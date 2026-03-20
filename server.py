@@ -8,6 +8,7 @@ import queue
 import threading
 import time
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -617,6 +618,58 @@ def _validated_message(raw_message: object) -> str:
     return message
 
 
+def _json_error(message: str, status: int) -> tuple[dict[str, object], int]:
+    return {"ok": False, "error": message}, status
+
+
+def _sse_error(message: str, status: int, *, chat_id: int | None = None) -> Response:
+    payload: dict[str, object] = {"error": message}
+    if chat_id is not None:
+        payload["chat_id"] = chat_id
+    return Response(_sse_event("error", payload), mimetype="text/event-stream", status=status)
+
+
+def _verify_for_json(payload: dict[str, object]) -> tuple[VerifiedTelegramInitData | None, tuple[dict[str, object], int] | None]:
+    try:
+        return _verify_from_payload(payload), None
+    except TelegramAuthError as exc:
+        return None, _json_error(str(exc), 401)
+
+
+def _verify_for_sse(payload: dict[str, object]) -> tuple[VerifiedTelegramInitData | None, Response | None]:
+    try:
+        return _verify_from_payload(payload), None
+    except TelegramAuthError as exc:
+        return None, _sse_error(str(exc), 401)
+
+
+def _request_payload() -> dict[str, object]:
+    return request.get_json(silent=True) or {}
+
+
+def _json_user_id_or_error(payload: dict[str, object]) -> tuple[str | None, tuple[dict[str, object], int] | None]:
+    verified, auth_error = _verify_for_json(payload)
+    if auth_error:
+        return None, auth_error
+    return str(verified.user.id), None
+
+
+def _sse_user_id_or_error(payload: dict[str, object]) -> tuple[str | None, Response | None]:
+    verified, auth_error = _verify_for_sse(payload)
+    if auth_error:
+        return None, auth_error
+    return str(verified.user.id), None
+
+
+def _chat_id_from_payload_or_error(payload: dict[str, object], *, user_id: str) -> tuple[int | None, tuple[dict[str, object], int] | None]:
+    try:
+        return _chat_id_from_payload(payload, user_id=user_id), None
+    except ValueError as exc:
+        return None, _json_error(str(exc), 400)
+    except KeyError as exc:
+        return None, _json_error(str(exc), 404)
+
+
 def _asset_version(filename: str) -> str:
     asset_path = BASE_DIR / "static" / filename
     try:
@@ -707,11 +760,10 @@ def static_files(filename: str):
 
 @app.post("/api/auth")
 def auth() -> Response | tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    verified, auth_error = _verify_for_json(payload)
+    if auth_error:
+        return auth_error
 
     user_id = str(verified.user.id)
     _ensure_pending_jobs(user_id)
@@ -763,15 +815,14 @@ def auth() -> Response | tuple[dict[str, object], int]:
 
 @app.post("/api/preferences/skin")
 def set_skin() -> Response | tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
+    payload = _request_payload()
     skin = str(payload.get("skin", "")).strip().lower()
     if skin not in ALLOWED_SKINS:
         return {"ok": False, "error": f"Unsupported skin: {skin or 'unknown'}"}, 400
 
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    verified, auth_error = _verify_for_json(payload)
+    if auth_error:
+        return auth_error
 
     store.set_skin(user_id=str(verified.user.id), skin=skin)
     response = jsonify({"ok": True, "skin": skin})
@@ -787,40 +838,40 @@ def set_skin() -> Response | tuple[dict[str, object], int]:
 
 @app.post("/api/chats")
 def create_chat() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
+    payload = _request_payload()
     try:
         title = _validated_title(payload.get("title"), default="New chat")
     except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
+        return _json_error(str(exc), 400)
 
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
 
-    user_id = str(verified.user.id)
     chat = store.create_chat(user_id=user_id, title=title)
     store.set_active_chat(user_id=user_id, chat_id=chat.id)
-    history = [asdict(turn) for turn in store.get_history(user_id=user_id, chat_id=chat.id, limit=120)]
+    history = _chat_history(user_id=user_id, chat_id=chat.id, limit=120)
     return {"ok": True, "chat": _serialize_chat(chat), "history": history}, 201
 
 
 @app.post("/api/chats/rename")
 def rename_chat() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
+
+    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
+    if chat_id_error:
+        return chat_id_error
 
     try:
-        chat_id = _chat_id_from_payload(payload, user_id=str(verified.user.id))
         title = _validated_title(payload.get("title"), default="Untitled")
-        chat = store.rename_chat(user_id=str(verified.user.id), chat_id=chat_id, title=title)
+        chat = store.rename_chat(user_id=user_id, chat_id=chat_id, title=title)
     except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
+        return _json_error(str(exc), 400)
     except KeyError as exc:
-        return {"ok": False, "error": str(exc)}, 404
+        return _json_error(str(exc), 404)
     return {"ok": True, "chat": _serialize_chat(chat)}, 200
 
 
@@ -835,111 +886,103 @@ def _chat_history_payload(user_id: str, chat_id: int, *, activate: bool) -> dict
 
 @app.post("/api/chats/open")
 def open_chat() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
+
+    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
+    if chat_id_error:
+        return chat_id_error
 
     try:
-        user_id = str(verified.user.id)
-        chat_id = _chat_id_from_payload(payload, user_id=user_id)
         response_payload = _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=True)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
     except KeyError as exc:
-        return {"ok": False, "error": str(exc)}, 404
+        return _json_error(str(exc), 404)
 
     return response_payload, 200
 
 
 @app.post("/api/chats/history")
 def chat_history() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
+
+    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
+    if chat_id_error:
+        return chat_id_error
 
     try:
-        user_id = str(verified.user.id)
-        chat_id = _chat_id_from_payload(payload, user_id=user_id)
         activate = bool(payload.get("activate", False))
         response_payload = _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=activate)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
     except KeyError as exc:
-        return {"ok": False, "error": str(exc)}, 404
+        return _json_error(str(exc), 404)
 
     return response_payload, 200
 
 
 @app.post("/api/chats/mark-read")
 def mark_chat_read() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
+
+    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
+    if chat_id_error:
+        return chat_id_error
 
     try:
-        chat_id = _chat_id_from_payload(payload, user_id=str(verified.user.id))
-        store.mark_chat_read(user_id=str(verified.user.id), chat_id=chat_id)
-        chat = store.get_chat(user_id=str(verified.user.id), chat_id=chat_id)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
+        store.mark_chat_read(user_id=user_id, chat_id=chat_id)
+        chat = store.get_chat(user_id=user_id, chat_id=chat_id)
     except KeyError as exc:
-        return {"ok": False, "error": str(exc)}, 404
+        return _json_error(str(exc), 404)
     return {"ok": True, "chat": _serialize_chat(chat)}, 200
 
 
 @app.post("/api/chats/clear")
 def clear_chat() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
+
+    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
+    if chat_id_error:
+        return chat_id_error
 
     try:
-        user_id = str(verified.user.id)
-        chat_id = _chat_id_from_payload(payload, user_id=user_id)
         store.clear_chat(user_id=user_id, chat_id=chat_id)
         chat = store.get_chat(user_id=user_id, chat_id=chat_id)
-        session_id = _miniapp_session_id(user_id, chat_id)
-        client.evict_session(session_id)
-        store.delete_runtime_checkpoint(session_id)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
+        _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
     except KeyError as exc:
-        return {"ok": False, "error": str(exc)}, 404
+        return _json_error(str(exc), 404)
     return {"ok": True, "chat": _serialize_chat(chat), "history": []}, 200
 
 
 @app.post("/api/chats/remove")
 def remove_chat() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
 
-    user_id = str(verified.user.id)
+    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
+    if chat_id_error:
+        return chat_id_error
+
     try:
-        chat_id = _chat_id_from_payload(payload, user_id=user_id)
-        session_id = _miniapp_session_id(user_id, chat_id)
-        client.evict_session(session_id)
-        store.delete_runtime_checkpoint(session_id)
+        _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
         next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id)
-        history = [asdict(turn) for turn in store.get_history(user_id=user_id, chat_id=next_chat_id, limit=120)]
+        history = _chat_history(user_id=user_id, chat_id=next_chat_id, limit=120)
         store.mark_chat_read(user_id=user_id, chat_id=next_chat_id)
         store.set_active_chat(user_id=user_id, chat_id=next_chat_id)
         active_chat = store.get_chat(user_id=user_id, chat_id=next_chat_id)
-        chats = [_serialize_chat(chat) for chat in store.list_chats(user_id=user_id)]
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
+        chats = _serialize_chats(user_id=user_id)
     except KeyError as exc:
-        return {"ok": False, "error": str(exc)}, 404
+        return _json_error(str(exc), 404)
     return {
         "ok": True,
         "removed_chat_id": chat_id,
@@ -952,26 +995,22 @@ def remove_chat() -> tuple[dict[str, object], int]:
 
 @app.post("/api/chats/status")
 def chats_status() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
-    user_id = str(verified.user.id)
+    payload = _request_payload()
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
     _ensure_pending_jobs(user_id)
-    chats = [_serialize_chat(chat) for chat in store.list_chats(user_id=user_id)]
+    chats = _serialize_chats(user_id=user_id)
     return {"ok": True, "chats": chats}, 200
 
 
 @app.post("/api/jobs/status")
 def jobs_status() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
 
-    user_id = str(verified.user.id)
     limit = int(payload.get("limit") or 25)
     jobs = store.list_jobs(user_id=user_id, limit=limit)
     dead_letters = store.list_dead_letters(user_id=user_id, limit=limit)
@@ -988,13 +1027,11 @@ def jobs_status() -> tuple[dict[str, object], int]:
 
 @app.post("/api/jobs/cleanup")
 def jobs_cleanup() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    user_id, auth_error = _json_user_id_or_error(payload)
+    if auth_error:
+        return auth_error
 
-    user_id = str(verified.user.id)
     limit = int(payload.get("limit") or 200)
     cleaned = store.cleanup_stale_jobs(user_id=user_id, limit=limit)
     return {
@@ -1006,11 +1043,10 @@ def jobs_cleanup() -> tuple[dict[str, object], int]:
 
 @app.post("/api/runtime/status")
 def runtime_status() -> tuple[dict[str, object], int]:
-    payload = request.get_json(silent=True) or {}
-    try:
-        _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    payload = _request_payload()
+    _, auth_error = _verify_for_json(payload)
+    if auth_error:
+        return auth_error
 
     runtime = client.runtime_status()
     return {
@@ -1020,37 +1056,56 @@ def runtime_status() -> tuple[dict[str, object], int]:
     }, 200
 
 
+def _resolve_active_chat(payload: dict[str, object], *, user_id: str) -> int:
+    chat_id = _chat_id_from_payload(payload, user_id=user_id)
+    store.set_active_chat(user_id=user_id, chat_id=chat_id)
+    return chat_id
+
+
+def _chat_history(user_id: str, chat_id: int, *, limit: int = 120) -> list[dict[str, object]]:
+    return [asdict(turn) for turn in store.get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
+
+
+def _serialize_chats(user_id: str) -> list[dict[str, object]]:
+    return [_serialize_chat(chat) for chat in store.list_chats(user_id=user_id)]
+
+
+def _evict_chat_runtime(user_id: str, chat_id: int) -> None:
+    session_id = _miniapp_session_id(user_id, chat_id)
+    client.evict_session(session_id)
+    store.delete_runtime_checkpoint(session_id)
+
+
+def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
+    return store.add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
+
+
 @app.post("/api/chat")
 def chat() -> tuple[object, int]:
-    payload = request.get_json(silent=True) or {}
+    payload = _request_payload()
     try:
         message = _validated_message(payload.get("message"))
     except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
+        return _json_error(str(exc), 400)
 
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return {"ok": False, "error": str(exc)}, 401
+    verified, auth_error = _verify_for_json(payload)
+    if auth_error:
+        return auth_error
 
     user_id = str(verified.user.id)
     try:
-        chat_id = _chat_id_from_payload(payload, user_id=user_id)
-        store.set_active_chat(user_id=user_id, chat_id=chat_id)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
-
-    history = [asdict(turn) for turn in store.get_history(user_id=user_id, chat_id=chat_id, limit=120)]
-    try:
-        store.add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
+        chat_id = _resolve_active_chat(payload, user_id=user_id)
+        _add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
     except (KeyError, ValueError) as exc:
-        return {"ok": False, "error": str(exc)}, 400
+        return _json_error(str(exc), 400)
+
+    history = _chat_history(user_id=user_id, chat_id=chat_id, limit=120)
 
     started = time.perf_counter()
     try:
         reply = client.ask(user_id=user_id, message=message, conversation_history=history)
     except HermesClientError as exc:
-        return {"ok": False, "error": str(exc)}, 502
+        return _json_error(str(exc), 502)
 
     latency_ms = int((time.perf_counter() - started) * 1000) if not reply.latency_ms else reply.latency_ms
     store.add_message(user_id=user_id, chat_id=chat_id, role="hermes", body=reply.text)
@@ -1068,40 +1123,7 @@ def chat() -> tuple[object, int]:
     )
 
 
-@app.post("/api/chat/stream")
-def stream_chat() -> Response:
-    payload = request.get_json(silent=True) or {}
-    try:
-        message = _validated_message(payload.get("message"))
-    except ValueError as exc:
-        return Response(_sse_event("error", {"error": str(exc)}), mimetype="text/event-stream", status=400)
-
-    try:
-        verified = _verify_from_payload(payload)
-    except TelegramAuthError as exc:
-        return Response(_sse_event("error", {"error": str(exc)}), mimetype="text/event-stream", status=401)
-
-    user_id = str(verified.user.id)
-    try:
-        chat_id = _chat_id_from_payload(payload, user_id=user_id)
-        store.set_active_chat(user_id=user_id, chat_id=chat_id)
-        if store.has_open_job(user_id=user_id, chat_id=chat_id):
-            return Response(
-                _sse_event("error", {"error": "Hermes is already working on this chat.", "chat_id": chat_id}),
-                mimetype="text/event-stream",
-                status=409,
-            )
-        operator_message_id = store.add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
-        job_id = store.enqueue_chat_job(
-            user_id=user_id,
-            chat_id=chat_id,
-            operator_message_id=operator_message_id,
-            max_attempts=JOB_MAX_ATTEMPTS,
-        )
-        _JOB_WAKE_EVENT.set()
-    except (KeyError, ValueError) as exc:
-        return Response(_sse_event("error", {"error": str(exc)}), mimetype="text/event-stream", status=400)
-
+def _stream_job_response(*, user_id: str, chat_id: int, job_id: int) -> Response:
     def generate() -> Iterator[str]:
         subscriber = _subscribe_job_events(job_id)
         terminal = False
@@ -1117,6 +1139,18 @@ def stream_chat() -> Response:
                     if (now - last_queue_heartbeat) >= 4.0:
                         state = store.get_job_state(job_id)
                         if state:
+                            elapsed_ms = None
+                            started_at_raw = str(state.get("started_at") or "").strip()
+                            if started_at_raw:
+                                try:
+                                    started_dt = datetime.strptime(started_at_raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                                    elapsed_ms = max(
+                                        0,
+                                        int((datetime.now(timezone.utc) - started_dt).total_seconds() * 1000),
+                                    )
+                                except ValueError:
+                                    elapsed_ms = None
+
                             heartbeat_payload = {
                                 "chat_id": chat_id,
                                 "source": "queue",
@@ -1130,6 +1164,9 @@ def stream_chat() -> Response:
                                 "running_total": state.get("running_total"),
                                 "attempt": state.get("attempts"),
                                 "max_attempts": state.get("max_attempts"),
+                                "started_at": state.get("started_at"),
+                                "created_at": state.get("created_at"),
+                                "elapsed_ms": elapsed_ms,
                             }
                             yield _sse_event("meta", heartbeat_payload)
                         last_queue_heartbeat = now
@@ -1151,6 +1188,58 @@ def stream_chat() -> Response:
     }
     return Response(generate(), mimetype="text/event-stream", headers=headers)
 
+
+@app.post("/api/chat/stream")
+def stream_chat() -> Response:
+    payload = _request_payload()
+    try:
+        message = _validated_message(payload.get("message"))
+    except ValueError as exc:
+        return _sse_error(str(exc), 400)
+
+    verified, auth_error = _verify_for_sse(payload)
+    if auth_error:
+        return auth_error
+
+    user_id = str(verified.user.id)
+    try:
+        chat_id = _resolve_active_chat(payload, user_id=user_id)
+        if store.has_open_job(user_id=user_id, chat_id=chat_id):
+            return _sse_error("Hermes is already working on this chat.", 409, chat_id=chat_id)
+        operator_message_id = _add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
+        job_id = store.enqueue_chat_job(
+            user_id=user_id,
+            chat_id=chat_id,
+            operator_message_id=operator_message_id,
+            max_attempts=JOB_MAX_ATTEMPTS,
+        )
+        _JOB_WAKE_EVENT.set()
+    except (KeyError, ValueError) as exc:
+        return _sse_error(str(exc), 400)
+
+    return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=job_id)
+
+
+@app.post("/api/chat/stream/resume")
+def stream_chat_resume() -> Response:
+    payload = _request_payload()
+
+    verified, auth_error = _verify_for_sse(payload)
+    if auth_error:
+        return auth_error
+
+    user_id = str(verified.user.id)
+    try:
+        chat_id = _resolve_active_chat(payload, user_id=user_id)
+    except (KeyError, ValueError) as exc:
+        return _sse_error(str(exc), 400)
+
+    open_job = store.get_open_job(user_id=user_id, chat_id=chat_id)
+    if not open_job:
+        return _sse_error("No active Hermes job for this chat.", 409, chat_id=chat_id)
+
+    _JOB_WAKE_EVENT.set()
+    return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=int(open_job["id"]))
 
 @app.get("/api/state")
 def state() -> tuple[dict[str, object], int]:

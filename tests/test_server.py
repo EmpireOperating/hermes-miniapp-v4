@@ -80,6 +80,8 @@ def test_mobile_viewport_and_composer_zoom_guards_present() -> None:
     assert "font-size: 16px;" in css
     assert "-webkit-text-size-adjust: none;" in css
     assert "text-size-adjust: none;" in css
+    assert "margin-left: auto;" in css
+    assert "margin-left: auto !important;" in css
 
 
 def test_quote_selection_sync_is_debounced_in_client_script() -> None:
@@ -241,6 +243,27 @@ def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     assert captured["session_id"] == f"miniapp-123-{chat_id}"
 
 
+def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "in flight")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+
+    response = client.post("/api/chats/clear", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 200
+    state = server.store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+
+
 def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
@@ -326,6 +349,52 @@ def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None
     assert response.status_code == 409
     body = response.get_data(as_text=True)
     assert "already working" in body
+
+
+def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    chat_id = server.store.ensure_default_chat("123")
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 409
+    body = response.get_data(as_text=True)
+    assert "No active Hermes job" in body
+
+
+def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == job_id
+
+    server._publish_job_event(job_id, "tool", {"chat_id": chat_id, "display": "read_file: test"})
+    server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: tool" in body
+    assert "read_file: test" in body
+    assert "event: done" in body
+    assert '"reply": "ok"' in body
 
 
 def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path) -> None:

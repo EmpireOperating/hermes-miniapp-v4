@@ -31,6 +31,7 @@ const renameChatButton = document.getElementById("rename-chat");
 const fullscreenAppTopButton = document.getElementById("fullscreen-app-top");
 const closeAppTopButton = document.getElementById("close-app-top");
 const settingsButton = document.getElementById("settings-button");
+const renderTraceBadge = document.getElementById("render-trace-badge");
 const settingsModal = document.getElementById("settings-modal");
 const settingsClose = document.getElementById("settings-close");
 const template = document.getElementById("message-template");
@@ -52,29 +53,206 @@ let operatorDisplayName = "Operator";
 const chats = new Map();
 const histories = new Map();
 const pendingChats = new Set();
+const streamAbortControllers = new Map();
+const latencyByChat = new Map();
 const prefetchingHistories = new Set();
 const tabNodes = new Map();
 const chatScrollTop = new Map();
 const chatStickToBottom = new Map();
 const virtualizationRanges = new Map();
 const virtualMetrics = new Map();
+const renderedHistoryLength = new Map();
+const renderedHistoryVirtualized = new Map();
 const unseenStreamChats = new Set();
 const markReadInFlight = new Set();
 const VIRTUALIZE_THRESHOLD = 220;
 const ESTIMATED_MESSAGE_HEIGHT = 108;
 const VIRTUAL_OVERSCAN = 18;
+const SCROLL_STICKY_THRESHOLD_PX = 80;
 let renderedChatId = null;
 let lastOpenChatRequestId = 0;
 let activeRenderScheduled = false;
 let activeRenderChatId = null;
-let selectionQuoteText = "";
+// Back-compat aliases kept for tests and grep-based checks.
 let selectionQuoteSyncTimer = null;
 let selectionQuoteClearTimer = null;
 let selectionQuoteSettleTimer = null;
-let mobileQuotePlacementKey = "";
+
+const selectionQuoteState = {
+  text: "",
+  placementKey: "",
+  timers: {
+    sync: null,
+    clear: null,
+    settle: null,
+  },
+  getText() {
+    return this.text;
+  },
+  setText(text) {
+    this.text = String(text || "");
+  },
+  clearPlacement() {
+    this.placementKey = "";
+  },
+  setPlacement(placementKey) {
+    this.placementKey = String(placementKey || "");
+  },
+  reset() {
+    this.setText("");
+    this.clearPlacement();
+  },
+  cancelTimer(name) {
+    const timerId = this.timers[name];
+    if (!timerId) return;
+    window.clearTimeout(timerId);
+    this.timers[name] = null;
+  },
+  scheduleTimer(name, delayMs, callback) {
+    this.cancelTimer(name);
+    const safeDelay = Math.max(0, Number(delayMs) || 0);
+    this.timers[name] = window.setTimeout(() => {
+      this.timers[name] = null;
+      callback();
+    }, safeDelay);
+  },
+};
+const messageCopyState = {
+  minHandledIntervalMs: 350,
+  handledAtByButton: new WeakMap(),
+  resetTimerByButton: new WeakMap(),
+
+  wasHandledRecently(button, now = Date.now()) {
+    const lastHandledAt = Number(this.handledAtByButton.get(button) || 0);
+    return now - lastHandledAt < this.minHandledIntervalMs;
+  },
+
+  markHandled(button, now = Date.now()) {
+    this.handledAtByButton.set(button, Number(now) || Date.now());
+  },
+
+  cancelReset(button) {
+    const timerId = this.resetTimerByButton.get(button);
+    if (!timerId) return;
+    window.clearTimeout(timerId);
+    this.resetTimerByButton.delete(button);
+  },
+
+  scheduleReset(button, delayMs, callback) {
+    this.cancelReset(button);
+    const safeDelay = Math.max(0, Number(delayMs) || 0);
+    const timerId = window.setTimeout(() => {
+      this.resetTimerByButton.delete(button);
+      callback();
+    }, safeDelay);
+    this.resetTimerByButton.set(button, timerId);
+  },
+};
 const mobileQuoteMode = isCoarsePointer();
 const draftByChat = new Map();
 const DRAFT_STORAGE_KEY = "hermes_miniapp_chat_drafts_v1";
+const RENDER_TRACE_STORAGE_KEY = "hermes_render_trace_debug";
+
+function parseBooleanFlag(rawValue) {
+  if (rawValue == null) return null;
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (!normalized) return null;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return null;
+}
+
+function resolveRenderTraceDebugEnabled() {
+  let queryFlag = null;
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    queryFlag = parseBooleanFlag(params.get("render_trace"));
+    if (queryFlag !== null) {
+      try {
+        if (queryFlag) {
+          localStorage.setItem(RENDER_TRACE_STORAGE_KEY, "1");
+        } else {
+          localStorage.removeItem(RENDER_TRACE_STORAGE_KEY);
+        }
+      } catch {
+        // Best-effort persistence only.
+      }
+      return queryFlag;
+    }
+  } catch {
+    // URL parsing unavailable; fall through to stored preference.
+  }
+
+  try {
+    return Boolean(parseBooleanFlag(localStorage.getItem(RENDER_TRACE_STORAGE_KEY)));
+  } catch {
+    return false;
+  }
+}
+
+let renderTraceDebugEnabled = resolveRenderTraceDebugEnabled();
+
+function syncRenderTraceBadge() {
+  if (!renderTraceBadge) return;
+  renderTraceBadge.hidden = false;
+  renderTraceBadge.dataset.enabled = renderTraceDebugEnabled ? "true" : "false";
+  renderTraceBadge.setAttribute("aria-pressed", renderTraceDebugEnabled ? "true" : "false");
+  renderTraceBadge.textContent = `Render Trace ${renderTraceDebugEnabled ? "ON" : "OFF"}`;
+  renderTraceBadge.title = renderTraceDebugEnabled
+    ? "Tap to disable render trace logging"
+    : "Tap to enable render trace logging";
+}
+
+function setRenderTraceDebugEnabled(nextEnabled, options = {}) {
+  const { persist = true, updateUrl = true } = options;
+  renderTraceDebugEnabled = Boolean(nextEnabled);
+
+  if (persist) {
+    try {
+      if (renderTraceDebugEnabled) {
+        localStorage.setItem(RENDER_TRACE_STORAGE_KEY, "1");
+      } else {
+        localStorage.removeItem(RENDER_TRACE_STORAGE_KEY);
+      }
+    } catch {
+      // Best-effort persistence only.
+    }
+  }
+
+  if (updateUrl) {
+    try {
+      const url = new URL(window.location.href);
+      if (renderTraceDebugEnabled) {
+        url.searchParams.set("render_trace", "1");
+      } else {
+        url.searchParams.delete("render_trace");
+      }
+      window.history.replaceState(window.history.state, "", url.toString());
+    } catch {
+      // Ignore URL update failures.
+    }
+  }
+
+  syncRenderTraceBadge();
+}
+
+function handleRenderTraceBadgeClick() {
+  setRenderTraceDebugEnabled(!renderTraceDebugEnabled);
+  if (renderTraceDebugEnabled) {
+    console.info("[render-trace] debug-enabled", { enabled: true, source: "badge" });
+    return;
+  }
+  console.info("[render-trace] debug-disabled", { enabled: false, source: "badge" });
+}
+
+function renderTraceLog(eventName, details = null) {
+  if (!renderTraceDebugEnabled) return;
+  if (details == null) {
+    console.info(`[render-trace] ${eventName}`);
+    return;
+  }
+  console.info(`[render-trace] ${eventName}`, details);
+}
 
 
 const MESSAGE_TIMEZONE = "America/Regina";
@@ -168,6 +346,26 @@ function formatLatency(msValue) {
   if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
   if (minutes > 0) return `${minutes}m ${seconds}s`;
   return `${seconds}s`;
+}
+
+function setChatLatency(chatId, text) {
+  const key = Number(chatId);
+  if (!key) return;
+  const normalized = String(text || "").trim() || "--";
+  latencyByChat.set(key, normalized);
+  if (Number(activeChatId) === key) {
+    setActivityChip(latencyChip, `latency: ${normalized}`);
+  }
+}
+
+function syncActiveLatencyChip() {
+  const key = Number(activeChatId);
+  if (!key) {
+    setActivityChip(latencyChip, "latency: --");
+    return;
+  }
+  const value = latencyByChat.get(key) || "--";
+  setActivityChip(latencyChip, `latency: ${value}`);
 }
 
 function revealShell() {
@@ -761,52 +959,43 @@ function isCoarsePointer() {
 }
 
 function clearSelectionQuoteState() {
-  selectionQuoteText = "";
-  mobileQuotePlacementKey = "";
+  selectionQuoteState.reset();
   if (selectionQuoteButton) {
     selectionQuoteButton.hidden = true;
   }
 }
 
+function cancelSelectionQuoteTimer(name) {
+  selectionQuoteState.cancelTimer(name);
+}
+
 function cancelSelectionQuoteSync() {
-  if (selectionQuoteSyncTimer) {
-    window.clearTimeout(selectionQuoteSyncTimer);
-    selectionQuoteSyncTimer = null;
-  }
+  cancelSelectionQuoteTimer("sync");
 }
 
 function cancelSelectionQuoteSettle() {
-  if (selectionQuoteSettleTimer) {
-    window.clearTimeout(selectionQuoteSettleTimer);
-    selectionQuoteSettleTimer = null;
-  }
+  cancelSelectionQuoteTimer("settle");
 }
 
 function cancelSelectionQuoteClear() {
-  if (selectionQuoteClearTimer) {
-    window.clearTimeout(selectionQuoteClearTimer);
-    selectionQuoteClearTimer = null;
-  }
+  cancelSelectionQuoteTimer("clear");
 }
 
 function scheduleSelectionQuoteClear(delayMs = 380) {
-  cancelSelectionQuoteClear();
-  selectionQuoteClearTimer = window.setTimeout(() => {
-    selectionQuoteClearTimer = null;
+  selectionQuoteState.scheduleTimer("clear", delayMs, () => {
     const picked = activeSelectionQuote();
     if (!picked) {
       clearSelectionQuoteState();
     }
-  }, Math.max(0, Number(delayMs) || 0));
+  });
 }
 
 function scheduleSelectionQuoteSync(delayMs = 120) {
   cancelSelectionQuoteSync();
   cancelSelectionQuoteSettle();
-  selectionQuoteSyncTimer = window.setTimeout(() => {
-    selectionQuoteSyncTimer = null;
+  selectionQuoteState.scheduleTimer("sync", delayMs, () => {
     syncSelectionQuoteAction();
-  }, Math.max(0, Number(delayMs) || 0));
+  });
 }
 
 function applyQuoteIntoPrompt(text) {
@@ -866,12 +1055,12 @@ function showSelectionQuoteAction({ text, rect }, { lockPlacement = false } = {}
   }
 
   const placementKey = quotePlacementKey({ text, rect });
-  if (mobileQuoteMode && lockPlacement && !selectionQuoteButton.hidden && mobileQuotePlacementKey === placementKey) {
-    selectionQuoteText = text;
+  if (mobileQuoteMode && lockPlacement && !selectionQuoteButton.hidden && selectionQuoteState.placementKey === placementKey) {
+    selectionQuoteState.setText(text);
     return;
   }
 
-  selectionQuoteText = text;
+  selectionQuoteState.setText(text);
   const viewportWidth = Number(window.innerWidth || 0);
   const viewportHeight = Number(window.innerHeight || 0);
   const buttonWidth = selectionQuoteButton.offsetWidth || 72;
@@ -901,7 +1090,7 @@ function showSelectionQuoteAction({ text, rect }, { lockPlacement = false } = {}
   selectionQuoteButton.style.top = `${top}px`;
   selectionQuoteButton.hidden = false;
   if (mobileQuoteMode && lockPlacement) {
-    mobileQuotePlacementKey = placementKey;
+    selectionQuoteState.setPlacement(placementKey);
   }
 }
 
@@ -920,14 +1109,13 @@ function syncSelectionQuoteAction() {
   }
 
   const firstKey = quotePlacementKey(firstPick);
-  if (!selectionQuoteButton.hidden && mobileQuotePlacementKey === firstKey) {
-    selectionQuoteText = firstPick.text;
+  if (!selectionQuoteButton.hidden && selectionQuoteState.placementKey === firstKey) {
+    selectionQuoteState.setText(firstPick.text);
     return;
   }
 
   cancelSelectionQuoteSettle();
-  selectionQuoteSettleTimer = window.setTimeout(() => {
-    selectionQuoteSettleTimer = null;
+  selectionQuoteState.scheduleTimer("settle", 110, () => {
     const settledPick = activeSelectionQuote();
     if (!settledPick) {
       scheduleSelectionQuoteClear(160);
@@ -939,7 +1127,7 @@ function syncSelectionQuoteAction() {
       return;
     }
     showSelectionQuoteAction(settledPick, { lockPlacement: true });
-  }, 110);
+  });
 }
 
 function renderBody(container, rawText) {
@@ -1045,36 +1233,83 @@ function refreshOperatorRoleLabels() {
   }
 }
 
-function createMessageNode(message) {
-  const renderedBody = cleanDisplayText(message.body || (message.pending ? "…" : ""));
-  if (!renderedBody && !message.pending && message.role !== "tool") {
-    return null;
-  }
+function messageVariantForRole(role) {
+  if (role === "operator" || role === "user") return "operator";
+  if (role === "hermes" || role === "assistant") return "assistant";
+  if (role === "tool") return "tool";
+  return "system";
+}
 
-  const node = template.content.firstElementChild.cloneNode(true);
-  const role = String(message.role || "").toLowerCase();
-  const variant = (role === "operator" || role === "user")
-    ? "operator"
-    : (role === "hermes" || role === "assistant")
-      ? "assistant"
-      : role === "tool"
-        ? "tool"
-        : "system";
+function shouldSkipMessageRender({ role, renderedBody, pending }) {
+  return !renderedBody && !pending && role !== "tool";
+}
+
+function applyMessageMeta(node, message, role, variant) {
   node.classList.add(`message--${variant}`);
   if (message.pending) {
     node.classList.add("message--pending");
   }
-  node.dataset.role = String(message.role || "").toLowerCase();
+  node.dataset.role = role;
   node.querySelector(".message__role").textContent = roleLabelForMessage(message);
   node.querySelector(".message__time").textContent = formatMessageTime(message.created_at);
+}
 
+function renderMessageContent(node, message, renderedBody) {
   const bodyNode = node.querySelector(".message__body");
-  if (message.role === "tool") {
+  if (String(message.role || "").toLowerCase() === "tool") {
     renderToolTraceBody(bodyNode, message);
+    return;
+  }
+  renderBody(bodyNode, renderedBody);
+}
+
+function messageStableKey(message, index = 0) {
+  const messageId = Number(message?.id || 0);
+  if (Number.isFinite(messageId) && messageId > 0) {
+    return `id:${messageId}`;
+  }
+
+  const role = String(message?.role || "").toLowerCase();
+  const pending = Boolean(message?.pending) ? "pending" : "sent";
+  const createdAt = String(message?.created_at || "");
+  return `local:${role}:${pending}:${createdAt}:${index}`;
+}
+
+function upsertMessageNode(node, message) {
+  const role = String(message.role || "").toLowerCase();
+  const renderedBody = cleanDisplayText(message.body || (message.pending ? "…" : ""));
+  if (shouldSkipMessageRender({ role, renderedBody, pending: Boolean(message.pending) })) {
+    return false;
+  }
+
+  const variant = messageVariantForRole(role);
+  node.className = "message";
+  applyMessageMeta(node, message, role, variant);
+  renderMessageContent(node, message, renderedBody);
+  return true;
+}
+
+function createMessageNode(message, { index = 0 } = {}) {
+  const node = template.content.firstElementChild.cloneNode(true);
+  if (!upsertMessageNode(node, message)) {
+    return null;
+  }
+  node.dataset.messageKey = messageStableKey(message, index);
+  if (Number.isFinite(Number(message?.id)) && Number(message.id) > 0) {
+    node.dataset.messageId = String(Number(message.id));
   } else {
-    renderBody(bodyNode, renderedBody);
+    delete node.dataset.messageId;
   }
   return node;
+}
+
+function appendMessages(fragment, messages, startIndex = 0) {
+  messages.forEach((message, offset) => {
+    const node = createMessageNode(message, { index: startIndex + offset });
+    if (node) {
+      fragment.appendChild(node);
+    }
+  });
 }
 
 function isNearBottom(element, threshold = 24) {
@@ -1155,67 +1390,114 @@ function computeVirtualRange({ total, scrollTop, viewportHeight, forceBottom, es
   return { start, end };
 }
 
-function renderMessages(chatId, { preserveViewport = false, forceBottom = false } = {}) {
-  const targetChatId = Number(chatId);
-  const isSameRenderedChat = Number(renderedChatId) === targetChatId;
-  const prevScrollTop = messagesEl.scrollTop;
-  // Stable viewport policy: never auto-stick to bottom unless explicitly forced
-  // (e.g. user taps the Jump to latest button).
-  const shouldStick = Boolean(forceBottom);
+function renderVirtualizedHistory(targetChatId, history, {
+  prevScrollTop,
+  preserveViewport,
+  forceBottom,
+  shouldStick,
+  estimatedHeight,
+}) {
+  const viewportHeight = Math.max(messagesEl.clientHeight || 0, 320);
+  const range = computeVirtualRange({
+    total: history.length,
+    scrollTop: forceBottom ? Number.MAX_SAFE_INTEGER : prevScrollTop,
+    viewportHeight,
+    forceBottom: forceBottom || (!preserveViewport && shouldStick),
+    estimatedHeight,
+  });
 
-  messagesEl.innerHTML = "";
-  clearSelectionQuoteState();
-  const history = histories.get(targetChatId) || [];
-  const shouldVirtualize = shouldVirtualizeHistory(history.length);
+  const renderStart = range.start;
+  const renderEnd = range.end;
 
-  let renderStart = 0;
-  let renderEnd = history.length;
-  const estimatedHeight = getEstimatedMessageHeight(targetChatId);
+  const topSpacer = document.createElement("div");
+  topSpacer.className = "messages__spacer";
+  topSpacer.style.height = `${renderStart * estimatedHeight}px`;
 
-  if (shouldVirtualize) {
-    const viewportHeight = Math.max(messagesEl.clientHeight || 0, 320);
-    const range = computeVirtualRange({
-      total: history.length,
-      scrollTop: forceBottom ? Number.MAX_SAFE_INTEGER : prevScrollTop,
-      viewportHeight,
-      forceBottom: forceBottom || (!preserveViewport && shouldStick),
-      estimatedHeight,
-    });
+  const bottomSpacer = document.createElement("div");
+  bottomSpacer.className = "messages__spacer";
+  bottomSpacer.style.height = `${Math.max(0, history.length - renderEnd) * estimatedHeight}px`;
 
-    renderStart = range.start;
-    renderEnd = range.end;
+  messagesEl.appendChild(topSpacer);
+  const fragment = document.createDocumentFragment();
+  appendMessages(fragment, history.slice(renderStart, renderEnd));
+  messagesEl.appendChild(fragment);
+  messagesEl.appendChild(bottomSpacer);
 
-    const topSpacer = document.createElement("div");
-    topSpacer.className = "messages__spacer";
-    topSpacer.style.height = `${renderStart * estimatedHeight}px`;
+  virtualizationRanges.set(targetChatId, {
+    start: renderStart,
+    end: renderEnd,
+    total: history.length,
+    estimatedHeight,
+  });
+}
 
-    const bottomSpacer = document.createElement("div");
-    bottomSpacer.className = "messages__spacer";
-    bottomSpacer.style.height = `${Math.max(0, history.length - renderEnd) * estimatedHeight}px`;
+function renderFullHistory(targetChatId, history) {
+  const fragment = document.createDocumentFragment();
+  appendMessages(fragment, history);
+  messagesEl.appendChild(fragment);
+  virtualizationRanges.delete(targetChatId);
+}
 
-    messagesEl.appendChild(topSpacer);
-    const fragment = document.createDocumentFragment();
-    history.slice(renderStart, renderEnd).forEach((message) => {
-      const node = createMessageNode(message);
-      if (node) {
-        fragment.appendChild(node);
-      }
-    });
-    messagesEl.appendChild(fragment);
-    messagesEl.appendChild(bottomSpacer);
-    virtualizationRanges.set(targetChatId, { start: renderStart, end: renderEnd, total: history.length, estimatedHeight });
-  } else {
-    const fragment = document.createDocumentFragment();
-    history.forEach((message) => {
-      const node = createMessageNode(message);
-      if (node) {
-        fragment.appendChild(node);
-      }
-    });
-    messagesEl.appendChild(fragment);
-    virtualizationRanges.delete(targetChatId);
+function tryAppendOnlyRender(targetChatId, history, {
+  preserveViewport,
+  forceBottom,
+  isSameRenderedChat,
+  shouldVirtualize,
+  prevScrollTop,
+  wasNearBottom,
+}) {
+  if (forceBottom || !preserveViewport || !isSameRenderedChat || shouldVirtualize) {
+    return false;
   }
 
+  if (renderedHistoryVirtualized.get(targetChatId)) {
+    return false;
+  }
+
+  const previouslyRenderedLength = Number(renderedHistoryLength.get(targetChatId));
+  if (!Number.isFinite(previouslyRenderedLength) || previouslyRenderedLength < 0) {
+    return false;
+  }
+
+  if (history.length <= previouslyRenderedLength) {
+    return false;
+  }
+
+  const appendedSlice = history.slice(previouslyRenderedLength);
+  if (!appendedSlice.length) {
+    return false;
+  }
+
+  const fragment = document.createDocumentFragment();
+  appendMessages(fragment, appendedSlice);
+  messagesEl.appendChild(fragment);
+
+  const shouldStickBottom = Boolean(chatStickToBottom.get(targetChatId) || wasNearBottom);
+  if (shouldStickBottom) {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  } else {
+    // Appending new messages at the bottom should not move the viewport when
+    // the operator is reading older content.
+    messagesEl.scrollTop = Math.max(0, prevScrollTop);
+  }
+
+  renderTraceLog("append-only-render", {
+    chatId: Number(targetChatId),
+    appendedCount: appendedSlice.length,
+    shouldStickBottom,
+    preservedScrollTop: Math.max(0, prevScrollTop),
+  });
+
+  return true;
+}
+
+function restoreMessageViewport(targetChatId, {
+  forceBottom,
+  preserveViewport,
+  isSameRenderedChat,
+  shouldStick,
+  prevScrollTop,
+}) {
   if (forceBottom) {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   } else if (preserveViewport && isSameRenderedChat && !shouldStick) {
@@ -1226,8 +1508,12 @@ function renderMessages(chatId, { preserveViewport = false, forceBottom = false 
   } else {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
+}
 
+function finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom }) {
   renderedChatId = targetChatId;
+  renderedHistoryLength.set(targetChatId, history.length);
+  renderedHistoryVirtualized.set(targetChatId, Boolean(shouldVirtualize));
   if (shouldVirtualize) {
     updateVirtualMetrics(targetChatId);
   }
@@ -1241,6 +1527,66 @@ function renderMessages(chatId, { preserveViewport = false, forceBottom = false 
   chatStickToBottom.set(targetChatId, atBottom);
   updateJumpLatestVisibility();
   historyCount.textContent = String(history.filter((item) => item.role !== "system").length);
+}
+
+function renderMessages(chatId, { preserveViewport = false, forceBottom = false } = {}) {
+  const targetChatId = Number(chatId);
+  const isSameRenderedChat = Number(renderedChatId) === targetChatId;
+  const prevScrollTop = messagesEl.scrollTop;
+  const wasNearBottom = isNearBottom(messagesEl, 40);
+  // Keep viewport stable when reading older messages, but anchor to bottom
+  // when the operator is already near latest and new content arrives.
+  const shouldStick = Boolean(forceBottom || (preserveViewport && isSameRenderedChat && wasNearBottom));
+
+  const history = histories.get(targetChatId) || [];
+  const shouldVirtualize = shouldVirtualizeHistory(history.length);
+  const estimatedHeight = getEstimatedMessageHeight(targetChatId);
+
+  if (tryAppendOnlyRender(targetChatId, history, {
+    preserveViewport,
+    forceBottom,
+    isSameRenderedChat,
+    shouldVirtualize,
+    prevScrollTop,
+    wasNearBottom,
+  })) {
+    finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom });
+    return;
+  }
+
+  renderTraceLog("full-render", {
+    chatId: Number(targetChatId),
+    reason: "append-only-unavailable",
+    preserveViewport: Boolean(preserveViewport),
+    forceBottom: Boolean(forceBottom),
+    shouldVirtualize,
+    historyLength: history.length,
+  });
+
+  messagesEl.innerHTML = "";
+  clearSelectionQuoteState();
+
+  if (shouldVirtualize) {
+    renderVirtualizedHistory(targetChatId, history, {
+      prevScrollTop,
+      preserveViewport,
+      forceBottom,
+      shouldStick,
+      estimatedHeight,
+    });
+  } else {
+    renderFullHistory(targetChatId, history);
+  }
+
+  restoreMessageViewport(targetChatId, {
+    forceBottom,
+    preserveViewport,
+    isSameRenderedChat,
+    shouldStick,
+    prevScrollTop,
+  });
+
+  finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom });
 }
 
 function upsertChat(chat) {
@@ -1264,6 +1610,8 @@ function syncChats(chatList) {
       chatStickToBottom.delete(Number(chatId));
       virtualizationRanges.delete(Number(chatId));
       virtualMetrics.delete(Number(chatId));
+      renderedHistoryLength.delete(Number(chatId));
+      renderedHistoryVirtualized.delete(Number(chatId));
       unseenStreamChats.delete(Number(chatId));
       const staleNode = tabNodes.get(Number(chatId));
       staleNode?.remove();
@@ -1286,55 +1634,84 @@ function getOrCreateTabNode(chatId) {
   return node;
 }
 
-function updateTabNode(node, chat) {
-  const isActive = Number(chat.id) === Number(activeChatId);
-  node.classList.toggle("is-active", isActive);
-  node.setAttribute("aria-selected", isActive ? "true" : "false");
-  node.querySelector(".chat-tab__title").textContent = chat.title;
-
-  const badge = node.querySelector(".chat-tab__badge");
+function getTabBadgeState(chat) {
   const chatKey = Number(chat.id);
   const pending = pendingChats.has(chatKey) || Boolean(chat.pending);
   const unread = Number(chat.unread_count || 0);
   const hasUnseenInViewport = unseenStreamChats.has(chatKey);
-  badge.classList.remove("is-visible", "is-pending", "is-unread-dot");
-  badge.removeAttribute("aria-label");
 
   if (pending) {
-    badge.textContent = "…";
-    badge.classList.add("is-visible", "is-pending");
-    badge.setAttribute("aria-label", "Pending response");
-  } else if (unread > 0 || hasUnseenInViewport) {
-    badge.textContent = "•";
-    badge.classList.add("is-visible", "is-unread-dot");
-    if (unread > 0) {
-      badge.setAttribute("aria-label", `${unread} unread ${unread === 1 ? "message" : "messages"}`);
-    } else {
-      badge.setAttribute("aria-label", "New messages below current scroll position");
-    }
-  } else {
-    badge.textContent = "";
+    return {
+      text: "…",
+      classes: ["is-visible", "is-pending"],
+      ariaLabel: "Pending response",
+    };
+  }
+
+  if (unread > 0 || hasUnseenInViewport) {
+    return {
+      text: "•",
+      classes: ["is-visible", "is-unread-dot"],
+      ariaLabel:
+        unread > 0
+          ? `${unread} unread ${unread === 1 ? "message" : "messages"}`
+          : "New messages below current scroll position",
+    };
+  }
+
+  return {
+    text: "",
+    classes: [],
+    ariaLabel: "",
+  };
+}
+
+function applyTabBadgeState(badge, badgeState) {
+  badge.classList.remove("is-visible", "is-pending", "is-unread-dot");
+  badge.removeAttribute("aria-label");
+  badge.textContent = badgeState.text;
+  if (badgeState.classes.length) {
+    badge.classList.add(...badgeState.classes);
+  }
+  if (badgeState.ariaLabel) {
+    badge.setAttribute("aria-label", badgeState.ariaLabel);
   }
 }
 
-function renderTabs() {
-  const ordered = [...chats.values()].sort((a, b) => a.id - b.id);
-  const nextIds = new Set(ordered.map((chat) => Number(chat.id)));
+function applyTabNodeState(node, chat) {
+  const isActive = Number(chat.id) === Number(activeChatId);
+  node.classList.toggle("is-active", isActive);
+  node.setAttribute("aria-selected", isActive ? "true" : "false");
+  node.querySelector(".chat-tab__title").textContent = chat.title;
+  applyTabBadgeState(node.querySelector(".chat-tab__badge"), getTabBadgeState(chat));
+}
 
+function updateTabNode(node, chat) {
+  applyTabNodeState(node, chat);
+}
+
+function removeMissingTabNodes(nextIds) {
   [...tabNodes.entries()].forEach(([chatId, node]) => {
     if (!nextIds.has(chatId)) {
       node.remove();
       tabNodes.delete(chatId);
     }
   });
+}
 
-  ordered.forEach((chat) => {
-    const node = getOrCreateTabNode(chat.id);
-    updateTabNode(node, chat);
-    if (node.parentElement !== tabsEl) {
-      tabsEl.appendChild(node);
-    }
-  });
+function renderTabNode(chat) {
+  const node = getOrCreateTabNode(chat.id);
+  applyTabNodeState(node, chat);
+  if (node.parentElement !== tabsEl) {
+    tabsEl.appendChild(node);
+  }
+}
+
+function renderTabs() {
+  const ordered = [...chats.values()].sort((a, b) => a.id - b.id);
+  const nextIds = new Set(ordered.map((chat) => Number(chat.id)));
+  removeMissingTabNodes(nextIds);
+  ordered.forEach(renderTabNode);
 }
 
 function refreshTabNode(chatId) {
@@ -1343,7 +1720,7 @@ function refreshTabNode(chatId) {
   const node = tabNodes.get(key);
   const chat = chats.get(key);
   if (!node || !chat) return;
-  updateTabNode(node, chat);
+  applyTabNodeState(node, chat);
 }
 
 function syncActiveTabSelection(previousChatId, nextChatId) {
@@ -1417,6 +1794,7 @@ function setActiveChatMeta(chatId, { fullTabRender = true, deferNonCritical = fa
 
   const finalizeMeta = () => {
     syncActivePendingStatus();
+    syncActiveLatencyChip();
     updateJumpLatestVisibility();
   };
 
@@ -1435,6 +1813,27 @@ function updateComposerState() {
   if (removeChatButton) {
     removeChatButton.disabled = pending || !isAuthenticated || !activeChatId;
   }
+}
+
+function setStreamAbortController(chatId, controller) {
+  const key = Number(chatId);
+  const existing = streamAbortControllers.get(key);
+  if (existing && existing !== controller) {
+    try {
+      existing.abort();
+    } catch {
+      // best effort
+    }
+  }
+  streamAbortControllers.set(key, controller);
+}
+
+function clearStreamAbortController(chatId, controller) {
+  const key = Number(chatId);
+  const existing = streamAbortControllers.get(key);
+  if (!existing) return;
+  if (controller && existing !== controller) return;
+  streamAbortControllers.delete(key);
 }
 
 async function apiPost(url, payload) {
@@ -1487,6 +1886,8 @@ async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) 
   const nextHistory = data.history || [];
   const previousHistory = histories.get(targetChatId) || [];
   const historyChanged = historiesDiffer(previousHistory, nextHistory);
+  const shouldResumePending = Boolean(data.chat?.pending);
+  const resumeForce = streamAbortControllers.has(targetChatId) || pendingChats.has(targetChatId);
   histories.set(targetChatId, nextHistory);
 
   if (chats.has(targetChatId)) {
@@ -1497,11 +1898,17 @@ async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) 
   if (Number(activeChatId) !== targetChatId) {
     setActiveChatMeta(targetChatId);
     renderMessages(targetChatId);
+    if (shouldResumePending) {
+      void resumePendingChatStream(targetChatId, { force: resumeForce });
+    }
     return;
   }
 
   if (!hadCachedHistory || historyChanged) {
     renderMessages(targetChatId, { preserveViewport: hadCachedHistory });
+  }
+  if (shouldResumePending) {
+    void resumePendingChatStream(targetChatId, { force: resumeForce });
   }
 }
 
@@ -1557,6 +1964,36 @@ function patchVisiblePendingAssistant(chatId, nextBody, pendingState = true) {
 
   renderBody(bodyNode, nextBody || (pendingState ? "…" : ""));
   node.classList.toggle("message--pending", Boolean(pendingState));
+  return true;
+}
+
+function patchVisibleToolTrace(chatId) {
+  if (Number(chatId) !== Number(activeChatId)) return false;
+
+  const history = histories.get(Number(chatId)) || [];
+  let latestToolMessage = null;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const item = history[index];
+    if (String(item?.role || "").toLowerCase() !== "tool") continue;
+    latestToolMessage = item;
+    break;
+  }
+
+  if (!latestToolMessage) {
+    return true;
+  }
+
+  const toolNodes = messagesEl.querySelectorAll(".message--tool");
+  const node = toolNodes[toolNodes.length - 1];
+  if (!node) return false;
+
+  const bodyNode = node.querySelector(".message__body");
+  const timeNode = node.querySelector(".message__time");
+  if (!bodyNode || !timeNode) return false;
+
+  renderToolTraceBody(bodyNode, latestToolMessage);
+  timeNode.textContent = formatMessageTime(latestToolMessage.created_at);
+  node.classList.toggle("message--pending", Boolean(latestToolMessage.pending));
   return true;
 }
 
@@ -1619,6 +2056,7 @@ async function removeActiveChat() {
   syncChats(data.chats || []);
   histories.delete(Number(data.removed_chat_id));
   pendingChats.delete(Number(data.removed_chat_id));
+  latencyByChat.delete(Number(data.removed_chat_id));
   histories.set(Number(data.active_chat_id), data.history || []);
   upsertChat(data.active_chat);
   setActiveChatMeta(data.active_chat_id);
@@ -1757,12 +2195,17 @@ async function bootstrap() {
 
   tg.ready();
   tg.expand();
+  syncRenderTraceBadge();
   loadDraftsFromStorage();
   syncClosingConfirmation();
   syncFullscreenControlState();
   tg.onEvent?.("fullscreenChanged", syncFullscreenControlState);
   tg.onEvent?.("fullscreenFailed", () => appendSystemMessage("Fullscreen request was denied by Telegram client."));
   initData = tg.initData || "";
+  renderTraceLog("debug-enabled", {
+    enabled: renderTraceDebugEnabled,
+    toggleHint: "Tap the Render Trace badge to toggle logging",
+  });
 
   try {
     const response = await fetch("/api/auth", {
@@ -1794,6 +2237,9 @@ async function bootstrap() {
     setActiveChatMeta(data.active_chat_id);
     renderMessages(data.active_chat_id);
     warmChatHistoryCache();
+    if (Boolean(chats.get(Number(data.active_chat_id))?.pending) && !pendingChats.has(Number(data.active_chat_id))) {
+      void resumePendingChatStream(Number(data.active_chat_id));
+    }
     if (!(data.history || []).length) {
       addLocalMessage(data.active_chat_id, {
         role: "system",
@@ -1814,6 +2260,115 @@ async function bootstrap() {
 async function saveSkinPreference(skin) {
   const data = await apiPost("/api/preferences/skin", { skin });
   setSkin(data.skin);
+}
+
+function applyDonePayload(chatId, payload, builtReplyRef, { updateUnread = true } = {}) {
+  builtReplyRef.value = payload.reply || builtReplyRef.value;
+  finalizeInlineToolTrace(chatId);
+  updatePendingAssistant(chatId, builtReplyRef.value, false);
+  markStreamUpdate(chatId);
+  const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, false);
+  const patchedToolTrace = patchVisibleToolTrace(chatId);
+  renderTraceLog("stream-done-patch", {
+    chatId: Number(chatId),
+    patchedAssistant,
+    patchedToolTrace,
+    fallbackRender: !patchedAssistant || !patchedToolTrace,
+  });
+  if (!patchedAssistant || !patchedToolTrace) {
+    syncActiveMessageView(chatId, { preserveViewport: true });
+  }
+  setChatLatency(chatId, formatLatency(payload.latency_ms));
+  setStreamStatus(`Reply received in ${chatLabel(chatId)}`);
+  setActivityChip(streamChip, `stream: complete · ${compactChatLabel(chatId)}`);
+  if (updateUnread && Number(activeChatId) !== chatId) {
+    incrementUnread(chatId);
+    renderTabs();
+  }
+}
+
+function handleStreamEvent(chatId, eventName, payload, builtReplyRef) {
+  if (!payload) {
+    return false;
+  }
+
+  if (eventName === "meta" && payload.skin) {
+    setSkin(payload.skin);
+  }
+  if (eventName === "meta" && payload.source) {
+    setActivityChip(sourceChip, `source: ${payload.source}`);
+  }
+  if (eventName === "meta" && payload.detail) {
+    const detail = String(payload.detail || "").trim();
+    if (detail) {
+      setStreamStatus(`Queue update (${chatLabel(chatId)}): ${detail}`);
+      if (payload.source === "queue") {
+        setActivityChip(streamChip, `stream: ${detail} · ${compactChatLabel(chatId)}`);
+        if (payload.job_status === "running") {
+          const elapsedMs = Number(payload.elapsed_ms);
+          if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
+            setChatLatency(chatId, `${formatLatency(elapsedMs)} · live`);
+          } else {
+            setChatLatency(chatId, "calculating...");
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  if (eventName === "tool") {
+    const display = payload.display || payload.preview || payload.tool_name || "Tool running";
+    appendInlineToolTrace(chatId, display);
+    markStreamUpdate(chatId);
+    const patchedToolTrace = patchVisibleToolTrace(chatId);
+    renderTraceLog("stream-tool-patch", {
+      chatId: Number(chatId),
+      patchedToolTrace,
+      fallbackRender: !patchedToolTrace,
+    });
+    if (!patchedToolTrace) {
+      scheduleActiveMessageView(chatId);
+    }
+    setStreamStatus(`Using tools in ${chatLabel(chatId)}`);
+    setActivityChip(streamChip, `stream: tools active · ${compactChatLabel(chatId)}`);
+    return false;
+  }
+
+  if (eventName === "chunk") {
+    builtReplyRef.value += payload.text || "";
+    updatePendingAssistant(chatId, builtReplyRef.value, true);
+    markStreamUpdate(chatId);
+    const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, true);
+    renderTraceLog("stream-chunk-patch", {
+      chatId: Number(chatId),
+      patchedAssistant,
+      fallbackRender: !patchedAssistant,
+      chunkLength: String(payload.text || "").length,
+      replyLength: builtReplyRef.value.length,
+    });
+    if (!patchedAssistant) {
+      scheduleActiveMessageView(chatId);
+    }
+    return false;
+  }
+
+  if (eventName === "error") {
+    finalizeInlineToolTrace(chatId);
+    updatePendingAssistant(chatId, payload.error || "Hermes stream failed.", false);
+    markStreamUpdate(chatId);
+    syncActiveMessageView(chatId, { preserveViewport: true });
+    setStreamStatus("Stream error");
+    setActivityChip(streamChip, "stream: error");
+    return false;
+  }
+
+  if (eventName === "done") {
+    applyDonePayload(chatId, payload, builtReplyRef);
+    return true;
+  }
+
+  return false;
 }
 
 async function sendPrompt(message) {
@@ -1851,16 +2406,20 @@ async function sendPrompt(message) {
   const chatLabelCompact = compactChatLabel(chatId);
   setStreamStatus(`Hermes responding in ${chatLabel(chatId)}`);
   setActivityChip(streamChip, `stream: active · ${chatLabelCompact}`);
-  setActivityChip(latencyChip, "latency: calculating...");
+  setChatLatency(chatId, "calculating...");
 
-  let builtReply = "";
+  const builtReplyRef = { value: "" };
   let doneReceived = false;
+  let wasAborted = false;
+  const streamController = new AbortController();
+  setStreamAbortController(chatId, streamController);
 
   try {
     const response = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(authPayload({ chat_id: chatId, message: cleaned })),
+      signal: streamController.signal,
     });
 
     if (!response.ok || !response.body) {
@@ -1892,90 +2451,34 @@ async function sendPrompt(message) {
 
       for (const rawEvent of events) {
         const { eventName, payload } = parseSseEvent(rawEvent);
-        if (!payload) continue;
-
-        if (eventName === "meta" && payload.skin) {
-          setSkin(payload.skin);
-        }
-        if (eventName === "meta" && payload.source) {
-          setActivityChip(sourceChip, `source: ${payload.source}`);
-        }
-        if (eventName === "meta" && payload.detail) {
-          const detail = String(payload.detail || "").trim();
-          if (detail) {
-            setStreamStatus(`Queue update (${chatLabel(chatId)}): ${detail}`);
-            if (payload.source === "queue") {
-              setActivityChip(streamChip, `stream: ${detail} · ${compactChatLabel(chatId)}`);
-            }
-          }
-        }
-        if (eventName === "tool") {
-          const display = payload.display || payload.preview || payload.tool_name || "Tool running";
-          appendInlineToolTrace(chatId, display);
-          markStreamUpdate(chatId);
-          scheduleActiveMessageView(chatId);
-          setStreamStatus(`Using tools in ${chatLabel(chatId)}`);
-          setActivityChip(streamChip, `stream: tools active · ${compactChatLabel(chatId)}`);
-        }
-        if (eventName === "chunk") {
-          builtReply += payload.text || "";
-          updatePendingAssistant(chatId, builtReply, true);
-          markStreamUpdate(chatId);
-          if (!patchVisiblePendingAssistant(chatId, builtReply, true)) {
-            scheduleActiveMessageView(chatId);
-          }
-        }
-        if (eventName === "error") {
-          finalizeInlineToolTrace(chatId);
-          updatePendingAssistant(chatId, payload.error || "Hermes stream failed.", false);
-          markStreamUpdate(chatId);
-          syncActiveMessageView(chatId, { preserveViewport: true });
-          setStreamStatus("Stream error");
-          setActivityChip(streamChip, "stream: error");
-        }
-        if (eventName === "done") {
+        if (handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
           doneReceived = true;
-          builtReply = payload.reply || builtReply;
-          finalizeInlineToolTrace(chatId);
-          updatePendingAssistant(chatId, builtReply, false);
-          markStreamUpdate(chatId);
-          if (!patchVisiblePendingAssistant(chatId, builtReply, false)) {
-            syncActiveMessageView(chatId, { preserveViewport: true });
-          }
-          setActivityChip(latencyChip, `latency: ${formatLatency(payload.latency_ms)}`);
-          setStreamStatus(`Reply received in ${chatLabel(chatId)}`);
-          setActivityChip(streamChip, `stream: complete · ${compactChatLabel(chatId)}`);
-          if (Number(activeChatId) !== chatId) {
-            incrementUnread(chatId);
-            renderTabs();
-          }
         }
       }
     }
 
     if (buffer.trim()) {
       const { eventName, payload } = parseSseEvent(buffer.trim());
-      if (payload && eventName === "done") {
+      if (eventName === "done" && payload) {
+        applyDonePayload(chatId, payload, builtReplyRef, { updateUnread: false });
         doneReceived = true;
-        builtReply = payload.reply || builtReply;
-        finalizeInlineToolTrace(chatId);
-        updatePendingAssistant(chatId, builtReply, false);
-        markStreamUpdate(chatId);
-        if (!patchVisiblePendingAssistant(chatId, builtReply, false)) {
-          syncActiveMessageView(chatId, { preserveViewport: true });
-        }
-        setActivityChip(latencyChip, `latency: ${formatLatency(payload.latency_ms)}`);
-        setStreamStatus(`Reply received in ${chatLabel(chatId)}`);
-        setActivityChip(streamChip, `stream: complete · ${compactChatLabel(chatId)}`);
       }
     }
 
     if (!doneReceived) {
-      const fallbackReply = builtReply || "Hermes stream closed before a final reply event.";
+      const fallbackReply = builtReplyRef.value || "The response ended before completion.";
       finalizeInlineToolTrace(chatId);
       updatePendingAssistant(chatId, fallbackReply, false);
       markStreamUpdate(chatId);
-      if (!patchVisiblePendingAssistant(chatId, fallbackReply, false)) {
+      const patchedAssistant = patchVisiblePendingAssistant(chatId, fallbackReply, false);
+      const patchedToolTrace = patchVisibleToolTrace(chatId);
+      renderTraceLog("stream-fallback-patch", {
+        chatId: Number(chatId),
+        patchedAssistant,
+        patchedToolTrace,
+        fallbackRender: !patchedAssistant || !patchedToolTrace,
+      });
+      if (!patchedAssistant || !patchedToolTrace) {
         syncActiveMessageView(chatId, { preserveViewport: true });
       }
       setStreamStatus("Stream closed early");
@@ -1985,6 +2488,10 @@ async function sendPrompt(message) {
       }
     }
   } catch (error) {
+    if (error?.name === "AbortError") {
+      wasAborted = true;
+      return;
+    }
     finalizeInlineToolTrace(chatId);
     updatePendingAssistant(chatId, `Network failure: ${error.message}`, false);
     markStreamUpdate(chatId);
@@ -1992,6 +2499,10 @@ async function sendPrompt(message) {
     setStreamStatus("Network failure");
     setActivityChip(streamChip, "stream: network failure");
   } finally {
+    clearStreamAbortController(chatId, streamController);
+    if (wasAborted) {
+      return;
+    }
     pendingChats.delete(chatId);
     if (chats.has(chatId)) {
       chats.get(chatId).pending = false;
@@ -2014,16 +2525,165 @@ async function sendPrompt(message) {
   }
 }
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    await sendPrompt(promptEl.value);
-  } catch (error) {
-    appendSystemMessage(error.message);
+async function resumePendingChatStream(chatId, { force = false } = {}) {
+  const key = Number(chatId);
+  if (!key || !isAuthenticated) return;
+  if (pendingChats.has(key) && !force) return;
+  if (!Boolean(chats.get(key)?.pending)) return;
+
+  if (force) {
+    const existingController = streamAbortControllers.get(key);
+    if (existingController) {
+      try {
+        existingController.abort();
+      } catch {
+        // best effort
+      }
+    }
   }
+
+  pendingChats.add(key);
+  if (chats.has(key)) {
+    chats.get(key).pending = true;
+  }
+  syncClosingConfirmation();
+  renderTabs();
+  updateComposerState();
+
+  if (Number(activeChatId) === key) {
+    setStreamStatus(`Reconnecting stream in ${chatLabel(key)}...`);
+    setActivityChip(streamChip, `stream: reconnecting · ${compactChatLabel(key)}`);
+    setChatLatency(key, "recalculating...");
+  }
+
+  const builtReplyRef = { value: "" };
+  let doneReceived = false;
+  let wasAborted = false;
+  const streamController = new AbortController();
+  setStreamAbortController(key, streamController);
+
+  try {
+    const response = await fetch("/api/chat/stream/resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(authPayload({ chat_id: key })),
+      signal: streamController.signal,
+    });
+
+    if (!response.ok || !response.body) {
+      const fallback = await response.text();
+      throw new Error(fallback || `Resume failed: ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || "";
+
+      for (const rawEvent of events) {
+        const { eventName, payload } = parseSseEvent(rawEvent);
+        if (handleStreamEvent(key, eventName, payload, builtReplyRef)) {
+          doneReceived = true;
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      const { eventName, payload } = parseSseEvent(buffer.trim());
+      if (eventName === "done" && payload) {
+        applyDonePayload(key, payload, builtReplyRef, { updateUnread: false });
+        doneReceived = true;
+      }
+    }
+
+    if (!doneReceived) {
+      const fallbackReply = builtReplyRef.value || "The response ended before completion.";
+      finalizeInlineToolTrace(key);
+      updatePendingAssistant(key, fallbackReply, false);
+      markStreamUpdate(key);
+      const patchedAssistant = patchVisiblePendingAssistant(key, fallbackReply, false);
+      const patchedToolTrace = patchVisibleToolTrace(key);
+      renderTraceLog("stream-resume-fallback-patch", {
+        chatId: Number(key),
+        patchedAssistant,
+        patchedToolTrace,
+        fallbackRender: !patchedAssistant || !patchedToolTrace,
+      });
+      if (!patchedAssistant || !patchedToolTrace) {
+        syncActiveMessageView(key, { preserveViewport: true });
+      }
+      setStreamStatus("Stream closed early");
+      setActivityChip(streamChip, "stream: closed early");
+      if (Number(activeChatId) !== key) {
+        incrementUnread(key);
+      }
+    }
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      wasAborted = true;
+      return;
+    }
+    finalizeInlineToolTrace(key);
+    appendSystemMessage(`Stream reconnect failed for '${chatLabel(key)}': ${error.message}`);
+    if (Number(activeChatId) === key) {
+      setStreamStatus("Stream reconnect failed");
+      setActivityChip(streamChip, "stream: reconnect failed");
+    }
+  } finally {
+    clearStreamAbortController(key, streamController);
+    if (wasAborted) {
+      return;
+    }
+    pendingChats.delete(key);
+    if (chats.has(key)) {
+      chats.get(key).pending = false;
+    }
+    syncClosingConfirmation();
+    try {
+      if (Number(activeChatId) === key) {
+        maybeMarkRead(key);
+      } else {
+        await refreshChats();
+      }
+    } catch (error) {
+      appendSystemMessage(`Failed to sync chat state: ${error.message}`);
+    }
+    renderTabs();
+    updateComposerState();
+    if (Number(activeChatId) === key && document.visibilityState === "visible") {
+      promptEl.focus();
+    }
+  }
+}
+
+function reportUiError(error) {
+  appendSystemMessage(error?.message || "Action failed");
+}
+
+async function submitPromptFromComposer() {
+  await sendPrompt(promptEl.value);
+}
+
+const submitPromptWithUiError = async () => {
+  try {
+    await submitPromptFromComposer();
+  } catch (error) {
+    reportUiError(error);
+  }
+};
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitPromptWithUiError();
 });
 
-promptEl.addEventListener("keydown", async (event) => {
+promptEl.addEventListener("keydown", (event) => {
   if (event.isComposing) return;
 
   // On coarse-pointer/mobile keyboards, Enter should always insert a newline.
@@ -2035,11 +2695,7 @@ promptEl.addEventListener("keydown", async (event) => {
 
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    try {
-      await sendPrompt(promptEl.value);
-    } catch (error) {
-      appendSystemMessage(error.message);
-    }
+    void submitPromptWithUiError();
   }
 });
 
@@ -2048,17 +2704,140 @@ promptEl.addEventListener("input", () => {
   setDraft(activeChatId, promptEl.value || "");
 });
 
-selectionQuoteButton?.addEventListener("click", () => {
+function quoteSelectionTextForInsert() {
   const picked = mobileQuoteMode ? activeSelectionQuote() : null;
-  const textToQuote = mobileQuoteMode ? (picked?.text || selectionQuoteText) : selectionQuoteText;
-  if (!textToQuote) return;
-  cancelSelectionQuoteSync();
-  cancelSelectionQuoteSettle();
-  cancelSelectionQuoteClear();
-  applyQuoteIntoPrompt(textToQuote);
-  window.getSelection?.()?.removeAllRanges?.();
-  clearSelectionQuoteState();
-});
+  return mobileQuoteMode ? (picked?.text || selectionQuoteState.getText()) : selectionQuoteState.getText();
+}
+
+function hasMessageSelection(selection) {
+  const hasSelection = Boolean(selection && selection.rangeCount >= 1 && !selection.isCollapsed);
+  return Boolean(hasSelection && messagesEl.contains(selection.anchorNode || null));
+}
+
+const selectionQuoteController = {
+  handleQuoteButtonClick() {
+    const textToQuote = quoteSelectionTextForInsert();
+    if (!textToQuote) return;
+    cancelSelectionQuoteSync();
+    cancelSelectionQuoteSettle();
+    cancelSelectionQuoteClear();
+    applyQuoteIntoPrompt(textToQuote);
+    window.getSelection?.()?.removeAllRanges?.();
+    clearSelectionQuoteState();
+  },
+
+  handleMessagesMouseUp() {
+    if (mobileQuoteMode) return;
+    cancelSelectionQuoteClear();
+    scheduleSelectionQuoteSync(80);
+  },
+
+  handleMessagesTouchStart() {
+    if (!mobileQuoteMode) return;
+    // Freeze quote action while selection handles are moving.
+    cancelSelectionQuoteSync();
+    cancelSelectionQuoteSettle();
+    cancelSelectionQuoteClear();
+    selectionQuoteState.clearPlacement();
+    if (selectionQuoteButton) {
+      selectionQuoteButton.hidden = true;
+    }
+  },
+
+  handleMessagesTouchEnd() {
+    if (!mobileQuoteMode) return;
+    cancelSelectionQuoteClear();
+    // Wait for native toolbar/handles to settle before showing popup.
+    scheduleSelectionQuoteSync(220);
+  },
+
+  handleMessagesTouchCancel() {
+    if (!mobileQuoteMode) return;
+    cancelSelectionQuoteSync();
+    cancelSelectionQuoteSettle();
+    scheduleSelectionQuoteClear(220);
+  },
+
+  handleDocumentSelectionChange() {
+    const active = document.activeElement;
+    if (active === promptEl) {
+      return;
+    }
+
+    const selection = document.getSelection?.();
+    const inMessages = hasMessageSelection(selection);
+
+    if (mobileQuoteMode) {
+      if (!inMessages) {
+        cancelSelectionQuoteSync();
+        cancelSelectionQuoteSettle();
+        scheduleSelectionQuoteClear(220);
+        return;
+      }
+
+      // On mobile, hide while selection changes and only reveal after touchend settle.
+      cancelSelectionQuoteSync();
+      cancelSelectionQuoteSettle();
+      selectionQuoteState.clearPlacement();
+      if (selectionQuoteButton) {
+        selectionQuoteButton.hidden = true;
+      }
+      return;
+    }
+
+    if (!inMessages) {
+      cancelSelectionQuoteSync();
+      clearSelectionQuoteState();
+      return;
+    }
+
+    // Desktop selection can update live while dragging.
+    scheduleSelectionQuoteSync(140);
+  },
+
+  handleDocumentTouchStart(event) {
+    if (!mobileQuoteMode) return;
+    const target = event.target;
+    if (!target) return;
+    if (messagesEl.contains(target)) return;
+    if (target === promptEl || promptEl?.contains?.(target)) return;
+    cancelSelectionQuoteSync();
+    cancelSelectionQuoteSettle();
+    scheduleSelectionQuoteClear(220);
+  },
+
+  bind() {
+    selectionQuoteButton?.addEventListener("click", () => this.handleQuoteButtonClick());
+    messagesEl.addEventListener("mouseup", () => this.handleMessagesMouseUp());
+    messagesEl.addEventListener("touchstart", () => this.handleMessagesTouchStart());
+    messagesEl.addEventListener("touchend", () => this.handleMessagesTouchEnd());
+    messagesEl.addEventListener("touchcancel", () => this.handleMessagesTouchCancel());
+    document.addEventListener("selectionchange", () => this.handleDocumentSelectionChange());
+    document.addEventListener("touchstart", (event) => this.handleDocumentTouchStart(event));
+  },
+};
+
+function copyTextFromMessageButton(copyButton) {
+  const messageNode = copyButton.closest(".message");
+  const bodyNode = messageNode?.querySelector(".message__body");
+  const rawText = bodyNode?.innerText || bodyNode?.textContent || "";
+  return normalizeQuoteSelection(rawText);
+}
+
+function setCopyButtonFeedback(copyButton, copied) {
+  copyButton.classList.remove("is-copied", "is-error");
+  copyButton.textContent = copied ? "✓" : "!";
+  copyButton.setAttribute("aria-label", copied ? "Copied" : "Copy failed");
+  copyButton.title = copied ? "Copied" : "Copy failed";
+  copyButton.classList.add(copied ? "is-copied" : "is-error");
+}
+
+function resetCopyButtonFeedback(copyButton) {
+  copyButton.classList.remove("is-copied", "is-error");
+  copyButton.textContent = "⧉";
+  copyButton.setAttribute("aria-label", "Copy message");
+  copyButton.title = "Copy message";
+}
 
 async function handleMessageCopy(event) {
   const copyButton = event.target.closest(".message__copy");
@@ -2068,126 +2847,35 @@ async function handleMessageCopy(event) {
   event.stopPropagation();
 
   const now = Date.now();
-  const lastHandledAt = Number(copyButton.dataset.copyHandledAt || 0);
-  if (now - lastHandledAt < 350) {
+  if (messageCopyState.wasHandledRecently(copyButton, now)) {
     return;
   }
-  copyButton.dataset.copyHandledAt = String(now);
+  messageCopyState.markHandled(copyButton, now);
 
-  const messageNode = copyButton.closest(".message");
-  const bodyNode = messageNode?.querySelector(".message__body");
-  const copyText = normalizeQuoteSelection(bodyNode?.innerText || bodyNode?.textContent || "");
+  const copyText = copyTextFromMessageButton(copyButton);
   const copied = await copyTextToClipboard(copyText);
 
-  copyButton.classList.remove("is-copied", "is-error");
-  copyButton.textContent = copied ? "✓" : "!";
-  copyButton.setAttribute("aria-label", copied ? "Copied" : "Copy failed");
-  copyButton.title = copied ? "Copied" : "Copy failed";
-  copyButton.classList.add(copied ? "is-copied" : "is-error");
-
-  if (copyButton._copyResetTimer) {
-    window.clearTimeout(copyButton._copyResetTimer);
-  }
-  copyButton._copyResetTimer = window.setTimeout(() => {
-    copyButton.classList.remove("is-copied", "is-error");
-    copyButton.textContent = "⧉";
-    copyButton.setAttribute("aria-label", "Copy message");
-    copyButton.title = "Copy message";
-    copyButton._copyResetTimer = null;
-  }, copied ? 1200 : 1600);
+  setCopyButtonFeedback(copyButton, copied);
+  messageCopyState.scheduleReset(copyButton, copied ? 1200 : 1600, () => {
+    resetCopyButtonFeedback(copyButton);
+  });
 }
 
 // Use click (not pointerdown) for clipboard writes.
 // Some Telegram WebView variants reject clipboard operations on pointerdown
 // but allow them on click as a trusted user activation.
 messagesEl.addEventListener("click", handleMessageCopy);
+selectionQuoteController.bind();
 
-messagesEl.addEventListener("mouseup", () => {
-  if (mobileQuoteMode) return;
-  cancelSelectionQuoteClear();
-  scheduleSelectionQuoteSync(80);
-});
-messagesEl.addEventListener("touchstart", () => {
-  if (!mobileQuoteMode) return;
-  // Freeze quote action while selection handles are moving.
-  cancelSelectionQuoteSync();
-  cancelSelectionQuoteSettle();
-  cancelSelectionQuoteClear();
-  mobileQuotePlacementKey = "";
-  if (selectionQuoteButton) {
-    selectionQuoteButton.hidden = true;
-  }
-});
-messagesEl.addEventListener("touchend", () => {
-  if (!mobileQuoteMode) return;
-  cancelSelectionQuoteClear();
-  // Wait for native toolbar/handles to settle before showing popup.
-  scheduleSelectionQuoteSync(220);
-});
-messagesEl.addEventListener("touchcancel", () => {
-  if (!mobileQuoteMode) return;
-  cancelSelectionQuoteSync();
-  cancelSelectionQuoteSettle();
-  scheduleSelectionQuoteClear(220);
-});
-document.addEventListener("selectionchange", () => {
-  const active = document.activeElement;
-  if (active === promptEl) {
-    return;
-  }
-
-  const selection = document.getSelection?.();
-  const hasSelection = Boolean(selection && selection.rangeCount >= 1 && !selection.isCollapsed);
-  const inMessages = Boolean(hasSelection && messagesEl.contains(selection.anchorNode || null));
-
-  if (mobileQuoteMode) {
-    if (!inMessages) {
-      cancelSelectionQuoteSync();
-      cancelSelectionQuoteSettle();
-      scheduleSelectionQuoteClear(220);
-      return;
-    }
-
-    // On mobile, hide while selection changes and only reveal after touchend settle.
-    cancelSelectionQuoteSync();
-    cancelSelectionQuoteSettle();
-    mobileQuotePlacementKey = "";
-    if (selectionQuoteButton) {
-      selectionQuoteButton.hidden = true;
-    }
-    return;
-  }
-
-  if (!inMessages) {
-    cancelSelectionQuoteSync();
-    clearSelectionQuoteState();
-    return;
-  }
-
-  // Desktop selection can update live while dragging.
-  scheduleSelectionQuoteSync(140);
-});
-
-document.addEventListener("touchstart", (event) => {
-  if (!mobileQuoteMode) return;
-  const target = event.target;
-  if (!target) return;
-  if (messagesEl.contains(target)) return;
-  if (target === promptEl || promptEl?.contains?.(target)) return;
-  cancelSelectionQuoteSync();
-  cancelSelectionQuoteSettle();
-  scheduleSelectionQuoteClear(220);
-});
-
-tabsEl.addEventListener("click", (event) => {
+function handleTabClick(event) {
   const tab = event.target.closest(".chat-tab");
   if (!tab) return;
   const chatId = Number(tab.dataset.chatId);
   if (!chatId || chatId === Number(activeChatId)) return;
   void openChat(chatId);
-});
+}
 
-messagesEl.addEventListener("scroll", () => {
+function handleMessagesScroll() {
   cancelSelectionQuoteSync();
   cancelSelectionQuoteSettle();
   cancelSelectionQuoteClear();
@@ -2208,9 +2896,9 @@ messagesEl.addEventListener("scroll", () => {
   if (shouldVirtualizeHistory(historyLength)) {
     scheduleActiveMessageView(key);
   }
-});
+}
 
-jumpLatestButton?.addEventListener("click", () => {
+function handleJumpLatest() {
   const key = Number(activeChatId);
   if (!key) return;
   unseenStreamChats.delete(key);
@@ -2218,9 +2906,9 @@ jumpLatestButton?.addEventListener("click", () => {
   syncActiveMessageView(key, { forceBottom: true });
   maybeMarkRead(key, { force: true });
   updateJumpLatestVisibility();
-});
+}
 
-jumpLastStartButton?.addEventListener("click", () => {
+function handleJumpLastStart() {
   const key = Number(activeChatId);
   if (!key) return;
   const renderedMessages = messagesEl.querySelectorAll(".message");
@@ -2231,46 +2919,39 @@ jumpLastStartButton?.addEventListener("click", () => {
   chatScrollTop.set(key, messagesEl.scrollTop);
   chatStickToBottom.set(key, isNearBottom(messagesEl, 40));
   updateJumpLatestVisibility();
-});
+}
+
+tabsEl.addEventListener("click", handleTabClick);
+messagesEl.addEventListener("scroll", handleMessagesScroll);
+jumpLatestButton?.addEventListener("click", handleJumpLatest);
+jumpLastStartButton?.addEventListener("click", handleJumpLastStart);
+
+function bindAsyncClick(button, action) {
+  button?.addEventListener("click", () => {
+    void (async () => {
+      try {
+        await action();
+      } catch (error) {
+        reportUiError(error);
+      }
+    })();
+  });
+}
 
 skinButtons.forEach((button) => {
-  button.addEventListener("click", async () => {
+  bindAsyncClick(button, async () => {
     if (!isAuthenticated) {
       appendSystemMessage("Still signing you in. Try again in a moment.");
       return;
     }
-    try {
-      await saveSkinPreference(button.dataset.skin);
-      closeSettingsModal();
-    } catch (error) {
-      appendSystemMessage(error.message);
-    }
+    await saveSkinPreference(button.dataset.skin);
+    closeSettingsModal();
   });
 });
 
-newChatButton.addEventListener("click", async () => {
-  try {
-    await createChat();
-  } catch (error) {
-    appendSystemMessage(error.message);
-  }
-});
-
-renameChatButton.addEventListener("click", async () => {
-  try {
-    await renameActiveChat();
-  } catch (error) {
-    appendSystemMessage(error.message);
-  }
-});
-
-removeChatButton.addEventListener("click", async () => {
-  try {
-    await removeActiveChat();
-  } catch (error) {
-    appendSystemMessage(error.message);
-  }
-});
+bindAsyncClick(newChatButton, createChat);
+bindAsyncClick(renameChatButton, renameActiveChat);
+bindAsyncClick(removeChatButton, removeActiveChat);
 
 function syncFullscreenControlState() {
   if (!fullscreenAppTopButton) return;
@@ -2461,6 +3142,7 @@ function installKeyboardViewportSync() {
 
 fullscreenAppTopButton?.addEventListener("click", handleFullscreenToggle);
 closeAppTopButton?.addEventListener("click", handleCloseApp);
+renderTraceBadge?.addEventListener("click", handleRenderTraceBadgeClick);
 settingsButton?.addEventListener("click", openSettingsModal);
 settingsClose?.addEventListener("click", closeSettingsModal);
 settingsModal?.addEventListener?.("cancel", (event) => {
@@ -2468,21 +3150,32 @@ settingsModal?.addEventListener?.("cancel", (event) => {
   closeSettingsModal();
 });
 
-document.addEventListener("visibilitychange", async () => {
+async function syncVisibleActiveChat() {
+  if (!activeChatId) return;
+  const activeId = Number(activeChatId);
+  maybeMarkRead(activeId);
+  const data = await loadChatHistory(activeId, { activate: true });
+  const nextHistory = data.history || [];
+  histories.set(activeId, nextHistory);
+  upsertChat(data.chat);
+  renderMessages(activeId, { preserveViewport: true });
+  if (Boolean(data.chat?.pending)) {
+    void resumePendingChatStream(activeId, { force: true });
+  }
+}
+
+async function handleVisibilityChange() {
   if (document.visibilityState !== "visible" || !isAuthenticated) return;
   try {
     await refreshChats();
-    if (activeChatId) {
-      maybeMarkRead(activeChatId);
-      const data = await loadChatHistory(Number(activeChatId), { activate: true });
-      const nextHistory = data.history || [];
-      histories.set(Number(activeChatId), nextHistory);
-      upsertChat(data.chat);
-      renderMessages(Number(activeChatId), { preserveViewport: true });
-    }
+    await syncVisibleActiveChat();
   } catch {
     // best effort sync
   }
+}
+
+document.addEventListener("visibilitychange", () => {
+  void handleVisibilityChange();
 });
 
 startDevAutoRefresh();

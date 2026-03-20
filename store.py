@@ -6,6 +6,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+
+class ClosingConnection(sqlite3.Connection):
+    """sqlite3 connection that always closes when leaving a context manager."""
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
 MAX_OPERATOR_MESSAGE_LEN = 4000
 MAX_ASSISTANT_MESSAGE_LEN = 64000
 MAX_SYSTEM_MESSAGE_LEN = 16000
@@ -38,7 +48,7 @@ class SessionStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=10)
+        connection = sqlite3.connect(self.db_path, timeout=10, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 10000")
@@ -465,6 +475,49 @@ class SessionStore:
     def clear_chat(self, user_id: str, chat_id: int) -> None:
         with self._connect() as conn:
             self._ensure_chat_exists(conn, user_id, chat_id)
+
+            cancelled_jobs = conn.execute(
+                """
+                SELECT id, operator_message_id, attempts, max_attempts
+                FROM chat_jobs
+                WHERE user_id = ? AND chat_id = ? AND status IN ('queued', 'running')
+                """,
+                (user_id, chat_id),
+            ).fetchall()
+
+            if cancelled_jobs:
+                cancellation_reason = "Chat cleared by user before job completed"
+                for row in cancelled_jobs:
+                    conn.execute(
+                        """
+                        INSERT INTO chat_job_dead_letters (
+                            job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            int(row["id"]),
+                            user_id,
+                            chat_id,
+                            int(row["operator_message_id"]),
+                            int(row["attempts"] or 0),
+                            int(row["max_attempts"] or 1),
+                            cancellation_reason,
+                        ),
+                    )
+
+                conn.execute(
+                    """
+                    UPDATE chat_jobs
+                    SET status = 'dead',
+                        error = ?,
+                        finished_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND chat_id = ? AND status IN ('queued', 'running')
+                    """,
+                    (cancellation_reason, user_id, chat_id),
+                )
+
             conn.execute(
                 "DELETE FROM chat_messages WHERE user_id = ? AND chat_id = ?",
                 (user_id, chat_id),
@@ -561,6 +614,30 @@ class SessionStore:
                 (user_id, chat_id),
             ).fetchone()
         return bool(row)
+
+    def get_open_job(self, user_id: str, chat_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, user_id, chat_id, operator_message_id, status, attempts, max_attempts
+                FROM chat_jobs
+                WHERE user_id = ? AND chat_id = ? AND status IN ('queued', 'running')
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (user_id, int(chat_id)),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": int(row["id"]),
+            "user_id": str(row["user_id"]),
+            "chat_id": int(row["chat_id"]),
+            "operator_message_id": int(row["operator_message_id"]),
+            "status": str(row["status"]),
+            "attempts": int(row["attempts"] or 0),
+            "max_attempts": int(row["max_attempts"] or 0),
+        }
 
     def claim_next_job(self) -> dict[str, Any] | None:
         with self._connect() as conn:

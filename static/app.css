@@ -161,6 +161,19 @@ h1 {
   color: var(--muted);
   background: color-mix(in srgb, var(--accent) 4%, transparent);
 }
+.status-pill--debug {
+  cursor: pointer;
+  color: color-mix(in srgb, var(--danger) 70%, var(--ink));
+  border-color: color-mix(in srgb, var(--danger) 62%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  font-weight: 700;
+}
+.status-pill--debug[data-enabled="false"] {
+  color: var(--muted);
+  border-color: color-mix(in srgb, var(--line-strong) 85%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  font-weight: 600;
+}
 .status-pill-button {
   cursor: pointer;
   font: inherit;
@@ -496,6 +509,7 @@ textarea:focus-visible {
   flex-direction: column;
   gap: 14px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 .messages__spacer {
   height: 0;
@@ -750,8 +764,13 @@ textarea:disabled {
 }
 #send-button {
   min-width: 160px;
+  margin-left: auto;
   color: var(--ink);
   background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* Keep Send pinned to the right even if upstream rules/styles re-order composer actions. */
+.composer__actions #send-button {
+  margin-left: auto !important;
 }
 #send-button:disabled {
   opacity: 0.65;

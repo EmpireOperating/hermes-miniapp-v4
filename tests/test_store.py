@@ -144,15 +144,25 @@ def test_chat_job_queue_lifecycle(tmp_path) -> None:
 
     job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id)
     assert store.has_open_job(user_id, chat_id) is True
+    queued_open = store.get_open_job(user_id, chat_id)
+    assert queued_open is not None
+    assert queued_open["id"] == job_id
+    assert queued_open["status"] == "queued"
 
     claimed = store.claim_next_job()
     assert claimed is not None
     assert claimed["id"] == job_id
     assert claimed["operator_message_id"] == operator_message_id
 
+    running_open = store.get_open_job(user_id, chat_id)
+    assert running_open is not None
+    assert running_open["id"] == job_id
+    assert running_open["status"] == "running"
+
     assert store.has_open_job(user_id, chat_id) is True
     store.complete_job(job_id)
     assert store.has_open_job(user_id, chat_id) is False
+    assert store.get_open_job(user_id, chat_id) is None
 
 
 def test_claim_next_job_skips_same_chat_when_one_is_running(tmp_path) -> None:
