@@ -75,7 +75,6 @@ let mobileQuotePlacementKey = "";
 const mobileQuoteMode = isCoarsePointer();
 const draftByChat = new Map();
 const DRAFT_STORAGE_KEY = "hermes_miniapp_chat_drafts_v1";
-let lastInAppHapticAt = 0;
 
 
 const MESSAGE_TIMEZONE = "America/Regina";
@@ -196,29 +195,6 @@ function setActivityChip(chip, text) {
 function setStreamStatus(text) {
   if (!streamStatus) return;
   streamStatus.textContent = String(text || "");
-}
-
-function triggerInAppReplyHaptic(chatId) {
-  if (!mobileQuoteMode) return;
-  if (Number(activeChatId) !== Number(chatId)) return;
-
-  const now = Date.now();
-  const minGapMs = 600;
-  if ((now - lastInAppHapticAt) < minGapMs) return;
-  lastInAppHapticAt = now;
-
-  try {
-    tg?.HapticFeedback?.notificationOccurred?.("success");
-    return;
-  } catch {
-    // Telegram client rejected notification-style haptic; try fallback.
-  }
-
-  try {
-    tg?.HapticFeedback?.impactOccurred?.("light");
-  } catch {
-    // Best-effort haptics only.
-  }
 }
 
 function authPayload(extra = {}) {
@@ -420,76 +396,12 @@ function ensurePendingToolTraceMessage(chatId) {
   return next;
 }
 
-function toToolTraceRawText(payload) {
-  if (!payload || typeof payload !== "object") return "";
-  try {
-    return JSON.stringify(payload, null, 2);
-  } catch {
-    return "";
-  }
-}
-
-function normalizeToolTraceEntry(rawEntry) {
-  if (!rawEntry || typeof rawEntry !== "object") {
-    const summary = String(rawEntry || "").trim();
-    return summary ? { summary, details: [], raw: "", expanded: false } : null;
-  }
-
-  const summary = String(rawEntry.display || rawEntry.preview || rawEntry.tool_name || "Tool running").trim();
-  if (!summary) return null;
-
-  const details = [];
-  const toolName = String(rawEntry.tool_name || "").trim();
-  const preview = String(rawEntry.preview || "").trim();
-  if (toolName) details.push(`Tool: ${toolName}`);
-  if (preview) details.push(`Preview: ${preview}`);
-
-  if (rawEntry.args && typeof rawEntry.args === "object" && Object.keys(rawEntry.args).length > 0) {
-    try {
-      details.push(`Args: ${JSON.stringify(rawEntry.args)}`);
-    } catch {
-      details.push("Args: [unserializable]");
-    }
-  }
-
-  const excluded = new Set(["display", "preview", "tool_name", "args", "chat_id"]);
-  const extraKeys = Object.keys(rawEntry).filter((key) => !excluded.has(key));
-  for (const key of extraKeys) {
-    const value = rawEntry[key];
-    if (value === undefined || value === null || value === "") continue;
-    if (typeof value === "object") {
-      try {
-        details.push(`${key}: ${JSON.stringify(value)}`);
-      } catch {
-        details.push(`${key}: [unserializable]`);
-      }
-    } else {
-      details.push(`${key}: ${String(value)}`);
-    }
-  }
-
-  return {
-    summary,
-    details,
-    raw: toToolTraceRawText(rawEntry),
-    expanded: false,
-    rawExpanded: false,
-  };
-}
-
-function appendInlineToolTrace(chatId, entryOrText) {
-  const entry = normalizeToolTraceEntry(entryOrText);
-  if (!entry) return;
-  const line = String(entry.summary || "").trim();
+function appendInlineToolTrace(chatId, text) {
+  const line = String(text || "").trim();
   if (!line) return;
-
   const key = Number(chatId);
   const trace = ensurePendingToolTraceMessage(key);
   trace.body = trace.body ? `${trace.body}\n${line}` : line;
-  if (!Array.isArray(trace.tool_entries)) {
-    trace.tool_entries = [];
-  }
-  trace.tool_entries.push(entry);
 }
 
 function finalizeInlineToolTrace(chatId) {
@@ -973,9 +885,7 @@ function showSelectionQuoteAction({ text, rect }, { lockPlacement = false } = {}
     const mobileToolbarUnsafeTop = Math.max(56, Math.round(viewportHeight * 0.18));
     const composerTop = Number(form?.getBoundingClientRect?.().top || viewportHeight);
     const safeBottom = Math.max(mobileToolbarUnsafeTop + buttonHeight + 8, Math.min(viewportHeight - buttonHeight - 8, composerTop - buttonHeight - 12));
-    // Keep the popup farther from iOS/Telegram selection handles so taps don't collide.
-    const selectionHandleClearance = 56;
-    const belowSelection = rect.bottom + selectionHandleClearance;
+    const belowSelection = rect.bottom + 12;
     top = belowSelection;
     if (top < mobileToolbarUnsafeTop) {
       top = mobileToolbarUnsafeTop;
@@ -1057,58 +967,6 @@ function renderBody(container, rawText) {
   container.innerHTML = parts.join("");
 }
 
-function parseToolTraceLine(line) {
-  const text = String(line || "").trim();
-  if (!text) return null;
-
-  // Expected line style from _format_tool_progress:
-  // "🧠 memory: \"preview\""
-  // "⚙️ tool_name..."
-  const lineMatch = text.match(/^([\p{Emoji}\u200D\uFE0F]+\s+)?([a-zA-Z0-9_.-]+)(?::\s*"([\s\S]*)"|\.\.\.)?$/u);
-  if (!lineMatch) {
-    return {
-      summary: text,
-      details: ["Captured from stored tool trace."],
-      raw: text,
-      expanded: false,
-      rawExpanded: false,
-    };
-  }
-
-  const emoji = String(lineMatch[1] || "").trim();
-  const toolName = String(lineMatch[2] || "").trim();
-  const preview = lineMatch[3] != null ? String(lineMatch[3]) : "";
-  const details = ["Captured from stored tool trace."];
-  if (emoji) details.push(`Icon: ${emoji}`);
-  if (toolName) details.push(`Tool: ${toolName}`);
-  if (preview) {
-    details.push(`Preview: ${preview}`);
-    if (preview.endsWith("...")) {
-      details.push("Preview may be truncated by runtime formatter.");
-    }
-  }
-
-  return {
-    summary: text,
-    details,
-    raw: text,
-    expanded: false,
-    rawExpanded: false,
-  };
-}
-
-function getToolTraceEntriesForMessage(message, lines) {
-  if (Array.isArray(message.tool_entries) && message.tool_entries.length) {
-    return message.tool_entries;
-  }
-
-  const fallback = (lines || [])
-    .map((line) => parseToolTraceLine(line))
-    .filter(Boolean);
-  message.tool_entries = fallback;
-  return fallback;
-}
-
 function renderToolTraceBody(container, message) {
   container.innerHTML = "";
   const text = cleanDisplayText(message.body || "");
@@ -1117,75 +975,24 @@ function renderToolTraceBody(container, message) {
     return;
   }
 
-  const entries = getToolTraceEntriesForMessage(message, lines);
-
   const details = document.createElement("details");
   details.className = "tool-trace";
   const collapsed = typeof message.collapsed === "boolean" ? message.collapsed : !message.pending;
   details.open = !collapsed;
 
   const summary = document.createElement("summary");
-  const lineCount = entries.length;
+  const lineCount = lines.length;
   const liveSuffix = message.pending ? " · live" : "";
   summary.textContent = `Tool activity (${lineCount})${liveSuffix}`;
   details.appendChild(summary);
 
   const list = document.createElement("div");
   list.className = "tool-trace__lines";
-  if (entries.length) {
-    for (const entry of entries) {
-      const row = document.createElement("details");
-      row.className = "tool-trace__entry";
-      row.open = Boolean(entry.expanded);
-
-      const rowSummary = document.createElement("summary");
-      rowSummary.className = "tool-trace__line";
-      rowSummary.textContent = String(entry.summary || "Tool event");
-      row.appendChild(rowSummary);
-
-      const hasDetails = Array.isArray(entry.details) && entry.details.length > 0;
-      const hasRaw = Boolean(String(entry.raw || "").trim());
-      if (hasDetails || hasRaw) {
-        const rowDetails = document.createElement("div");
-        rowDetails.className = "tool-trace__entry-body";
-
-        if (hasDetails) {
-          for (const detailLine of entry.details) {
-            const detail = document.createElement("div");
-            detail.className = "tool-trace__detail";
-            detail.textContent = String(detailLine || "");
-            rowDetails.appendChild(detail);
-          }
-        }
-
-        if (hasRaw) {
-          const rawDetails = document.createElement("details");
-          rawDetails.className = "tool-trace__raw";
-          rawDetails.open = Boolean(entry.rawExpanded);
-
-          const rawSummary = document.createElement("summary");
-          rawSummary.textContent = "Show raw";
-          rawDetails.appendChild(rawSummary);
-
-          const rawPre = document.createElement("pre");
-          rawPre.className = "tool-trace__raw-pre";
-          rawPre.textContent = String(entry.raw || "");
-          rawDetails.appendChild(rawPre);
-
-          rawDetails.addEventListener("toggle", () => {
-            entry.rawExpanded = rawDetails.open;
-          });
-
-          rowDetails.appendChild(rawDetails);
-        }
-
-        row.appendChild(rowDetails);
-      }
-
-      row.addEventListener("toggle", () => {
-        entry.expanded = row.open;
-      });
-
+  if (lines.length) {
+    for (const line of lines) {
+      const row = document.createElement("div");
+      row.className = "tool-trace__line";
+      row.textContent = line;
       list.appendChild(row);
     }
   } else {
@@ -2103,7 +1910,8 @@ async function sendPrompt(message) {
           }
         }
         if (eventName === "tool") {
-          appendInlineToolTrace(chatId, payload);
+          const display = payload.display || payload.preview || payload.tool_name || "Tool running";
+          appendInlineToolTrace(chatId, display);
           markStreamUpdate(chatId);
           scheduleActiveMessageView(chatId);
           setStreamStatus(`Using tools in ${chatLabel(chatId)}`);
@@ -2130,7 +1938,6 @@ async function sendPrompt(message) {
           builtReply = payload.reply || builtReply;
           finalizeInlineToolTrace(chatId);
           updatePendingAssistant(chatId, builtReply, false);
-          triggerInAppReplyHaptic(chatId);
           markStreamUpdate(chatId);
           if (!patchVisiblePendingAssistant(chatId, builtReply, false)) {
             syncActiveMessageView(chatId, { preserveViewport: true });
@@ -2153,7 +1960,6 @@ async function sendPrompt(message) {
         builtReply = payload.reply || builtReply;
         finalizeInlineToolTrace(chatId);
         updatePendingAssistant(chatId, builtReply, false);
-        triggerInAppReplyHaptic(chatId);
         markStreamUpdate(chatId);
         if (!patchVisiblePendingAssistant(chatId, builtReply, false)) {
           syncActiveMessageView(chatId, { preserveViewport: true });
@@ -2168,7 +1974,6 @@ async function sendPrompt(message) {
       const fallbackReply = builtReply || "Hermes stream closed before a final reply event.";
       finalizeInlineToolTrace(chatId);
       updatePendingAssistant(chatId, fallbackReply, false);
-      triggerInAppReplyHaptic(chatId);
       markStreamUpdate(chatId);
       if (!patchVisiblePendingAssistant(chatId, fallbackReply, false)) {
         syncActiveMessageView(chatId, { preserveViewport: true });

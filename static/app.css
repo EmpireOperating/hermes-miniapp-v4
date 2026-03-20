@@ -581,62 +581,11 @@ textarea:focus-visible {
   gap: 8px;
   margin-top: 10px;
 }
-.tool-trace__entry {
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.16);
-  padding: 6px 8px;
-}
-.tool-trace__entry > summary {
-  cursor: pointer;
-  list-style: none;
-}
-.tool-trace__entry > summary::-webkit-details-marker {
-  display: none;
-}
 .tool-trace__line {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--ink);
   font-size: 12px;
-  line-height: 1.45;
-}
-.tool-trace__entry-body {
-  margin-top: 8px;
-  display: grid;
-  gap: 6px;
-  padding-top: 6px;
-  border-top: 1px dashed color-mix(in srgb, var(--accent) 22%, transparent);
-}
-.tool-trace__detail {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.tool-trace__raw {
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
-  border-radius: 8px;
-  padding: 6px 8px;
-  background: rgba(0, 0, 0, 0.2);
-}
-.tool-trace__raw > summary {
-  cursor: pointer;
-  color: var(--accent-soft);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  user-select: none;
-}
-.tool-trace__raw-pre {
-  margin: 8px 0 0;
-  max-height: 220px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--ink);
-  font-size: 11px;
   line-height: 1.45;
 }
 .tool-trace__line--muted {

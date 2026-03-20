@@ -98,7 +98,6 @@ def test_quote_selection_sync_is_debounced_in_client_script() -> None:
     assert "scheduleSelectionQuoteClear(220);" in script
     assert "mobileToolbarUnsafeTop" in script
     assert "composerTop" in script
-    assert "const selectionHandleClearance = 56;" in script
     assert "composer-quote-apply" not in script
     assert "const skipTouchDismiss = mobileQuoteMode && target === messagesEl;" in script
     assert "function formatQuoteBlock" in script
@@ -109,33 +108,6 @@ def test_quote_selection_sync_is_debounced_in_client_script() -> None:
     assert "╭─ Quote ─" not in script
     assert "╰────────" not in script
     assert "\\n\\n\\n" in script
-
-
-def test_in_app_haptics_trigger_on_completed_assistant_replies() -> None:
-    script = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text(encoding="utf-8")
-
-    assert "lastInAppHapticAt" in script
-    assert "function triggerInAppReplyHaptic" in script
-    assert "tg?.HapticFeedback?.notificationOccurred?.(\"success\");" in script
-    assert "tg?.HapticFeedback?.impactOccurred?.(\"light\");" in script
-    assert "const minGapMs = 600;" in script
-    assert "triggerInAppReplyHaptic(chatId);" in script
-
-
-def test_tool_activity_rows_support_expandable_details() -> None:
-    script = (Path(__file__).resolve().parents[1] / "static" / "app.js").read_text(encoding="utf-8")
-    css = (Path(__file__).resolve().parents[1] / "static" / "app.css").read_text(encoding="utf-8")
-
-    assert "function normalizeToolTraceEntry" in script
-    assert "appendInlineToolTrace(chatId, payload);" in script
-    assert "tool-trace__entry" in script
-    assert "tool-trace__entry-body" in script
-    assert 'rawSummary.textContent = "Show raw";' in script
-
-    assert ".tool-trace__entry" in css
-    assert ".tool-trace__entry-body" in css
-    assert ".tool-trace__raw" in css
-    assert ".tool-trace__raw-pre" in css
 
 
 def test_detects_stale_chat_job_errors(monkeypatch, tmp_path) -> None:
@@ -524,25 +496,9 @@ def test_run_chat_job_uses_runtime_checkpoint_when_bootstrapping(monkeypatch, tm
         history=checkpoint_history,
     )
 
-    job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    with server.store._connect() as conn:  # noqa: SLF001 - test-only deterministic setup
-        conn.execute(
-            """
-            UPDATE chat_jobs
-            SET status = 'running', attempts = 1, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (job_id,),
-        )
-
-    job = {
-        "id": job_id,
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "operator_message_id": operator_message_id,
-        "attempts": 1,
-        "max_attempts": 1,
-    }
+    server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    job = server.store.claim_next_job()
+    assert job is not None
 
     captured = {"history": None}
     monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: True)
@@ -567,25 +523,9 @@ def test_run_chat_job_persists_runtime_checkpoint_from_done_event(monkeypatch, t
     operator_message_id = server.store.add_message(user_id, chat_id, "operator", "latest question")
     session_id = f"miniapp-{user_id}-{chat_id}"
 
-    job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    with server.store._connect() as conn:  # noqa: SLF001 - test-only deterministic setup
-        conn.execute(
-            """
-            UPDATE chat_jobs
-            SET status = 'running', attempts = 1, started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-            """,
-            (job_id,),
-        )
-
-    job = {
-        "id": job_id,
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "operator_message_id": operator_message_id,
-        "attempts": 1,
-        "max_attempts": 1,
-    }
+    server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    job = server.store.claim_next_job()
+    assert job is not None
 
     monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: False)
 
