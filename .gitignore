@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local env/config
+.env
+.env.*
+!.env.example
+
+# Runtime/state artifacts
+sessions.db
+sessions.db-shm
+sessions.db-wal
+*.log
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

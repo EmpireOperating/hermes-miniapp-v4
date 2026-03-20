@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <title>Hermes Agent Console</title>
+    <script>
+      (() => {
+        const allowed = new Set(["terminal", "oracle", "obsidian"]);
+        const serverBoot = {{ boot_skin|tojson }};
+        let resolved = allowed.has(serverBoot) ? serverBoot : "terminal";
+
+        try {
+          const savedSkin = localStorage.getItem("hermes_skin");
+          if (allowed.has(savedSkin)) {
+            resolved = savedSkin;
+          } else {
+            localStorage.setItem("hermes_skin", resolved);
+          }
+        } catch (_) {
+          // Local storage may be blocked in privacy mode.
+        }
+
+        // Keep shell hidden until bootstrap resolves the authenticated skin,
+        // preventing a brief flash of the default terminal skin on fresh domains.
+        document.documentElement.setAttribute("data-shell-ready", "0");
+        document.documentElement.setAttribute("data-skin", resolved);
+        window.__HERMES_SKIN_BOOT__ = resolved;
+      })();
+    </script>
+    <style>
+      html[data-shell-ready="0"] body {
+        visibility: hidden;
+      }
+      html[data-shell-ready="1"] body {
+        visibility: visible;
+      }
+    </style>
+    <link rel="stylesheet" href="/static/app.css?v={{ css_version }}">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  </head>
+  <body data-skin="{{ boot_skin }}">
+    <div class="shell">
+      <header class="masthead panel">
+        <div class="app-window-controls app-window-controls--top-right" aria-label="Window controls">
+          <button type="button" id="fullscreen-app-top" class="terminal-control" title="Toggle fullscreen">⛶</button>
+          <button type="button" id="close-app-top" class="terminal-control terminal-control--danger" title="Close app">✕</button>
+        </div>
+        <img src="/static/hermes-banner.png" alt="Hermes Agent" class="masthead__banner">
+        <div class="masthead__meta">
+          <div class="masthead__copy">
+            <p class="eyebrow">PERSISTENT SELF-IMPROVING OPERATOR</p>
+            <h1>HERMES MULTI CHAT</h1>
+            <p class="subhead">Fast tab switching</p>
+          </div>
+          <div class="masthead__status-row">
+            <div class="status-group">
+              <div class="status-pill"><span class="status-dot"></span><span id="auth-status">Checking session…</span></div>
+            </div>
+
+            <div class="status-group">
+              <button type="button" class="status-pill status-pill--muted status-pill-button status-pill-button--icon" id="settings-button" aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-controls="settings-modal">⚙︎</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="sidebar panel">
+          <div class="panel__header">Chats</div>
+          <div class="kv"><span>Operator</span><strong id="operator-name">Unknown</strong></div>
+          <div class="kv"><span>Route</span><strong>telegram → mini app → hermes</strong></div>
+          <div class="kv"><span>Active chat</span><strong id="active-chat-name">main</strong></div>
+          <div class="kv"><span>Turns in chat</span><strong id="history-count">0</strong></div>
+          <div class="kv"><span>Skin</span><strong id="skin-name">terminal</strong></div>
+          <div class="divider"></div>
+          <div class="chat-actions">
+            <button type="button" id="new-chat" class="action-button">New chat</button>
+            <button type="button" id="rename-chat" class="action-button">Rename chat</button>
+            <button type="button" id="remove-chat" class="danger-button">Close chat</button>
+          </div>
+
+        </aside>
+
+        <section class="panel terminal-panel">
+          <div class="panel__header panel__header--terminal">
+            <span id="panel-title">Conversation</span>
+            <span class="panel__hint" id="panel-hint"></span>
+          </div>
+
+          <div class="tabs-wrap">
+            <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Chat tabs"></div>
+          </div>
+
+          <div id="tool-stream" class="tool-stream" aria-live="polite" aria-label="Live tool activity" hidden>
+            <div class="tool-stream__header">Live tool activity</div>
+            <div id="tool-stream-lines" class="tool-stream__lines"></div>
+          </div>
+
+          <div class="messages-wrap">
+            <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-atomic="false"></div>
+            <button type="button" class="jump-last-start" id="jump-last-start" hidden aria-label="Jump to start of final message">↑</button>
+            <button type="button" class="jump-latest" id="jump-latest" hidden aria-label="Jump to latest message">↓</button>
+            <button type="button" id="selection-quote-button" class="selection-quote-button" hidden>Quote</button>
+          </div>
+
+          <div class="activity-rail" id="activity-rail">
+            <span class="activity-chip" id="latency-chip">latency: --</span>
+          </div>
+
+          <form id="chat-form" class="composer">
+            <label class="composer__label" for="prompt">Message</label>
+            <textarea id="prompt" name="prompt" rows="4" placeholder="Type a message…" maxlength="6000" enterkeyhint="send" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea>
+            <div class="composer__actions">
+              <div class="composer__hint">Enter to send • Shift+Enter for new line</div>
+              <button id="send-button" type="submit">Send</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="chat-title-modal" class="modal" aria-labelledby="chat-title-modal-title">
+      <form method="dialog" id="chat-title-form" class="modal__card">
+        <h2 id="chat-title-modal-title" class="modal__title">Chat title</h2>
+        <p class="modal__hint" id="chat-title-modal-hint">Name this chat.</p>
+        <label for="chat-title-input" class="modal__label">Title</label>
+        <input id="chat-title-input" class="modal__input" type="text" maxlength="120" autocomplete="off" required>
+        <div class="modal__actions">
+          <button type="button" id="chat-title-cancel" class="action-button">Cancel</button>
+          <button type="submit" id="chat-title-confirm" class="action-button">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="settings-modal" class="modal" aria-labelledby="settings-modal-title">
+      <form method="dialog" id="settings-form" class="modal__card">
+        <h2 id="settings-modal-title" class="modal__title">Settings</h2>
+        <p class="modal__hint">Choose a skin theme for this session.</p>
+        <div class="settings-modal__skins">
+          <button type="button" class="skin-toggle is-active" data-skin="terminal">Terminal</button>
+          <button type="button" class="skin-toggle" data-skin="oracle">Oracle</button>
+          <button type="button" class="skin-toggle" data-skin="obsidian">Obsidian</button>
+        </div>
+        <div class="modal__actions">
+          <button type="button" id="settings-close" class="action-button">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="message-template">
+      <article class="message">
+        <div class="message__meta">
+          <span class="message__role"></span>
+          <span class="message__time"></span>
+        </div>
+        <div class="message__body"></div>
+        <button type="button" class="message__copy" aria-label="Copy message" title="Copy message">⧉</button>
+      </article>
+    </template>
+
+    <template id="chat-tab-template">
+      <button type="button" class="chat-tab">
+        <span class="chat-tab__title"></span>
+        <span class="chat-tab__badge"></span>
+      </button>
+    </template>
+
+    <script>
+      window.__HERMES_DEV__ = {
+        enabled: {{ 'true' if dev_reload else 'false' }},
+        reloadStateUrl: "/dev/reload-state",
+        intervalMs: {{ dev_reload_interval_ms }},
+        version: "{{ dev_reload_version }}"
+      };
+    </script>
+    <script src="/static/app.js?v={{ js_version }}"></script>
+  </body>
+</html>

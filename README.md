@@ -1,0 +1,197 @@
+# Hermes Mini App v4
+
+Telegram Mini App shell for Hermes Agent with a Hermes-style themed UI.
+
+## What changed in v4
+
+- single Hermes UI still stays simple
+- multi-chat tabs added
+- create new chats
+- rename chats
+- unread badges on inactive tabs when Hermes finishes replying there
+- per-chat message history in SQLite
+- active chat selection persists across reopen/auth
+- queue-backed turn execution worker decouples response generation from UI connection lifecycle
+- retry policy with exponential backoff and dead-letter capture for exhausted jobs
+- pending turn state persists across reopen (if the latest turn is still awaiting Hermes)
+- clear current chat
+- keeps Hermes CLI / gateway architecture intact
+
+## Architecture
+
+- Telegram bot launches the Mini App
+- Mini App authenticates with Telegram `initData`
+- Flask backend verifies Telegram auth
+- Backend calls Hermes through:
+  - `HERMES_STREAM_URL` if available
+  - `HERMES_API_URL` if available
+  - otherwise local CLI: `hermes chat --quiet --query ...`
+- chat threads and messages are stored in `sessions.db`
+
+## Canonical workspace and runtime (important)
+
+Use this path as source of truth:
+
+- `/home/hermes-agent/workspace/active/hermes_miniapp_v4`
+
+Do not run the app from legacy handoff paths under `/home/openclaw/Downloads/...`.
+
+Canonical services:
+
+- backend unit: `/home/openclaw/.config/systemd/user/hermes-miniapp-v4.service`
+- tunnel unit: `/home/openclaw/.config/systemd/user/hermes-miniapp-v4-tunnel.service`
+- command target: `server.py` in the Hermes workspace above
+- env file loaded by services: `/home/hermes-agent/workspace/active/hermes_miniapp_v4/.env`
+
+Quick verification commands:
+
+```bash
+# confirm service is running
+systemctl --user status hermes-miniapp-v4.service
+
+# confirm process cwd is Hermes workspace (not Downloads handoff)
+pid=$(systemctl --user show -p MainPID --value hermes-miniapp-v4.service)
+readlink -f /proc/$pid/cwd
+
+# confirm listening port (from .env PORT)
+ss -ltnp | grep ':8787'
+```
+
+## Quick start
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Fill in:
+
+- `TELEGRAM_BOT_TOKEN`
+- `MINI_APP_URL`
+- optionally `HERMES_API_URL` or `HERMES_STREAM_URL`
+
+Auth-switcher routing (recommended for persistent direct runtime):
+
+- set `HERMES_MODEL=auto`
+- set `HERMES_PROVIDER=auto`
+- set `HERMES_BASE_URL=auto`
+- ensure the miniapp service runs with:
+  - `HOME=/home/hermes-agent`
+  - `HERMES_HOME=/home/hermes-agent/.hermes`
+
+With these values, the mini app resolves provider/base URL/model from the active Hermes auth/config context (`~/.hermes/auth.json` + `~/.hermes/config.yaml`) instead of requiring a fixed API key in miniapp `.env`.
+
+Optional hardening settings:
+
+- `FLASK_DEBUG=0` (default)
+- `MAX_MESSAGE_LEN=4000`
+- `MAX_TITLE_LEN=120`
+- `MAX_CONTENT_LENGTH=1048576`
+- `MINI_APP_JOB_MAX_ATTEMPTS=4` (queue worker retries before dead-letter)
+- `MINI_APP_JOB_RETRY_BASE_SECONDS=2` (exponential backoff base seconds)
+
+Optional dev hot-reload settings:
+
+- `MINI_APP_DEV_RELOAD=1` enables dev-only polling reloads for template/CSS/JS/server changes
+- `MINI_APP_DEV_RELOAD_INTERVAL_MS=1200` controls how often the client checks for changes
+- static assets are cache-busted automatically with file mtime query params
+
+Hot-reload verification:
+
+```bash
+curl -sS http://127.0.0.1:8787/dev/reload-state
+# expect: {"ok":true,"enabled":true,...}
+
+# watch version change when touching a watched file
+before=$(curl -sS http://127.0.0.1:8787/dev/reload-state | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+touch static/app.js
+after=$(curl -sS http://127.0.0.1:8787/dev/reload-state | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+echo "$before -> $after"
+```
+
+Run backend + tunnel (recommended: service mode):
+
+```bash
+# one-time install
+systemctl --user daemon-reload
+systemctl --user enable --now hermes-miniapp-v4.service
+systemctl --user enable --now hermes-miniapp-v4-tunnel.service
+
+# lifecycle
+systemctl --user restart hermes-miniapp-v4.service hermes-miniapp-v4-tunnel.service
+systemctl --user status hermes-miniapp-v4.service hermes-miniapp-v4-tunnel.service
+journalctl --user -u hermes-miniapp-v4.service -u hermes-miniapp-v4-tunnel.service -f
+```
+
+Manual backend run (debugging only):
+
+```bash
+source .venv/bin/activate
+set -a; source .env; set +a
+python server.py
+```
+
+Note: this project does not auto-load `.env` by itself; service mode uses `EnvironmentFile=.../.env`.
+
+Run tests:
+
+```bash
+python -m pytest -q
+```
+
+## Smoke test checklist
+
+1) Start backend and tunnel with real values in `.env`
+2) In Telegram Hermes chat, run `/app` and open the Mini App button
+3) Verify auth loads and the operator name appears
+4) Send a prompt and confirm streamed reply appears
+5) Create and rename a chat (now via in-app modal, not browser prompt)
+6) Switch tabs while a reply runs and verify unread badge behavior
+7) Clear current chat and confirm history resets
+
+## Notes
+
+- The gateway can stay running for your normal Telegram Hermes chat.
+- This Mini App is another frontend, not a gateway replacement.
+- Unread badges are designed for replies that finish after you switch tabs.
+- If a stream client disconnects mid-response (close/reopen), queue worker continues processing independently.
+- Retries use exponential backoff; exhausted jobs move to dead-letter storage (`chat_job_dead_letters`) and a system message is written in-chat.
+- True external push from unrelated Hermes events is not implemented yet.
+- Port `8080` may already be occupied on this machine; keep using the `.env` `PORT` value (`8787`) unless intentionally changed.
+
+## Troubleshooting wrong build showing in Telegram
+
+If Telegram shows an old UI/version:
+
+1) Confirm the running backend process is the service process:
+
+```bash
+systemctl --user status hermes-miniapp-v4.service
+pid=$(systemctl --user show -p MainPID --value hermes-miniapp-v4.service)
+readlink -f /proc/$pid/cwd
+```
+
+2) Ensure no ad-hoc legacy process is running from `/home/openclaw/Downloads/hermes_miniapp_v4_handoff/...`.
+
+3) Verify your `MINI_APP_URL` tunnel/proxy points to the same backend port as `.env` (`PORT=8787`).
+
+4) Close and reopen the Mini App in Telegram (hard reopen) after backend restart.
+
+5) Inspect queue/dead-letter state for the current authenticated user:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8787/api/jobs/status \
+  -H 'Content-Type: application/json' \
+  -d '{"init_data":"<telegram-init-data>","limit":25}'
+```
+
+## Files
+
+- `server.py` — Flask server and API routes
+- `store.py` — SQLite storage for tabs, history, unread state
+- `hermes_client.py` — Hermes CLI / HTTP adapter
+- `templates/app.html` — Mini App shell
+- `static/app.css` — Hermes-themed styling
+- `static/app.js` — tabbed chat UI logic
