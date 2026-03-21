@@ -7,17 +7,18 @@ import os
 import queue
 import threading
 import time
-from dataclasses import asdict
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 from flask import Flask, Response, g, jsonify, make_response, render_template, request, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
+from routes_auth import register_auth_routes
+from routes_chat import register_chat_routes
+from routes_jobs_runtime import register_jobs_runtime_routes
+from routes_meta import register_meta_routes
 
 from auth import TelegramAuthError, TelegramUser, VerifiedTelegramInitData, verify_telegram_init_data
 from blueprints import create_api_blueprint, create_public_blueprint
-from hermes_client import HermesClient, HermesClientError
+from hermes_client import HermesClient
 from job_runtime import JobRuntime
 from miniapp_config import MiniAppConfig, normalize_origin
 from rate_limiter import SlidingWindowRateLimiter
@@ -96,7 +97,6 @@ def _sync_runtime_bindings() -> None:
     # Keep runtime wired to current globals so wrappers stay back-compat.
     runtime.store = store
     runtime.client = client
-
 
 
 def _cookie_secure() -> bool:
@@ -491,541 +491,63 @@ def static_files(filename: str):
     return response
 
 
-@api_bp.post("/auth")
-def auth() -> Response | tuple[dict[str, object], int]:
-    payload = _request_payload()
-    verified, auth_error = _verify_for_json(payload)
-    if auth_error:
-        return auth_error
-
-    user_id = str(verified.user.id)
-    store.prune_expired_auth_sessions(int(time.time()))
-    runtime.ensure_pending_jobs(user_id)
-    display_name = verified.user.first_name or verified.user.username or "Operator"
-    default_chat_id = store.ensure_default_chat(user_id)
-    active_chat_id = store.get_active_chat(user_id) or default_chat_id
-    try:
-        store.get_chat(user_id=user_id, chat_id=active_chat_id)
-    except KeyError:
-        active_chat_id = default_chat_id
-
-    history = [asdict(turn) for turn in store.get_history(user_id=user_id, chat_id=active_chat_id, limit=120)]
-    store.mark_chat_read(user_id=user_id, chat_id=active_chat_id)
-    store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
-    chats = [_serialize_chat(chat) for chat in store.list_chats(user_id=user_id)]
-    skin = store.get_skin(user_id=user_id)
-    response = jsonify(
-        {
-            "ok": True,
-            "user": {
-                "id": verified.user.id,
-                "display_name": display_name,
-                "username": verified.user.username,
-            },
-            "skin": skin,
-            "active_chat_id": active_chat_id,
-            "history": history,
-            "chats": chats,
-            "stats": {"turn_count": store.get_turn_count(user_id)},
-        }
-    )
-    response.set_cookie(
-        SKIN_COOKIE_NAME,
-        skin,
-        max_age=60 * 60 * 24 * 365,
-        samesite="Lax",
-        secure=_cookie_secure(),
-    )
-    response.set_cookie(
-        AUTH_COOKIE_NAME,
-        _create_auth_session_token(user_id),
-        max_age=max(60, AUTH_SESSION_MAX_AGE_SECONDS),
-        httponly=True,
-        samesite="Lax",
-        secure=_cookie_secure(),
-    )
-    return response
-
-
-@api_bp.post("/auth/logout-all")
-def logout_all_sessions() -> Response | tuple[dict[str, object], int]:
-    payload = _request_payload()
-    verified, auth_error = _verify_for_json(payload)
-    if auth_error:
-        return auth_error
-
-    user_id = str(verified.user.id)
-    revoked_count = store.revoke_all_auth_sessions(user_id)
-    response = jsonify({"ok": True, "revoked": revoked_count})
-    response.set_cookie(
-        AUTH_COOKIE_NAME,
-        "",
-        max_age=0,
-        httponly=True,
-        samesite="Lax",
-        secure=_cookie_secure(),
-    )
-    app.logger.info(
-        build_job_log(
-            event="auth_logout_all",
-            request_id=str(getattr(g, "request_id", "")) or None,
-            chat_id=0,
-            extra={"user_id": user_id, "revoked": revoked_count},
-        )
-    )
-    return response
-
-
-@api_bp.post("/preferences/skin")
-def set_skin() -> Response | tuple[dict[str, object], int]:
-    payload = _request_payload()
-    skin = str(payload.get("skin", "")).strip().lower()
-    if skin not in ALLOWED_SKINS:
-        return {"ok": False, "error": f"Unsupported skin: {skin or 'unknown'}"}, 400
-
-    verified, auth_error = _verify_for_json(payload)
-    if auth_error:
-        return auth_error
-
-    store.set_skin(user_id=str(verified.user.id), skin=skin)
-    response = jsonify({"ok": True, "skin": skin})
-    response.set_cookie(
-        SKIN_COOKIE_NAME,
-        skin,
-        max_age=60 * 60 * 24 * 365,
-        samesite="Lax",
-        secure=_cookie_secure(),
-    )
-    return response
-
-
-@api_bp.post("/chats")
-def create_chat() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    try:
-        title = _validated_title(payload.get("title"), default="New chat")
-    except ValueError as exc:
-        return _json_error(str(exc), 400)
-
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-
-    chat = store.create_chat(user_id=user_id, title=title)
-    store.set_active_chat(user_id=user_id, chat_id=chat.id)
-    history = _chat_history(user_id=user_id, chat_id=chat.id, limit=120)
-    return {"ok": True, "chat": _serialize_chat(chat), "history": history}, 201
-
-
-@api_bp.post("/chats/rename")
-def rename_chat() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-
-    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
-    if chat_id_error:
-        return chat_id_error
-
-    try:
-        title = _validated_title(payload.get("title"), default="Untitled")
-        chat = store.rename_chat(user_id=user_id, chat_id=chat_id, title=title)
-    except ValueError as exc:
-        return _json_error(str(exc), 400)
-    except KeyError as exc:
-        return _json_error(str(exc), 404)
-    return {"ok": True, "chat": _serialize_chat(chat)}, 200
-
-
-def _chat_history_payload(user_id: str, chat_id: int, *, activate: bool) -> dict[str, object]:
-    if activate:
-        store.mark_chat_read(user_id=user_id, chat_id=chat_id)
-        store.set_active_chat(user_id=user_id, chat_id=chat_id)
-    history = [asdict(turn) for turn in store.get_history(user_id=user_id, chat_id=chat_id, limit=120)]
-    chat = store.get_chat(user_id=user_id, chat_id=chat_id)
-    return {"ok": True, "chat": _serialize_chat(chat), "history": history}
-
-
-@api_bp.post("/chats/open")
-def open_chat() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-
-    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
-    if chat_id_error:
-        return chat_id_error
-
-    try:
-        response_payload = _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=True)
-    except KeyError as exc:
-        return _json_error(str(exc), 404)
-
-    return response_payload, 200
-
-
-@api_bp.post("/chats/history")
-def chat_history() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-
-    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
-    if chat_id_error:
-        return chat_id_error
-
-    try:
-        activate = bool(payload.get("activate", False))
-        response_payload = _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=activate)
-    except KeyError as exc:
-        return _json_error(str(exc), 404)
-
-    return response_payload, 200
-
-
-@api_bp.post("/chats/mark-read")
-def mark_chat_read() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-
-    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
-    if chat_id_error:
-        return chat_id_error
-
-    try:
-        store.mark_chat_read(user_id=user_id, chat_id=chat_id)
-        chat = store.get_chat(user_id=user_id, chat_id=chat_id)
-    except KeyError as exc:
-        return _json_error(str(exc), 404)
-    return {"ok": True, "chat": _serialize_chat(chat)}, 200
-
-
-@api_bp.post("/chats/clear")
-def clear_chat() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-
-    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
-    if chat_id_error:
-        return chat_id_error
-
-    try:
-        store.clear_chat(user_id=user_id, chat_id=chat_id)
-        chat = store.get_chat(user_id=user_id, chat_id=chat_id)
-        _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
-    except KeyError as exc:
-        return _json_error(str(exc), 404)
-    return {"ok": True, "chat": _serialize_chat(chat), "history": []}, 200
-
-
-@api_bp.post("/chats/remove")
-def remove_chat() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-
-    chat_id, chat_id_error = _chat_id_from_payload_or_error(payload, user_id=user_id)
-    if chat_id_error:
-        return chat_id_error
-
-    try:
-        _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
-        next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id)
-        history = _chat_history(user_id=user_id, chat_id=next_chat_id, limit=120)
-        store.mark_chat_read(user_id=user_id, chat_id=next_chat_id)
-        store.set_active_chat(user_id=user_id, chat_id=next_chat_id)
-        active_chat = store.get_chat(user_id=user_id, chat_id=next_chat_id)
-        chats = _serialize_chats(user_id=user_id)
-    except KeyError as exc:
-        return _json_error(str(exc), 404)
-    return {
-        "ok": True,
-        "removed_chat_id": chat_id,
-        "active_chat_id": next_chat_id,
-        "active_chat": _serialize_chat(active_chat),
-        "history": history,
-        "chats": chats,
-    }, 200
-
-
-@api_bp.post("/chats/status")
-def chats_status() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-    runtime.ensure_pending_jobs(user_id)
-    chats = _serialize_chats(user_id=user_id)
-    return {"ok": True, "chats": chats}, 200
-
-
-@api_bp.post("/jobs/status")
-def jobs_status() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-
-    limit = int(payload.get("limit") or 25)
-    jobs = store.list_jobs(user_id=user_id, limit=limit)
-    dead_letters = store.list_dead_letters(user_id=user_id, limit=limit)
-    summary = {
-        "queued": sum(1 for job in jobs if job["status"] == "queued"),
-        "running": sum(1 for job in jobs if job["status"] == "running"),
-        "done": sum(1 for job in jobs if job["status"] == "done"),
-        "error": sum(1 for job in jobs if job["status"] == "error"),
-        "dead": sum(1 for job in jobs if job["status"] == "dead"),
-        "dead_letter_count": len(dead_letters),
-    }
-    return {"ok": True, "summary": summary, "jobs": jobs, "dead_letters": dead_letters}, 200
-
-
-@api_bp.post("/jobs/cleanup")
-def jobs_cleanup() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    user_id, auth_error = _json_user_id_or_error(payload)
-    if auth_error:
-        return auth_error
-
-    limit = int(payload.get("limit") or 200)
-    cleaned = store.cleanup_stale_jobs(user_id=user_id, limit=limit)
-    return {
-        "ok": True,
-        "cleaned_count": len(cleaned),
-        "cleaned": cleaned,
-    }, 200
-
-
-@api_bp.post("/runtime/status")
-def runtime_status() -> tuple[dict[str, object], int]:
-    payload = _request_payload()
-    _, auth_error = _verify_for_json(payload)
-    if auth_error:
-        return auth_error
-
-    runtime = client.runtime_status()
-    return {
-        "ok": True,
-        "persistent": runtime.get("persistent") or {},
-        "routing": runtime.get("routing") or {},
-    }, 200
-
-
-def _resolve_active_chat(payload: dict[str, object], *, user_id: str) -> int:
-    chat_id = _chat_id_from_payload(payload, user_id=user_id)
-    store.set_active_chat(user_id=user_id, chat_id=chat_id)
-    return chat_id
-
-
-def _chat_history(user_id: str, chat_id: int, *, limit: int = 120) -> list[dict[str, object]]:
-    return [asdict(turn) for turn in store.get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
-
-
-def _serialize_chats(user_id: str) -> list[dict[str, object]]:
-    return [_serialize_chat(chat) for chat in store.list_chats(user_id=user_id)]
-
-
-def _evict_chat_runtime(user_id: str, chat_id: int) -> None:
-    session_id = _session_id_for(user_id, chat_id)
-    client.evict_session(session_id)
-    store.delete_runtime_checkpoint(session_id)
-
-
-def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
-    return store.add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
-
-
-@api_bp.post("/chat")
-def chat() -> tuple[object, int]:
-    payload = _request_payload()
-    try:
-        message = _validated_message(payload.get("message"))
-    except ValueError as exc:
-        return _json_error(str(exc), 400)
-
-    verified, auth_error = _verify_for_json(payload)
-    if auth_error:
-        return auth_error
-
-    user_id = str(verified.user.id)
-    try:
-        chat_id = _resolve_active_chat(payload, user_id=user_id)
-        _add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
-    except (KeyError, ValueError) as exc:
-        return _json_error(str(exc), 400)
-
-    history = _chat_history(user_id=user_id, chat_id=chat_id, limit=120)
-
-    started = time.perf_counter()
-    try:
-        reply = client.ask(user_id=user_id, message=message, conversation_history=history)
-    except HermesClientError as exc:
-        return _json_error(str(exc), 502)
-
-    latency_ms = int((time.perf_counter() - started) * 1000) if not reply.latency_ms else reply.latency_ms
-    store.add_message(user_id=user_id, chat_id=chat_id, role="hermes", body=reply.text)
-
-    return jsonify(
-        {
-            "ok": True,
-            "reply": reply.text,
-            "source": reply.source,
-            "skin": store.get_skin(user_id),
-            "latency_ms": latency_ms,
-            "turn_count": store.get_turn_count(user_id, chat_id=chat_id),
-            "chat_id": chat_id,
-        }
-    )
-
-
-def _stream_job_response(*, user_id: str, chat_id: int, job_id: int) -> Response:
-    def generate() -> Iterator[str]:
-        subscriber = _subscribe_job_events(job_id)
-        terminal = False
-        last_queue_heartbeat = 0.0
-
-        try:
-            yield _sse_event("meta", {"skin": store.get_skin(user_id), "source": "queue", "chat_id": chat_id})
-            while not terminal:
-                try:
-                    event = subscriber.get(timeout=0.6)
-                except queue.Empty:
-                    now = time.monotonic()
-                    if (now - last_queue_heartbeat) >= 4.0:
-                        state = store.get_job_state(job_id)
-                        if state:
-                            elapsed_ms = None
-                            started_at_raw = str(state.get("started_at") or "").strip()
-                            if started_at_raw:
-                                try:
-                                    started_dt = datetime.strptime(started_at_raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                                    elapsed_ms = max(
-                                        0,
-                                        int((datetime.now(timezone.utc) - started_dt).total_seconds() * 1000),
-                                    )
-                                except ValueError:
-                                    elapsed_ms = None
-
-                            heartbeat_payload = {
-                                "chat_id": chat_id,
-                                "source": "queue",
-                                "detail": (
-                                    f"queued (ahead: {state.get('queued_ahead', 0)})"
-                                    if state.get("status") == "queued"
-                                    else "running"
-                                ),
-                                "job_status": state.get("status"),
-                                "queued_ahead": state.get("queued_ahead"),
-                                "running_total": state.get("running_total"),
-                                "attempt": state.get("attempts"),
-                                "max_attempts": state.get("max_attempts"),
-                                "started_at": state.get("started_at"),
-                                "created_at": state.get("created_at"),
-                                "elapsed_ms": elapsed_ms,
-                            }
-                            yield _sse_event("meta", heartbeat_payload)
-                        last_queue_heartbeat = now
-                    continue
-                event_name = str(event.get("event") or "message")
-                payload = dict(event.get("payload") or {})
-                if "chat_id" not in payload:
-                    payload["chat_id"] = chat_id
-                yield _sse_event(event_name, payload)
-                if event_name in {"done", "error"}:
-                    terminal = True
-        finally:
-            _unsubscribe_job_events(job_id, subscriber)
-
-    headers = {
-        "Cache-Control": "no-cache",
-        "X-Accel-Buffering": "no",
-        "Connection": "keep-alive",
-    }
-    return Response(generate(), mimetype="text/event-stream", headers=headers)
-
-
-@api_bp.post("/chat/stream")
-def stream_chat() -> Response:
-    payload = _request_payload()
-    try:
-        message = _validated_message(payload.get("message"))
-    except ValueError as exc:
-        return _sse_error(str(exc), 400)
-
-    verified, auth_error = _verify_for_sse(payload)
-    if auth_error:
-        return auth_error
-
-    user_id = str(verified.user.id)
-    try:
-        chat_id = _resolve_active_chat(payload, user_id=user_id)
-        if store.has_open_job(user_id=user_id, chat_id=chat_id):
-            return _sse_error("Hermes is already working on this chat.", 409, chat_id=chat_id)
-        operator_message_id = _add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
-        job_id = store.enqueue_chat_job(
-            user_id=user_id,
-            chat_id=chat_id,
-            operator_message_id=operator_message_id,
-            max_attempts=JOB_MAX_ATTEMPTS,
-        )
-        _JOB_WAKE_EVENT.set()
-    except (KeyError, ValueError) as exc:
-        return _sse_error(str(exc), 400)
-
-    app.logger.info(
-        build_job_log(
-            event="stream_job_enqueued",
-            request_id=str(getattr(g, "request_id", "")) or None,
-            chat_id=chat_id,
-            job_id=job_id,
-            extra={"user_id": user_id},
-        )
-    )
-    return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=job_id)
-
-
-@api_bp.post("/chat/stream/resume")
-def stream_chat_resume() -> Response:
-    payload = _request_payload()
-
-    verified, auth_error = _verify_for_sse(payload)
-    if auth_error:
-        return auth_error
-
-    user_id = str(verified.user.id)
-    try:
-        chat_id = _resolve_active_chat(payload, user_id=user_id)
-    except (KeyError, ValueError) as exc:
-        return _sse_error(str(exc), 400)
-
-    open_job = store.get_open_job(user_id=user_id, chat_id=chat_id)
-    if not open_job:
-        return _sse_error("No active Hermes job for this chat.", 409, chat_id=chat_id)
-
-    _JOB_WAKE_EVENT.set()
-    resumed_job_id = int(open_job["id"])
-    app.logger.info(
-        build_job_log(
-            event="stream_job_resumed",
-            request_id=str(getattr(g, "request_id", "")) or None,
-            chat_id=chat_id,
-            job_id=resumed_job_id,
-            extra={"user_id": user_id},
-        )
-    )
-    return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=resumed_job_id)
-
-@api_bp.get("/state")
-def state() -> tuple[dict[str, object], int]:
-    return {"ok": True, "skins": sorted(ALLOWED_SKINS)}, 200
+register_auth_routes(
+    api_bp,
+    store_getter=lambda: store,
+    runtime_getter=lambda: runtime,
+    request_payload_fn=_request_payload,
+    verify_for_json_fn=_verify_for_json,
+    serialize_chat_fn=_serialize_chat,
+    cookie_secure_fn=_cookie_secure,
+    create_auth_session_token_fn=_create_auth_session_token,
+    allowed_skins=ALLOWED_SKINS,
+    skin_cookie_name=SKIN_COOKIE_NAME,
+    auth_cookie_name=AUTH_COOKIE_NAME,
+    auth_session_max_age_seconds=AUTH_SESSION_MAX_AGE_SECONDS,
+    build_job_log_fn=build_job_log,
+    logger=app.logger,
+)
+
+
+register_chat_routes(
+    api_bp,
+    store_getter=lambda: store,
+    client_getter=lambda: client,
+    runtime_getter=lambda: runtime,
+    job_wake_event_getter=lambda: _JOB_WAKE_EVENT,
+    request_payload_fn=_request_payload,
+    json_user_id_or_error_fn=_json_user_id_or_error,
+    verify_for_json_fn=_verify_for_json,
+    verify_for_sse_fn=_verify_for_sse,
+    chat_id_from_payload_or_error_fn=_chat_id_from_payload_or_error,
+    chat_id_from_payload_fn=lambda payload, user_id: _chat_id_from_payload(payload, user_id=user_id),
+    validated_title_fn=lambda raw_title, default: _validated_title(raw_title, default=default),
+    validated_message_fn=_validated_message,
+    json_error_fn=_json_error,
+    sse_error_fn=_sse_error,
+    sse_event_fn=lambda event, data: _sse_event(event, data),
+    serialize_chat_fn=_serialize_chat,
+    session_id_builder_fn=_session_id_for,
+    job_max_attempts=JOB_MAX_ATTEMPTS,
+    build_job_log_fn=build_job_log,
+    logger=app.logger,
+)
+
+
+register_jobs_runtime_routes(
+    api_bp,
+    store_getter=lambda: store,
+    client_getter=lambda: client,
+    request_payload_fn=_request_payload,
+    json_user_id_or_error_fn=_json_user_id_or_error,
+    verify_for_json_fn=_verify_for_json,
+)
+
+
+register_meta_routes(
+    api_bp,
+    allowed_skins=ALLOWED_SKINS,
+)
 
 
 def _sse_event(event: str, data: dict[str, object]) -> str:
