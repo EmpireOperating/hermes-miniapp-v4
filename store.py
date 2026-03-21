@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -190,6 +191,22 @@ class SessionStore:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runtime_checkpoints_user_chat ON runtime_checkpoints(user_id, chat_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    nonce_hash TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    revoked_at INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id, expires_at)"
             )
 
             self._migrate_legacy_history(conn)
@@ -1170,8 +1187,74 @@ class SessionStore:
         with self._connect() as conn:
             conn.execute(
                 "DELETE FROM runtime_checkpoints WHERE user_id = ? AND chat_id = ?",
-                (user_id, chat_id),
+                (user_id, int(chat_id)),
             )
+
+    def upsert_auth_session(self, *, session_id: str, user_id: str, nonce_hash: str, expires_at: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO auth_sessions (session_id, user_id, nonce_hash, expires_at, revoked_at, updated_at)
+                VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+                ON CONFLICT(session_id)
+                DO UPDATE SET
+                    user_id = excluded.user_id,
+                    nonce_hash = excluded.nonce_hash,
+                    expires_at = excluded.expires_at,
+                    revoked_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (session_id, user_id, nonce_hash, int(expires_at)),
+            )
+
+    def is_auth_session_active(self, *, session_id: str, user_id: str, nonce_hash: str, now_epoch: int) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT expires_at, revoked_at
+                FROM auth_sessions
+                WHERE session_id = ? AND user_id = ? AND nonce_hash = ?
+                """,
+                (session_id, user_id, nonce_hash),
+            ).fetchone()
+            if not row:
+                return False
+            if row["revoked_at"] is not None:
+                return False
+            if int(row["expires_at"] or 0) < int(now_epoch):
+                return False
+            return True
+
+    def revoke_auth_session(self, session_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE auth_sessions
+                SET revoked_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ?
+                """,
+                (int(time.time()), session_id),
+            )
+
+    def revoke_all_auth_sessions(self, user_id: str) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE auth_sessions
+                SET revoked_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND revoked_at IS NULL
+                """,
+                (int(time.time()), user_id),
+            )
+            return int(cursor.rowcount or 0)
+
+    def prune_expired_auth_sessions(self, now_epoch: int) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM auth_sessions WHERE expires_at < ?",
+                (int(now_epoch),),
+            )
+            return int(cursor.rowcount or 0)
 
     def get_turn_count(self, user_id: str, chat_id: int | None = None) -> int:
         with self._connect() as conn:

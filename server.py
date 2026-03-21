@@ -7,74 +7,65 @@ import os
 import queue
 import threading
 import time
-from collections import defaultdict, deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
-from urllib.parse import urlparse
 
-from flask import Flask, Response, jsonify, make_response, render_template, request, send_from_directory
+from flask import Flask, Response, g, jsonify, make_response, render_template, request, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from auth import TelegramAuthError, TelegramUser, VerifiedTelegramInitData, verify_telegram_init_data
 from hermes_client import HermesClient, HermesClientError
 from job_runtime import JobRuntime
+from miniapp_config import MiniAppConfig, normalize_origin
+from rate_limiter import SlidingWindowRateLimiter
+from request_logging import build_job_log, build_request_log, new_request_id, now_ms
 from store import ChatThread, SessionStore
 
 BASE_DIR = Path(__file__).resolve().parent
+CONFIG = MiniAppConfig.from_env()
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-PORT = int(os.environ.get("PORT", "8080"))
-DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"
-DEV_RELOAD = os.environ.get("MINI_APP_DEV_RELOAD", "0") == "1"
+PORT = CONFIG.port
+DEBUG = CONFIG.debug
+DEV_RELOAD = CONFIG.dev_reload
 ALLOWED_SKINS = {"terminal", "oracle", "obsidian"}
 SKIN_COOKIE_NAME = "hermes_skin"
-AUTH_COOKIE_NAME = "hermes_session"
-AUTH_SESSION_MAX_AGE_SECONDS = int(os.environ.get("MINI_APP_AUTH_SESSION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 7)))
-MAX_MESSAGE_LEN = int(os.environ.get("MAX_MESSAGE_LEN", "4000"))
-MAX_TITLE_LEN = int(os.environ.get("MAX_TITLE_LEN", "120"))
-ASSISTANT_CHUNK_LEN = int(os.environ.get("MAX_ASSISTANT_CHUNK_LEN", "12000"))
-ASSISTANT_HARD_LIMIT = int(os.environ.get("MAX_ASSISTANT_HARD_LIMIT", "256000"))
-DEV_RELOAD_INTERVAL_MS = int(os.environ.get("MINI_APP_DEV_RELOAD_INTERVAL_MS", "1200"))
-JOB_MAX_ATTEMPTS = int(os.environ.get("MINI_APP_JOB_MAX_ATTEMPTS", "4"))
-JOB_RETRY_BASE_SECONDS = int(os.environ.get("MINI_APP_JOB_RETRY_BASE_SECONDS", "2"))
-JOB_WORKER_CONCURRENCY = max(1, int(os.environ.get("MINI_APP_JOB_WORKER_CONCURRENCY", "6")))
-JOB_STALL_TIMEOUT_SECONDS = max(60, int(os.environ.get("MINI_APP_JOB_STALL_TIMEOUT_SECONDS", "240")))
-TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", "21600"))
-TRUST_PROXY_HEADERS = os.environ.get("MINI_APP_TRUST_PROXY_HEADERS", "1") == "1"
-FORCE_SECURE_COOKIES = os.environ.get("MINI_APP_FORCE_SECURE_COOKIES", "1") == "1"
-ALLOWED_ORIGINS = {
-    value.strip().lower().rstrip("/")
-    for value in os.environ.get("MINI_APP_ALLOWED_ORIGINS", "").split(",")
-    if value.strip()
-}
-ENFORCE_ORIGIN_CHECK = os.environ.get("MINI_APP_ENFORCE_ORIGIN_CHECK", "0") == "1"
-RATE_LIMIT_WINDOW_SECONDS = max(5, int(os.environ.get("MINI_APP_RATE_LIMIT_WINDOW_SECONDS", "60")))
-RATE_LIMIT_API_REQUESTS = max(10, int(os.environ.get("MINI_APP_RATE_LIMIT_API_REQUESTS", "180")))
-RATE_LIMIT_STREAM_REQUESTS = max(3, int(os.environ.get("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", "24")))
-ENABLE_HSTS = os.environ.get("MINI_APP_ENABLE_HSTS", "0") == "1"
-JOB_EVENT_HISTORY_MAX_JOBS = max(32, int(os.environ.get("MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS", "256")))
-JOB_EVENT_HISTORY_TTL_SECONDS = max(60, int(os.environ.get("MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS", "1800")))
-DEV_RELOAD_WATCH_PATHS = (
-    BASE_DIR / "server.py",
-    BASE_DIR / "templates" / "app.html",
-    BASE_DIR / "static" / "app.css",
-    BASE_DIR / "static" / "app.js",
-)
+AUTH_COOKIE_NAME = "hermes_auth_session"
+AUTH_SESSION_MAX_AGE_SECONDS = CONFIG.auth_session_max_age_seconds
+MAX_MESSAGE_LEN = CONFIG.max_message_len
+MAX_TITLE_LEN = CONFIG.max_title_len
+ASSISTANT_CHUNK_LEN = CONFIG.assistant_chunk_len
+ASSISTANT_HARD_LIMIT = CONFIG.assistant_hard_limit
+DEV_RELOAD_INTERVAL_MS = CONFIG.dev_reload_interval_ms
+JOB_MAX_ATTEMPTS = CONFIG.job_max_attempts
+JOB_RETRY_BASE_SECONDS = CONFIG.job_retry_base_seconds
+JOB_WORKER_CONCURRENCY = CONFIG.job_worker_concurrency
+JOB_STALL_TIMEOUT_SECONDS = CONFIG.job_stall_timeout_seconds
+TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = CONFIG.telegram_init_data_max_age_seconds
+TRUST_PROXY_HEADERS = CONFIG.trust_proxy_headers
+FORCE_SECURE_COOKIES = CONFIG.force_secure_cookies
+ALLOWED_ORIGINS = CONFIG.allowed_origins
+ENFORCE_ORIGIN_CHECK = CONFIG.enforce_origin_check
+RATE_LIMIT_WINDOW_SECONDS = CONFIG.rate_limit_window_seconds
+RATE_LIMIT_API_REQUESTS = CONFIG.rate_limit_api_requests
+RATE_LIMIT_STREAM_REQUESTS = CONFIG.rate_limit_stream_requests
+ENABLE_HSTS = CONFIG.enable_hsts
+JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
+JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
+DEV_RELOAD_WATCH_PATHS = CONFIG.dev_reload_watch_paths
 
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
 if TRUST_PROXY_HEADERS:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)  # type: ignore[assignment]
-app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH", "1048576"))
+app.config["MAX_CONTENT_LENGTH"] = CONFIG.max_content_length
 app.config["TEMPLATES_AUTO_RELOAD"] = DEBUG or DEV_RELOAD
 app.jinja_env.auto_reload = DEBUG or DEV_RELOAD
 client = HermesClient()
 store = SessionStore(BASE_DIR / "sessions.db")
 
 _JOB_WAKE_EVENT = threading.Event()
-
-_RATE_LIMIT_LOCK = threading.Lock()
-_RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
+_RATE_LIMITER = SlidingWindowRateLimiter()
 
 
 def _session_id_for(user_id: str, chat_id: int) -> str:
@@ -111,25 +102,15 @@ def _cookie_secure() -> bool:
     return bool(request.is_secure)
 
 
-def _normalized_origin(value: str | None) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    parsed = urlparse(raw)
-    if not parsed.scheme or not parsed.netloc:
-        return ""
-    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}".rstrip("/")
-
-
 def _origin_allowed() -> bool:
     if not ALLOWED_ORIGINS or not ENFORCE_ORIGIN_CHECK:
         return True
 
-    origin = _normalized_origin(request.headers.get("Origin"))
+    origin = normalize_origin(request.headers.get("Origin"))
     if origin:
         return origin in ALLOWED_ORIGINS
 
-    referer = _normalized_origin(request.headers.get("Referer"))
+    referer = normalize_origin(request.headers.get("Referer"))
     if referer:
         return referer in ALLOWED_ORIGINS
 
@@ -137,16 +118,7 @@ def _origin_allowed() -> bool:
 
 
 def _check_rate_limit(*, key: str, limit: int, window_seconds: int) -> bool:
-    now = time.monotonic()
-    cutoff = now - max(1, int(window_seconds))
-    with _RATE_LIMIT_LOCK:
-        bucket = _RATE_LIMIT_BUCKETS[key]
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        if len(bucket) >= max(1, int(limit)):
-            return False
-        bucket.append(now)
-        return True
+    return _RATE_LIMITER.allow(key=key, limit=limit, window_seconds=window_seconds)
 
 
 def _publish_job_event(job_id: int, event_name: str, payload: dict[str, object]) -> None:
@@ -174,11 +146,22 @@ def _session_secret_key() -> bytes:
     return hmac.new(b"HermesMiniAppSession", BOT_TOKEN.encode("utf-8"), hashlib.sha256).digest()
 
 
+def _nonce_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 def _create_auth_session_token(user_id: str) -> str:
     expires_at = int(time.time()) + max(60, AUTH_SESSION_MAX_AGE_SECONDS)
+    session_id = os.urandom(8).hex()
     nonce = os.urandom(8).hex()
-    payload = f"{user_id}:{expires_at}:{nonce}"
+    payload = f"{user_id}:{session_id}:{expires_at}:{nonce}"
     signature = hmac.new(_session_secret_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    store.upsert_auth_session(
+        session_id=session_id,
+        user_id=user_id,
+        nonce_hash=_nonce_hash(nonce),
+        expires_at=expires_at,
+    )
     return f"{payload}:{signature}"
 
 
@@ -188,14 +171,14 @@ def _verify_auth_session_token(token: str) -> str | None:
         return None
 
     parts = value.split(":")
-    if len(parts) != 4:
+    if len(parts) != 5:
         return None
 
-    user_id, expires_raw, nonce, signature = parts
-    if not user_id or not expires_raw or not nonce or not signature:
+    user_id, session_id, expires_raw, nonce, signature = parts
+    if not user_id or not session_id or not expires_raw or not nonce or not signature:
         return None
 
-    payload = f"{user_id}:{expires_raw}:{nonce}"
+    payload = f"{user_id}:{session_id}:{expires_raw}:{nonce}"
     expected_sig = hmac.new(_session_secret_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected_sig):
         return None
@@ -205,8 +188,18 @@ def _verify_auth_session_token(token: str) -> str | None:
     except ValueError:
         return None
 
-    if expires_at < int(time.time()):
+    now_epoch = int(time.time())
+    if expires_at < now_epoch:
         return None
+
+    if not store.is_auth_session_active(
+        session_id=session_id,
+        user_id=user_id,
+        nonce_hash=_nonce_hash(nonce),
+        now_epoch=now_epoch,
+    ):
+        return None
+
     return user_id
 
 
@@ -377,6 +370,9 @@ runtime.start_once()
 
 @app.before_request
 def enforce_request_guards() -> Response | None:
+    g.request_id = new_request_id()
+    g.request_started_ms = now_ms()
+
     if request.path.startswith("/api") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         if request.mimetype != "application/json":
             return jsonify({"ok": False, "error": "Content-Type must be application/json."}), 415
@@ -420,6 +416,20 @@ def add_security_headers(response: Response) -> Response:
     )
     if ENABLE_HSTS:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+
+    request_started_ms = float(getattr(g, "request_started_ms", now_ms()))
+    elapsed_ms = max(0, int(now_ms() - request_started_ms))
+    request_id = str(getattr(g, "request_id", ""))
+    app.logger.info(
+        build_request_log(
+            request=request,
+            request_id=request_id,
+            status_code=response.status_code,
+            elapsed_ms=elapsed_ms,
+        )
+    )
+    if request_id:
+        response.headers.setdefault("X-Request-Id", request_id)
     return response
 
 
@@ -486,6 +496,7 @@ def auth() -> Response | tuple[dict[str, object], int]:
         return auth_error
 
     user_id = str(verified.user.id)
+    store.prune_expired_auth_sessions(int(time.time()))
     runtime.ensure_pending_jobs(user_id)
     display_name = verified.user.first_name or verified.user.username or "Operator"
     default_chat_id = store.ensure_default_chat(user_id)
@@ -529,6 +540,35 @@ def auth() -> Response | tuple[dict[str, object], int]:
         httponly=True,
         samesite="Lax",
         secure=_cookie_secure(),
+    )
+    return response
+
+
+@app.post("/api/auth/logout-all")
+def logout_all_sessions() -> Response | tuple[dict[str, object], int]:
+    payload = _request_payload()
+    verified, auth_error = _verify_for_json(payload)
+    if auth_error:
+        return auth_error
+
+    user_id = str(verified.user.id)
+    revoked_count = store.revoke_all_auth_sessions(user_id)
+    response = jsonify({"ok": True, "revoked": revoked_count})
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        "",
+        max_age=0,
+        httponly=True,
+        samesite="Lax",
+        secure=_cookie_secure(),
+    )
+    app.logger.info(
+        build_job_log(
+            event="auth_logout_all",
+            request_id=str(getattr(g, "request_id", "")) or None,
+            chat_id=0,
+            extra={"user_id": user_id, "revoked": revoked_count},
+        )
     )
     return response
 
@@ -937,6 +977,15 @@ def stream_chat() -> Response:
     except (KeyError, ValueError) as exc:
         return _sse_error(str(exc), 400)
 
+    app.logger.info(
+        build_job_log(
+            event="stream_job_enqueued",
+            request_id=str(getattr(g, "request_id", "")) or None,
+            chat_id=chat_id,
+            job_id=job_id,
+            extra={"user_id": user_id},
+        )
+    )
     return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=job_id)
 
 
@@ -959,7 +1008,17 @@ def stream_chat_resume() -> Response:
         return _sse_error("No active Hermes job for this chat.", 409, chat_id=chat_id)
 
     _JOB_WAKE_EVENT.set()
-    return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=int(open_job["id"]))
+    resumed_job_id = int(open_job["id"])
+    app.logger.info(
+        build_job_log(
+            event="stream_job_resumed",
+            request_id=str(getattr(g, "request_id", "")) or None,
+            chat_id=chat_id,
+            job_id=resumed_job_id,
+            extra={"user_id": user_id},
+        )
+    )
+    return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=resumed_job_id)
 
 @app.get("/api/state")
 def state() -> tuple[dict[str, object], int]:
