@@ -5,11 +5,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
-def _load_server(monkeypatch, tmp_path, *, max_message_len: int = 20, max_title_len: int = 10):
+def _load_server(
+    monkeypatch,
+    tmp_path,
+    *,
+    max_message_len: int = 20,
+    max_title_len: int = 10,
+    max_content_length: int = 2048,
+):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("MAX_MESSAGE_LEN", str(max_message_len))
     monkeypatch.setenv("MAX_TITLE_LEN", str(max_title_len))
-    monkeypatch.setenv("MAX_CONTENT_LENGTH", "2048")
+    monkeypatch.setenv("MAX_CONTENT_LENGTH", str(max_content_length))
 
     import server  # noqa: PLC0415
     import store as store_mod  # noqa: PLC0415
@@ -29,6 +36,100 @@ def test_health_includes_security_headers(monkeypatch, tmp_path) -> None:
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["X-Frame-Options"] == "DENY"
     assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert "Content-Security-Policy" in response.headers
+    assert "Permissions-Policy" in response.headers
+
+
+def test_auth_sets_secure_session_cookie_by_default(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    response = client.post("/api/auth", json={"init_data": "ok"})
+
+    assert response.status_code == 200
+    set_cookie = response.headers.get("Set-Cookie", "")
+    assert "Secure" in set_cookie
+
+
+def test_enforced_origin_check_rejects_disallowed_origin(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "https://allowed.example")
+    monkeypatch.setenv("MINI_APP_ENFORCE_ORIGIN_CHECK", "1")
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    response = client.post(
+        "/api/chats",
+        json={"init_data": "ok", "title": "x"},
+        headers={"Origin": "https://evil.example"},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "Origin not allowed."
+
+
+def test_origin_check_accepts_allowed_referer_when_origin_missing(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "https://allowed.example")
+    monkeypatch.setenv("MINI_APP_ENFORCE_ORIGIN_CHECK", "1")
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    response = client.post(
+        "/api/chats",
+        json={"init_data": "ok", "title": "x"},
+        headers={"Referer": "https://allowed.example/app"},
+    )
+
+    # Origin gate should pass via Referer fallback; auth still fails on dummy init_data.
+    assert response.status_code == 401
+
+
+def test_rate_limit_helper_enforces_limit(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+
+    key = "test-rate-limit"
+    assert server._check_rate_limit(key=key, limit=1, window_seconds=60) is True
+    assert server._check_rate_limit(key=key, limit=1, window_seconds=60) is False
+
+
+def test_rate_limit_ignores_x_forwarded_for_when_proxy_headers_disabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_TRUST_PROXY_HEADERS", "0")
+    monkeypatch.setenv("MINI_APP_RATE_LIMIT_API_REQUESTS", "10")
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    for i in range(10):
+        response = client.get("/api/state", headers={"X-Forwarded-For": f"198.51.100.{i}"})
+        assert response.status_code == 200
+
+    blocked = client.get("/api/state", headers={"X-Forwarded-For": "203.0.113.77"})
+    assert blocked.status_code == 429
+
+
+def test_stream_rate_limit_blocks_burst_reconnects(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", "3")
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    for _ in range(3):
+        response = client.post("/api/chat/stream/resume", json={"init_data": "ok"})
+        assert response.status_code in {400, 401, 404, 409}
+
+    blocked = client.post("/api/chat/stream/resume", json={"init_data": "ok"})
+    assert blocked.status_code == 429
+
+
+def test_app_rejects_payload_over_max_content_length(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path, max_content_length=128)
+    client = server.app.test_client()
+
+    response = client.post("/api/auth", json={"init_data": "x" * 400})
+
+    assert response.status_code == 413
 
 
 def test_app_boots_skin_from_cookie(monkeypatch, tmp_path) -> None:

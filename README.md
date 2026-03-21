@@ -64,6 +64,8 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+# or for hardened permanent-domain defaults:
+# cp .env.permanent-domain.example .env
 ```
 
 Fill in:
@@ -89,8 +91,18 @@ Optional hardening settings:
 - `MAX_MESSAGE_LEN=4000`
 - `MAX_TITLE_LEN=120`
 - `MAX_CONTENT_LENGTH=1048576`
+- `MINI_APP_TRUST_PROXY_HEADERS=1` (only when requests come through your trusted reverse proxy/tunnel)
+- `MINI_APP_FORCE_SECURE_COOKIES=1` (always mark auth cookies as Secure)
+- `MINI_APP_ALLOWED_ORIGINS=https://your-miniapp-domain.example` (comma-separated allowlist)
+- `MINI_APP_ENFORCE_ORIGIN_CHECK=1` (reject mutating API calls from non-allowlisted origins)
+- `MINI_APP_RATE_LIMIT_WINDOW_SECONDS=60`
+- `MINI_APP_RATE_LIMIT_API_REQUESTS=180`
+- `MINI_APP_RATE_LIMIT_STREAM_REQUESTS=24`
+- `MINI_APP_ENABLE_HSTS=1` (enable only once permanent TLS domain is stable)
 - `MINI_APP_JOB_MAX_ATTEMPTS=4` (queue worker retries before dead-letter)
 - `MINI_APP_JOB_RETRY_BASE_SECONDS=2` (exponential backoff base seconds)
+- `MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS=256` (cap in-memory SSE history cache)
+- `MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS=1800` (expire idle SSE history)
 
 Optional dev hot-reload settings:
 

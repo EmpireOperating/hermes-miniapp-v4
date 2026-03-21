@@ -12,6 +12,7 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.permanent-domain.example
 
 # Runtime/state artifacts
 sessions.db

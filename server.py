@@ -7,15 +7,19 @@ import os
 import queue
 import threading
 import time
+from collections import defaultdict, deque
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, make_response, render_template, request, send_from_directory
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from auth import TelegramAuthError, TelegramUser, VerifiedTelegramInitData, verify_telegram_init_data
 from hermes_client import HermesClient, HermesClientError
+from job_runtime import JobRuntime
 from store import ChatThread, SessionStore
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -37,6 +41,20 @@ JOB_RETRY_BASE_SECONDS = int(os.environ.get("MINI_APP_JOB_RETRY_BASE_SECONDS", "
 JOB_WORKER_CONCURRENCY = max(1, int(os.environ.get("MINI_APP_JOB_WORKER_CONCURRENCY", "6")))
 JOB_STALL_TIMEOUT_SECONDS = max(60, int(os.environ.get("MINI_APP_JOB_STALL_TIMEOUT_SECONDS", "240")))
 TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = int(os.environ.get("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", "21600"))
+TRUST_PROXY_HEADERS = os.environ.get("MINI_APP_TRUST_PROXY_HEADERS", "1") == "1"
+FORCE_SECURE_COOKIES = os.environ.get("MINI_APP_FORCE_SECURE_COOKIES", "1") == "1"
+ALLOWED_ORIGINS = {
+    value.strip().lower().rstrip("/")
+    for value in os.environ.get("MINI_APP_ALLOWED_ORIGINS", "").split(",")
+    if value.strip()
+}
+ENFORCE_ORIGIN_CHECK = os.environ.get("MINI_APP_ENFORCE_ORIGIN_CHECK", "0") == "1"
+RATE_LIMIT_WINDOW_SECONDS = max(5, int(os.environ.get("MINI_APP_RATE_LIMIT_WINDOW_SECONDS", "60")))
+RATE_LIMIT_API_REQUESTS = max(10, int(os.environ.get("MINI_APP_RATE_LIMIT_API_REQUESTS", "180")))
+RATE_LIMIT_STREAM_REQUESTS = max(3, int(os.environ.get("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", "24")))
+ENABLE_HSTS = os.environ.get("MINI_APP_ENABLE_HSTS", "0") == "1"
+JOB_EVENT_HISTORY_MAX_JOBS = max(32, int(os.environ.get("MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS", "256")))
+JOB_EVENT_HISTORY_TTL_SECONDS = max(60, int(os.environ.get("MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS", "1800")))
 DEV_RELOAD_WATCH_PATHS = (
     BASE_DIR / "server.py",
     BASE_DIR / "templates" / "app.html",
@@ -45,450 +63,111 @@ DEV_RELOAD_WATCH_PATHS = (
 )
 
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
+if TRUST_PROXY_HEADERS:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)  # type: ignore[assignment]
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH", "1048576"))
 app.config["TEMPLATES_AUTO_RELOAD"] = DEBUG or DEV_RELOAD
 app.jinja_env.auto_reload = DEBUG or DEV_RELOAD
 client = HermesClient()
 store = SessionStore(BASE_DIR / "sessions.db")
 
-_JOB_EVENT_LOCK = threading.Lock()
-_JOB_EVENT_QUEUES: dict[int, list[queue.Queue[dict[str, object]]]] = {}
-_JOB_EVENT_HISTORY: dict[int, list[dict[str, object]]] = {}
 _JOB_WAKE_EVENT = threading.Event()
-_JOB_WORKER_THREADS: list[threading.Thread] = []
-_JOB_WORKER_START_LOCK = threading.Lock()
-_JOB_WATCHDOG_STARTED = False
-_JOB_WATCHDOG_LOCK = threading.Lock()
+
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
 
 
-class JobRetryableError(Exception):
-    pass
-
-
-class JobNonRetryableError(Exception):
-    pass
-
-
-def _publish_job_event(job_id: int, event_name: str, payload: dict[str, object]) -> None:
-    event = {"event": event_name, "payload": payload}
-    if event_name not in {"done", "error"}:
-        try:
-            store.touch_job(job_id)
-        except Exception:
-            pass
-    with _JOB_EVENT_LOCK:
-        history = _JOB_EVENT_HISTORY.setdefault(job_id, [])
-        history.append(event)
-        if len(history) > 512:
-            del history[: len(history) - 512]
-        subscribers = list(_JOB_EVENT_QUEUES.get(job_id, []))
-
-    for subscriber in subscribers:
-        try:
-            subscriber.put_nowait(event)
-        except queue.Full:
-            continue
-
-
-def _subscribe_job_events(job_id: int) -> queue.Queue[dict[str, object]]:
-    subscriber: queue.Queue[dict[str, object]] = queue.Queue(maxsize=512)
-    with _JOB_EVENT_LOCK:
-        history = list(_JOB_EVENT_HISTORY.get(job_id, []))
-        _JOB_EVENT_QUEUES.setdefault(job_id, []).append(subscriber)
-
-    for event in history:
-        try:
-            subscriber.put_nowait(event)
-        except queue.Full:
-            break
-    return subscriber
-
-
-def _unsubscribe_job_events(job_id: int, subscriber: queue.Queue[dict[str, object]]) -> None:
-    with _JOB_EVENT_LOCK:
-        listeners = _JOB_EVENT_QUEUES.get(job_id, [])
-        if subscriber in listeners:
-            listeners.remove(subscriber)
-        if not listeners:
-            _JOB_EVENT_QUEUES.pop(job_id, None)
-            terminal_events = {"done", "error"}
-            history = _JOB_EVENT_HISTORY.get(job_id, [])
-            if history and str(history[-1].get("event") or "") in terminal_events:
-                _JOB_EVENT_HISTORY.pop(job_id, None)
-
-
-def _chunk_assistant_reply(text: str, chunk_len: int) -> list[str]:
-    cleaned = str(text or "").strip()
-    if not cleaned:
-        return []
-
-    safe_chunk_len = max(800, int(chunk_len or ASSISTANT_CHUNK_LEN))
-    parts: list[str] = []
-    cursor = 0
-    text_len = len(cleaned)
-
-    while cursor < text_len:
-        end = min(text_len, cursor + safe_chunk_len)
-        if end < text_len:
-            split_candidates = ["\n\n", "\n", " "]
-            best = -1
-            for token in split_candidates:
-                idx = cleaned.rfind(token, cursor, end)
-                if idx > best:
-                    best = idx
-            if best > cursor:
-                end = best + 1
-        piece = cleaned[cursor:end].strip()
-        if piece:
-            parts.append(piece)
-        cursor = end
-
-    return parts
-
-
-def _miniapp_session_id(user_id: str, chat_id: int) -> str:
+def _session_id_for(user_id: str, chat_id: int) -> str:
     return f"miniapp-{user_id}-{chat_id}"
 
 
-def _build_recent_context_brief(history: list[dict[str, object]], max_items: int = 8, max_chars: int = 1200) -> str:
-    if not history:
+runtime = JobRuntime(
+    store=store,
+    client=client,
+    job_max_attempts=JOB_MAX_ATTEMPTS,
+    job_retry_base_seconds=JOB_RETRY_BASE_SECONDS,
+    job_worker_concurrency=JOB_WORKER_CONCURRENCY,
+    job_stall_timeout_seconds=JOB_STALL_TIMEOUT_SECONDS,
+    assistant_chunk_len=ASSISTANT_CHUNK_LEN,
+    assistant_hard_limit=ASSISTANT_HARD_LIMIT,
+    job_event_history_max_jobs=JOB_EVENT_HISTORY_MAX_JOBS,
+    job_event_history_ttl_seconds=JOB_EVENT_HISTORY_TTL_SECONDS,
+    session_id_builder=lambda user_id, chat_id: _session_id_for(user_id, chat_id),
+)
+_JOB_WAKE_EVENT = runtime.wake_event
+
+
+def _sync_runtime_bindings() -> None:
+    # Tests monkeypatch module globals (`store`, `client`) after import.
+    # Keep runtime wired to current globals so wrappers stay back-compat.
+    runtime.store = store
+    runtime.client = client
+
+
+
+def _cookie_secure() -> bool:
+    if FORCE_SECURE_COOKIES:
+        return True
+    return bool(request.is_secure)
+
+
+def _normalized_origin(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
         return ""
-
-    lines: list[str] = []
-    for turn in history:
-        role = str(turn.get("role") or "").strip().lower()
-        if role not in {"operator", "hermes", "system"}:
-            continue
-
-        body = str(turn.get("body") or turn.get("content") or "").strip()
-        if not body:
-            continue
-
-        body_single = " ".join(body.split())
-        if len(body_single) > 180:
-            body_single = body_single[:177].rstrip() + "..."
-
-        if role == "operator":
-            label = "user"
-        elif role == "hermes":
-            label = "assistant"
-        else:
-            label = "system"
-
-        lines.append(f"- {label}: {body_single}")
-
-    if not lines:
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
         return ""
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}".rstrip("/")
 
-    selected = lines[-max_items:]
-    brief = "\n".join(selected)
-    if len(brief) > max_chars:
-        brief = brief[-max_chars:]
-        newline = brief.find("\n")
-        if newline > 0:
-            brief = brief[newline + 1 :]
-    return brief
+
+def _origin_allowed() -> bool:
+    if not ALLOWED_ORIGINS or not ENFORCE_ORIGIN_CHECK:
+        return True
+
+    origin = _normalized_origin(request.headers.get("Origin"))
+    if origin:
+        return origin in ALLOWED_ORIGINS
+
+    referer = _normalized_origin(request.headers.get("Referer"))
+    if referer:
+        return referer in ALLOWED_ORIGINS
+
+    return False
+
+
+def _check_rate_limit(*, key: str, limit: int, window_seconds: int) -> bool:
+    now = time.monotonic()
+    cutoff = now - max(1, int(window_seconds))
+    with _RATE_LIMIT_LOCK:
+        bucket = _RATE_LIMIT_BUCKETS[key]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= max(1, int(limit)):
+            return False
+        bucket.append(now)
+        return True
+
+
+def _publish_job_event(job_id: int, event_name: str, payload: dict[str, object]) -> None:
+    runtime.publish_job_event(job_id, event_name, payload)
+
+
+def _subscribe_job_events(job_id: int) -> queue.Queue[dict[str, object]]:
+    return runtime.subscribe_job_events(job_id)
+
+
+def _unsubscribe_job_events(job_id: int, subscriber: queue.Queue[dict[str, object]]) -> None:
+    runtime.unsubscribe_job_events(job_id, subscriber)
 
 
 def _run_chat_job(job: dict[str, object]) -> None:
-    job_id = int(job["id"])
-    user_id = str(job["user_id"])
-    chat_id = int(job["chat_id"])
-    operator_message_id = int(job["operator_message_id"])
-
-    try:
-        operator_turn = store.get_message(user_id=user_id, chat_id=chat_id, message_id=operator_message_id)
-    except KeyError as exc:
-        raise JobNonRetryableError(f"Missing operator turn: {exc}") from exc
-
-    message = operator_turn.body
-    session_id = _miniapp_session_id(user_id, chat_id)
-    include_history = client.should_include_conversation_history(session_id=session_id)
-    history: list[dict[str, object]] = []
-
-    if include_history:
-        checkpoint_history = store.get_runtime_checkpoint(session_id)
-        if checkpoint_history:
-            history = list(checkpoint_history)
-        else:
-            history = [
-                asdict(turn)
-                for turn in store.get_history_before(
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    before_message_id=operator_message_id,
-                    limit=120,
-                )
-            ]
-
-            context_brief = _build_recent_context_brief(history)
-            if context_brief:
-                history.append(
-                    {
-                        "role": "system",
-                        "body": (
-                            "Recent thread context (most recent first-order turns). "
-                            "Use this to resolve references like 'that', 'it', 'again', or 'last couple messages':\n"
-                            f"{context_brief}"
-                        ),
-                    }
-                )
-
-    started = time.perf_counter()
-    reply_text = ""
-    latency_ms = 0
-    tool_trace_lines: list[str] = []
-    runtime_checkpoint: list[dict[str, str]] = []
-
-    runtime_stats = client.persistent_stats()
-    _publish_job_event(
-        job_id,
-        "meta",
-        {
-            "skin": store.get_skin(user_id),
-            "source": "stream",
-            "chat_id": chat_id,
-            "persistent_mode": "bootstrap" if include_history else "live",
-            "persistent_enabled": bool(runtime_stats.get("enabled")),
-            "persistent_runtime_total": int(runtime_stats.get("total", 0)),
-        },
-    )
-
-    try:
-        for event in client.stream_events(
-            user_id=user_id,
-            message=message,
-            conversation_history=history,
-            session_id=session_id,
-        ):
-            event_type = str(event.get("type") or "")
-            if event_type == "meta":
-                payload = {"chat_id": chat_id, **{k: v for k, v in event.items() if k != "type"}}
-                _publish_job_event(job_id, "meta", payload)
-            elif event_type == "tool":
-                payload = {"chat_id": chat_id, **{k: v for k, v in event.items() if k != "type"}}
-                display = str(payload.get("display") or payload.get("preview") or payload.get("tool_name") or "Tool running").strip()
-                if display:
-                    tool_trace_lines.append(display)
-                _publish_job_event(job_id, "tool", payload)
-            elif event_type == "chunk":
-                chunk = str(event.get("text") or "")
-                if chunk:
-                    reply_text += chunk
-                    _publish_job_event(job_id, "chunk", {"text": chunk, "chat_id": chat_id})
-            elif event_type == "done":
-                reply_text = str(event.get("reply") or reply_text).strip()
-                latency_ms = int(event.get("latency_ms") or 0)
-                checkpoint_payload = event.get("runtime_checkpoint")
-                if isinstance(checkpoint_payload, list):
-                    runtime_checkpoint = [item for item in checkpoint_payload if isinstance(item, dict)]
-            elif event_type == "error":
-                raise HermesClientError(str(event.get("error") or "Hermes stream failed."))
-    except HermesClientError as exc:
-        raise JobRetryableError(str(exc)) from exc
-
-    state = store.get_job_state(job_id)
-    if not state or state.get("status") != "running":
-        # Job was externally timed-out/cancelled while this worker was blocked.
-        # Drop late output to avoid resurrecting stale responses.
-        return
-
-    if not reply_text:
-        raise JobRetryableError("Empty response from Hermes.")
-
-    was_hard_truncated = False
-    if len(reply_text) > ASSISTANT_HARD_LIMIT:
-        trunc_notice = "\n\n[response truncated by miniapp hard limit]"
-        keep = max(0, ASSISTANT_HARD_LIMIT - len(trunc_notice))
-        reply_text = (reply_text[:keep]).rstrip() + trunc_notice
-        was_hard_truncated = True
-
-    reply_parts = _chunk_assistant_reply(reply_text, ASSISTANT_CHUNK_LEN)
-    if not reply_parts:
-        raise JobRetryableError("Hermes response could not be chunked.")
-
-    if latency_ms <= 0:
-        latency_ms = int((time.perf_counter() - started) * 1000)
-
-    if tool_trace_lines:
-        tool_trace_text = "\n".join(tool_trace_lines)
-        max_tool_trace_len = 15000
-        if len(tool_trace_text) > max_tool_trace_len:
-            suffix = "\n… [tool trace truncated]"
-            keep = max(0, max_tool_trace_len - len(suffix))
-            tool_trace_text = tool_trace_text[:keep].rstrip() + suffix
-        store.add_message(user_id=user_id, chat_id=chat_id, role="tool", body=tool_trace_text)
-
-    if len(reply_parts) == 1:
-        store.add_message(user_id=user_id, chat_id=chat_id, role="hermes", body=reply_parts[0])
-    else:
-        total = len(reply_parts)
-        for index, part in enumerate(reply_parts, start=1):
-            chunk_body = f"[part {index}/{total}]\n{part}"
-            store.add_message(user_id=user_id, chat_id=chat_id, role="hermes", body=chunk_body)
-
-    if runtime_checkpoint:
-        store.set_runtime_checkpoint(
-            session_id=session_id,
-            user_id=user_id,
-            chat_id=chat_id,
-            history=runtime_checkpoint,
-        )
-
-    store.complete_job(job_id)
-    _publish_job_event(
-        job_id,
-        "done",
-        {
-            "reply": reply_text,
-            "latency_ms": latency_ms,
-            "turn_count": store.get_turn_count(user_id, chat_id=chat_id),
-            "chat_id": chat_id,
-            "hard_truncated": was_hard_truncated,
-            "parts": len(reply_parts),
-        },
-    )
-
-
-def _safe_add_system_message(user_id: str, chat_id: int, text: str) -> None:
-    try:
-        store.add_message(user_id=user_id, chat_id=chat_id, role="system", body=text)
-    except Exception:
-        return
-
-
-def _sweep_stale_running_jobs() -> None:
-    stale_jobs = store.dead_letter_stale_running_jobs(
-        timeout_seconds=JOB_STALL_TIMEOUT_SECONDS,
-        error=f"Job timed out after {JOB_STALL_TIMEOUT_SECONDS}s without progress",
-    )
-    for stale in stale_jobs:
-        stale_job_id = int(stale.get("id") or 0)
-        stale_chat_id = int(stale.get("chat_id") or 0)
-        stale_user_id = str(stale.get("user_id") or "")
-        if stale_job_id:
-            _publish_job_event(
-                stale_job_id,
-                "error",
-                {
-                    "chat_id": stale_chat_id,
-                    "error": f"Job timed out after {JOB_STALL_TIMEOUT_SECONDS}s without progress",
-                    "retrying": False,
-                },
-            )
-        if stale_user_id and stale_chat_id:
-            _safe_add_system_message(
-                user_id=stale_user_id,
-                chat_id=stale_chat_id,
-                text=f"Hermes timed out after {JOB_STALL_TIMEOUT_SECONDS}s with no progress. Please retry.",
-            )
-
-
-def _job_watchdog_loop() -> None:
-    while True:
-        time.sleep(5)
-        _sweep_stale_running_jobs()
+    _sync_runtime_bindings()
+    runtime.run_chat_job(job)
 
 
 def _is_stale_chat_job_error(exc: Exception) -> bool:
-    if not isinstance(exc, KeyError):
-        return False
-    text = str(exc)
-    return "Chat" in text and "not found" in text
-
-
-def _job_worker_loop() -> None:
-    while True:
-        _JOB_WAKE_EVENT.wait(timeout=0.6)
-        _JOB_WAKE_EVENT.clear()
-
-        _sweep_stale_running_jobs()
-
-        while True:
-            job = store.claim_next_job()
-            if not job:
-                break
-
-            job_id = int(job["id"])
-            user_id = str(job["user_id"])
-            chat_id = int(job["chat_id"])
-            attempts = int(job.get("attempts") or 0)
-            max_attempts = int(job.get("max_attempts") or 1)
-
-            try:
-                _run_chat_job(job)
-            except JobNonRetryableError as exc:
-                error_text = str(exc)
-                store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
-                _safe_add_system_message(user_id=user_id, chat_id=chat_id, text=f"Hermes failed permanently: {error_text}")
-                _publish_job_event(job_id, "error", {"error": error_text, "chat_id": chat_id, "retrying": False})
-            except JobRetryableError as exc:
-                error_text = str(exc)
-                retrying = store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=JOB_RETRY_BASE_SECONDS)
-                if retrying:
-                    _publish_job_event(
-                        job_id,
-                        "meta",
-                        {
-                            "chat_id": chat_id,
-                            "source": "retry",
-                            "attempt": attempts,
-                            "max_attempts": max_attempts,
-                            "detail": f"retrying after error: {error_text}",
-                        },
-                    )
-                    _JOB_WAKE_EVENT.set()
-                else:
-                    _safe_add_system_message(user_id=user_id, chat_id=chat_id, text=f"Hermes failed after {attempts} attempts: {error_text}")
-                    _publish_job_event(job_id, "error", {"error": error_text, "chat_id": chat_id, "retrying": False})
-            except Exception as exc:  # noqa: BLE001
-                if _is_stale_chat_job_error(exc):
-                    error_text = f"Stale chat job dropped: {exc}"
-                    store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
-                    _publish_job_event(job_id, "meta", {"chat_id": chat_id, "source": "stale-chat", "detail": str(exc)})
-                    continue
-                error_text = f"Unexpected worker failure: {exc}"
-                store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
-                _safe_add_system_message(user_id=user_id, chat_id=chat_id, text=error_text)
-                _publish_job_event(job_id, "error", {"error": error_text, "chat_id": chat_id, "retrying": False})
-
-
-def _start_job_worker_once() -> None:
-    global _JOB_WATCHDOG_STARTED
-
-    with _JOB_WATCHDOG_LOCK:
-        if not _JOB_WATCHDOG_STARTED:
-            watchdog = threading.Thread(target=_job_watchdog_loop, name="miniapp-job-watchdog", daemon=True)
-            watchdog.start()
-            _JOB_WATCHDOG_STARTED = True
-
-    with _JOB_WORKER_START_LOCK:
-        alive_workers = [worker for worker in _JOB_WORKER_THREADS if worker.is_alive()]
-        _JOB_WORKER_THREADS[:] = alive_workers
-
-        missing = max(0, JOB_WORKER_CONCURRENCY - len(alive_workers))
-        if missing <= 0:
-            return
-
-        for _ in range(missing):
-            worker_index = len(_JOB_WORKER_THREADS) + 1
-            worker = threading.Thread(target=_job_worker_loop, name=f"miniapp-job-worker-{worker_index}", daemon=True)
-            worker.start()
-            _JOB_WORKER_THREADS.append(worker)
-
-        _JOB_WAKE_EVENT.set()
-
-
-def _ensure_pending_jobs(user_id: str) -> None:
-    for chat_id, operator_message_id in store.list_recoverable_pending_turns(user_id):
-        job_id = store.enqueue_chat_job(
-            user_id=user_id,
-            chat_id=chat_id,
-            operator_message_id=operator_message_id,
-            max_attempts=JOB_MAX_ATTEMPTS,
-        )
-        _publish_job_event(job_id, "meta", {"chat_id": chat_id, "source": "recovered"})
-        _JOB_WAKE_EVENT.set()
+    return runtime.is_stale_chat_job_error(exc)
 
 
 def _session_secret_key() -> bytes:
@@ -692,7 +371,39 @@ def _dev_reload_version() -> str:
     return digest.hexdigest()[:12]
 
 
-_start_job_worker_once()
+_sync_runtime_bindings()
+runtime.start_once()
+
+
+@app.before_request
+def enforce_request_guards() -> Response | None:
+    if request.path.startswith("/api") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        if request.mimetype != "application/json":
+            return jsonify({"ok": False, "error": "Content-Type must be application/json."}), 415
+        if not _origin_allowed():
+            return jsonify({"ok": False, "error": "Origin not allowed."}), 403
+
+    if not request.path.startswith("/api"):
+        return None
+
+    remote = (request.remote_addr or "unknown").strip()
+    if request.path in {"/api/chat/stream", "/api/chat/stream/resume"}:
+        ok = _check_rate_limit(
+            key=f"stream:{remote}",
+            limit=RATE_LIMIT_STREAM_REQUESTS,
+            window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+        )
+    else:
+        ok = _check_rate_limit(
+            key=f"api:{remote}",
+            limit=RATE_LIMIT_API_REQUESTS,
+            window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+        )
+
+    if not ok:
+        return jsonify({"ok": False, "error": "Rate limit exceeded. Please slow down."}), 429
+
+    return None
 
 
 @app.after_request
@@ -700,6 +411,15 @@ def add_security_headers(response: Response) -> Response:
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; connect-src 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org; "
+        "base-uri 'self'; form-action 'self'",
+    )
+    if ENABLE_HSTS:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
 
@@ -766,7 +486,7 @@ def auth() -> Response | tuple[dict[str, object], int]:
         return auth_error
 
     user_id = str(verified.user.id)
-    _ensure_pending_jobs(user_id)
+    runtime.ensure_pending_jobs(user_id)
     display_name = verified.user.first_name or verified.user.username or "Operator"
     default_chat_id = store.ensure_default_chat(user_id)
     active_chat_id = store.get_active_chat(user_id) or default_chat_id
@@ -800,7 +520,7 @@ def auth() -> Response | tuple[dict[str, object], int]:
         skin,
         max_age=60 * 60 * 24 * 365,
         samesite="Lax",
-        secure=request.is_secure,
+        secure=_cookie_secure(),
     )
     response.set_cookie(
         AUTH_COOKIE_NAME,
@@ -808,7 +528,7 @@ def auth() -> Response | tuple[dict[str, object], int]:
         max_age=max(60, AUTH_SESSION_MAX_AGE_SECONDS),
         httponly=True,
         samesite="Lax",
-        secure=request.is_secure,
+        secure=_cookie_secure(),
     )
     return response
 
@@ -831,7 +551,7 @@ def set_skin() -> Response | tuple[dict[str, object], int]:
         skin,
         max_age=60 * 60 * 24 * 365,
         samesite="Lax",
-        secure=request.is_secure,
+        secure=_cookie_secure(),
     )
     return response
 
@@ -999,7 +719,7 @@ def chats_status() -> tuple[dict[str, object], int]:
     user_id, auth_error = _json_user_id_or_error(payload)
     if auth_error:
         return auth_error
-    _ensure_pending_jobs(user_id)
+    runtime.ensure_pending_jobs(user_id)
     chats = _serialize_chats(user_id=user_id)
     return {"ok": True, "chats": chats}, 200
 
@@ -1071,7 +791,7 @@ def _serialize_chats(user_id: str) -> list[dict[str, object]]:
 
 
 def _evict_chat_runtime(user_id: str, chat_id: int) -> None:
-    session_id = _miniapp_session_id(user_id, chat_id)
+    session_id = _session_id_for(user_id, chat_id)
     client.evict_session(session_id)
     store.delete_runtime_checkpoint(session_id)
 
