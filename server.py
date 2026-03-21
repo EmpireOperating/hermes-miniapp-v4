@@ -16,6 +16,7 @@ from flask import Flask, Response, g, jsonify, make_response, render_template, r
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from auth import TelegramAuthError, TelegramUser, VerifiedTelegramInitData, verify_telegram_init_data
+from blueprints import create_api_blueprint, create_public_blueprint
 from hermes_client import HermesClient, HermesClientError
 from job_runtime import JobRuntime
 from miniapp_config import MiniAppConfig, normalize_origin
@@ -56,6 +57,8 @@ JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
 DEV_RELOAD_WATCH_PATHS = CONFIG.dev_reload_watch_paths
 
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
+public_bp = create_public_blueprint()
+api_bp = create_api_blueprint()
 if TRUST_PROXY_HEADERS:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)  # type: ignore[assignment]
 app.config["MAX_CONTENT_LENGTH"] = CONFIG.max_content_length
@@ -433,12 +436,12 @@ def add_security_headers(response: Response) -> Response:
     return response
 
 
-@app.get("/")
+@public_bp.get("/")
 def root() -> tuple[dict[str, str], int]:
     return {"status": "ok", "service": "hermes-miniapp"}, 200
 
 
-@app.get("/app")
+@public_bp.get("/app")
 def mini_app() -> Response:
     boot_skin = str(request.cookies.get(SKIN_COOKIE_NAME, "terminal")).strip().lower()
     if boot_skin not in ALLOWED_SKINS:
@@ -459,12 +462,12 @@ def mini_app() -> Response:
     return response
 
 
-@app.get("/health")
+@public_bp.get("/health")
 def health() -> tuple[dict[str, str], int]:
     return {"status": "ok"}, 200
 
 
-@app.get("/dev/reload-state")
+@public_bp.get("/dev/reload-state")
 def dev_reload_state() -> Response | tuple[dict[str, object], int]:
     if not DEV_RELOAD:
         return {"ok": False, "enabled": False}, 404
@@ -480,7 +483,7 @@ def dev_reload_state() -> Response | tuple[dict[str, object], int]:
     return response
 
 
-@app.get("/static/<path:filename>")
+@public_bp.get("/static/<path:filename>")
 def static_files(filename: str):
     response = send_from_directory(app.static_folder, filename)
     if filename in {"app.js", "app.css"}:
@@ -488,7 +491,7 @@ def static_files(filename: str):
     return response
 
 
-@app.post("/api/auth")
+@api_bp.post("/auth")
 def auth() -> Response | tuple[dict[str, object], int]:
     payload = _request_payload()
     verified, auth_error = _verify_for_json(payload)
@@ -544,7 +547,7 @@ def auth() -> Response | tuple[dict[str, object], int]:
     return response
 
 
-@app.post("/api/auth/logout-all")
+@api_bp.post("/auth/logout-all")
 def logout_all_sessions() -> Response | tuple[dict[str, object], int]:
     payload = _request_payload()
     verified, auth_error = _verify_for_json(payload)
@@ -573,7 +576,7 @@ def logout_all_sessions() -> Response | tuple[dict[str, object], int]:
     return response
 
 
-@app.post("/api/preferences/skin")
+@api_bp.post("/preferences/skin")
 def set_skin() -> Response | tuple[dict[str, object], int]:
     payload = _request_payload()
     skin = str(payload.get("skin", "")).strip().lower()
@@ -596,7 +599,7 @@ def set_skin() -> Response | tuple[dict[str, object], int]:
     return response
 
 
-@app.post("/api/chats")
+@api_bp.post("/chats")
 def create_chat() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     try:
@@ -614,7 +617,7 @@ def create_chat() -> tuple[dict[str, object], int]:
     return {"ok": True, "chat": _serialize_chat(chat), "history": history}, 201
 
 
-@app.post("/api/chats/rename")
+@api_bp.post("/chats/rename")
 def rename_chat() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     user_id, auth_error = _json_user_id_or_error(payload)
@@ -644,7 +647,7 @@ def _chat_history_payload(user_id: str, chat_id: int, *, activate: bool) -> dict
     return {"ok": True, "chat": _serialize_chat(chat), "history": history}
 
 
-@app.post("/api/chats/open")
+@api_bp.post("/chats/open")
 def open_chat() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     user_id, auth_error = _json_user_id_or_error(payload)
@@ -663,7 +666,7 @@ def open_chat() -> tuple[dict[str, object], int]:
     return response_payload, 200
 
 
-@app.post("/api/chats/history")
+@api_bp.post("/chats/history")
 def chat_history() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     user_id, auth_error = _json_user_id_or_error(payload)
@@ -683,7 +686,7 @@ def chat_history() -> tuple[dict[str, object], int]:
     return response_payload, 200
 
 
-@app.post("/api/chats/mark-read")
+@api_bp.post("/chats/mark-read")
 def mark_chat_read() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     user_id, auth_error = _json_user_id_or_error(payload)
@@ -702,7 +705,7 @@ def mark_chat_read() -> tuple[dict[str, object], int]:
     return {"ok": True, "chat": _serialize_chat(chat)}, 200
 
 
-@app.post("/api/chats/clear")
+@api_bp.post("/chats/clear")
 def clear_chat() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     user_id, auth_error = _json_user_id_or_error(payload)
@@ -722,7 +725,7 @@ def clear_chat() -> tuple[dict[str, object], int]:
     return {"ok": True, "chat": _serialize_chat(chat), "history": []}, 200
 
 
-@app.post("/api/chats/remove")
+@api_bp.post("/chats/remove")
 def remove_chat() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     user_id, auth_error = _json_user_id_or_error(payload)
@@ -753,7 +756,7 @@ def remove_chat() -> tuple[dict[str, object], int]:
     }, 200
 
 
-@app.post("/api/chats/status")
+@api_bp.post("/chats/status")
 def chats_status() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     user_id, auth_error = _json_user_id_or_error(payload)
@@ -764,7 +767,7 @@ def chats_status() -> tuple[dict[str, object], int]:
     return {"ok": True, "chats": chats}, 200
 
 
-@app.post("/api/jobs/status")
+@api_bp.post("/jobs/status")
 def jobs_status() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     user_id, auth_error = _json_user_id_or_error(payload)
@@ -785,7 +788,7 @@ def jobs_status() -> tuple[dict[str, object], int]:
     return {"ok": True, "summary": summary, "jobs": jobs, "dead_letters": dead_letters}, 200
 
 
-@app.post("/api/jobs/cleanup")
+@api_bp.post("/jobs/cleanup")
 def jobs_cleanup() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     user_id, auth_error = _json_user_id_or_error(payload)
@@ -801,7 +804,7 @@ def jobs_cleanup() -> tuple[dict[str, object], int]:
     }, 200
 
 
-@app.post("/api/runtime/status")
+@api_bp.post("/runtime/status")
 def runtime_status() -> tuple[dict[str, object], int]:
     payload = _request_payload()
     _, auth_error = _verify_for_json(payload)
@@ -840,7 +843,7 @@ def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
     return store.add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
 
 
-@app.post("/api/chat")
+@api_bp.post("/chat")
 def chat() -> tuple[object, int]:
     payload = _request_payload()
     try:
@@ -949,7 +952,7 @@ def _stream_job_response(*, user_id: str, chat_id: int, job_id: int) -> Response
     return Response(generate(), mimetype="text/event-stream", headers=headers)
 
 
-@app.post("/api/chat/stream")
+@api_bp.post("/chat/stream")
 def stream_chat() -> Response:
     payload = _request_payload()
     try:
@@ -989,7 +992,7 @@ def stream_chat() -> Response:
     return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=job_id)
 
 
-@app.post("/api/chat/stream/resume")
+@api_bp.post("/chat/stream/resume")
 def stream_chat_resume() -> Response:
     payload = _request_payload()
 
@@ -1020,7 +1023,7 @@ def stream_chat_resume() -> Response:
     )
     return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=resumed_job_id)
 
-@app.get("/api/state")
+@api_bp.get("/state")
 def state() -> tuple[dict[str, object], int]:
     return {"ok": True, "skins": sorted(ALLOWED_SKINS)}, 200
 
@@ -1028,6 +1031,10 @@ def state() -> tuple[dict[str, object], int]:
 def _sse_event(event: str, data: dict[str, object]) -> str:
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n"
+
+
+app.register_blueprint(public_bp)
+app.register_blueprint(api_bp)
 
 
 if __name__ == "__main__":
