@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -103,6 +104,16 @@ def _cookie_secure() -> bool:
     if FORCE_SECURE_COOKIES:
         return True
     return bool(request.is_secure)
+
+
+def _ensure_csp_nonce() -> str:
+    existing = getattr(g, "csp_nonce", None)
+    if isinstance(existing, str) and existing:
+        return existing
+
+    nonce = base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("=")
+    g.csp_nonce = nonce
+    return nonce
 
 
 def _origin_allowed() -> bool:
@@ -411,11 +422,21 @@ def add_security_headers(response: Response) -> Response:
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    script_src = "script-src 'self' https://telegram.org"
+    csp_nonce = getattr(g, "csp_nonce", None)
+    if isinstance(csp_nonce, str) and csp_nonce:
+        script_src = f"{script_src} 'nonce-{csp_nonce}'"
+
     response.headers.setdefault(
         "Content-Security-Policy",
-        "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: https:; connect-src 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org; "
-        "base-uri 'self'; form-action 'self'",
+        "default-src 'self'; "
+        f"{script_src}; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "frame-ancestors https://web.telegram.org https://*.telegram.org; "
+        "base-uri 'self'; "
+        "form-action 'self'",
     )
     if ENABLE_HSTS:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
@@ -456,6 +477,8 @@ def mini_app() -> Response:
             dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
             dev_reload_version=_dev_reload_version(),
             boot_skin=boot_skin,
+            csp_nonce=_ensure_csp_nonce(),
+            max_message_len=MAX_MESSAGE_LEN,
         )
     )
     response.headers["Cache-Control"] = "no-store, max-age=0"

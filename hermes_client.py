@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib
+import logging
 import os
 import queue
 import re
@@ -16,6 +17,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class HermesClientError(RuntimeError):
@@ -345,9 +349,13 @@ class HermesClient:
                     session_id=session_id,
                 )
                 return
-            except Exception:
+            except Exception as exc:
                 # Fall back to existing subprocess/CLI path when persistent runtime fails.
-                pass
+                logger.warning(
+                    "Persistent miniapp runtime failed; falling back to non-persistent path",
+                    extra={"session_id": session_id or "", "error": str(exc)},
+                    exc_info=True,
+                )
 
         if self.direct_agent_enabled:
             try:
@@ -363,19 +371,6 @@ class HermesClient:
 
         yield from self._stream_via_cli_progress(message=cleaned)
         return
-
-        started = time.perf_counter()
-        reply = self.ask(user_id=user_id, message=cleaned, conversation_history=conversation_history)
-        yield {"type": "meta", "source": reply.source}
-        chunk_size = max(1, self.stream_chunk_size)
-        for index in range(0, len(reply.text), chunk_size):
-            yield {"type": "chunk", "text": reply.text[index : index + chunk_size]}
-        yield {
-            "type": "done",
-            "reply": reply.text,
-            "source": reply.source,
-            "latency_ms": int((time.perf_counter() - started) * 1000),
-        }
 
     def _request_payload(self, user_id: str, message: str) -> dict[str, str]:
         payload = {"user_id": user_id, "message": message}

@@ -25,3 +25,11 @@ def test_config_rejects_non_positive_max_content_length(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="MAX_CONTENT_LENGTH"):
         MiniAppConfig.from_env()
+
+
+def test_config_disables_proxy_header_trust_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("MINI_APP_TRUST_PROXY_HEADERS", raising=False)
+
+    cfg = MiniAppConfig.from_env()
+
+    assert cfg.trust_proxy_headers is False

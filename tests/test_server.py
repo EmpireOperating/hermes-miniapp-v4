@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -143,6 +144,33 @@ def test_app_boots_skin_from_cookie(monkeypatch, tmp_path) -> None:
     page = response.get_data(as_text=True)
     assert 'data-skin="obsidian"' in page
     assert 'const serverBoot = "obsidian";' in page
+
+
+def test_app_csp_nonce_is_emitted_and_applied_to_inline_scripts(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    csp = response.headers.get("Content-Security-Policy", "")
+    nonce_match = re.search(r"script-src[^;]*'nonce-([^']+)'", csp)
+    assert nonce_match, csp
+
+    nonce = nonce_match.group(1)
+    page = response.get_data(as_text=True)
+    assert f'nonce="{nonce}"' in page
+
+
+def test_app_template_uses_server_message_length_limit(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path, max_message_len=123)
+    client = server.app.test_client()
+
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    page = response.get_data(as_text=True)
+    assert 'maxlength="123"' in page
 
 
 def test_app_includes_quote_selection_controls(monkeypatch, tmp_path) -> None:
@@ -637,6 +665,36 @@ def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) ->
     state = server.store.get_job_state(job_id)
     assert state is not None
     assert state["status"] == "dead"
+
+
+def test_jobs_status_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    response = client.post("/api/jobs/status", json={"init_data": "ok", "limit": "abc"})
+
+    assert response.status_code == 400
+    assert "limit" in response.get_json()["error"].lower()
+
+
+def test_jobs_cleanup_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    response = client.post("/api/jobs/cleanup", json={"init_data": "ok", "limit": "abc"})
+
+    assert response.status_code == 400
+    assert "limit" in response.get_json()["error"].lower()
 
 
 def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path) -> None:
