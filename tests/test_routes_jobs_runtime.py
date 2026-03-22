@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from server_test_utils import load_server as _load_server, patch_verified_user
+import sqlite3
+
+from server_test_utils import load_server, patch_verified_user
 
 def test_detects_stale_chat_job_errors(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
 
     assert server._is_stale_chat_job_error(KeyError("Chat 22 not found")) is True
     assert server._is_stale_chat_job_error(RuntimeError("Chat 22 not found")) is False
     assert server._is_stale_chat_job_error(KeyError("Message 22 not found")) is False
 
 def test_jobs_status_endpoint_returns_jobs_and_dead_letters(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -30,7 +32,7 @@ def test_jobs_status_endpoint_returns_jobs_and_dead_letters(monkeypatch, tmp_pat
     assert data["summary"]["dead_letter_count"] >= 1
 
 def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -39,8 +41,6 @@ def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) ->
     job_id = server.store.enqueue_chat_job("123", stale_chat.id, operator_message_id)
 
     # Simulate stale open job by archiving the chat directly (legacy state).
-    import sqlite3
-
     conn = sqlite3.connect(server.store.db_path)
     conn.execute("UPDATE chat_threads SET is_archived = 1 WHERE user_id = ? AND id = ?", ("123", stale_chat.id))
     conn.commit()
@@ -59,7 +59,7 @@ def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) ->
     assert state["status"] == "dead"
 
 def test_jobs_status_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -69,7 +69,7 @@ def test_jobs_status_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -
     assert "limit" in response.get_json()["error"].lower()
 
 def test_jobs_cleanup_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -79,7 +79,7 @@ def test_jobs_cleanup_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) 
     assert "limit" in response.get_json()["error"].lower()
 
 def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
     monkeypatch.setattr(
@@ -108,7 +108,7 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
     assert data["routing"]["direct_agent_enabled"] is True
 
 def test_run_chat_job_skips_db_history_when_runtime_already_bootstrapped(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
 
     user_id = "123"
     chat_id = server.store.ensure_default_chat(user_id)
@@ -136,7 +136,7 @@ def test_run_chat_job_skips_db_history_when_runtime_already_bootstrapped(monkeyp
     assert any(turn.role == "hermes" and "ok" in turn.body for turn in latest)
 
 def test_run_chat_job_uses_runtime_checkpoint_when_bootstrapping(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
 
     user_id = "123"
     chat_id = server.store.ensure_default_chat(user_id)
@@ -172,7 +172,7 @@ def test_run_chat_job_uses_runtime_checkpoint_when_bootstrapping(monkeypatch, tm
     assert captured["history"] == checkpoint_history
 
 def test_run_chat_job_persists_runtime_checkpoint_from_done_event(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
 
     user_id = "123"
     chat_id = server.store.ensure_default_chat(user_id)

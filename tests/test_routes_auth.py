@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from server_test_utils import load_server as _load_server, patch_verified_user
+from server_test_utils import load_server, patch_verified_user
 
 def test_auth_sets_secure_session_cookie_by_default(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -16,7 +16,7 @@ def test_auth_sets_secure_session_cookie_by_default(monkeypatch, tmp_path) -> No
     assert "Secure" in set_cookie
 
 def test_verify_from_payload_prefers_init_data_over_cookie(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
 
     cookie_verified = SimpleNamespace(user=SimpleNamespace(id=1, first_name=None, username=None))
     init_verified = SimpleNamespace(user=SimpleNamespace(id=2, first_name="Lemon", username="lemonsqueeze"))
@@ -38,7 +38,7 @@ def test_verify_from_payload_prefers_init_data_over_cookie(monkeypatch, tmp_path
     assert captured["init_data"] == "fresh-init-data"
 
 def test_verify_from_payload_uses_cookie_when_init_data_missing(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
 
     cookie_verified = SimpleNamespace(user=SimpleNamespace(id=7, first_name=None, username=None))
     monkeypatch.setattr(server, "_verified_from_session_cookie", lambda: cookie_verified)
@@ -48,7 +48,7 @@ def test_verify_from_payload_uses_cookie_when_init_data_missing(monkeypatch, tmp
     assert resolved is cookie_verified
 
 def test_auth_reopens_last_active_chat(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -69,7 +69,7 @@ def test_auth_reopens_last_active_chat(monkeypatch, tmp_path) -> None:
     assert "hermes_skin=terminal" in response.headers.get("Set-Cookie", "")
 
 def test_logout_all_revokes_cookie_session(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     fake_verified = SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test"))
@@ -93,7 +93,7 @@ def test_logout_all_revokes_cookie_session(monkeypatch, tmp_path) -> None:
     assert unauthorized.status_code == 401
 
 def test_set_skin_sets_cookie(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
