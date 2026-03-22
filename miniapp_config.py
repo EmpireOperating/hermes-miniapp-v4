@@ -59,7 +59,7 @@ class MiniAppConfig:
             telegram_init_data_max_age_seconds=_as_int("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", 21600),
             auth_session_max_age_seconds=_as_int("AUTH_SESSION_MAX_AGE_SECONDS", 60 * 60 * 24 * 7),
             force_secure_cookies=_as_bool("MINI_APP_FORCE_SECURE_COOKIES", default=True),
-            trust_proxy_headers=_as_bool("MINI_APP_TRUST_PROXY_HEADERS", default=True),
+            trust_proxy_headers=_as_bool("MINI_APP_TRUST_PROXY_HEADERS", default=False),
             allowed_origins=_parse_allowed_origins(os.environ.get("MINI_APP_ALLOWED_ORIGINS", "")),
             enforce_origin_check=_as_bool("MINI_APP_ENFORCE_ORIGIN_CHECK", default=False),
             rate_limit_window_seconds=max(5, _as_int("MINI_APP_RATE_LIMIT_WINDOW_SECONDS", 60)),

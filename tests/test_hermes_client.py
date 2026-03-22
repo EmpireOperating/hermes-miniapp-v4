@@ -205,3 +205,39 @@ def test_stream_events_falls_back_when_persistent_path_raises_non_hermes_error(m
 
     events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-fallback"))
     assert any(event.get("type") == "done" and event.get("reply") == "fallback-ok" for event in events)
+
+
+def test_stream_events_logs_when_persistent_path_falls_back(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+
+    warning_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _Logger:
+        @staticmethod
+        def warning(*args, **kwargs):
+            warning_calls.append((args, kwargs))
+
+    monkeypatch.setattr(hermes_client, "logger", _Logger())
+
+    def blow_up(**kwargs):
+        raise ModuleNotFoundError("No module named 'run_agent'")
+
+    monkeypatch.setattr(client, "_stream_via_persistent_agent", blow_up)
+    monkeypatch.setattr(
+        client,
+        "_stream_via_agent",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "agent"},
+                {"type": "chunk", "text": "fallback-ok"},
+                {"type": "done", "reply": "fallback-ok", "source": "agent", "latency_ms": 1},
+            ]
+        ),
+    )
+
+    list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-fallback-logs"))
+
+    assert warning_calls

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
     <title>Hermes Agent Console</title>
-    <script>
+    <script nonce="{{ csp_nonce }}">
       (() => {
         const allowed = new Set(["terminal", "oracle", "obsidian"]);
         const serverBoot = {{ boot_skin|tojson }};
@@ -111,7 +111,7 @@
 
           <form id="chat-form" class="composer">
             <label class="composer__label" for="prompt">Message</label>
-            <textarea id="prompt" name="prompt" rows="4" placeholder="Type a message…" maxlength="6000" enterkeyhint="send" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea>
+            <textarea id="prompt" name="prompt" rows="4" placeholder="Type a message…" maxlength="{{ max_message_len }}" enterkeyhint="send" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea>
             <div class="composer__actions">
               <div class="composer__hint">Enter to send • Shift+Enter for new line</div>
               <button id="send-button" type="submit">Send</button>
@@ -167,7 +167,7 @@
       </button>
     </template>
 
-    <script>
+    <script nonce="{{ csp_nonce }}">
       window.__HERMES_DEV__ = {
         enabled: {{ 'true' if dev_reload else 'false' }},
         reloadStateUrl: "/dev/reload-state",

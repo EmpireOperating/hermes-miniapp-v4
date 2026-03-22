@@ -3,6 +3,22 @@ from __future__ import annotations
 from typing import Any, Callable
 
 
+def _parse_limit(payload: dict[str, object], *, default: int, min_value: int, max_value: int) -> tuple[int | None, tuple[dict[str, object], int] | None]:
+    raw_limit = payload.get("limit")
+    if raw_limit in (None, ""):
+        return default, None
+
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return None, ({"ok": False, "error": "Invalid limit. Must be an integer."}, 400)
+
+    if limit < min_value or limit > max_value:
+        return None, ({"ok": False, "error": f"Invalid limit. Must be between {min_value} and {max_value}."}, 400)
+
+    return limit, None
+
+
 def register_jobs_runtime_routes(
     api_bp,
     *,
@@ -20,7 +36,10 @@ def register_jobs_runtime_routes(
             return auth_error
 
         store = store_getter()
-        limit = int(payload.get("limit") or 25)
+        limit, limit_error = _parse_limit(payload, default=25, min_value=1, max_value=200)
+        if limit_error:
+            return limit_error
+
         jobs = store.list_jobs(user_id=user_id, limit=limit)
         dead_letters = store.list_dead_letters(user_id=user_id, limit=limit)
         summary = {
@@ -40,7 +59,10 @@ def register_jobs_runtime_routes(
         if auth_error:
             return auth_error
 
-        limit = int(payload.get("limit") or 200)
+        limit, limit_error = _parse_limit(payload, default=200, min_value=1, max_value=1000)
+        if limit_error:
+            return limit_error
+
         cleaned = store_getter().cleanup_stale_jobs(user_id=user_id, limit=limit)
         return {
             "ok": True,
