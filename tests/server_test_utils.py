@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
+
 
 def load_server(
     monkeypatch,
@@ -21,3 +23,16 @@ def load_server(
     module = importlib.reload(server)
     module.store = store_mod.SessionStore(tmp_path / "sessions.db")
     return module
+
+
+def patch_verified_user(
+    monkeypatch,
+    server,
+    *,
+    user_id: int = 123,
+    first_name: str = "Test",
+    username: str = "test",
+):
+    verified = SimpleNamespace(user=SimpleNamespace(id=user_id, first_name=first_name, username=username))
+    monkeypatch.setattr(server, "_verify_from_payload", lambda payload: verified)
+    return verified

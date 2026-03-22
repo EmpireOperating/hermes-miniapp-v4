@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import re
-from pathlib import Path
-from types import SimpleNamespace
-
-from server_test_utils import load_server as _load_server
+from server_test_utils import load_server as _load_server, patch_verified_user
 
 def test_chat_rejects_oversized_message_before_auth(monkeypatch, tmp_path) -> None:
 
@@ -28,11 +24,7 @@ def test_create_chat_rejects_oversized_title_before_auth(monkeypatch, tmp_path) 
 def test_remove_chat_returns_replacement_active_chat(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     first_chat_id = server.store.ensure_default_chat("123")
     second_chat = server.store.create_chat("123", "Second")
@@ -52,11 +44,7 @@ def test_remove_chat_returns_replacement_active_chat(monkeypatch, tmp_path) -> N
 def test_remove_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     server.store.ensure_default_chat("123")
     removable = server.store.create_chat("123", "Busy")
@@ -73,11 +61,7 @@ def test_remove_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
 def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     captured = {"session_id": None}
     monkeypatch.setattr(server.client, "evict_session", lambda session_id: captured.__setitem__("session_id", session_id) or True)
@@ -93,11 +77,7 @@ def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
 def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "in flight")
@@ -113,11 +93,7 @@ def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
 def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     captured = {"session_id": None}
     monkeypatch.setattr(server.client, "evict_session", lambda session_id: captured.__setitem__("session_id", session_id) or True)
@@ -134,11 +110,7 @@ def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
 def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "already running")
@@ -156,11 +128,7 @@ def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None
 def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     chat_id = server.store.ensure_default_chat("123")
     response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
@@ -172,11 +140,7 @@ def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
 def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
@@ -200,11 +164,7 @@ def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_pat
 def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
@@ -227,11 +187,7 @@ def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch
 def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     main_chat_id = server.store.ensure_default_chat("123")
     alt_chat = server.store.create_chat("123", "Alt")

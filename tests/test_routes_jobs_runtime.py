@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import re
-from pathlib import Path
-from types import SimpleNamespace
-
-from server_test_utils import load_server as _load_server
+from server_test_utils import load_server as _load_server, patch_verified_user
 
 def test_detects_stale_chat_job_errors(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
@@ -16,11 +12,7 @@ def test_detects_stale_chat_job_errors(monkeypatch, tmp_path) -> None:
 def test_jobs_status_endpoint_returns_jobs_and_dead_letters(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "job")
@@ -40,11 +32,7 @@ def test_jobs_status_endpoint_returns_jobs_and_dead_letters(monkeypatch, tmp_pat
 def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     stale_chat = server.store.create_chat("123", "Stale")
     operator_message_id = server.store.add_message("123", stale_chat.id, "operator", "stale")
@@ -73,11 +61,7 @@ def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) ->
 def test_jobs_status_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     response = client.post("/api/jobs/status", json={"init_data": "ok", "limit": "abc"})
 
@@ -87,11 +71,7 @@ def test_jobs_status_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -
 def test_jobs_cleanup_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
 
     response = client.post("/api/jobs/cleanup", json={"init_data": "ok", "limit": "abc"})
 
@@ -101,11 +81,7 @@ def test_jobs_cleanup_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) 
 def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
-    monkeypatch.setattr(
-        server,
-        "_verify_from_payload",
-        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
-    )
+    patch_verified_user(monkeypatch, server)
     monkeypatch.setattr(
         server.client,
         "runtime_status",
