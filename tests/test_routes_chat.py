@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from types import SimpleNamespace
+
+from server_test_utils import load_server as _load_server
+
+def test_chat_rejects_oversized_message_before_auth(monkeypatch, tmp_path) -> None:
+
+    server = _load_server(monkeypatch, tmp_path, max_message_len=5)
+    client = server.app.test_client()
+
+    response = client.post("/api/chat", json={"message": "abcdef"})
+
+    assert response.status_code == 400
+    assert "exceeds" in response.get_json()["error"]
+
+def test_create_chat_rejects_oversized_title_before_auth(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path, max_title_len=4)
+    client = server.app.test_client()
+
+    response = client.post("/api/chats", json={"title": "abcde"})
+
+    assert response.status_code == 400
+    assert "Title exceeds" in response.get_json()["error"]
+
+def test_remove_chat_returns_replacement_active_chat(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    first_chat_id = server.store.ensure_default_chat("123")
+    second_chat = server.store.create_chat("123", "Second")
+    server.store.add_message("123", second_chat.id, "operator", "hello")
+
+    response = client.post("/api/chats/remove", json={"init_data": "ok", "chat_id": second_chat.id})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["removed_chat_id"] == second_chat.id
+    assert data["active_chat_id"] == first_chat_id
+    assert data["active_chat"]["id"] == first_chat_id
+    assert [chat["id"] for chat in data["chats"]] == [first_chat_id]
+    assert data["history"] == []
+    assert server.store.get_turn_count("123", second_chat.id) == 1
+
+def test_remove_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    server.store.ensure_default_chat("123")
+    removable = server.store.create_chat("123", "Busy")
+    operator_message_id = server.store.add_message("123", removable.id, "operator", "in flight")
+    job_id = server.store.enqueue_chat_job("123", removable.id, operator_message_id)
+
+    response = client.post("/api/chats/remove", json={"init_data": "ok", "chat_id": removable.id})
+
+    assert response.status_code == 200
+    state = server.store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+
+def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    captured = {"session_id": None}
+    monkeypatch.setattr(server.client, "evict_session", lambda session_id: captured.__setitem__("session_id", session_id) or True)
+
+    chat_id = server.store.ensure_default_chat("123")
+    server.store.add_message("123", chat_id, "operator", "x")
+
+    response = client.post("/api/chats/clear", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 200
+    assert captured["session_id"] == f"miniapp-123-{chat_id}"
+
+def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "in flight")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+
+    response = client.post("/api/chats/clear", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 200
+    state = server.store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+
+def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    captured = {"session_id": None}
+    monkeypatch.setattr(server.client, "evict_session", lambda session_id: captured.__setitem__("session_id", session_id) or True)
+
+    default_chat_id = server.store.ensure_default_chat("123")
+    alt_chat = server.store.create_chat("123", "Alt")
+
+    response = client.post("/api/chats/remove", json={"init_data": "ok", "chat_id": alt_chat.id})
+
+    assert response.status_code == 200
+    assert captured["session_id"] == f"miniapp-123-{alt_chat.id}"
+    assert response.get_json()["active_chat_id"] == default_chat_id
+
+def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "already running")
+    server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": chat_id, "message": "second"},
+    )
+
+    assert response.status_code == 409
+    body = response.get_data(as_text=True)
+    assert "already working" in body
+
+def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    chat_id = server.store.ensure_default_chat("123")
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 409
+    body = response.get_data(as_text=True)
+    assert "No active Hermes job" in body
+
+def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == job_id
+
+    server._publish_job_event(job_id, "tool", {"chat_id": chat_id, "display": "read_file: test"})
+    server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: tool" in body
+    assert "read_file: test" in body
+    assert "event: done" in body
+    assert '"reply": "ok"' in body
+
+def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    server.store.claim_next_job()
+
+    server._publish_job_event(job_id, "tool", {"chat_id": chat_id, "display": "tool call"})
+    server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
+
+    first = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+    assert first.status_code == 200
+    assert "event: tool" in first.get_data(as_text=True)
+
+    server._publish_job_event(job_id, "tool", {"chat_id": chat_id, "display": "tool call 2"})
+    server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
+    second = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+    assert second.status_code == 200
+    assert "event: tool" in second.get_data(as_text=True)
+
+def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    main_chat_id = server.store.ensure_default_chat("123")
+    alt_chat = server.store.create_chat("123", "Alt")
+    server.store.add_message("123", alt_chat.id, "hermes", "new reply")
+    server.store.set_active_chat("123", main_chat_id)
+
+    response = client.post(
+        "/api/chats/history",
+        json={"init_data": "ok", "chat_id": alt_chat.id, "activate": False},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["ok"] is True
+    assert data["chat"]["id"] == alt_chat.id
+    assert data["history"][-1]["body"] == "new reply"
+    assert server.store.get_active_chat("123") == main_chat_id
+    assert server.store.get_chat("123", alt_chat.id).unread_count == 1
