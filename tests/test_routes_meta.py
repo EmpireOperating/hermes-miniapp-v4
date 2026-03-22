@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from types import SimpleNamespace
-
 from server_test_utils import load_server as _load_server
 
 def test_health_includes_security_headers(monkeypatch, tmp_path) -> None:
