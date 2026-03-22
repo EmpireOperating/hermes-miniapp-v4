@@ -41,6 +41,14 @@ def test_health_includes_security_headers(monkeypatch, tmp_path) -> None:
     assert "Permissions-Policy" in response.headers
 
 
+def test_create_app_returns_flask_app(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+
+    app = server.create_app()
+
+    assert app is server.app
+
+
 def test_auth_sets_secure_session_cookie_by_default(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
@@ -124,6 +132,28 @@ def test_stream_rate_limit_blocks_burst_reconnects(monkeypatch, tmp_path) -> Non
     assert blocked.status_code == 429
 
 
+def test_rate_limit_scopes_authenticated_requests_by_user(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_RATE_LIMIT_API_REQUESTS", "1")
+    server = _load_server(monkeypatch, tmp_path)
+
+    client_a = server.app.test_client()
+    client_b = server.app.test_client()
+
+    token_a = server._create_auth_session_token("123")
+    token_b = server._create_auth_session_token("456")
+
+    client_a.set_cookie(server.AUTH_COOKIE_NAME, token_a)
+    client_b.set_cookie(server.AUTH_COOKIE_NAME, token_b)
+
+    first_a = client_a.get("/api/state")
+    first_b = client_b.get("/api/state")
+    blocked_a = client_a.get("/api/state")
+
+    assert first_a.status_code == 200
+    assert first_b.status_code == 200
+    assert blocked_a.status_code == 429
+
+
 def test_app_rejects_payload_over_max_content_length(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path, max_content_length=128)
     client = server.app.test_client()
@@ -160,6 +190,19 @@ def test_app_csp_nonce_is_emitted_and_applied_to_inline_scripts(monkeypatch, tmp
     nonce = nonce_match.group(1)
     page = response.get_data(as_text=True)
     assert f'nonce="{nonce}"' in page
+
+
+def test_app_csp_script_src_keeps_telegram_origin_and_nonce(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    csp = response.headers.get("Content-Security-Policy", "")
+    assert "script-src" in csp
+    assert "https://telegram.org" in csp
+    assert "'nonce-" in csp
 
 
 def test_app_template_uses_server_message_length_limit(monkeypatch, tmp_path) -> None:

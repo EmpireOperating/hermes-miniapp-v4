@@ -2,21 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-
-def _parse_limit(payload: dict[str, object], *, default: int, min_value: int, max_value: int) -> tuple[int | None, tuple[dict[str, object], int] | None]:
-    raw_limit = payload.get("limit")
-    if raw_limit in (None, ""):
-        return default, None
-
-    try:
-        limit = int(raw_limit)
-    except (TypeError, ValueError):
-        return None, ({"ok": False, "error": "Invalid limit. Must be an integer."}, 400)
-
-    if limit < min_value or limit > max_value:
-        return None, ({"ok": False, "error": f"Invalid limit. Must be between {min_value} and {max_value}."}, 400)
-
-    return limit, None
+from validators import parse_bounded_int
 
 
 def register_jobs_runtime_routes(
@@ -36,7 +22,7 @@ def register_jobs_runtime_routes(
             return auth_error
 
         store = store_getter()
-        limit, limit_error = _parse_limit(payload, default=25, min_value=1, max_value=200)
+        limit, limit_error = parse_bounded_int(payload, "limit", default=25, min_value=1, max_value=200)
         if limit_error:
             return limit_error
 
@@ -59,7 +45,7 @@ def register_jobs_runtime_routes(
         if auth_error:
             return auth_error
 
-        limit, limit_error = _parse_limit(payload, default=200, min_value=1, max_value=1000)
+        limit, limit_error = parse_bounded_int(payload, "limit", default=200, min_value=1, max_value=1000)
         if limit_error:
             return limit_error
 
