@@ -33,3 +33,17 @@ def test_config_disables_proxy_header_trust_by_default(monkeypatch) -> None:
     cfg = MiniAppConfig.from_env()
 
     assert cfg.trust_proxy_headers is False
+
+
+def test_config_rejects_invalid_worker_concurrency(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_CONCURRENCY", "0")
+
+    with pytest.raises(ValueError, match="MINI_APP_JOB_WORKER_CONCURRENCY"):
+        MiniAppConfig.from_env()
+
+
+def test_config_rejects_invalid_rate_limit_window(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_RATE_LIMIT_WINDOW_SECONDS", "4")
+
+    with pytest.raises(ValueError, match="MINI_APP_RATE_LIMIT_WINDOW_SECONDS"):
+        MiniAppConfig.from_env()
