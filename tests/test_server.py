@@ -413,6 +413,31 @@ def test_auth_reopens_last_active_chat(monkeypatch, tmp_path) -> None:
     assert "hermes_skin=terminal" in response.headers.get("Set-Cookie", "")
 
 
+def test_logout_all_revokes_cookie_session(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    fake_verified = SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test"))
+
+    def fake_verify(*, init_data: str, bot_token: str, max_age_seconds: int):
+        if not init_data:
+            raise server.TelegramAuthError("Missing init data")
+        return fake_verified
+
+    monkeypatch.setattr(server, "verify_telegram_init_data", fake_verify)
+
+    auth_response = client.post("/api/auth", json={"init_data": "ok"})
+    assert auth_response.status_code == 200
+
+    logout_response = client.post("/api/auth/logout-all", json={"init_data": "ok"})
+    assert logout_response.status_code == 200
+    assert logout_response.get_json()["ok"] is True
+
+    # No init_data: should rely on cookie session, which is now revoked.
+    unauthorized = client.post("/api/chats", json={"title": "x"})
+    assert unauthorized.status_code == 401
+
+
 def test_set_skin_sets_cookie(monkeypatch, tmp_path) -> None:
     server = _load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
@@ -496,6 +521,35 @@ def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_pat
     assert "read_file: test" in body
     assert "event: done" in body
     assert '"reply": "ok"' in body
+
+
+
+def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch, tmp_path) -> None:
+    server = _load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+    monkeypatch.setattr(
+        server,
+        "_verify_from_payload",
+        lambda payload: SimpleNamespace(user=SimpleNamespace(id=123, first_name="Test", username="test")),
+    )
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    server.store.claim_next_job()
+
+    server._publish_job_event(job_id, "tool", {"chat_id": chat_id, "display": "tool call"})
+    server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
+
+    first = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+    assert first.status_code == 200
+    assert "event: tool" in first.get_data(as_text=True)
+
+    server._publish_job_event(job_id, "tool", {"chat_id": chat_id, "display": "tool call 2"})
+    server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
+    second = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+    assert second.status_code == 200
+    assert "event: tool" in second.get_data(as_text=True)
 
 
 def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path) -> None:

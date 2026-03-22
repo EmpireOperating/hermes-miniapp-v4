@@ -378,3 +378,27 @@ def test_runtime_checkpoint_round_trip_and_delete(tmp_path) -> None:
 
     store.delete_runtime_checkpoint(session_id)
     assert store.get_runtime_checkpoint(session_id) is None
+
+
+def test_auth_session_round_trip_and_revoke(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.upsert_auth_session(session_id="s1", user_id="u1", nonce_hash="n1", expires_at=200)
+
+    assert store.is_auth_session_active(session_id="s1", user_id="u1", nonce_hash="n1", now_epoch=100) is True
+
+    store.revoke_auth_session("s1")
+    assert store.is_auth_session_active(session_id="s1", user_id="u1", nonce_hash="n1", now_epoch=100) is False
+
+
+def test_revoke_all_auth_sessions_and_prune(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions.db")
+    store.upsert_auth_session(session_id="s1", user_id="u1", nonce_hash="n1", expires_at=200)
+    store.upsert_auth_session(session_id="s2", user_id="u1", nonce_hash="n2", expires_at=50)
+
+    revoked = store.revoke_all_auth_sessions("u1")
+    assert revoked == 2
+
+    assert store.is_auth_session_active(session_id="s1", user_id="u1", nonce_hash="n1", now_epoch=100) is False
+
+    deleted = store.prune_expired_auth_sessions(100)
+    assert deleted >= 1
