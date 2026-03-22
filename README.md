@@ -25,8 +25,25 @@ Telegram Mini App shell for Hermes Agent with a Hermes-style themed UI.
 - Backend calls Hermes through:
   - `HERMES_STREAM_URL` if available
   - `HERMES_API_URL` if available
-  - otherwise local CLI: `hermes chat --quiet --query ...`
+  - otherwise direct in-process agent (when enabled) and finally local CLI
 - chat threads and messages are stored in `sessions.db`
+
+### Module map (server/store/client split)
+
+- `server.py`
+  - app bootstrap + shared runtime wiring (store/client/jobs/runtime objects)
+  - route registration only (keeps endpoint logic out of the bootstrap file)
+- `routes_auth.py`
+  - Telegram auth verification, cookie/session issuance, auth guards
+- `routes_chat.py`
+  - chat/tab CRUD, message history reads/writes, stream endpoint wiring
+- `routes_jobs_runtime.py`
+  - queue/runtime status, retry/dead-letter inspection, runtime diagnostics
+- `store.py`
+  - SQLite data layer: chats, turns, unread state, job tables, dead letters
+- `hermes_client.py`
+  - Hermes routing and fallback policy (`HERMES_STREAM_URL` → `HERMES_API_URL` stream probe → direct agent paths → CLI)
+  - persistent in-memory runtime session manager for direct-agent continuity
 
 ## Canonical workspace and runtime (important)
 

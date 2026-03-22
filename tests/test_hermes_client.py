@@ -244,3 +244,84 @@ def test_stream_events_logs_when_persistent_path_falls_back(monkeypatch) -> None
     _, kwargs = warning_calls[0]
     assert (kwargs.get("extra") or {}).get("session_id") == "miniapp-123-fallback-logs"
     assert "fallback_to" in (kwargs.get("extra") or {})
+
+
+def test_stream_url_takes_precedence_over_api_and_agent(monkeypatch) -> None:
+    monkeypatch.setenv("HERMES_STREAM_URL", "https://stream.example")
+    monkeypatch.setenv("HERMES_API_URL", "https://api.example")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+
+    def fake_stream(url, *, user_id, message):
+        assert url == "https://stream.example"
+        assert user_id == "123"
+        assert message == "hello"
+        return iter(["s", "tream"])
+
+    monkeypatch.setattr(client, "_stream_via_http", fake_stream)
+    monkeypatch.setattr(client, "_stream_via_agent", lambda **kwargs: (_ for _ in ()).throw(AssertionError("agent fallback should not run")))
+    monkeypatch.setattr(client, "_stream_via_cli_progress", lambda **kwargs: (_ for _ in ()).throw(AssertionError("cli fallback should not run")))
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-http-precedence"))
+
+    assert events[0].get("type") == "meta"
+    assert events[0].get("source") == "http-stream"
+    assert any(event.get("type") == "done" and event.get("reply") == "stream" and event.get("source") == "http-stream" for event in events)
+
+
+def test_api_stream_error_falls_back_to_direct_agent_before_cli(monkeypatch) -> None:
+    monkeypatch.delenv("HERMES_STREAM_URL", raising=False)
+    monkeypatch.setenv("HERMES_API_URL", "https://api.example")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
+
+    client = hermes_client.HermesClient()
+
+    def blow_up_http(*args, **kwargs):
+        raise hermes_client.HermesClientError("http stream failed")
+
+    monkeypatch.setattr(client, "_stream_via_http", blow_up_http)
+    monkeypatch.setattr(
+        client,
+        "_stream_via_agent",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "agent"},
+                {"type": "chunk", "text": "agent-ok"},
+                {"type": "done", "reply": "agent-ok", "source": "agent", "latency_ms": 1},
+            ]
+        ),
+    )
+    monkeypatch.setattr(client, "_stream_via_cli_progress", lambda **kwargs: (_ for _ in ()).throw(AssertionError("cli fallback should not run")))
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-agent-fallback"))
+    assert any(event.get("type") == "done" and event.get("reply") == "agent-ok" and event.get("source") == "agent" for event in events)
+
+
+def test_api_stream_error_falls_back_to_cli_when_direct_agent_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("HERMES_STREAM_URL", raising=False)
+    monkeypatch.setenv("HERMES_API_URL", "https://api.example")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "0")
+
+    client = hermes_client.HermesClient()
+
+    def blow_up_http(*args, **kwargs):
+        raise hermes_client.HermesClientError("http stream failed")
+
+    monkeypatch.setattr(client, "_stream_via_http", blow_up_http)
+    monkeypatch.setattr(client, "_stream_via_agent", lambda **kwargs: (_ for _ in ()).throw(AssertionError("agent path should be disabled")))
+    monkeypatch.setattr(
+        client,
+        "_stream_via_cli_progress",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "cli"},
+                {"type": "chunk", "text": "cli-ok"},
+                {"type": "done", "reply": "cli-ok", "source": "cli", "latency_ms": 1},
+            ]
+        ),
+    )
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-cli-fallback"))
+    assert any(event.get("type") == "done" and event.get("reply") == "cli-ok" and event.get("source") == "cli" for event in events)
