@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from server_test_utils import load_server as _load_server, patch_verified_user
+from server_test_utils import load_server, patch_verified_user
 
 def test_chat_rejects_oversized_message_before_auth(monkeypatch, tmp_path) -> None:
-
-    server = _load_server(monkeypatch, tmp_path, max_message_len=5)
+    server = load_server(monkeypatch, tmp_path, max_message_len=5)
     client = server.app.test_client()
 
     response = client.post("/api/chat", json={"message": "abcdef"})
@@ -13,7 +12,7 @@ def test_chat_rejects_oversized_message_before_auth(monkeypatch, tmp_path) -> No
     assert "exceeds" in response.get_json()["error"]
 
 def test_create_chat_rejects_oversized_title_before_auth(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path, max_title_len=4)
+    server = load_server(monkeypatch, tmp_path, max_title_len=4)
     client = server.app.test_client()
 
     response = client.post("/api/chats", json={"title": "abcde"})
@@ -22,7 +21,7 @@ def test_create_chat_rejects_oversized_title_before_auth(monkeypatch, tmp_path) 
     assert "Title exceeds" in response.get_json()["error"]
 
 def test_remove_chat_returns_replacement_active_chat(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -42,7 +41,7 @@ def test_remove_chat_returns_replacement_active_chat(monkeypatch, tmp_path) -> N
     assert server.store.get_turn_count("123", second_chat.id) == 1
 
 def test_remove_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -59,7 +58,7 @@ def test_remove_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
     assert state["status"] == "dead"
 
 def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -75,7 +74,7 @@ def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     assert captured["session_id"] == f"miniapp-123-{chat_id}"
 
 def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -91,7 +90,7 @@ def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
     assert state["status"] == "dead"
 
 def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -108,7 +107,7 @@ def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     assert response.get_json()["active_chat_id"] == default_chat_id
 
 def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -126,7 +125,7 @@ def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None
     assert "already working" in body
 
 def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -138,7 +137,7 @@ def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
     assert "No active Hermes job" in body
 
 def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -162,7 +161,7 @@ def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_pat
     assert '"reply": "ok"' in body
 
 def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 
@@ -185,7 +184,7 @@ def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch
     assert "event: tool" in second.get_data(as_text=True)
 
 def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
 

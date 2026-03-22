@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from server_test_utils import load_server as _load_server
+from server_test_utils import load_server
 
 def test_health_includes_security_headers(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     response = client.get("/health")
@@ -18,7 +18,7 @@ def test_health_includes_security_headers(monkeypatch, tmp_path) -> None:
     assert "Permissions-Policy" in response.headers
 
 def test_create_app_returns_flask_app(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
 
     app = server.create_app()
 
@@ -27,7 +27,7 @@ def test_create_app_returns_flask_app(monkeypatch, tmp_path) -> None:
 def test_enforced_origin_check_rejects_disallowed_origin(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "https://allowed.example")
     monkeypatch.setenv("MINI_APP_ENFORCE_ORIGIN_CHECK", "1")
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     response = client.post(
@@ -42,7 +42,7 @@ def test_enforced_origin_check_rejects_disallowed_origin(monkeypatch, tmp_path) 
 def test_origin_check_accepts_allowed_referer_when_origin_missing(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "https://allowed.example")
     monkeypatch.setenv("MINI_APP_ENFORCE_ORIGIN_CHECK", "1")
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     response = client.post(
@@ -55,7 +55,7 @@ def test_origin_check_accepts_allowed_referer_when_origin_missing(monkeypatch, t
     assert response.status_code == 401
 
 def test_rate_limit_helper_enforces_limit(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
 
     key = "test-rate-limit"
     assert server._check_rate_limit(key=key, limit=1, window_seconds=60) is True
@@ -64,7 +64,7 @@ def test_rate_limit_helper_enforces_limit(monkeypatch, tmp_path) -> None:
 def test_rate_limit_ignores_x_forwarded_for_when_proxy_headers_disabled(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_TRUST_PROXY_HEADERS", "0")
     monkeypatch.setenv("MINI_APP_RATE_LIMIT_API_REQUESTS", "10")
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     for i in range(10):
@@ -76,7 +76,7 @@ def test_rate_limit_ignores_x_forwarded_for_when_proxy_headers_disabled(monkeypa
 
 def test_stream_rate_limit_blocks_burst_reconnects(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", "3")
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     for _ in range(3):
@@ -88,7 +88,7 @@ def test_stream_rate_limit_blocks_burst_reconnects(monkeypatch, tmp_path) -> Non
 
 def test_rate_limit_scopes_authenticated_requests_by_user(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_RATE_LIMIT_API_REQUESTS", "1")
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
 
     client_a = server.app.test_client()
     client_b = server.app.test_client()
@@ -108,7 +108,7 @@ def test_rate_limit_scopes_authenticated_requests_by_user(monkeypatch, tmp_path)
     assert blocked_a.status_code == 429
 
 def test_app_rejects_payload_over_max_content_length(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path, max_content_length=128)
+    server = load_server(monkeypatch, tmp_path, max_content_length=128)
     client = server.app.test_client()
 
     response = client.post("/api/auth", json={"init_data": "x" * 400})
@@ -116,7 +116,7 @@ def test_app_rejects_payload_over_max_content_length(monkeypatch, tmp_path) -> N
     assert response.status_code == 413
 
 def test_app_boots_skin_from_cookie(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     client.set_cookie("hermes_skin", "obsidian")
@@ -128,7 +128,7 @@ def test_app_boots_skin_from_cookie(monkeypatch, tmp_path) -> None:
     assert 'const serverBoot = "obsidian";' in page
 
 def test_app_csp_nonce_is_emitted_and_applied_to_inline_scripts(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     response = client.get("/app")
@@ -143,7 +143,7 @@ def test_app_csp_nonce_is_emitted_and_applied_to_inline_scripts(monkeypatch, tmp
     assert f'nonce="{nonce}"' in page
 
 def test_app_csp_script_src_keeps_telegram_origin_and_nonce(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     response = client.get("/app")
@@ -155,7 +155,7 @@ def test_app_csp_script_src_keeps_telegram_origin_and_nonce(monkeypatch, tmp_pat
     assert "'nonce-" in csp
 
 def test_app_template_uses_server_message_length_limit(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path, max_message_len=123)
+    server = load_server(monkeypatch, tmp_path, max_message_len=123)
     client = server.app.test_client()
 
     response = client.get("/app")
@@ -165,7 +165,7 @@ def test_app_template_uses_server_message_length_limit(monkeypatch, tmp_path) ->
     assert 'maxlength="123"' in page
 
 def test_app_includes_quote_selection_controls(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     response = client.get("/app")
@@ -177,7 +177,7 @@ def test_app_includes_quote_selection_controls(monkeypatch, tmp_path) -> None:
     assert 'id="composer-quote-apply"' not in page
 
 def test_app_includes_per_message_copy_button(monkeypatch, tmp_path) -> None:
-    server = _load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path)
     client = server.app.test_client()
 
     response = client.get("/app")
