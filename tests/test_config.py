@@ -1,0 +1,27 @@
+from __future__ import annotations
+
+import pytest
+
+from miniapp_config import MiniAppConfig
+
+
+def test_config_normalizes_allowed_origins(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", " https://APP.EXAMPLE.COM/ ,https://api.example.com ")
+
+    cfg = MiniAppConfig.from_env()
+
+    assert cfg.allowed_origins == {"https://app.example.com", "https://api.example.com"}
+
+
+def test_config_rejects_invalid_allowed_origin(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "not-a-url")
+
+    with pytest.raises(ValueError, match="Invalid origin"):
+        MiniAppConfig.from_env()
+
+
+def test_config_rejects_non_positive_max_content_length(monkeypatch) -> None:
+    monkeypatch.setenv("MAX_CONTENT_LENGTH", "0")
+
+    with pytest.raises(ValueError, match="MAX_CONTENT_LENGTH"):
+        MiniAppConfig.from_env()
