@@ -46,28 +46,28 @@ class MiniAppConfig:
             port=_as_int("PORT", 8080),
             debug=_as_bool("FLASK_DEBUG", default=False),
             dev_reload=_as_bool("MINI_APP_DEV_RELOAD", default=False),
-            dev_reload_interval_ms=_as_int("MINI_APP_DEV_RELOAD_INTERVAL_MS", 1200),
-            max_message_len=_as_int("MAX_MESSAGE_LEN", 4000),
-            max_title_len=_as_int("MAX_TITLE_LEN", 120),
+            dev_reload_interval_ms=_as_int_in_range("MINI_APP_DEV_RELOAD_INTERVAL_MS", 1200, min_value=100, max_value=60000),
+            max_message_len=_as_int_in_range("MAX_MESSAGE_LEN", 4000, min_value=1, max_value=12000),
+            max_title_len=_as_int_in_range("MAX_TITLE_LEN", 120, min_value=1, max_value=512),
             max_content_length=max_content_length,
-            assistant_chunk_len=_as_int("MAX_ASSISTANT_CHUNK_LEN", 12000),
-            assistant_hard_limit=_as_int("MAX_ASSISTANT_HARD_LIMIT", 256000),
-            job_max_attempts=_as_int("MINI_APP_JOB_MAX_ATTEMPTS", 4),
-            job_retry_base_seconds=_as_int("MINI_APP_JOB_RETRY_BASE_SECONDS", 2),
-            job_worker_concurrency=max(1, _as_int("MINI_APP_JOB_WORKER_CONCURRENCY", 6)),
-            job_stall_timeout_seconds=max(60, _as_int("MINI_APP_JOB_STALL_TIMEOUT_SECONDS", 240)),
-            telegram_init_data_max_age_seconds=_as_int("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", 21600),
-            auth_session_max_age_seconds=_as_int("AUTH_SESSION_MAX_AGE_SECONDS", 60 * 60 * 24 * 7),
+            assistant_chunk_len=_as_int_in_range("MAX_ASSISTANT_CHUNK_LEN", 12000, min_value=800, max_value=200000),
+            assistant_hard_limit=_as_int_in_range("MAX_ASSISTANT_HARD_LIMIT", 256000, min_value=8000, max_value=1000000),
+            job_max_attempts=_as_int_in_range("MINI_APP_JOB_MAX_ATTEMPTS", 4, min_value=1, max_value=20),
+            job_retry_base_seconds=_as_int_in_range("MINI_APP_JOB_RETRY_BASE_SECONDS", 2, min_value=1, max_value=120),
+            job_worker_concurrency=_as_int_in_range("MINI_APP_JOB_WORKER_CONCURRENCY", 6, min_value=1, max_value=64),
+            job_stall_timeout_seconds=_as_int_in_range("MINI_APP_JOB_STALL_TIMEOUT_SECONDS", 240, min_value=60, max_value=7200),
+            telegram_init_data_max_age_seconds=_as_int_in_range("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", 21600, min_value=60, max_value=604800),
+            auth_session_max_age_seconds=_as_int_in_range("AUTH_SESSION_MAX_AGE_SECONDS", 60 * 60 * 24 * 7, min_value=60, max_value=60 * 60 * 24 * 90),
             force_secure_cookies=_as_bool("MINI_APP_FORCE_SECURE_COOKIES", default=True),
             trust_proxy_headers=_as_bool("MINI_APP_TRUST_PROXY_HEADERS", default=False),
             allowed_origins=_parse_allowed_origins(os.environ.get("MINI_APP_ALLOWED_ORIGINS", "")),
             enforce_origin_check=_as_bool("MINI_APP_ENFORCE_ORIGIN_CHECK", default=False),
-            rate_limit_window_seconds=max(5, _as_int("MINI_APP_RATE_LIMIT_WINDOW_SECONDS", 60)),
-            rate_limit_api_requests=max(10, _as_int("MINI_APP_RATE_LIMIT_API_REQUESTS", 180)),
-            rate_limit_stream_requests=max(3, _as_int("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", 24)),
+            rate_limit_window_seconds=_as_int_in_range("MINI_APP_RATE_LIMIT_WINDOW_SECONDS", 60, min_value=5, max_value=3600),
+            rate_limit_api_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_API_REQUESTS", 180, min_value=1, max_value=10000),
+            rate_limit_stream_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", 24, min_value=1, max_value=1000),
             enable_hsts=_as_bool("MINI_APP_ENABLE_HSTS", default=False),
-            job_event_history_max_jobs=max(32, _as_int("MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS", 256)),
-            job_event_history_ttl_seconds=max(60, _as_int("MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS", 1800)),
+            job_event_history_max_jobs=_as_int_in_range("MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS", 256, min_value=32, max_value=10000),
+            job_event_history_ttl_seconds=_as_int_in_range("MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS", 1800, min_value=60, max_value=86400),
             dev_reload_watch_paths=(
                 base_dir / "server.py",
                 base_dir / "templates" / "app.html",
@@ -101,6 +101,13 @@ def _parse_allowed_origins(raw: str) -> set[str]:
 
 def _as_int(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
+
+
+def _as_int_in_range(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    value = _as_int(name, default)
+    if value < min_value or value > max_value:
+        raise ValueError(f"{name} must be between {min_value} and {max_value}")
+    return value
 
 
 def _as_bool(name: str, *, default: bool) -> bool:

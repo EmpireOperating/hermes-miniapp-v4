@@ -353,7 +353,12 @@ class HermesClient:
                 # Fall back to existing subprocess/CLI path when persistent runtime fails.
                 logger.warning(
                     "Persistent miniapp runtime failed; falling back to non-persistent path",
-                    extra={"session_id": session_id or "", "error": str(exc)},
+                    extra={
+                        "session_id": session_id or "",
+                        "user_id": user_id,
+                        "error": str(exc),
+                        "fallback_to": "agent" if self.direct_agent_enabled else "cli",
+                    },
                     exc_info=True,
                 )
 

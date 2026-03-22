@@ -241,3 +241,6 @@ def test_stream_events_logs_when_persistent_path_falls_back(monkeypatch) -> None
     list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-fallback-logs"))
 
     assert warning_calls
+    _, kwargs = warning_calls[0]
+    assert (kwargs.get("extra") or {}).get("session_id") == "miniapp-123-fallback-logs"
+    assert "fallback_to" in (kwargs.get("extra") or {})
