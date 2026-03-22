@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import os
 import queue
@@ -10,20 +8,37 @@ import time
 from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, make_response, render_template, request, send_from_directory
-from werkzeug.middleware.proxy_fix import ProxyFix
-from routes_auth import register_auth_routes
-from routes_chat import register_chat_routes
-from routes_jobs_runtime import register_jobs_runtime_routes
-from routes_meta import register_meta_routes
 
-from auth import TelegramAuthError, TelegramUser, VerifiedTelegramInitData, verify_telegram_init_data
+from app_factory import create_flask_app
+from assets import asset_version, dev_reload_version
+from auth import TelegramAuthError, VerifiedTelegramInitData, verify_telegram_init_data
+from auth_session import (
+    create_auth_session_token,
+    verified_from_session_cookie,
+    verify_auth_session_token,
+    verify_from_payload,
+)
 from blueprints import create_api_blueprint, create_public_blueprint
 from hermes_client import HermesClient
 from job_runtime import JobRuntime
 from miniapp_config import MiniAppConfig, normalize_origin
 from rate_limiter import SlidingWindowRateLimiter
+from request_context import (
+    chat_id_from_payload_or_error,
+    json_error,
+    json_user_id_or_error,
+    request_payload,
+    sse_error,
+    sse_user_id_or_error,
+    verify_for_json,
+    verify_for_sse,
+)
 from request_guards import enforce_api_request_guards
 from request_logging import build_job_log, build_request_log, new_request_id, now_ms
+from routes_auth import register_auth_routes
+from routes_chat import register_chat_routes
+from routes_jobs_runtime import register_jobs_runtime_routes
+from routes_meta import register_meta_routes
 from security_headers import apply_security_headers, generate_csp_nonce
 from store import ChatThread, SessionStore
 from validators import parse_chat_id, validate_message, validate_title
@@ -60,14 +75,15 @@ JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
 JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
 DEV_RELOAD_WATCH_PATHS = CONFIG.dev_reload_watch_paths
 
-app = Flask(__name__, template_folder=str(BASE_DIR / "templates"), static_folder=str(BASE_DIR / "static"))
+app: Flask = create_flask_app(
+    base_dir=BASE_DIR,
+    trust_proxy_headers=TRUST_PROXY_HEADERS,
+    max_content_length=CONFIG.max_content_length,
+    debug=DEBUG,
+    dev_reload=DEV_RELOAD,
+)
 public_bp = create_public_blueprint()
 api_bp = create_api_blueprint()
-if TRUST_PROXY_HEADERS:
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)  # type: ignore[assignment]
-app.config["MAX_CONTENT_LENGTH"] = CONFIG.max_content_length
-app.config["TEMPLATES_AUTO_RELOAD"] = DEBUG or DEV_RELOAD
-app.jinja_env.auto_reload = DEBUG or DEV_RELOAD
 client = HermesClient()
 store = SessionStore(BASE_DIR / "sessions.db")
 
@@ -158,114 +174,38 @@ def _is_stale_chat_job_error(exc: Exception) -> bool:
     return runtime.is_stale_chat_job_error(exc)
 
 
-def _session_secret_key() -> bytes:
-    return hmac.new(b"HermesMiniAppSession", BOT_TOKEN.encode("utf-8"), hashlib.sha256).digest()
-
-
-def _nonce_hash(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
 def _create_auth_session_token(user_id: str) -> str:
-    expires_at = int(time.time()) + max(60, AUTH_SESSION_MAX_AGE_SECONDS)
-    session_id = os.urandom(8).hex()
-    nonce = os.urandom(8).hex()
-    payload = f"{user_id}:{session_id}:{expires_at}:{nonce}"
-    signature = hmac.new(_session_secret_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    store.upsert_auth_session(
-        session_id=session_id,
-        user_id=user_id,
-        nonce_hash=_nonce_hash(nonce),
-        expires_at=expires_at,
+    return create_auth_session_token(
+        user_id,
+        bot_token=BOT_TOKEN,
+        auth_session_max_age_seconds=AUTH_SESSION_MAX_AGE_SECONDS,
+        upsert_auth_session_fn=store.upsert_auth_session,
     )
-    return f"{payload}:{signature}"
 
 
 def _verify_auth_session_token(token: str) -> str | None:
-    value = str(token or "").strip()
-    if not value:
-        return None
-
-    parts = value.split(":")
-    if len(parts) != 5:
-        return None
-
-    user_id, session_id, expires_raw, nonce, signature = parts
-    if not user_id or not session_id or not expires_raw or not nonce or not signature:
-        return None
-
-    payload = f"{user_id}:{session_id}:{expires_raw}:{nonce}"
-    expected_sig = hmac.new(_session_secret_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected_sig):
-        return None
-
-    try:
-        expires_at = int(expires_raw)
-    except ValueError:
-        return None
-
-    now_epoch = int(time.time())
-    if expires_at < now_epoch:
-        return None
-
-    if not store.is_auth_session_active(
-        session_id=session_id,
-        user_id=user_id,
-        nonce_hash=_nonce_hash(nonce),
-        now_epoch=now_epoch,
-    ):
-        return None
-
-    return user_id
+    return verify_auth_session_token(
+        token,
+        bot_token=BOT_TOKEN,
+        is_auth_session_active_fn=store.is_auth_session_active,
+    )
 
 
 def _verified_from_session_cookie() -> VerifiedTelegramInitData | None:
     token = request.cookies.get(AUTH_COOKIE_NAME, "")
-    user_id = _verify_auth_session_token(token)
-    if not user_id:
-        return None
-
-    try:
-        numeric_user_id = int(user_id)
-    except ValueError:
-        return None
-
-    now = int(time.time())
-    return VerifiedTelegramInitData(
-        auth_date=now,
-        query_id=None,
-        user=TelegramUser(
-            id=numeric_user_id,
-            first_name=None,
-            last_name=None,
-            username=None,
-            language_code=None,
-            is_premium=None,
-        ),
-        raw="cookie-session",
+    return verified_from_session_cookie(
+        token=token,
+        verify_auth_session_token_fn=_verify_auth_session_token,
     )
 
 
 def _verify_from_payload(payload: dict[str, object]) -> VerifiedTelegramInitData:
-    if not BOT_TOKEN:
-        raise TelegramAuthError("Server is missing TELEGRAM_BOT_TOKEN.")
-
-    init_data = str(payload.get("init_data", ""))
-    if init_data.strip():
-        return verify_telegram_init_data(
-            init_data=init_data,
-            bot_token=BOT_TOKEN,
-            max_age_seconds=TELEGRAM_INIT_DATA_MAX_AGE_SECONDS,
-        )
-
-    cached = _verified_from_session_cookie()
-    if cached is not None:
-        return cached
-
-    return verify_telegram_init_data(
-        init_data=init_data,
+    return verify_from_payload(
+        payload,
         bot_token=BOT_TOKEN,
-        max_age_seconds=TELEGRAM_INIT_DATA_MAX_AGE_SECONDS,
+        telegram_init_data_max_age_seconds=TELEGRAM_INIT_DATA_MAX_AGE_SECONDS,
+        verified_from_session_cookie_fn=_verified_from_session_cookie,
+        verify_telegram_init_data_fn=verify_telegram_init_data,
     )
 
 
@@ -293,77 +233,52 @@ def _validated_message(raw_message: object) -> str:
 
 
 def _json_error(message: str, status: int) -> tuple[dict[str, object], int]:
-    return {"ok": False, "error": message}, status
+    return json_error(message, status)
+
+
+def _sse_event(event: str, data: dict[str, object]) -> str:
+    payload = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {payload}\n\n"
 
 
 def _sse_error(message: str, status: int, *, chat_id: int | None = None) -> Response:
-    payload: dict[str, object] = {"error": message}
-    if chat_id is not None:
-        payload["chat_id"] = chat_id
-    return Response(_sse_event("error", payload), mimetype="text/event-stream", status=status)
+    return sse_error(message, status, chat_id=chat_id, sse_event_fn=_sse_event)
 
 
 def _verify_for_json(payload: dict[str, object]) -> tuple[VerifiedTelegramInitData | None, tuple[dict[str, object], int] | None]:
-    try:
-        return _verify_from_payload(payload), None
-    except TelegramAuthError as exc:
-        return None, _json_error(str(exc), 401)
+    return verify_for_json(payload, verify_from_payload_fn=_verify_from_payload)
 
 
 def _verify_for_sse(payload: dict[str, object]) -> tuple[VerifiedTelegramInitData | None, Response | None]:
-    try:
-        return _verify_from_payload(payload), None
-    except TelegramAuthError as exc:
-        return None, _sse_error(str(exc), 401)
+    return verify_for_sse(payload, verify_from_payload_fn=_verify_from_payload, sse_event_fn=_sse_event)
 
 
 def _request_payload() -> dict[str, object]:
-    return request.get_json(silent=True) or {}
+    return request_payload()
 
 
 def _json_user_id_or_error(payload: dict[str, object]) -> tuple[str | None, tuple[dict[str, object], int] | None]:
-    verified, auth_error = _verify_for_json(payload)
-    if auth_error:
-        return None, auth_error
-    return str(verified.user.id), None
+    return json_user_id_or_error(payload, verify_for_json_fn=_verify_for_json)
 
 
 def _sse_user_id_or_error(payload: dict[str, object]) -> tuple[str | None, Response | None]:
-    verified, auth_error = _verify_for_sse(payload)
-    if auth_error:
-        return None, auth_error
-    return str(verified.user.id), None
+    return sse_user_id_or_error(payload, verify_for_sse_fn=_verify_for_sse)
 
 
 def _chat_id_from_payload_or_error(payload: dict[str, object], *, user_id: str) -> tuple[int | None, tuple[dict[str, object], int] | None]:
-    try:
-        return _chat_id_from_payload(payload, user_id=user_id), None
-    except ValueError as exc:
-        return None, _json_error(str(exc), 400)
-    except KeyError as exc:
-        return None, _json_error(str(exc), 404)
+    return chat_id_from_payload_or_error(
+        payload,
+        user_id=user_id,
+        chat_id_from_payload_fn=_chat_id_from_payload,
+    )
 
 
 def _asset_version(filename: str) -> str:
-    asset_path = BASE_DIR / "static" / filename
-    try:
-        return str(asset_path.stat().st_mtime_ns)
-    except FileNotFoundError:
-        return "0"
+    return asset_version(BASE_DIR, filename)
 
 
 def _dev_reload_version() -> str:
-    digest = hashlib.sha1()
-    for path in DEV_RELOAD_WATCH_PATHS:
-        try:
-            stat = path.stat()
-            digest.update(str(path.relative_to(BASE_DIR)).encode("utf-8"))
-            digest.update(str(stat.st_mtime_ns).encode("utf-8"))
-            digest.update(str(stat.st_size).encode("utf-8"))
-        except FileNotFoundError:
-            digest.update(str(path).encode("utf-8"))
-            digest.update(b"missing")
-    return digest.hexdigest()[:12]
+    return dev_reload_version(BASE_DIR, DEV_RELOAD_WATCH_PATHS)
 
 
 _sync_runtime_bindings()
@@ -523,11 +438,6 @@ register_meta_routes(
     api_bp,
     allowed_skins=ALLOWED_SKINS,
 )
-
-
-def _sse_event(event: str, data: dict[str, object]) -> str:
-    payload = json.dumps(data, ensure_ascii=False)
-    return f"event: {event}\ndata: {payload}\n\n"
 
 
 app.register_blueprint(public_bp)
