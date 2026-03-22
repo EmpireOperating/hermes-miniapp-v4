@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -23,8 +22,11 @@ from hermes_client import HermesClient
 from job_runtime import JobRuntime
 from miniapp_config import MiniAppConfig, normalize_origin
 from rate_limiter import SlidingWindowRateLimiter
+from request_guards import enforce_api_request_guards
 from request_logging import build_job_log, build_request_log, new_request_id, now_ms
+from security_headers import apply_security_headers, generate_csp_nonce
 from store import ChatThread, SessionStore
+from validators import parse_chat_id, validate_message, validate_title
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG = MiniAppConfig.from_env()
@@ -111,7 +113,7 @@ def _ensure_csp_nonce() -> str:
     if isinstance(existing, str) and existing:
         return existing
 
-    nonce = base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("=")
+    nonce = generate_csp_nonce()
     g.csp_nonce = nonce
     return nonce
 
@@ -131,7 +133,7 @@ def _origin_allowed() -> bool:
     return False
 
 
-def _check_rate_limit(*, key: str, limit: int, window_seconds: int) -> bool:
+def _check_rate_limit(key: str, limit: int, window_seconds: int) -> bool:
     return _RATE_LIMITER.allow(key=key, limit=limit, window_seconds=window_seconds)
 
 
@@ -279,29 +281,15 @@ def _serialize_chat(chat: ChatThread) -> dict[str, object]:
 
 
 def _chat_id_from_payload(payload: dict[str, object], user_id: str) -> int:
-    raw_chat_id = payload.get("chat_id")
-    if raw_chat_id in (None, "", 0):
-        return store.ensure_default_chat(user_id)
-    try:
-        return int(raw_chat_id)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Invalid chat_id.") from exc
+    return parse_chat_id(payload, default_chat_id=store.ensure_default_chat(user_id))
 
 
 def _validated_title(raw_title: object, *, default: str) -> str:
-    title = str(raw_title or "").strip() or default
-    if len(title) > MAX_TITLE_LEN:
-        raise ValueError(f"Title exceeds {MAX_TITLE_LEN} characters.")
-    return title
+    return validate_title(raw_title, default=default, max_length=MAX_TITLE_LEN)
 
 
 def _validated_message(raw_message: object) -> str:
-    message = str(raw_message or "").strip()
-    if not message:
-        raise ValueError("Message cannot be empty.")
-    if len(message) > MAX_MESSAGE_LEN:
-        raise ValueError(f"Message exceeds {MAX_MESSAGE_LEN} characters.")
-    return message
+    return validate_message(raw_message, max_length=MAX_MESSAGE_LEN)
 
 
 def _json_error(message: str, status: int) -> tuple[dict[str, object], int]:
@@ -384,62 +372,26 @@ runtime.start_once()
 
 @app.before_request
 def enforce_request_guards() -> Response | None:
-    g.request_id = new_request_id()
-    g.request_started_ms = now_ms()
-
-    if request.path.startswith("/api") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-        if request.mimetype != "application/json":
-            return jsonify({"ok": False, "error": "Content-Type must be application/json."}), 415
-        if not _origin_allowed():
-            return jsonify({"ok": False, "error": "Origin not allowed."}), 403
-
-    if not request.path.startswith("/api"):
-        return None
-
-    remote = (request.remote_addr or "unknown").strip()
-    if request.path in {"/api/chat/stream", "/api/chat/stream/resume"}:
-        ok = _check_rate_limit(
-            key=f"stream:{remote}",
-            limit=RATE_LIMIT_STREAM_REQUESTS,
-            window_seconds=RATE_LIMIT_WINDOW_SECONDS,
-        )
-    else:
-        ok = _check_rate_limit(
-            key=f"api:{remote}",
-            limit=RATE_LIMIT_API_REQUESTS,
-            window_seconds=RATE_LIMIT_WINDOW_SECONDS,
-        )
-
-    if not ok:
-        return jsonify({"ok": False, "error": "Rate limit exceeded. Please slow down."}), 429
-
-    return None
+    return enforce_api_request_guards(
+        origin_allowed_fn=_origin_allowed,
+        check_rate_limit_fn=_check_rate_limit,
+        rate_limit_window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+        rate_limit_api_requests=RATE_LIMIT_API_REQUESTS,
+        rate_limit_stream_requests=RATE_LIMIT_STREAM_REQUESTS,
+        new_request_id_fn=new_request_id,
+        now_ms_fn=now_ms,
+        auth_cookie_name=AUTH_COOKIE_NAME,
+        verify_auth_session_token_fn=_verify_auth_session_token,
+    )
 
 
 @app.after_request
 def add_security_headers(response: Response) -> Response:
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("Referrer-Policy", "no-referrer")
-    response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
-    script_src = "script-src 'self' https://telegram.org"
-    csp_nonce = getattr(g, "csp_nonce", None)
-    if isinstance(csp_nonce, str) and csp_nonce:
-        script_src = f"{script_src} 'nonce-{csp_nonce}'"
-
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        "default-src 'self'; "
-        f"{script_src}; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: https:; "
-        "connect-src 'self'; "
-        "frame-ancestors https://web.telegram.org https://*.telegram.org; "
-        "base-uri 'self'; "
-        "form-action 'self'",
+    response = apply_security_headers(
+        response,
+        csp_nonce=str(getattr(g, "csp_nonce", "") or ""),
+        enable_hsts=ENABLE_HSTS,
     )
-    if ENABLE_HSTS:
-        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
     request_started_ms = float(getattr(g, "request_started_ms", now_ms()))
     elapsed_ms = max(0, int(now_ms() - request_started_ms))
@@ -580,6 +532,10 @@ def _sse_event(event: str, data: dict[str, object]) -> str:
 
 app.register_blueprint(public_bp)
 app.register_blueprint(api_bp)
+
+
+def create_app() -> Flask:
+    return app
 
 
 if __name__ == "__main__":
