@@ -334,7 +334,7 @@ def add_security_headers(response: Response) -> Response:
             elapsed_ms=elapsed_ms,
         )
     )
-    if request.path in {"/static/app.js", "/static/app.css", "/static/runtime_helpers.js"}:
+    if request.path in {"/static/app.js", "/static/app.css", "/static/runtime_helpers.js", "/static/app_shared_utils.js"}:
         response.headers["Cache-Control"] = "no-store, max-age=0"
     if request_id:
         response.headers.setdefault("X-Request-Id", request_id)
@@ -357,6 +357,7 @@ def mini_app() -> Response:
             "app.html",
             css_version=_asset_version("app.css"),
             helpers_version=_asset_version("runtime_helpers.js"),
+            shared_utils_version=_asset_version("app_shared_utils.js"),
             app_js_version=_asset_version("app.js"),
             dev_reload=DEV_RELOAD,
             dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
@@ -394,7 +395,7 @@ def dev_reload_state() -> Response | tuple[dict[str, object], int]:
 @public_bp.get("/static/<path:filename>")
 def static_files(filename: str):
     response = send_from_directory(app.static_folder, filename)
-    if filename in {"app.js", "app.css", "runtime_helpers.js"}:
+    if filename in {"app.js", "app.css", "runtime_helpers.js", "app_shared_utils.js"}:
         response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
 
