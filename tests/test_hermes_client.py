@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 import hermes_client
+import hermes_client_agent
 
 
 class _FakeAgent:
@@ -138,6 +139,142 @@ def test_persistent_agent_runtime_reuses_agent_for_same_session(monkeypatch) -> 
     second_done = next(event for event in second if event.get("type") == "done")
     assert len(first_done.get("runtime_checkpoint") or []) == 3
     assert len(second_done.get("runtime_checkpoint") or []) == 5
+
+
+def test_persistent_agent_passes_session_db_to_run_agent(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    _FakeAgent.created = 0
+    _FakeAgent.calls = []
+    monkeypatch.setitem(sys.modules, "run_agent", _FakeRunAgentModule())
+
+    sentinel_db = object()
+    monkeypatch.setattr(hermes_client.HermesClient, "_init_session_db", lambda self: sentinel_db)
+
+    client = hermes_client.HermesClient()
+
+    list(
+        client._stream_via_persistent_agent(
+            user_id="123",
+            message="one",
+            session_id="miniapp-123-db",
+            conversation_history=[{"role": "operator", "body": "old"}],
+        )
+    )
+
+    runtime = client._session_manager.get_runtime("miniapp-123-db")
+    assert runtime is not None
+    assert getattr(runtime.agent, "kwargs", {}).get("session_db") is sentinel_db
+
+
+def test_persistent_agent_keeps_session_db_on_resumed_turn(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    _FakeAgent.created = 0
+    _FakeAgent.calls = []
+    monkeypatch.setitem(sys.modules, "run_agent", _FakeRunAgentModule())
+
+    sentinel_db = object()
+    monkeypatch.setattr(hermes_client.HermesClient, "_init_session_db", lambda self: sentinel_db)
+
+    client = hermes_client.HermesClient()
+    session_id = "miniapp-123-resume-db"
+
+    list(
+        client._stream_via_persistent_agent(
+            user_id="123",
+            message="first",
+            session_id=session_id,
+            conversation_history=[{"role": "operator", "body": "old"}],
+        )
+    )
+    list(
+        client._stream_via_persistent_agent(
+            user_id="123",
+            message="/resume",
+            session_id=session_id,
+            conversation_history=[{"role": "operator", "body": "ignored on resumed runtime"}],
+        )
+    )
+
+    runtime = client._session_manager.get_runtime(session_id)
+    assert runtime is not None
+    assert _FakeAgent.created == 1
+    assert runtime.bootstrapped is True
+    assert getattr(runtime.agent, "kwargs", {}).get("session_db") is sentinel_db
+
+
+def test_runtime_status_reports_recall_health(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    sentinel_db = object()
+    monkeypatch.setattr(hermes_client.HermesClient, "_init_session_db", lambda self: sentinel_db)
+
+    client = hermes_client.HermesClient()
+    status = client.runtime_status()
+
+    health = status.get("health") or {}
+    assert health.get("session_db_available") is True
+    assert health.get("agent_kwargs_has_session_db") is True
+    assert health.get("agent_kwargs_session_db_available") is True
+    assert health.get("session_search_ready") is True
+
+
+def test_init_logs_warning_when_recall_is_unavailable_in_persistent_mode(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    warning_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _Logger:
+        @staticmethod
+        def warning(*args, **kwargs):
+            warning_calls.append((args, kwargs))
+
+    monkeypatch.setattr(hermes_client, "logger", _Logger())
+    monkeypatch.setattr(hermes_client.HermesClient, "_init_session_db", lambda self: None)
+
+    client = hermes_client.HermesClient()
+
+    assert client._session_db is None
+    assert warning_calls
+    _, kwargs = warning_calls[0]
+    assert (kwargs.get("extra") or {}).get("session_db_available") is False
+    assert (kwargs.get("extra") or {}).get("agent_kwargs_has_session_db") is True
+    assert (kwargs.get("extra") or {}).get("agent_kwargs_session_db_available") is False
+    assert (kwargs.get("extra") or {}).get("persistent_sessions_enabled") is True
+
+
+def test_build_agent_kwargs_warns_once_when_session_db_missing(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    warning_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _Logger:
+        @staticmethod
+        def warning(*args, **kwargs):
+            warning_calls.append((args, kwargs))
+
+    monkeypatch.setattr(hermes_client_agent, "logger", _Logger())
+    monkeypatch.setattr(hermes_client.HermesClient, "_init_session_db", lambda self: None)
+
+    client = hermes_client.HermesClient()
+
+    # Boot recall self-check triggers one warning via _build_agent_kwargs.
+    assert len(warning_calls) == 1
+    _, first_kwargs = warning_calls[0]
+    assert (first_kwargs.get("extra") or {}).get("session_id") == "miniapp-healthcheck"
+
+    first = client._build_agent_kwargs(session_id="miniapp-123-1", tool_progress_callback=lambda *a, **k: None)
+    second = client._build_agent_kwargs(session_id="miniapp-123-2", tool_progress_callback=lambda *a, **k: None)
+
+    assert first.get("session_db") is None
+    assert second.get("session_db") is None
+    assert len(warning_calls) == 1
 
 
 def test_should_include_conversation_history_only_on_first_persistent_turn(monkeypatch) -> None:

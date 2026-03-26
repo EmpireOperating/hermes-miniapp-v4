@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -45,6 +47,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         self.agent_hermes_home = os.environ.get("MINI_APP_AGENT_HERMES_HOME") or f"{self.agent_home}/.hermes"
         self.agent_workdir = os.environ.get("MINI_APP_AGENT_WORKDIR") or f"{self.agent_hermes_home}/hermes-agent"
         self.agent_venv = os.environ.get("MINI_APP_AGENT_VENV") or f"{self.agent_workdir}/venv"
+        self._session_db = self._init_session_db()
         self.model = env_model if env_model and env_model.lower() != "auto" else self._load_default_model_from_config()
         self.provider, self.base_url = self._resolve_agent_routing(env_provider=env_provider, env_base_url=env_base_url)
         self.persistent_sessions_enabled = os.environ.get("MINI_APP_PERSISTENT_SESSIONS", "0") == "1"
@@ -54,6 +57,21 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             max_sessions=self.persistent_max_sessions,
             idle_ttl_seconds=self.persistent_idle_ttl_seconds,
         )
+        self._warn_if_recall_unavailable()
+
+    def _init_session_db(self):
+        try:
+            workdir = str(self.agent_workdir or "").strip()
+            if workdir and workdir not in sys.path:
+                sys.path.insert(0, workdir)
+                importlib.invalidate_caches()
+
+            from hermes_state import SessionDB
+
+            return SessionDB()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Miniapp session DB unavailable: %s", exc)
+            return None
 
     def _resolve_agent_routing(self, *, env_provider: str, env_base_url: str) -> tuple[str | None, str | None]:
         provider = env_provider if env_provider and env_provider.lower() != "auto" else None
@@ -139,6 +157,50 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             "unbootstrapped": int(stats.get("unbootstrapped", 0)),
         }
 
+    def _recall_health(self) -> dict[str, bool]:
+        session_db_available = self._session_db is not None
+        kwargs_has_session_db = False
+        kwargs_session_db_available = False
+
+        if self.direct_agent_enabled and self.persistent_sessions_enabled:
+            try:
+                kwargs = self._build_agent_kwargs(
+                    session_id="miniapp-healthcheck",
+                    tool_progress_callback=lambda *_args, **_kwargs: None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Miniapp recall healthcheck failed building agent kwargs: %s", exc)
+                kwargs = {}
+            kwargs_has_session_db = "session_db" in kwargs
+            kwargs_session_db_available = kwargs.get("session_db") is not None
+
+        session_search_ready = session_db_available and kwargs_has_session_db and kwargs_session_db_available
+        return {
+            "session_db_available": session_db_available,
+            "agent_kwargs_has_session_db": kwargs_has_session_db,
+            "agent_kwargs_session_db_available": kwargs_session_db_available,
+            "session_search_ready": session_search_ready,
+        }
+
+    def _warn_if_recall_unavailable(self) -> None:
+        if not (self.direct_agent_enabled and self.persistent_sessions_enabled):
+            return
+
+        health = self._recall_health()
+        if health.get("session_search_ready") is True:
+            return
+
+        logger.warning(
+            "Persistent miniapp sessions have incomplete recall wiring; session_search may be unavailable.",
+            extra={
+                "session_db_available": bool(health.get("session_db_available")),
+                "agent_kwargs_has_session_db": bool(health.get("agent_kwargs_has_session_db")),
+                "agent_kwargs_session_db_available": bool(health.get("agent_kwargs_session_db_available")),
+                "direct_agent_enabled": self.direct_agent_enabled,
+                "persistent_sessions_enabled": self.persistent_sessions_enabled,
+            },
+        )
+
     def runtime_status(self) -> dict[str, Any]:
         return {
             "persistent": self.persistent_stats(),
@@ -149,6 +211,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "direct_agent_enabled": self.direct_agent_enabled,
                 "persistent_sessions_enabled": self.persistent_sessions_enabled,
             },
+            "health": self._recall_health(),
         }
 
     def ask(self, user_id: str, message: str, *, conversation_history: list[dict[str, Any]] | None = None) -> HermesReply:
