@@ -2,6 +2,26 @@ from __future__ import annotations
 
 from server_test_utils import load_server, patch_verified_user
 
+
+def _authed_client(monkeypatch, tmp_path, **load_kwargs):
+    server = load_server(monkeypatch, tmp_path, **load_kwargs)
+    client = server.app.test_client()
+    patch_verified_user(monkeypatch, server)
+    return server, client
+
+
+def _post_chat_endpoint(client, endpoint: str, **payload):
+    body = {"init_data": "ok"}
+    body.update(payload)
+    return client.post(endpoint, json=body)
+
+
+def _assert_missing_chat_404(client, endpoint: str) -> None:
+    response = _post_chat_endpoint(client, endpoint, chat_id=999999)
+    assert response.status_code == 404
+    assert "not found" in response.get_json()["error"].lower()
+
+
 def test_chat_rejects_oversized_message_before_auth(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path, max_message_len=5)
     client = server.app.test_client()
@@ -21,9 +41,7 @@ def test_create_chat_rejects_oversized_title_before_auth(monkeypatch, tmp_path) 
     assert "Title exceeds" in response.get_json()["error"]
 
 def test_remove_chat_returns_replacement_active_chat(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     first_chat_id = server.store.ensure_default_chat("123")
     second_chat = server.store.create_chat("123", "Second")
@@ -40,10 +58,34 @@ def test_remove_chat_returns_replacement_active_chat(monkeypatch, tmp_path) -> N
     assert data["history"] == []
     assert server.store.get_turn_count("123", second_chat.id) == 1
 
+
+def test_pin_close_and_reopen_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    main_chat_id = server.store.ensure_default_chat("123")
+    feature_chat = server.store.create_chat("123", "Feature")
+
+    pin_response = client.post("/api/chats/pin", json={"init_data": "ok", "chat_id": feature_chat.id})
+    assert pin_response.status_code == 200
+    pinned_payload = pin_response.get_json()
+    assert pinned_payload["chat"]["is_pinned"] is True
+    assert [chat["id"] for chat in pinned_payload["pinned_chats"]] == [feature_chat.id]
+
+    remove_response = client.post("/api/chats/remove", json={"init_data": "ok", "chat_id": feature_chat.id})
+    assert remove_response.status_code == 200
+    remove_payload = remove_response.get_json()
+    assert remove_payload["active_chat_id"] == main_chat_id
+    assert [chat["id"] for chat in remove_payload["pinned_chats"]] == [feature_chat.id]
+
+    reopen_response = client.post("/api/chats/reopen", json={"init_data": "ok", "chat_id": feature_chat.id})
+    assert reopen_response.status_code == 200
+    reopen_payload = reopen_response.get_json()
+    assert reopen_payload["chat"]["id"] == feature_chat.id
+    assert reopen_payload["active_chat_id"] == feature_chat.id
+    assert any(chat["id"] == feature_chat.id for chat in reopen_payload["chats"])
+
 def test_remove_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     server.store.ensure_default_chat("123")
     removable = server.store.create_chat("123", "Busy")
@@ -58,9 +100,7 @@ def test_remove_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
     assert state["status"] == "dead"
 
 def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     captured = {"session_id": None}
     monkeypatch.setattr(server.client, "evict_session", lambda session_id: captured.__setitem__("session_id", session_id) or True)
@@ -74,9 +114,7 @@ def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     assert captured["session_id"] == f"miniapp-123-{chat_id}"
 
 def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "in flight")
@@ -90,9 +128,7 @@ def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
     assert state["status"] == "dead"
 
 def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     captured = {"session_id": None}
     monkeypatch.setattr(server.client, "evict_session", lambda session_id: captured.__setitem__("session_id", session_id) or True)
@@ -107,9 +143,7 @@ def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     assert response.get_json()["active_chat_id"] == default_chat_id
 
 def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "already running")
@@ -125,9 +159,7 @@ def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None
     assert "already working" in body
 
 def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     chat_id = server.store.ensure_default_chat("123")
     response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
@@ -137,9 +169,7 @@ def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
     assert "No active Hermes job" in body
 
 def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
@@ -161,9 +191,7 @@ def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_pat
     assert '"reply": "ok"' in body
 
 def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
@@ -184,9 +212,7 @@ def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch
     assert "event: tool" in second.get_data(as_text=True)
 
 def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     main_chat_id = server.store.ensure_default_chat("123")
     alt_chat = server.store.create_chat("123", "Alt")
@@ -205,3 +231,60 @@ def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path
     assert data["history"][-1]["body"] == "new reply"
     assert server.store.get_active_chat("123") == main_chat_id
     assert server.store.get_chat("123", alt_chat.id).unread_count == 1
+
+
+def test_open_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/open")
+
+
+def test_chat_history_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/history")
+
+
+def test_mark_read_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/mark-read")
+
+
+def test_clear_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/clear")
+
+
+def test_remove_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/remove")
+
+
+def test_chat_returns_400_for_invalid_chat_id(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = _post_chat_endpoint(client, "/api/chat", chat_id="invalid", message="hello")
+
+    assert response.status_code == 400
+    assert "Invalid chat_id." in response.get_json()["error"]
+
+
+def test_stream_chat_returns_400_for_invalid_chat_id(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = _post_chat_endpoint(client, "/api/chat/stream", chat_id="invalid", message="hello")
+
+    assert response.status_code == 400
+    assert "Invalid chat_id." in response.get_data(as_text=True)
+
+
+def test_stream_resume_returns_400_for_invalid_chat_id(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = _post_chat_endpoint(client, "/api/chat/stream/resume", chat_id="invalid")
+
+    assert response.status_code == 400
+    assert "Invalid chat_id." in response.get_data(as_text=True)

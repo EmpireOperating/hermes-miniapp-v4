@@ -4,6 +4,13 @@ import sqlite3
 
 from server_test_utils import load_server, patch_verified_user
 
+
+def _authed_client(monkeypatch, tmp_path, **load_kwargs):
+    server = load_server(monkeypatch, tmp_path, **load_kwargs)
+    client = server.app.test_client()
+    patch_verified_user(monkeypatch, server)
+    return server, client
+
 def test_detects_stale_chat_job_errors(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
 
@@ -12,9 +19,7 @@ def test_detects_stale_chat_job_errors(monkeypatch, tmp_path) -> None:
     assert server._is_stale_chat_job_error(KeyError("Message 22 not found")) is False
 
 def test_jobs_status_endpoint_returns_jobs_and_dead_letters(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "job")
@@ -32,9 +37,7 @@ def test_jobs_status_endpoint_returns_jobs_and_dead_letters(monkeypatch, tmp_pat
     assert data["summary"]["dead_letter_count"] >= 1
 
 def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     stale_chat = server.store.create_chat("123", "Stale")
     operator_message_id = server.store.add_message("123", stale_chat.id, "operator", "stale")
@@ -59,9 +62,7 @@ def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) ->
     assert state["status"] == "dead"
 
 def test_jobs_status_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     response = client.post("/api/jobs/status", json={"init_data": "ok", "limit": "abc"})
 
@@ -69,9 +70,7 @@ def test_jobs_status_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -
     assert "limit" in response.get_json()["error"].lower()
 
 def test_jobs_cleanup_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     response = client.post("/api/jobs/cleanup", json={"init_data": "ok", "limit": "abc"})
 
@@ -79,9 +78,7 @@ def test_jobs_cleanup_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) 
     assert "limit" in response.get_json()["error"].lower()
 
 def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
     monkeypatch.setattr(
         server.client,
         "runtime_status",

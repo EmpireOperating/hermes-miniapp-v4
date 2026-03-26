@@ -5,9 +5,12 @@ import pytest
 from store import SessionStore
 
 
+def _store(tmp_path) -> SessionStore:
+    return SessionStore(tmp_path / "sessions.db")
+
+
 def test_unread_count_and_mark_read(tmp_path) -> None:
-    db = tmp_path / "sessions.db"
-    store = SessionStore(db)
+    store = _store(tmp_path)
     user_id = "u1"
     chat_id = store.ensure_default_chat(user_id)
 
@@ -24,7 +27,7 @@ def test_unread_count_and_mark_read(tmp_path) -> None:
 
 
 def test_store_rejects_overlong_title(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u2"
 
     with pytest.raises(ValueError, match="Title exceeds"):
@@ -32,7 +35,7 @@ def test_store_rejects_overlong_title(tmp_path) -> None:
 
 
 def test_store_rejects_overlong_message(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u3"
     chat_id = store.ensure_default_chat(user_id)
 
@@ -41,7 +44,7 @@ def test_store_rejects_overlong_message(tmp_path) -> None:
 
 
 def test_store_accepts_long_assistant_message(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u3b"
     chat_id = store.ensure_default_chat(user_id)
 
@@ -55,7 +58,7 @@ def test_store_accepts_long_assistant_message(tmp_path) -> None:
 
 
 def test_remove_chat_archives_thread_and_keeps_messages_while_hiding_it(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u4"
     first_chat_id = store.ensure_default_chat(user_id)
     second_chat = store.create_chat(user_id, "Second")
@@ -70,8 +73,29 @@ def test_remove_chat_archives_thread_and_keeps_messages_while_hiding_it(tmp_path
     assert [chat.id for chat in store.list_chats(user_id)] == [first_chat_id]
 
 
+def test_pinned_chat_remains_recoverable_after_close_and_can_reopen(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u4b"
+    main_chat_id = store.ensure_default_chat(user_id)
+    feature_chat = store.create_chat(user_id, "Feature MVP")
+    store.add_message(user_id, feature_chat.id, "operator", "save this")
+
+    pinned = store.set_chat_pinned(user_id, feature_chat.id, is_pinned=True)
+    assert pinned.is_pinned is True
+    assert [chat.id for chat in store.list_pinned_chats(user_id)] == [feature_chat.id]
+
+    next_chat_id = store.remove_chat(user_id, feature_chat.id)
+    assert next_chat_id == main_chat_id
+    assert [chat.id for chat in store.list_chats(user_id)] == [main_chat_id]
+    assert [chat.id for chat in store.list_pinned_chats(user_id)] == [feature_chat.id]
+
+    reopened = store.reopen_chat(user_id, feature_chat.id)
+    assert reopened.id == feature_chat.id
+    assert [chat.id for chat in store.list_chats(user_id)] == [main_chat_id, feature_chat.id]
+
+
 def test_remove_last_visible_chat_creates_fresh_default_chat(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u5"
     chat_id = store.ensure_default_chat(user_id)
     store.add_message(user_id, chat_id, "operator", "saved")
@@ -85,7 +109,7 @@ def test_remove_last_visible_chat_creates_fresh_default_chat(tmp_path) -> None:
 
 
 def test_remove_chat_cancels_open_jobs(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u5b"
     active_chat_id = store.ensure_default_chat(user_id)
     removable_chat = store.create_chat(user_id, "Removable")
@@ -105,7 +129,7 @@ def test_remove_chat_cancels_open_jobs(tmp_path) -> None:
 
 
 def test_store_tracks_active_chat_preference(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u6"
     main_chat_id = store.ensure_default_chat(user_id)
     alt_chat = store.create_chat(user_id, "Alt")
@@ -120,7 +144,7 @@ def test_store_tracks_active_chat_preference(tmp_path) -> None:
 
 
 def test_pending_flag_reflects_latest_operator_turn(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u7"
     chat_id = store.ensure_default_chat(user_id)
 
@@ -137,7 +161,7 @@ def test_pending_flag_reflects_latest_operator_turn(tmp_path) -> None:
 
 
 def test_chat_job_queue_lifecycle(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u8"
     chat_id = store.ensure_default_chat(user_id)
     operator_message_id = store.add_message(user_id, chat_id, "operator", "run job")
@@ -166,7 +190,7 @@ def test_chat_job_queue_lifecycle(tmp_path) -> None:
 
 
 def test_claim_next_job_skips_same_chat_when_one_is_running(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u9"
 
     chat1 = store.ensure_default_chat(user_id)
@@ -199,7 +223,7 @@ def test_claim_next_job_skips_same_chat_when_one_is_running(tmp_path) -> None:
 
 
 def test_claim_next_job_skips_jobs_for_archived_chats(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u9a"
 
     chat1 = store.ensure_default_chat(user_id)
@@ -228,7 +252,7 @@ def test_claim_next_job_skips_jobs_for_archived_chats(tmp_path) -> None:
 
 
 def test_list_recoverable_pending_turns_excludes_open_jobs(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u9b"
     chat_id = store.ensure_default_chat(user_id)
     operator_message_id = store.add_message(user_id, chat_id, "operator", "stuck")
@@ -242,7 +266,7 @@ def test_list_recoverable_pending_turns_excludes_open_jobs(tmp_path) -> None:
 
 
 def test_retry_or_dead_letter_job_retries_then_dead_letters(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u10"
     chat_id = store.ensure_default_chat(user_id)
     operator_message_id = store.add_message(user_id, chat_id, "operator", "retry me")
@@ -273,7 +297,7 @@ def test_retry_or_dead_letter_job_retries_then_dead_letters(tmp_path) -> None:
 
 
 def test_complete_job_only_applies_to_running_state(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u11"
     chat_id = store.ensure_default_chat(user_id)
     op_id = store.add_message(user_id, chat_id, "operator", "run")
@@ -295,7 +319,7 @@ def test_complete_job_only_applies_to_running_state(tmp_path) -> None:
 
 
 def test_dead_letter_stale_running_jobs_marks_old_running(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u12"
     chat_id = store.ensure_default_chat(user_id)
     op_id = store.add_message(user_id, chat_id, "operator", "run")
@@ -320,7 +344,7 @@ def test_dead_letter_stale_running_jobs_marks_old_running(tmp_path) -> None:
 
 
 def test_cleanup_stale_jobs_dead_letters_invalid_open_jobs(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u13"
     keep_chat_id = store.ensure_default_chat(user_id)
     keep_msg_id = store.add_message(user_id, keep_chat_id, "operator", "valid")
@@ -361,7 +385,7 @@ def test_cleanup_stale_jobs_dead_letters_invalid_open_jobs(tmp_path) -> None:
 
 
 def test_runtime_checkpoint_round_trip_and_delete(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     user_id = "u13"
     chat_id = store.ensure_default_chat(user_id)
     session_id = f"miniapp-{user_id}-{chat_id}"
@@ -381,7 +405,7 @@ def test_runtime_checkpoint_round_trip_and_delete(tmp_path) -> None:
 
 
 def test_auth_session_round_trip_and_revoke(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     store.upsert_auth_session(session_id="s1", user_id="u1", nonce_hash="n1", expires_at=200)
 
     assert store.is_auth_session_active(session_id="s1", user_id="u1", nonce_hash="n1", now_epoch=100) is True
@@ -391,7 +415,7 @@ def test_auth_session_round_trip_and_revoke(tmp_path) -> None:
 
 
 def test_revoke_all_auth_sessions_and_prune(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.db")
+    store = _store(tmp_path)
     store.upsert_auth_session(session_id="s1", user_id="u1", nonce_hash="n1", expires_at=200)
     store.upsert_auth_session(session_id="s2", user_id="u1", nonce_hash="n2", expires_at=50)
 

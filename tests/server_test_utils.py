@@ -11,11 +11,17 @@ def load_server(
     max_message_len: int = 20,
     max_title_len: int = 10,
     max_content_length: int = 2048,
+    isolate_security_env: bool = True,
 ):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("MAX_MESSAGE_LEN", str(max_message_len))
     monkeypatch.setenv("MAX_TITLE_LEN", str(max_title_len))
     monkeypatch.setenv("MAX_CONTENT_LENGTH", str(max_content_length))
+    # Isolate tests from host/service hardening env (e.g. production origin allowlists).
+    # Some tests can opt out to validate origin enforcement behavior.
+    if isolate_security_env:
+        monkeypatch.setenv("MINI_APP_ENFORCE_ORIGIN_CHECK", "0")
+        monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "")
 
     import server  # noqa: PLC0415
     import store as store_mod  # noqa: PLC0415

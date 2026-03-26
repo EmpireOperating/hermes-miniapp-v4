@@ -4,10 +4,15 @@ from types import SimpleNamespace
 
 from server_test_utils import load_server, patch_verified_user
 
-def test_auth_sets_secure_session_cookie_by_default(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
+
+def _authed_client(monkeypatch, tmp_path, **load_kwargs):
+    server = load_server(monkeypatch, tmp_path, **load_kwargs)
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
+    return server, client
+
+def test_auth_sets_secure_session_cookie_by_default(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     response = client.post("/api/auth", json={"init_data": "ok"})
 
@@ -48,14 +53,13 @@ def test_verify_from_payload_uses_cookie_when_init_data_missing(monkeypatch, tmp
     assert resolved is cookie_verified
 
 def test_auth_reopens_last_active_chat(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     main_chat_id = server.store.ensure_default_chat("123")
     alt_chat = server.store.create_chat("123", "Alt")
     server.store.add_message("123", alt_chat.id, "operator", "pending question")
     server.store.set_active_chat("123", alt_chat.id)
+    server.store.set_chat_pinned("123", alt_chat.id, is_pinned=True)
 
     response = client.post("/api/auth", json={"init_data": "ok"})
 
@@ -65,6 +69,8 @@ def test_auth_reopens_last_active_chat(monkeypatch, tmp_path) -> None:
     assert data["history"][-1]["body"] == "pending question"
     pending_chat = next(chat for chat in data["chats"] if chat["id"] == alt_chat.id)
     assert pending_chat["pending"] is True
+    assert pending_chat["is_pinned"] is True
+    assert [chat["id"] for chat in data["pinned_chats"]] == [alt_chat.id]
     assert any(chat["id"] == main_chat_id for chat in data["chats"])
     assert "hermes_skin=terminal" in response.headers.get("Set-Cookie", "")
 
@@ -93,9 +99,7 @@ def test_logout_all_revokes_cookie_session(monkeypatch, tmp_path) -> None:
     assert unauthorized.status_code == 401
 
 def test_set_skin_sets_cookie(monkeypatch, tmp_path) -> None:
-    server = load_server(monkeypatch, tmp_path)
-    client = server.app.test_client()
-    patch_verified_user(monkeypatch, server)
+    server, client = _authed_client(monkeypatch, tmp_path)
 
     response = client.post("/api/preferences/skin", json={"init_data": "ok", "skin": "oracle"})
 
