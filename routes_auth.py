@@ -48,6 +48,7 @@ def register_auth_routes(
         store.mark_chat_read(user_id=user_id, chat_id=active_chat_id)
         store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
         chats = [serialize_chat_fn(chat) for chat in store.list_chats(user_id=user_id)]
+        pinned_chats = [serialize_chat_fn(chat) for chat in store.list_pinned_chats(user_id=user_id)]
         skin = store.get_skin(user_id=user_id)
         response = jsonify(
             {
@@ -61,6 +62,7 @@ def register_auth_routes(
                 "active_chat_id": active_chat_id,
                 "history": history,
                 "chats": chats,
+                "pinned_chats": pinned_chats,
                 "stats": {"turn_count": store.get_turn_count(user_id)},
             }
         )
