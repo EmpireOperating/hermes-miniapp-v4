@@ -1463,6 +1463,22 @@ function tryAppendOnlyRender(targetChatId, history, {
     return false;
   }
 
+  const renderedMessageKeys = Array.from(messagesEl.querySelectorAll(".message"))
+    .map((node) => String(node?.dataset?.messageKey || ""));
+  if (!runtimeHelpers.shouldUseAppendOnlyRender({
+    history,
+    previouslyRenderedLength,
+    renderedMessageKeys,
+  })) {
+    renderTraceLog("append-only-skip-history-misaligned", {
+      chatId: Number(targetChatId),
+      previouslyRenderedLength,
+      renderedMessageNodes: renderedMessageKeys.length,
+      historyLength: history.length,
+    });
+    return false;
+  }
+
   const appendedSlice = history.slice(previouslyRenderedLength);
   if (!appendedSlice.length) {
     return false;
@@ -1836,6 +1852,13 @@ function clearStreamAbortController(chatId, controller) {
   streamAbortControllers.delete(key);
 }
 
+function hasLiveStreamController(chatId) {
+  const key = Number(chatId);
+  const controller = streamAbortControllers.get(key);
+  if (!controller) return false;
+  return !Boolean(controller.signal?.aborted);
+}
+
 async function apiPost(url, payload) {
   const response = await fetch(url, {
     method: "POST",
@@ -1883,11 +1906,15 @@ async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) 
     return;
   }
 
-  const nextHistory = data.history || [];
   const previousHistory = histories.get(targetChatId) || [];
+  const chatPending = Boolean(data.chat?.pending);
+  const shouldResumePending = chatPending && !hasLiveStreamController(targetChatId);
+  const nextHistory = runtimeHelpers.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: data.history || [],
+    chatPending,
+  });
   const historyChanged = historiesDiffer(previousHistory, nextHistory);
-  const shouldResumePending = Boolean(data.chat?.pending);
-  const resumeForce = streamAbortControllers.has(targetChatId) || pendingChats.has(targetChatId);
   histories.set(targetChatId, nextHistory);
 
   if (chats.has(targetChatId)) {
@@ -1899,7 +1926,7 @@ async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) 
     setActiveChatMeta(targetChatId);
     renderMessages(targetChatId);
     if (shouldResumePending) {
-      void resumePendingChatStream(targetChatId, { force: resumeForce });
+      void resumePendingChatStream(targetChatId);
     }
     return;
   }
@@ -1908,7 +1935,7 @@ async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) 
     renderMessages(targetChatId, { preserveViewport: hadCachedHistory });
   }
   if (shouldResumePending) {
-    void resumePendingChatStream(targetChatId, { force: resumeForce });
+    void resumePendingChatStream(targetChatId);
   }
 }
 
@@ -2528,10 +2555,11 @@ async function sendPrompt(message) {
 async function resumePendingChatStream(chatId, { force = false } = {}) {
   const key = Number(chatId);
   if (!key || !isAuthenticated) return;
-  if (pendingChats.has(key) && !force) return;
+  const hasLiveController = hasLiveStreamController(key);
+  if (hasLiveController && !force) return;
   if (!Boolean(chats.get(key)?.pending)) return;
 
-  if (force) {
+  if (force && hasLiveController) {
     const existingController = streamAbortControllers.get(key);
     if (existingController) {
       try {
@@ -3155,12 +3183,24 @@ async function syncVisibleActiveChat() {
   const activeId = Number(activeChatId);
   maybeMarkRead(activeId);
   const data = await loadChatHistory(activeId, { activate: true });
-  const nextHistory = data.history || [];
+  const previousHistory = histories.get(activeId) || [];
+  const nextHistory = runtimeHelpers.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: data.history || [],
+    chatPending: Boolean(data.chat?.pending),
+  });
   histories.set(activeId, nextHistory);
   upsertChat(data.chat);
   renderMessages(activeId, { preserveViewport: true });
-  if (Boolean(data.chat?.pending)) {
-    void resumePendingChatStream(activeId, { force: true });
+  const needsVisibilityResume = runtimeHelpers.shouldResumeOnVisibilityChange({
+    hidden: document.visibilityState !== "visible",
+    activeChatId: activeId,
+    pendingChats,
+    streamAbortControllers,
+  });
+  const serverPendingWithoutLiveStream = Boolean(data.chat?.pending) && !hasLiveStreamController(activeId);
+  if (needsVisibilityResume || serverPendingWithoutLiveStream) {
+    void resumePendingChatStream(activeId);
   }
 }
 
