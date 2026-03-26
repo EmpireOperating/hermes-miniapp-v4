@@ -191,6 +191,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
         return {
             "app.css": "css-v",
             "runtime_helpers.js": "helpers-v",
+            "app_shared_utils.js": "shared-v",
             "app.js": "app-v",
         }[filename]
 
@@ -200,6 +201,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     page = response.get_data(as_text=True)
     assert '/static/runtime_helpers.js?v=helpers-v' in page
+    assert '/static/app_shared_utils.js?v=shared-v' in page
     assert '/static/app.js?v=app-v' in page
 
 
@@ -207,6 +209,15 @@ def test_runtime_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None
     server, client = _client(monkeypatch, tmp_path)
 
     response = client.get("/static/runtime_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_shared_utils_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/app_shared_utils.js")
 
     assert response.status_code == 200
     assert response.headers.get("Cache-Control") == "no-store, max-age=0"
