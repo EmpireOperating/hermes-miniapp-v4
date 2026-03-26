@@ -12,7 +12,11 @@ def generate_csp_nonce() -> str:
 
 def apply_security_headers(response: Response, *, csp_nonce: str | None, enable_hsts: bool) -> Response:
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
+    # Do NOT send X-Frame-Options for Telegram Mini App pages.
+    # Telegram Web can render mini apps inside an iframe, and XFO=DENY blocks
+    # the app with a blank page even when CSP frame-ancestors allows Telegram.
+    # We rely on CSP frame-ancestors below for precise embedding control.
+    response.headers.pop("X-Frame-Options", None)
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 

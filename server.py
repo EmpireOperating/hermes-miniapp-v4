@@ -71,6 +71,7 @@ RATE_LIMIT_WINDOW_SECONDS = CONFIG.rate_limit_window_seconds
 RATE_LIMIT_API_REQUESTS = CONFIG.rate_limit_api_requests
 RATE_LIMIT_STREAM_REQUESTS = CONFIG.rate_limit_stream_requests
 ENABLE_HSTS = CONFIG.enable_hsts
+REQUEST_DEBUG = CONFIG.request_debug
 JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
 JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
 DEV_RELOAD_WATCH_PATHS = CONFIG.dev_reload_watch_paths
@@ -82,6 +83,19 @@ app: Flask = create_flask_app(
     debug=DEBUG,
     dev_reload=DEV_RELOAD,
 )
+app.logger.setLevel("INFO")
+
+
+@app.before_request
+def _log_request_debug() -> None:
+    if not REQUEST_DEBUG:
+        return
+    try:
+        app.logger.info("miniapp req method=%s path=%s host=%s ua=%s", request.method, request.path, request.host, request.headers.get("User-Agent", "")[:160])
+    except Exception:
+        pass
+
+
 public_bp = create_public_blueprint()
 api_bp = create_api_blueprint()
 client = HermesClient()
@@ -215,6 +229,7 @@ def _serialize_chat(chat: ChatThread) -> dict[str, object]:
         "title": chat.title,
         "unread_count": chat.unread_count,
         "pending": chat.pending,
+        "is_pinned": chat.is_pinned,
         "updated_at": chat.updated_at,
         "created_at": chat.created_at,
     }
@@ -319,6 +334,8 @@ def add_security_headers(response: Response) -> Response:
             elapsed_ms=elapsed_ms,
         )
     )
+    if request.path in {"/static/app.js", "/static/app.css", "/static/runtime_helpers.js"}:
+        response.headers["Cache-Control"] = "no-store, max-age=0"
     if request_id:
         response.headers.setdefault("X-Request-Id", request_id)
     return response
@@ -339,7 +356,8 @@ def mini_app() -> Response:
         render_template(
             "app.html",
             css_version=_asset_version("app.css"),
-            js_version=_asset_version("app.js"),
+            helpers_version=_asset_version("runtime_helpers.js"),
+            app_js_version=_asset_version("app.js"),
             dev_reload=DEV_RELOAD,
             dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
             dev_reload_version=_dev_reload_version(),
@@ -376,7 +394,7 @@ def dev_reload_state() -> Response | tuple[dict[str, object], int]:
 @public_bp.get("/static/<path:filename>")
 def static_files(filename: str):
     response = send_from_directory(app.static_folder, filename)
-    if filename in {"app.js", "app.css"}:
+    if filename in {"app.js", "app.css", "runtime_helpers.js"}:
         response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
 

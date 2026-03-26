@@ -34,6 +34,7 @@ class StoreSchemaMixin:
                     user_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     is_archived INTEGER NOT NULL DEFAULT 0,
+                    is_pinned INTEGER NOT NULL DEFAULT 0,
                     last_read_message_id INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -113,6 +114,10 @@ class StoreSchemaMixin:
             if "is_archived" not in columns:
                 conn.execute(
                     "ALTER TABLE chat_threads ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0"
+                )
+            if "is_pinned" not in columns:
+                conn.execute(
+                    "ALTER TABLE chat_threads ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0"
                 )
 
             user_pref_columns = {

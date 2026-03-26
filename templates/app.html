@@ -23,9 +23,17 @@
 
         // Keep shell hidden until bootstrap resolves the authenticated skin,
         // preventing a brief flash of the default terminal skin on fresh domains.
+        // Safety valve: if JS initialization fails or is blocked, auto-reveal
+        // after a short timeout so users never see a permanent blank page.
         document.documentElement.setAttribute("data-shell-ready", "0");
         document.documentElement.setAttribute("data-skin", resolved);
         window.__HERMES_SKIN_BOOT__ = resolved;
+
+        const revealFallback = () => {
+          document.documentElement.setAttribute("data-shell-ready", "1");
+        };
+        window.setTimeout(revealFallback, 4000);
+        window.addEventListener("error", revealFallback, { once: true });
       })();
     </script>
     <style>
@@ -56,10 +64,9 @@
           <div class="masthead__status-row">
             <div class="status-group status-group--stacked">
               <div class="status-pill"><span class="status-dot"></span><span id="auth-status">Checking session…</span></div>
-              <button type="button" class="status-pill status-pill--debug" id="render-trace-badge" aria-pressed="false">Render Trace OFF</button>
             </div>
 
-            <div class="status-group">
+            <div class="status-group status-group--settings">
               <button type="button" class="status-pill status-pill--muted status-pill-button status-pill-button--icon" id="settings-button" aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-controls="settings-modal">⚙︎</button>
             </div>
           </div>
@@ -78,7 +85,13 @@
           <div class="chat-actions">
             <button type="button" id="new-chat" class="action-button">New chat</button>
             <button type="button" id="rename-chat" class="action-button">Rename chat</button>
+            <button type="button" id="pin-chat" class="action-button">Pin chat</button>
             <button type="button" id="remove-chat" class="danger-button">Close chat</button>
+          </div>
+
+          <div class="pinned-chats" id="pinned-chats-wrap" hidden>
+            <div class="panel__header panel__header--subsection">Pinned chats</div>
+            <div id="pinned-chats" class="pinned-chats__list" role="list" aria-label="Pinned chats"></div>
           </div>
 
         </aside>
@@ -143,6 +156,10 @@
           <button type="button" class="skin-toggle" data-skin="oracle">Oracle</button>
           <button type="button" class="skin-toggle" data-skin="obsidian">Obsidian</button>
         </div>
+        <div class="settings-modal__debug">
+          <p class="modal__hint">Debug</p>
+          <button type="button" class="status-pill status-pill--debug" id="render-trace-badge" aria-pressed="false">Render Trace OFF</button>
+        </div>
         <div class="modal__actions">
           <button type="button" id="settings-close" class="action-button">Close</button>
         </div>
@@ -162,6 +179,7 @@
 
     <template id="chat-tab-template">
       <button type="button" class="chat-tab">
+        <span class="chat-tab__pin" aria-hidden="true"></span>
         <span class="chat-tab__title"></span>
         <span class="chat-tab__badge"></span>
       </button>
@@ -175,6 +193,7 @@
         version: "{{ dev_reload_version }}"
       };
     </script>
-    <script src="/static/app.js?v={{ js_version }}"></script>
+    <script src="/static/runtime_helpers.js?v={{ helpers_version }}"></script>
+    <script src="/static/app.js?v={{ app_js_version }}"></script>
   </body>
 </html>

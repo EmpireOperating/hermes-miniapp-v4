@@ -124,6 +124,10 @@ html[data-skin="obsidian"] body {
 .status-group:last-child {
   justify-self: end;
 }
+.status-group--settings {
+  position: relative;
+  z-index: 1;
+}
 .eyebrow, .panel__header {
   text-transform: uppercase;
   letter-spacing: 0.14em;
@@ -286,6 +290,41 @@ h1 {
   gap: 10px;
   padding: 8px 16px 0;
 }
+.pinned-chats {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px 0;
+}
+.panel__header--subsection {
+  font-size: 11px;
+  letter-spacing: 0.11em;
+  padding: 0;
+}
+.pinned-chats__list {
+  display: grid;
+  gap: 8px;
+}
+.pinned-chat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.01);
+  color: var(--muted);
+  padding: 8px 10px;
+  text-align: left;
+}
+.pinned-chat-item__pin {
+  flex: 0 0 auto;
+}
+.pinned-chat-item__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 button, .skin-toggle, .danger-button, .action-button {
   border: 1px solid var(--line-strong);
   background: color-mix(in srgb, var(--accent) 7%, transparent);
@@ -385,11 +424,21 @@ textarea:focus-visible {
   display: grid;
   gap: 10px;
 }
+.settings-modal__debug {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+.settings-modal__debug .status-pill {
+  justify-self: start;
+}
 
 .terminal-panel {
   display: grid;
-  grid-template-rows: auto auto auto minmax(180px, 1fr) auto auto;
-  min-height: 70vh;
+  /* Keep rows content-driven on all form factors; transcript growth is controlled by .messages max-height. */
+  grid-template-rows: auto auto auto auto auto auto;
+  align-content: start;
+  min-height: auto;
 }
 .tabs-wrap {
   padding: 12px 14px 0;
@@ -424,6 +473,14 @@ textarea:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 22ch;
+}
+.chat-tab__pin {
+  display: none;
+  flex: 0 0 auto;
+  line-height: 1;
+}
+.chat-tab.is-pinned .chat-tab__pin {
+  display: inline-block;
 }
 .chat-tab__badge {
   flex: 0 0 auto;
@@ -503,13 +560,24 @@ textarea:focus-visible {
   min-height: 0;
 }
 .messages {
-  height: 100%;
+  width: 100%;
+  height: auto;
+  flex: 0 1 auto;
   padding: 18px;
   display: flex;
   flex-direction: column;
   gap: 14px;
   overflow-y: auto;
   scrollbar-gutter: stable;
+  overflow-anchor: none;
+  /* Desktop/web: keep short histories tight to the latency rail, cap long histories with internal scroll. */
+  min-height: 140px;
+  max-height: min(52vh, 560px);
+}
+/* Bottom-anchor short histories without breaking overflow scroll for long histories. */
+.messages::before {
+  content: "";
+  flex: 1 0 auto;
 }
 .messages__spacer {
   height: 0;
@@ -628,7 +696,9 @@ textarea:focus-visible {
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 0 18px 18px;
+  overflow-anchor: none;
+  /* Keep a consistent visual buffer between transcript bottom edge and latency chips while scrolling. */
+  padding: 4px 0 8px;
   scrollbar-width: none;
 }
 .activity-rail::-webkit-scrollbar {
@@ -709,6 +779,7 @@ textarea:focus-visible {
   display: none;
 }
 .composer {
+  margin: 0;
   border-top: 1px solid var(--line);
   padding: 16px 18px 18px;
 }
@@ -762,6 +833,56 @@ textarea:disabled {
   color: var(--muted);
   font-size: 12px;
 }
+
+@media (min-width: 861px) {
+  /* Desktop compact stack: transcript -> latency chip -> input with almost no dead space. */
+  .masthead__banner {
+    margin-inline: auto;
+  }
+  .masthead__copy {
+    text-align: center;
+  }
+  .subhead {
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .masthead__status-row {
+    position: static;
+    padding-right: 0;
+  }
+  .status-group--settings {
+    position: absolute;
+    top: 54px;
+    right: 16px;
+    z-index: 22;
+  }
+  .messages {
+    padding-bottom: 6px;
+    height: min(60vh, 640px);
+    max-height: min(60vh, 640px);
+  }
+  .activity-rail {
+    min-height: 0;
+    padding: 4px 18px 8px;
+  }
+  .activity-chip {
+    padding: 6px 10px;
+  }
+  .composer {
+    padding: 8px 18px 10px;
+  }
+  .composer__label {
+    display: block;
+    margin-bottom: 4px;
+  }
+  textarea {
+    min-height: 96px;
+  }
+  .composer__actions {
+    margin-top: 8px;
+  }
+}
+
 #send-button {
   min-width: 160px;
   margin-left: auto;
@@ -779,6 +900,13 @@ textarea:disabled {
   /* Keep mobile composer focus from triggering viewport zoom in Telegram WebView. */
   textarea {
     font-size: 16px;
+  }
+
+  /* Keep latency rail aligned with composer gutter on mobile/tablet widths. */
+  .activity-rail {
+    padding-top: 4px;
+    padding-left: 18px;
+    padding-right: 18px;
   }
 
   .shell {
@@ -804,8 +932,8 @@ textarea:disabled {
   .messages {
     padding: 14px;
     gap: 10px;
-    min-height: 180px;
-    max-height: 63vh;
+    min-height: 207px;
+    max-height: 72vh;
   }
   .masthead {
     padding-right: 80px;
@@ -813,6 +941,12 @@ textarea:disabled {
   .masthead__status-row {
     width: 100%;
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .status-group--settings {
+    position: relative;
+    right: auto;
+    bottom: auto;
+    z-index: 1;
   }
   .app-window-controls--top-right {
     top: 12px;
@@ -831,7 +965,7 @@ textarea:disabled {
     gap: 6px;
     padding-left: 14px;
     padding-right: 14px;
-    padding-bottom: 12px;
+    padding-bottom: 8px;
   }
   .activity-chip {
     max-width: calc(100vw - 36px);
@@ -840,8 +974,8 @@ textarea:disabled {
     letter-spacing: 0.06em;
   }
   .messages {
-    min-height: 144px;
-    max-height: 54vh;
+    min-height: 166px;
+    max-height: 62vh;
   }
   .jump-latest,
   .jump-last-start {

@@ -31,6 +31,7 @@ class MiniAppConfig:
     rate_limit_api_requests: int
     rate_limit_stream_requests: int
     enable_hsts: bool
+    request_debug: bool
     job_event_history_max_jobs: int
     job_event_history_ttl_seconds: int
     dev_reload_watch_paths: tuple[Path, ...]
@@ -66,6 +67,7 @@ class MiniAppConfig:
             rate_limit_api_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_API_REQUESTS", 180, min_value=1, max_value=10000),
             rate_limit_stream_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", 24, min_value=1, max_value=1000),
             enable_hsts=_as_bool("MINI_APP_ENABLE_HSTS", default=False),
+            request_debug=_as_bool_any("MINI_APP_REQUEST_DEBUG", "MINIAPP_REQUEST_DEBUG", default=False),
             job_event_history_max_jobs=_as_int_in_range("MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS", 256, min_value=32, max_value=10000),
             job_event_history_ttl_seconds=_as_int_in_range("MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS", 1800, min_value=60, max_value=86400),
             dev_reload_watch_paths=(
@@ -113,3 +115,11 @@ def _as_int_in_range(name: str, default: int, *, min_value: int, max_value: int)
 def _as_bool(name: str, *, default: bool) -> bool:
     default_raw = "1" if default else "0"
     return os.environ.get(name, default_raw) == "1"
+
+
+def _as_bool_any(*names: str, default: bool) -> bool:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is not None:
+            return raw == "1"
+    return default

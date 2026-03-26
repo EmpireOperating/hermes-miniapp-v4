@@ -26,6 +26,7 @@ class ChatThread:
     title: str
     unread_count: int
     pending: bool
+    is_pinned: bool
     updated_at: str
     created_at: str
 
