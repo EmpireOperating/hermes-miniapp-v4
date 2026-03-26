@@ -94,6 +94,12 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
                 "direct_agent_enabled": True,
                 "persistent_sessions_enabled": True,
             },
+            "health": {
+                "session_db_available": True,
+                "agent_kwargs_has_session_db": True,
+                "agent_kwargs_session_db_available": True,
+                "session_search_ready": True,
+            },
         },
     )
 
@@ -106,6 +112,10 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
     assert data["persistent"]["total"] == 2
     assert data["routing"]["provider"] == "openai-codex"
     assert data["routing"]["direct_agent_enabled"] is True
+    assert data["health"]["session_db_available"] is True
+    assert data["health"]["agent_kwargs_has_session_db"] is True
+    assert data["health"]["agent_kwargs_session_db_available"] is True
+    assert data["health"]["session_search_ready"] is True
 
 def test_run_chat_job_skips_db_history_when_runtime_already_bootstrapped(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)

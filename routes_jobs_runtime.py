@@ -68,4 +68,5 @@ def register_jobs_runtime_routes(
             "ok": True,
             "persistent": runtime_payload.get("persistent") or {},
             "routing": runtime_payload.get("routing") or {},
+            "health": runtime_payload.get("health") or {},
         }, 200

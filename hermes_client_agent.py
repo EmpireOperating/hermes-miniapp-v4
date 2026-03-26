@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import queue
 import sys
@@ -15,8 +16,12 @@ from typing import Any, Iterator
 from hermes_client_types import HermesClientError
 
 
+logger = logging.getLogger(__name__)
+
+
 class HermesClientAgentMixin:
     def _build_agent_kwargs(self, *, session_id: str, tool_progress_callback: callable) -> dict[str, Any]:
+        session_db = getattr(self, "_session_db", None)
         agent_kwargs: dict[str, Any] = {
             "session_id": session_id,
             "max_iterations": self.max_iterations,
@@ -24,7 +29,21 @@ class HermesClientAgentMixin:
             "verbose_logging": False,
             "tool_progress_callback": tool_progress_callback,
             "platform": "telegram",
+            "session_db": session_db,
         }
+
+        if (
+            session_db is None
+            and getattr(self, "direct_agent_enabled", False)
+            and getattr(self, "persistent_sessions_enabled", False)
+            and not getattr(self, "_warned_missing_session_db_in_kwargs", False)
+        ):
+            logger.warning(
+                "Persistent agent kwargs built without session_db; recall tools may be unavailable.",
+                extra={"session_id": session_id},
+            )
+            setattr(self, "_warned_missing_session_db_in_kwargs", True)
+
         if self.model:
             agent_kwargs["model"] = self.model
         if self.provider:
