@@ -124,6 +124,24 @@
     return true;
   }
 
+  function getNextChatTabId({ orderedChatIds, activeChatId, reverse = false }) {
+    const ids = Array.isArray(orderedChatIds)
+      ? orderedChatIds.map((id) => normalizeChatId(id)).filter(Boolean)
+      : [];
+    if (ids.length <= 1) return null;
+
+    const active = normalizeChatId(activeChatId);
+    if (!active) return null;
+
+    const currentIndex = ids.indexOf(active);
+    if (currentIndex < 0) return null;
+
+    const step = reverse ? -1 : 1;
+    const nextIndex = (currentIndex + step + ids.length) % ids.length;
+    const nextId = ids[nextIndex];
+    return Number.isInteger(nextId) && nextId > 0 ? nextId : null;
+  }
+
   const api = {
     shouldResumeOnVisibilityChange,
     shouldIncrementUnread,
@@ -131,6 +149,7 @@
     nextLatencyState,
     mergeHydratedHistory,
     shouldUseAppendOnlyRender,
+    getNextChatTabId,
   };
 
   if (typeof module !== "undefined" && module.exports) {
