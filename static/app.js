@@ -74,91 +74,11 @@ const histories = new Map();
 const pendingChats = new Set();
 const streamAbortControllers = new Map();
 const latencyByChat = new Map();
-const runtimeHelpers = window.HermesMiniappRuntime || {
-  shouldResumeOnVisibilityChange: ({ hidden, activeChatId, pendingChats, streamAbortControllers: controllers }) => {
-    if (hidden) return false;
-    const id = Number(activeChatId);
-    if (!Number.isInteger(id) || id <= 0) return false;
-    const hasPending = pendingChats.has(id) || pendingChats.has(String(id));
-    const hasController = controllers.has(id) || controllers.has(String(id));
-    return hasPending && !hasController;
-  },
-  shouldIncrementUnread: ({ targetChatId, activeChatId, hidden }) => {
-    const target = Number(targetChatId);
-    if (!Number.isInteger(target) || target <= 0) return false;
-    if (hidden) return true;
-    return Number(activeChatId) !== target;
-  },
-  nextUnreadCount: ({ currentUnreadCount, targetChatId, activeChatId, hidden }) => {
-    const current = Math.max(0, Number(currentUnreadCount) || 0);
-    return runtimeHelpers.shouldIncrementUnread({ targetChatId, activeChatId, hidden }) ? current + 1 : current;
-  },
-  nextLatencyState: ({ latencyByChat, targetChatId, text, activeChatId }) => {
-    const key = Number(targetChatId);
-    if (!Number.isInteger(key) || key <= 0) return { nextMap: latencyByChat, chipText: null };
-    const normalized = String(text || "").trim() || "--";
-    latencyByChat.set(key, normalized);
-    return Number(activeChatId) === key
-      ? { nextMap: latencyByChat, chipText: `latency: ${normalized}` }
-      : { nextMap: latencyByChat, chipText: null };
-  },
-  mergeHydratedHistory: ({ previousHistory, nextHistory, chatPending }) => {
-    const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
-    if (!chatPending) {
-      return incoming;
-    }
-    const previous = Array.isArray(previousHistory) ? previousHistory : [];
-    const localPending = previous.filter((item) => {
-      if (!item || !item.pending) return false;
-      const role = String(item.role || "").toLowerCase();
-      return role === "tool" || role === "hermes" || role === "assistant";
-    });
-    if (!localPending.length) {
-      return incoming;
-    }
-    const fingerprint = (item) => {
-      const id = Number(item?.id || 0);
-      if (Number.isInteger(id) && id > 0) return `id:${id}`;
-      return [
-        String(item?.role || "").toLowerCase(),
-        String(item?.created_at || ""),
-        String(item?.body || ""),
-        item?.pending ? "pending" : "sent",
-      ].join("|");
-    };
-    const existingCounts = new Map();
-    for (const item of incoming) {
-      const key = fingerprint(item);
-      existingCounts.set(key, (existingCounts.get(key) || 0) + 1);
-    }
-    for (const item of localPending) {
-      const key = fingerprint(item);
-      const count = existingCounts.get(key) || 0;
-      if (count > 0) {
-        existingCounts.set(key, count - 1);
-        continue;
-      }
-      incoming.push({ ...item });
-    }
-    return incoming;
-  },
-  shouldUseAppendOnlyRender: ({ history, previouslyRenderedLength, renderedMessageKeys }) => {
-    const nextHistory = Array.isArray(history) ? history : [];
-    const renderedLen = Math.max(0, Number(previouslyRenderedLength) || 0);
-    const keys = Array.isArray(renderedMessageKeys) ? renderedMessageKeys : [];
+const runtimeHelpers = window.HermesMiniappRuntime;
+if (!runtimeHelpers) {
+  throw new Error("HermesMiniappRuntime is required before app.js");
+}
 
-    if (renderedLen <= 0) return false;
-    if (nextHistory.length <= renderedLen) return false;
-    if (keys.length !== renderedLen) return false;
-
-    for (let index = 0; index < renderedLen; index += 1) {
-      if (String(keys[index] || "") !== messageStableKey(nextHistory[index], index)) {
-        return false;
-      }
-    }
-    return true;
-  },
-};
 const prefetchingHistories = new Set();
 const tabNodes = new Map();
 const chatScrollTop = new Map();

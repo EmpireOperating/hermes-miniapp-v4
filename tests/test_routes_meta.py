@@ -200,9 +200,13 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
 
     assert response.status_code == 200
     page = response.get_data(as_text=True)
-    assert '/static/runtime_helpers.js?v=helpers-v' in page
-    assert '/static/app_shared_utils.js?v=shared-v' in page
-    assert '/static/app.js?v=app-v' in page
+    runtime_src = '/static/runtime_helpers.js?v=helpers-v'
+    shared_src = '/static/app_shared_utils.js?v=shared-v'
+    app_src = '/static/app.js?v=app-v'
+    assert runtime_src in page
+    assert shared_src in page
+    assert app_src in page
+    assert page.index(runtime_src) < page.index(shared_src) < page.index(app_src)
 
 
 def test_runtime_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
