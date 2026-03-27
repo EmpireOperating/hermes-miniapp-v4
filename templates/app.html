@@ -190,7 +190,8 @@
         enabled: {{ 'true' if dev_reload else 'false' }},
         reloadStateUrl: "/dev/reload-state",
         intervalMs: {{ dev_reload_interval_ms }},
-        version: "{{ dev_reload_version }}"
+        version: "{{ dev_reload_version }}",
+        requestDebug: {{ 'true' if request_debug else 'false' }}
       };
     </script>
     <script src="/static/runtime_helpers.js?v={{ helpers_version }}"></script>

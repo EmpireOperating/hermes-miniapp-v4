@@ -24,3 +24,11 @@ test('parseSseEvent returns null for empty data events', () => {
   assert.equal(shared.parseSseEvent('event: chunk\n\n'), null);
   assert.equal(shared.parseSseEvent(''), null);
 });
+
+test('parseSseEvent preserves message default when event field is omitted', () => {
+  const parsed = shared.parseSseEvent('data: {"ok":true}\n\n');
+  assert.ok(parsed);
+  assert.equal(parsed.eventName, 'message');
+  assert.equal(parsed.event, 'message');
+  assert.deepEqual(parsed.payload, { ok: true });
+});

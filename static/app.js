@@ -1,5 +1,12 @@
 const tg = window.Telegram?.WebApp;
-const devConfig = window.__HERMES_DEV__ || { enabled: false, reloadStateUrl: "/dev/reload-state", intervalMs: 1200, version: "" };
+const devConfig = window.__HERMES_DEV__ || {
+  enabled: false,
+  reloadStateUrl: "/dev/reload-state",
+  intervalMs: 1200,
+  version: "",
+  requestDebug: false,
+};
+const streamDebugEnabled = Boolean(devConfig.requestDebug);
 const sharedUtils = window.HermesMiniappSharedUtils;
 if (!sharedUtils) {
   throw new Error("HermesMiniappSharedUtils is required before app.js");
@@ -291,6 +298,14 @@ function renderTraceLog(eventName, details = null) {
   console.info(`[render-trace] ${eventName}`, details);
 }
 
+function streamDebugLog(eventName, details = null) {
+  if (!streamDebugEnabled) return;
+  if (details == null) {
+    console.info(`[stream-debug] ${eventName}`);
+    return;
+  }
+  console.info(`[stream-debug] ${eventName}`, details);
+}
 
 let viewportMutationSeq = 0;
 
@@ -372,6 +387,12 @@ function setChatLatency(chatId, text) {
     text,
     activeChatId,
   });
+  streamDebugLog("latency-set", {
+    chatId: Number(chatId),
+    activeChatId: Number(activeChatId),
+    text: String(text || "").trim() || "--",
+    hasChipText: Boolean(result.chipText),
+  });
   if (result.chipText) {
     preserveViewportDuringUiMutation(() => {
       setActivityChip(latencyChip, result.chipText);
@@ -385,6 +406,10 @@ function setChatLatency(chatId, text) {
   if (targetKey && Number(activeChatId) === targetKey) {
     preserveViewportDuringUiMutation(() => {
       setActivityChip(latencyChip, `latency: ${String(text || "--").trim() || "--"}`);
+    });
+    streamDebugLog("latency-fallback", {
+      chatId: targetKey,
+      activeChatId: Number(activeChatId),
     });
   }
 }
@@ -2599,6 +2624,11 @@ async function consumeStreamResponse(chatId, response, builtReplyRef, { fallback
       if (!parsed) continue;
       const eventName = parsed.eventName || parsed.event || "message";
       const payload = parsed.payload;
+      streamDebugLog("sse-event", {
+        chatId: Number(chatId),
+        eventName,
+        payloadKeys: payload && typeof payload === "object" ? Object.keys(payload) : [],
+      });
       if (handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
         doneReceived = true;
       }
@@ -2609,6 +2639,11 @@ async function consumeStreamResponse(chatId, response, builtReplyRef, { fallback
     const parsed = parseSseEvent(buffer.trim());
     const eventName = parsed?.eventName || parsed?.event || "message";
     const payload = parsed?.payload;
+    streamDebugLog("sse-buffer-tail", {
+      chatId: Number(chatId),
+      eventName,
+      hasPayload: Boolean(payload),
+    });
     if (eventName === "done" && payload) {
       applyDonePayload(chatId, payload, builtReplyRef, { updateUnread: false });
       doneReceived = true;

@@ -280,6 +280,17 @@ def test_request_debug_logging_enabled_via_legacy_env(monkeypatch, tmp_path) -> 
     assert calls[0][0] == "miniapp req method=%s path=%s host=%s ua=%s"
 
 
+def test_app_dev_config_exposes_request_debug_flag(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_REQUEST_DEBUG", "1")
+    monkeypatch.delenv("MINIAPP_REQUEST_DEBUG", raising=False)
+    _, client = _client(monkeypatch, tmp_path)
+
+    page = _app_page(client)
+
+    assert "window.__HERMES_DEV__" in page
+    assert "requestDebug: true" in page
+
+
 def test_mobile_viewport_and_composer_zoom_guards_present() -> None:
     template = _read_repo_file("templates", "app.html")
     css = _read_repo_file("static", "app.css")

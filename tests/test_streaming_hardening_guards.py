@@ -28,3 +28,19 @@ def test_visibility_reconcile_for_active_chat_is_present():
 
     assert "function handleVisibilityChange()" in app_js
     assert "syncActiveMessageView(activeId, { preserveViewport: true });" in app_js
+
+
+def test_stream_latency_lifecycle_labels_are_seeded_for_send_and_resume():
+    app_js = _app_js()
+
+    assert "setChatLatency(chatId, \"calculating...\");" in app_js
+    assert "setChatLatency(key, \"recalculating...\");" in app_js
+    assert "setChatLatency(chatId, formatLatency(payload.latency_ms));" in app_js
+
+
+def test_stream_debug_breadcrumbs_are_wired_through_event_and_latency_updates():
+    app_js = _app_js()
+
+    assert "function streamDebugLog(eventName, details = null)" in app_js
+    assert "streamDebugLog(\"sse-event\"" in app_js
+    assert "streamDebugLog(\"latency-set\"" in app_js
