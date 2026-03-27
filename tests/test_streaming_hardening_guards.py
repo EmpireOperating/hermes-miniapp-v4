@@ -1,46 +1,50 @@
 from pathlib import Path
 
 
-def _app_js() -> str:
-    return Path("static/app.js").read_text(encoding="utf-8")
+def _read_static(name: str) -> str:
+    return Path("static", name).read_text(encoding="utf-8")
 
 
-def test_tool_streaming_uses_keyed_target_resolution_and_phase_guardrails():
-    app_js = _app_js()
+def test_app_wires_stream_state_helper_before_stream_lifecycle_calls():
+    app_js = _read_static("app.js")
 
-    assert "const streamPhaseByChat = new Map();" in app_js
-    assert "function patchVisibleToolTrace(chatId)" in app_js
-    assert "findMessageNodeByKey(\n    \".message--tool\"" in app_js
-    assert "stream-tool-phase-mismatch" in app_js
-    assert "toolNodes[toolNodes.length - 1]" not in app_js
-
-
-def test_assistant_streaming_uses_keyed_target_resolution():
-    app_js = _app_js()
-
-    assert "function patchVisiblePendingAssistant(chatId, nextBody, pendingState = true)" in app_js
-    assert "findLatestAssistantHistoryMessage(chatId" in app_js
-    assert "findMessageNodeByKey(\n    \".message--assistant\"" in app_js
+    assert "HermesMiniappStreamState is required before app.js" in app_js
+    assert "HermesMiniappStreamController is required before app.js" in app_js
+    assert "HermesMiniappComposerState is required before app.js" in app_js
+    assert "composerStateHelpers.deriveComposerState({" in app_js
+    assert "composerStateHelpers.applyComposerState({" in app_js
+    assert "streamControllerHelpers.createController({" in app_js
+    assert "markChatStreamPending({" in app_js
+    assert "finalizeChatStreamState({" in app_js
+    assert "clearChatStreamState({" in app_js
 
 
-def test_visibility_reconcile_for_active_chat_is_present():
-    app_js = _app_js()
+def test_stream_state_helper_exports_phase_api_and_guardrails():
+    helper_js = _read_static("stream_state_helpers.js")
 
-    assert "function handleVisibilityChange()" in app_js
-    assert "syncActiveMessageView(activeId, { preserveViewport: true });" in app_js
-
-
-def test_stream_latency_lifecycle_labels_are_seeded_for_send_and_resume():
-    app_js = _app_js()
-
-    assert "setChatLatency(chatId, \"calculating...\");" in app_js
-    assert "setChatLatency(key, \"recalculating...\");" in app_js
-    assert "setChatLatency(chatId, formatLatency(payload.latency_ms));" in app_js
+    assert "const STREAM_PHASES = Object.freeze(" in helper_js
+    assert "function normalizeStreamPhase(value)" in helper_js
+    assert "function getStreamPhase({ streamPhaseByChat, chatId })" in helper_js
+    assert "function setStreamPhase({ streamPhaseByChat, chatId, phase })" in helper_js
+    assert "function isPatchPhaseAllowed(phase)" in helper_js
+    assert "function markChatStreamPending({ chatId, pendingChats, chats, setStreamPhase: setStreamPhaseFn })" in helper_js
+    assert "function finalizeChatStreamState({ chatId, wasAborted, pendingChats, chats, setStreamPhase: setStreamPhaseFn })" in helper_js
+    assert "function clearChatStreamState({ chatId, pendingChats, streamPhaseByChat, unseenStreamChats })" in helper_js
 
 
-def test_stream_debug_breadcrumbs_are_wired_through_event_and_latency_updates():
-    app_js = _app_js()
+def test_stream_controller_module_exports_core_api():
+    controller_js = _read_static("stream_controller.js")
 
-    assert "function streamDebugLog(eventName, details = null)" in app_js
-    assert "streamDebugLog(\"sse-event\"" in app_js
-    assert "streamDebugLog(\"latency-set\"" in app_js
+    assert "HermesMiniappStreamController" in controller_js
+    assert "function createController(deps)" in controller_js
+    assert "function setStreamAbortController(chatId, controller)" in controller_js
+    assert "function consumeStreamResponse(chatId, response, builtReplyRef" in controller_js
+    assert "function finalizeStreamLifecycle(chatId, streamController, { wasAborted })" in controller_js
+
+
+def test_composer_state_helper_exports_state_api():
+    helper_js = _read_static("composer_state_helpers.js")
+
+    assert "HermesMiniappComposerState" in helper_js
+    assert "function deriveComposerState({ activeChatId, pendingChats, chats, isAuthenticated })" in helper_js
+    assert "function applyComposerState({" in helper_js

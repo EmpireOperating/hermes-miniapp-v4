@@ -37,6 +37,7 @@ from request_guards import enforce_api_request_guards
 from request_logging import build_job_log, build_request_log, new_request_id, now_ms
 from routes_auth import register_auth_routes
 from routes_chat import register_chat_routes
+from routes_chat_context import ChatRouteContext
 from routes_jobs_runtime import register_jobs_runtime_routes
 from routes_meta import register_meta_routes
 from security_headers import apply_security_headers, generate_csp_nonce
@@ -75,6 +76,18 @@ REQUEST_DEBUG = CONFIG.request_debug
 JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
 JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
 DEV_RELOAD_WATCH_PATHS = CONFIG.dev_reload_watch_paths
+STATIC_NO_STORE_FILENAMES = {
+    "app.js",
+    "app.css",
+    "runtime_helpers.js",
+    "app_shared_utils.js",
+    "chat_ui_helpers.js",
+    "message_actions_helpers.js",
+    "stream_state_helpers.js",
+    "stream_controller.js",
+    "composer_state_helpers.js",
+}
+STATIC_NO_STORE_PATHS = {f"/static/{name}" for name in STATIC_NO_STORE_FILENAMES}
 
 app: Flask = create_flask_app(
     base_dir=BASE_DIR,
@@ -168,14 +181,17 @@ def _check_rate_limit(key: str, limit: int, window_seconds: int) -> bool:
 
 
 def _publish_job_event(job_id: int, event_name: str, payload: dict[str, object]) -> None:
+    _sync_runtime_bindings()
     runtime.publish_job_event(job_id, event_name, payload)
 
 
 def _subscribe_job_events(job_id: int) -> queue.Queue[dict[str, object]]:
+    _sync_runtime_bindings()
     return runtime.subscribe_job_events(job_id)
 
 
 def _unsubscribe_job_events(job_id: int, subscriber: queue.Queue[dict[str, object]]) -> None:
+    _sync_runtime_bindings()
     runtime.unsubscribe_job_events(job_id, subscriber)
 
 
@@ -334,7 +350,7 @@ def add_security_headers(response: Response) -> Response:
             elapsed_ms=elapsed_ms,
         )
     )
-    if request.path in {"/static/app.js", "/static/app.css", "/static/runtime_helpers.js", "/static/app_shared_utils.js", "/static/chat_ui_helpers.js", "/static/message_actions_helpers.js"}:
+    if request.path in STATIC_NO_STORE_PATHS:
         response.headers["Cache-Control"] = "no-store, max-age=0"
     if request_id:
         response.headers.setdefault("X-Request-Id", request_id)
@@ -360,6 +376,9 @@ def mini_app() -> Response:
             shared_utils_version=_asset_version("app_shared_utils.js"),
             chat_ui_helpers_version=_asset_version("chat_ui_helpers.js"),
             message_actions_helpers_version=_asset_version("message_actions_helpers.js"),
+            stream_state_helpers_version=_asset_version("stream_state_helpers.js"),
+            stream_controller_version=_asset_version("stream_controller.js"),
+            composer_state_helpers_version=_asset_version("composer_state_helpers.js"),
             app_js_version=_asset_version("app.js"),
             dev_reload=DEV_RELOAD,
             dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
@@ -398,7 +417,7 @@ def dev_reload_state() -> Response | tuple[dict[str, object], int]:
 @public_bp.get("/static/<path:filename>")
 def static_files(filename: str):
     response = send_from_directory(app.static_folder, filename)
-    if filename in {"app.js", "app.css", "runtime_helpers.js", "app_shared_utils.js", "chat_ui_helpers.js", "message_actions_helpers.js"}:
+    if filename in STATIC_NO_STORE_FILENAMES:
         response.headers["Cache-Control"] = "no-store, max-age=0"
     return response
 
@@ -423,26 +442,28 @@ register_auth_routes(
 
 register_chat_routes(
     api_bp,
-    store_getter=lambda: store,
-    client_getter=lambda: client,
-    runtime_getter=lambda: runtime,
-    job_wake_event_getter=lambda: _JOB_WAKE_EVENT,
-    request_payload_fn=_request_payload,
-    json_user_id_or_error_fn=_json_user_id_or_error,
-    verify_for_json_fn=_verify_for_json,
-    verify_for_sse_fn=_verify_for_sse,
-    chat_id_from_payload_or_error_fn=_chat_id_from_payload_or_error,
-    chat_id_from_payload_fn=lambda payload, user_id: _chat_id_from_payload(payload, user_id=user_id),
-    validated_title_fn=lambda raw_title, default: _validated_title(raw_title, default=default),
-    validated_message_fn=_validated_message,
-    json_error_fn=_json_error,
-    sse_error_fn=_sse_error,
-    sse_event_fn=lambda event, data: _sse_event(event, data),
-    serialize_chat_fn=_serialize_chat,
-    session_id_builder_fn=_session_id_for,
-    job_max_attempts=JOB_MAX_ATTEMPTS,
-    build_job_log_fn=build_job_log,
-    logger=app.logger,
+    context=ChatRouteContext(
+        store_getter=lambda: store,
+        client_getter=lambda: client,
+        runtime_getter=lambda: runtime,
+        job_wake_event_getter=lambda: _JOB_WAKE_EVENT,
+        request_payload_fn=_request_payload,
+        json_user_id_or_error_fn=_json_user_id_or_error,
+        verify_for_json_fn=_verify_for_json,
+        verify_for_sse_fn=_verify_for_sse,
+        chat_id_from_payload_or_error_fn=_chat_id_from_payload_or_error,
+        chat_id_from_payload_fn=lambda payload, user_id: _chat_id_from_payload(payload, user_id=user_id),
+        validated_title_fn=lambda raw_title, default: _validated_title(raw_title, default=default),
+        validated_message_fn=_validated_message,
+        json_error_fn=_json_error,
+        sse_error_fn=_sse_error,
+        sse_event_fn=lambda event, data: _sse_event(event, data),
+        serialize_chat_fn=_serialize_chat,
+        session_id_builder_fn=_session_id_for,
+        job_max_attempts=JOB_MAX_ATTEMPTS,
+        build_job_log_fn=build_job_log,
+        logger=app.logger,
+    ),
 )
 
 

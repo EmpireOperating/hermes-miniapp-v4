@@ -112,7 +112,7 @@
           </div>
 
           <div class="messages-wrap">
-            <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-atomic="false"></div>
+            <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-atomic="false" tabindex="-1"></div>
             <button type="button" class="jump-last-start" id="jump-last-start" hidden aria-label="Jump to start of final message">↑</button>
             <button type="button" class="jump-latest" id="jump-latest" hidden aria-label="Jump to latest message">↓</button>
             <button type="button" id="selection-quote-button" class="selection-quote-button" hidden>Quote</button>
@@ -198,6 +198,9 @@
     <script src="/static/app_shared_utils.js?v={{ shared_utils_version }}"></script>
     <script src="/static/chat_ui_helpers.js?v={{ chat_ui_helpers_version }}"></script>
     <script src="/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}"></script>
+    <script src="/static/stream_state_helpers.js?v={{ stream_state_helpers_version }}"></script>
+    <script src="/static/stream_controller.js?v={{ stream_controller_version }}"></script>
+    <script src="/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}"></script>
     <script src="/static/app.js?v={{ app_js_version }}"></script>
   </body>
 </html>
