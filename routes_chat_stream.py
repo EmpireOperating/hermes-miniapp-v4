@@ -3,12 +3,13 @@ from __future__ import annotations
 import queue
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterator, TypeVar
+from typing import Callable, Iterator, TypeVar
 
 from flask import Response, g
 
-from routes_chat_error_mapping import map_chat_id_payload_error_to_sse
 from routes_chat_context import ChatRouteContext
+from routes_chat_error_mapping import map_chat_id_payload_error_to_sse
+from routes_chat_resolution import active_chat_id_or_error, verified_user_id_or_error
 
 
 T = TypeVar("T")
@@ -41,32 +42,31 @@ def register_stream_routes(
         except KeyError as exc:
             return None, _sse_not_found(exc)
 
-    def _verified_user_id(verified: Any) -> str:
-        return str(verified.user.id)
-
     def _resolve_active_chat_or_error(
         payload: dict[str, object],
         *,
         user_id: str,
     ) -> tuple[int | None, Response | None]:
-        chat_id, payload_error = chat_id_from_payload_or_error_fn(payload, user_id=user_id)
-        if payload_error:
-            return None, map_chat_id_payload_error_to_sse(payload_error, sse_error_fn=sse_error_fn)
-        try:
-            store_getter().set_active_chat(user_id=user_id, chat_id=int(chat_id))
-        except KeyError as exc:
-            return None, _sse_not_found(exc)
-        return int(chat_id), None
+        return active_chat_id_or_error(
+            payload,
+            user_id=user_id,
+            chat_id_from_payload_or_error_fn=chat_id_from_payload_or_error_fn,
+            map_chat_id_payload_error_fn=lambda payload_error: map_chat_id_payload_error_to_sse(
+                payload_error,
+                sse_error_fn=sse_error_fn,
+            ),
+            set_active_chat_fn=lambda chat_id: store_getter().set_active_chat(user_id=user_id, chat_id=chat_id),
+            not_found_error_fn=_sse_not_found,
+        )
 
     def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
         return store_getter().add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
 
     def _sse_verified_user_and_chat_id(payload: dict[str, object]) -> tuple[str | None, int | None, Response | None]:
-        verified, auth_error = verify_for_sse_fn(payload)
+        user_id, auth_error = verified_user_id_or_error(payload, verify_fn=verify_for_sse_fn)
         if auth_error:
             return None, None, auth_error
 
-        user_id = _verified_user_id(verified)
         chat_id, chat_id_error = _resolve_active_chat_or_error(payload, user_id=user_id)
         if chat_id_error:
             return None, None, chat_id_error
