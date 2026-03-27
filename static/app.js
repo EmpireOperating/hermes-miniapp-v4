@@ -19,6 +19,10 @@ const messageActionsHelpers = window.HermesMiniappMessageActions;
 if (!messageActionsHelpers) {
   throw new Error("HermesMiniappMessageActions is required before app.js");
 }
+const composerStateHelpers = window.HermesMiniappComposerState;
+if (!composerStateHelpers) {
+  throw new Error("HermesMiniappComposerState is required before app.js");
+}
 const { parseSseEvent, formatMessageTime, nowStamp, formatLatency, escapeHtml, cleanDisplayText, copyTextToClipboard } = sharedUtils;
 const authStatus = document.getElementById("auth-status");
 const streamStatus = document.getElementById("stream-status");
@@ -87,11 +91,18 @@ const chats = new Map();
 const pinnedChats = new Map();
 const histories = new Map();
 const pendingChats = new Set();
-const streamAbortControllers = new Map();
 const latencyByChat = new Map();
 const runtimeHelpers = window.HermesMiniappRuntime;
 if (!runtimeHelpers) {
   throw new Error("HermesMiniappRuntime is required before app.js");
+}
+const streamStateHelpers = window.HermesMiniappStreamState;
+if (!streamStateHelpers) {
+  throw new Error("HermesMiniappStreamState is required before app.js");
+}
+const streamControllerHelpers = window.HermesMiniappStreamController;
+if (!streamControllerHelpers) {
+  throw new Error("HermesMiniappStreamController is required before app.js");
 }
 
 const prefetchingHistories = new Set();
@@ -113,14 +124,15 @@ let lastOpenChatRequestId = 0;
 let activeRenderScheduled = false;
 let activeRenderChatId = null;
 const streamPhaseByChat = new Map();
-const STREAM_PHASES = Object.freeze({
-  IDLE: "idle",
-  PENDING_TOOL: "pending_tool",
-  STREAMING_TOOL: "streaming_tool",
-  STREAMING_ASSISTANT: "streaming_assistant",
-  FINALIZED: "finalized",
-  ERROR: "error",
-});
+const {
+  STREAM_PHASES,
+  getStreamPhase: getStreamPhaseFromState,
+  setStreamPhase: setStreamPhaseInState,
+  isPatchPhaseAllowed,
+  markChatStreamPending,
+  finalizeChatStreamState,
+  clearChatStreamState,
+} = streamStateHelpers;
 // Back-compat aliases kept for tests and grep-based checks.
 let selectionQuoteSyncTimer = null;
 let selectionQuoteClearTimer = null;
@@ -506,6 +518,50 @@ function startDevAutoRefresh() {
 
   document.addEventListener("visibilitychange", maybeReload);
   setInterval(poll, Math.max(Number(devConfig.intervalMs) || 1200, 500));
+}
+
+const incomingMessageHapticKeys = new Set();
+
+function latestCompletedAssistantHapticKey(chatId) {
+  const key = Number(chatId);
+  if (!key) return "";
+  const history = histories.get(key) || [];
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const item = history[index];
+    const role = String(item?.role || "").toLowerCase();
+    if (role !== "assistant" && role !== "hermes") continue;
+    if (Boolean(item?.pending)) continue;
+
+    const messageId = Number(item?.id || 0);
+    if (messageId > 0) {
+      return `chat:${key}:msg:${messageId}`;
+    }
+
+    return [
+      `chat:${key}:local`,
+      String(item?.created_at || ""),
+      String(item?.body || ""),
+    ].join("|");
+  }
+  return "";
+}
+
+function triggerIncomingMessageHaptic(chatId, { messageKey = "", fallbackToLatestHistory = true } = {}) {
+  const key = Number(chatId);
+  if (!key) return;
+
+  const normalizedMessageKey = String(messageKey || "").trim();
+  const resolvedKey = normalizedMessageKey || (fallbackToLatestHistory ? latestCompletedAssistantHapticKey(key) : "");
+  if (!resolvedKey || incomingMessageHapticKeys.has(resolvedKey)) {
+    return;
+  }
+
+  incomingMessageHapticKeys.add(resolvedKey);
+  try {
+    tg?.HapticFeedback?.impactOccurred?.("heavy");
+  } catch {
+    // Haptics are best-effort and may be unavailable on some clients/devices.
+  }
 }
 
 function incrementUnread(chatId) {
@@ -1542,8 +1598,12 @@ function syncChats(chatList) {
     if (!nextIds.has(Number(chatId))) {
       chats.delete(Number(chatId));
       histories.delete(Number(chatId));
-      pendingChats.delete(Number(chatId));
-      streamPhaseByChat.delete(Number(chatId));
+      clearChatStreamState({
+        chatId: Number(chatId),
+        pendingChats,
+        streamPhaseByChat,
+        unseenStreamChats,
+      });
       prefetchingHistories.delete(Number(chatId));
       chatScrollTop.delete(Number(chatId));
       chatStickToBottom.delete(Number(chatId));
@@ -1551,7 +1611,6 @@ function syncChats(chatList) {
       virtualMetrics.delete(Number(chatId));
       renderedHistoryLength.delete(Number(chatId));
       renderedHistoryVirtualized.delete(Number(chatId));
-      unseenStreamChats.delete(Number(chatId));
       const staleNode = tabNodes.get(Number(chatId));
       staleNode?.remove();
       tabNodes.delete(Number(chatId));
@@ -1748,44 +1807,39 @@ function setActiveChatMeta(chatId, { fullTabRender = true, deferNonCritical = fa
 }
 
 function updateComposerState() {
-  const pending = pendingChats.has(Number(activeChatId)) || Boolean(chats.get(Number(activeChatId))?.pending);
-  sendButton.disabled = pending || !isAuthenticated;
-  sendButton.textContent = pending ? "Sending…" : "Send";
-  promptEl.disabled = !isAuthenticated;
-  if (removeChatButton) {
-    removeChatButton.disabled = pending || !isAuthenticated || !activeChatId;
-  }
-  if (pinChatButton) {
-    pinChatButton.disabled = pending || !isAuthenticated || !activeChatId;
-  }
+  const state = composerStateHelpers.deriveComposerState({
+    activeChatId,
+    pendingChats,
+    chats,
+    isAuthenticated,
+  });
+  composerStateHelpers.applyComposerState({
+    state,
+    sendButton,
+    promptEl,
+    removeChatButton,
+    pinChatButton,
+  });
 }
 
 function setStreamAbortController(chatId, controller) {
-  const key = Number(chatId);
-  const existing = streamAbortControllers.get(key);
-  if (existing && existing !== controller) {
-    try {
-      existing.abort();
-    } catch {
-      // best effort
-    }
-  }
-  streamAbortControllers.set(key, controller);
+  streamController.setStreamAbortController(chatId, controller);
 }
 
 function clearStreamAbortController(chatId, controller) {
-  const key = Number(chatId);
-  const existing = streamAbortControllers.get(key);
-  if (!existing) return;
-  if (controller && existing !== controller) return;
-  streamAbortControllers.delete(key);
+  streamController.clearStreamAbortController(chatId, controller);
 }
 
 function hasLiveStreamController(chatId) {
-  const key = Number(chatId);
-  const controller = streamAbortControllers.get(key);
-  if (!controller) return false;
-  return !Boolean(controller.signal?.aborted);
+  return streamController.hasLiveStreamController(chatId);
+}
+
+function abortStreamController(chatId) {
+  return streamController.abortStreamController(chatId);
+}
+
+function getStreamAbortControllers() {
+  return streamController.getAbortControllers();
 }
 
 async function apiPost(url, payload) {
@@ -1910,26 +1964,16 @@ async function markRead(chatId) {
   }
 }
 
-function normalizeStreamPhase(value) {
-  const normalized = String(value || "").toLowerCase();
-  if (Object.values(STREAM_PHASES).includes(normalized)) {
-    return normalized;
-  }
-  return STREAM_PHASES.IDLE;
-}
-
 function getStreamPhase(chatId) {
-  const key = Number(chatId);
-  if (!key) return STREAM_PHASES.IDLE;
-  return normalizeStreamPhase(streamPhaseByChat.get(key));
+  return getStreamPhaseFromState({ streamPhaseByChat, chatId });
 }
 
 function setStreamPhase(chatId, phase) {
   const key = Number(chatId);
-  if (!key) return;
-  const next = normalizeStreamPhase(phase);
-  streamPhaseByChat.set(key, next);
+  if (!key) return STREAM_PHASES.IDLE;
+  const next = setStreamPhaseInState({ streamPhaseByChat, chatId: key, phase });
   renderTraceLog("stream-phase", { chatId: key, phase: next });
+  return next;
 }
 
 function messageStableKeyForPendingState(message, index = 0, pendingState = false) {
@@ -2000,11 +2044,7 @@ function patchVisiblePendingAssistant(chatId, nextBody, pendingState = true) {
   if (Number(chatId) !== Number(activeChatId)) return false;
 
   const phase = getStreamPhase(chatId);
-  const phaseAllowed = phase === STREAM_PHASES.PENDING_TOOL
-    || phase === STREAM_PHASES.STREAMING_TOOL
-    || phase === STREAM_PHASES.STREAMING_ASSISTANT
-    || phase === STREAM_PHASES.FINALIZED
-    || phase === STREAM_PHASES.ERROR;
+  const phaseAllowed = isPatchPhaseAllowed(phase);
   if (!phaseAllowed) {
     renderTraceLog("stream-assistant-phase-mismatch", { chatId: Number(chatId), phase });
     return false;
@@ -2057,11 +2097,7 @@ function patchVisibleToolTrace(chatId) {
   if (Number(chatId) !== Number(activeChatId)) return false;
 
   const phase = getStreamPhase(chatId);
-  const phaseAllowed = phase === STREAM_PHASES.PENDING_TOOL
-    || phase === STREAM_PHASES.STREAMING_TOOL
-    || phase === STREAM_PHASES.STREAMING_ASSISTANT
-    || phase === STREAM_PHASES.FINALIZED
-    || phase === STREAM_PHASES.ERROR;
+  const phaseAllowed = isPatchPhaseAllowed(phase);
   if (!phaseAllowed) {
     renderTraceLog("stream-tool-phase-mismatch", { chatId: Number(chatId), phase });
     return false;
@@ -2172,12 +2208,21 @@ async function removeActiveChat() {
   if (!activeChatId) return;
   ensureSilentCloseTabAllowed(activeChatId);
   const currentChatId = Number(activeChatId);
+  const removedChatSnapshot = chats.get(currentChatId) || pinnedChats.get(currentChatId) || null;
+  const removedWasPinned = Boolean(removedChatSnapshot?.is_pinned);
   const data = await apiPost("/api/chats/remove", { chat_id: currentChatId });
   syncChats(data.chats || []);
   syncPinnedChats(data.pinned_chats || []);
+  if (removedWasPinned && !pinnedChats.has(currentChatId) && removedChatSnapshot) {
+    pinnedChats.set(currentChatId, normalizeChat(removedChatSnapshot, { forcePinned: true }));
+  }
   histories.delete(Number(data.removed_chat_id));
-  pendingChats.delete(Number(data.removed_chat_id));
-  streamPhaseByChat.delete(Number(data.removed_chat_id));
+  clearChatStreamState({
+    chatId: Number(data.removed_chat_id),
+    pendingChats,
+    streamPhaseByChat,
+    unseenStreamChats,
+  });
   latencyByChat.delete(Number(data.removed_chat_id));
   histories.set(Number(data.active_chat_id), data.history || []);
   upsertChat(data.active_chat);
@@ -2424,248 +2469,90 @@ async function saveSkinPreference(skin) {
   setSkin(data.skin);
 }
 
-function applyDonePayload(chatId, payload, builtReplyRef, { updateUnread = true } = {}) {
-  builtReplyRef.value = payload.reply || builtReplyRef.value;
-  finalizeInlineToolTrace(chatId);
-  updatePendingAssistant(chatId, builtReplyRef.value, false);
-  markStreamUpdate(chatId);
-  const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, false);
-  const patchedToolTrace = patchVisibleToolTrace(chatId);
-  renderTraceLog("stream-done-patch", {
-    chatId: Number(chatId),
-    patchedAssistant,
-    patchedToolTrace,
-    fallbackRender: !patchedAssistant || !patchedToolTrace,
+const streamController = streamControllerHelpers.createController({
+  parseSseEvent,
+  formatLatency,
+  STREAM_PHASES,
+  getStreamPhase,
+  setStreamPhase,
+  isPatchPhaseAllowed,
+  chats,
+  pendingChats,
+  chatLabel,
+  compactChatLabel,
+  setStreamStatus,
+  setActivityChip,
+  sourceChip,
+  streamChip,
+  latencyChip,
+  finalizeInlineToolTrace,
+  updatePendingAssistant,
+  markStreamUpdate,
+  patchVisiblePendingAssistant,
+  patchVisibleToolTrace,
+  renderTraceLog,
+  syncActiveMessageView,
+  scheduleActiveMessageView,
+  setChatLatency,
+  incrementUnread,
+  getActiveChatId: () => Number(activeChatId),
+  triggerIncomingMessageHaptic,
+  messagesEl,
+  promptEl,
+  isMobileQuoteMode: () => mobileQuoteMode,
+  isDesktopViewport,
+  maybeMarkRead,
+  refreshChats,
+  renderTabs,
+  updateComposerState,
+  syncClosingConfirmation,
+  appendSystemMessage,
+  appendInlineToolTrace,
+  streamDebugLog,
+  finalizeStreamPendingState,
+});
+
+function finalizeStreamPendingState(chatId, wasAborted) {
+  finalizeChatStreamState({
+    chatId,
+    wasAborted,
+    pendingChats,
+    chats,
+    setStreamPhase,
   });
-  if (!patchedAssistant || !patchedToolTrace) {
-    syncActiveMessageView(chatId, { preserveViewport: true });
-  }
-  setChatLatency(chatId, formatLatency(payload.latency_ms));
-  setStreamStatus(`Reply received in ${chatLabel(chatId)}`);
-  setActivityChip(streamChip, `stream: complete · ${compactChatLabel(chatId)}`);
-  if (updateUnread && Number(activeChatId) !== chatId) {
-    incrementUnread(chatId);
-    renderTabs();
-  }
+}
+
+function applyDonePayload(chatId, payload, builtReplyRef, options = {}) {
+  return streamController.applyDonePayload(chatId, payload, builtReplyRef, options);
 }
 
 function handleStreamEvent(chatId, eventName, payload, builtReplyRef) {
-  if (!payload) {
-    return false;
-  }
-
-  if (eventName === "meta") {
-    const detail = String(payload?.detail || "").toLowerCase();
-    if (detail.includes("running") || payload?.job_status === "running") {
-      if (getStreamPhase(chatId) === STREAM_PHASES.IDLE) {
-        setStreamPhase(chatId, STREAM_PHASES.PENDING_TOOL);
-      }
-    }
-  }
-
-  if (eventName === "meta" && payload.skin) {
-    // Stream meta can be delayed (queued/resume) and may carry stale skin values from
-    // when a job started. Applying it here can unexpectedly revert an operator's
-    // newly selected skin while another chat is still streaming.
-    renderTraceLog("stream-meta-skin-ignored", {
-      chatId: Number(chatId),
-      incomingSkin: payload.skin,
-      currentSkin,
-    });
-  }
-  if (eventName === "meta" && payload.source) {
-    setActivityChip(sourceChip, `source: ${payload.source}`);
-  }
-  if (eventName === "meta" && payload.detail) {
-    const detail = String(payload.detail || "").trim();
-    if (detail) {
-      setStreamStatus(`Queue update (${chatLabel(chatId)}): ${detail}`);
-      if (payload.source === "queue") {
-        setActivityChip(streamChip, `stream: ${detail} · ${compactChatLabel(chatId)}`);
-        if (payload.job_status === "running") {
-          const elapsedMs = Number(payload.elapsed_ms);
-          if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
-            setChatLatency(chatId, `${formatLatency(elapsedMs)} · live`);
-          } else {
-            setChatLatency(chatId, "calculating...");
-          }
-        }
-      }
-    }
-    return false;
-  }
-
-  if (eventName === "tool") {
-    setStreamPhase(chatId, STREAM_PHASES.STREAMING_TOOL);
-    const display = payload.display || payload.preview || payload.tool_name || "Tool running";
-    appendInlineToolTrace(chatId, display);
-    markStreamUpdate(chatId);
-    const patchedToolTrace = patchVisibleToolTrace(chatId);
-    renderTraceLog("stream-tool-patch", {
-      chatId: Number(chatId),
-      phase: getStreamPhase(chatId),
-      patchedToolTrace,
-      fallbackRender: !patchedToolTrace,
-    });
-    if (!patchedToolTrace) {
-      scheduleActiveMessageView(chatId);
-    }
-    setStreamStatus(`Using tools in ${chatLabel(chatId)}`);
-    setActivityChip(streamChip, `stream: tools active · ${compactChatLabel(chatId)}`);
-    return false;
-  }
-
-  if (eventName === "chunk") {
-    setStreamPhase(chatId, STREAM_PHASES.STREAMING_ASSISTANT);
-    builtReplyRef.value += payload.text || "";
-    updatePendingAssistant(chatId, builtReplyRef.value, true);
-    markStreamUpdate(chatId);
-    const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, true);
-    renderTraceLog("stream-chunk-patch", {
-      chatId: Number(chatId),
-      phase: getStreamPhase(chatId),
-      patchedAssistant,
-      fallbackRender: !patchedAssistant,
-      chunkLength: String(payload.text || "").length,
-      replyLength: builtReplyRef.value.length,
-    });
-    if (!patchedAssistant) {
-      scheduleActiveMessageView(chatId);
-    }
-    return false;
-  }
-
-  if (eventName === "error") {
-    setStreamPhase(chatId, STREAM_PHASES.ERROR);
-    finalizeInlineToolTrace(chatId);
-    updatePendingAssistant(chatId, payload.error || "Hermes stream failed.", false);
-    markStreamUpdate(chatId);
-    syncActiveMessageView(chatId, { preserveViewport: true });
-    setStreamStatus("Stream error");
-    setActivityChip(streamChip, "stream: error");
-    return false;
-  }
-
-  if (eventName === "done") {
-    setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
-    applyDonePayload(chatId, payload, builtReplyRef);
-    return true;
-  }
-
-  return false;
+  return streamController.handleStreamEvent(chatId, eventName, payload, builtReplyRef);
 }
 
 function applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent) {
-  setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
-  const fallbackReply = builtReplyRef.value || "The response ended before completion.";
-  finalizeInlineToolTrace(chatId);
-  updatePendingAssistant(chatId, fallbackReply, false);
-  markStreamUpdate(chatId);
-  const patchedAssistant = patchVisiblePendingAssistant(chatId, fallbackReply, false);
-  const patchedToolTrace = patchVisibleToolTrace(chatId);
-  renderTraceLog(fallbackTraceEvent, {
-    chatId: Number(chatId),
-    patchedAssistant,
-    patchedToolTrace,
-    fallbackRender: !patchedAssistant || !patchedToolTrace,
-  });
-  if (!patchedAssistant || !patchedToolTrace) {
-    syncActiveMessageView(chatId, { preserveViewport: true });
-  }
-  setStreamStatus("Stream closed early");
-  setActivityChip(streamChip, "stream: closed early");
-  if (Number(activeChatId) !== chatId) {
-    incrementUnread(chatId);
-  }
+  return streamController.applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent);
 }
 
-async function consumeStreamResponse(chatId, response, builtReplyRef, { fallbackTraceEvent } = {}) {
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let doneReceived = false;
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() || "";
-
-    for (const rawEvent of events) {
-      const parsed = parseSseEvent(rawEvent);
-      if (!parsed) continue;
-      const eventName = parsed.eventName || parsed.event || "message";
-      const payload = parsed.payload;
-      streamDebugLog("sse-event", {
-        chatId: Number(chatId),
-        eventName,
-        payloadKeys: payload && typeof payload === "object" ? Object.keys(payload) : [],
-      });
-      if (handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
-        doneReceived = true;
-      }
-    }
-  }
-
-  if (buffer.trim()) {
-    const parsed = parseSseEvent(buffer.trim());
-    const eventName = parsed?.eventName || parsed?.event || "message";
-    const payload = parsed?.payload;
-    streamDebugLog("sse-buffer-tail", {
-      chatId: Number(chatId),
-      eventName,
-      hasPayload: Boolean(payload),
-    });
-    if (eventName === "done" && payload) {
-      applyDonePayload(chatId, payload, builtReplyRef, { updateUnread: false });
-      doneReceived = true;
-    }
-  }
-
-  if (!doneReceived) {
-    applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent);
-  }
+async function consumeStreamResponse(chatId, response, builtReplyRef, options = {}) {
+  return streamController.consumeStreamResponse(chatId, response, builtReplyRef, options);
 }
 
-function focusPromptIfActiveChat(chatId) {
-  if (Number(activeChatId) !== Number(chatId) || document.visibilityState !== "visible" || mobileQuoteMode) {
+async function finalizeStreamLifecycle(chatId, controller, { wasAborted }) {
+  return streamController.finalizeStreamLifecycle(chatId, controller, { wasAborted });
+}
+
+function focusMessagesPaneIfActiveChat(chatId) {
+  if (!messagesEl) return;
+  if (Number(activeChatId) !== Number(chatId) || document.visibilityState !== "visible") {
     return;
   }
+  if (mobileQuoteMode || !isDesktopViewport()) return;
   try {
-    promptEl.focus({ preventScroll: true });
+    messagesEl.focus({ preventScroll: true });
   } catch {
-    promptEl.focus();
+    messagesEl.focus();
   }
-}
-
-async function finalizeStreamLifecycle(chatId, streamController, { wasAborted }) {
-  clearStreamAbortController(chatId, streamController);
-  if (wasAborted) {
-    setStreamPhase(chatId, STREAM_PHASES.IDLE);
-    return;
-  }
-
-  pendingChats.delete(chatId);
-  if (chats.has(chatId)) {
-    chats.get(chatId).pending = false;
-  }
-  syncClosingConfirmation();
-
-  try {
-    if (Number(activeChatId) === Number(chatId)) {
-      maybeMarkRead(Number(chatId));
-    } else {
-      await refreshChats();
-    }
-  } catch (error) {
-    appendSystemMessage(`Failed to sync chat state: ${error.message}`);
-  }
-
-  renderTabs();
-  updateComposerState();
-  setStreamPhase(chatId, STREAM_PHASES.IDLE);
-  focusPromptIfActiveChat(chatId);
 }
 
 async function sendPrompt(message) {
@@ -2684,11 +2571,12 @@ async function sendPrompt(message) {
     return;
   }
 
-  pendingChats.add(chatId);
-  if (chats.has(chatId)) {
-    chats.get(chatId).pending = true;
-  }
-  setStreamPhase(chatId, STREAM_PHASES.PENDING_TOOL);
+  markChatStreamPending({
+    chatId,
+    pendingChats,
+    chats,
+    setStreamPhase,
+  });
   syncClosingConfirmation();
   renderTabs();
   updateComposerState();
@@ -2699,6 +2587,7 @@ async function sendPrompt(message) {
     setDraft(chatId, "");
   }
   syncActiveMessageView(chatId, { preserveViewport: true });
+  focusMessagesPaneIfActiveChat(chatId);
 
   resetToolStream();
   const chatLabelCompact = compactChatLabel(chatId);
@@ -2765,21 +2654,15 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
   if (!Boolean(chats.get(key)?.pending)) return;
 
   if (force && hasLiveController) {
-    const existingController = streamAbortControllers.get(key);
-    if (existingController) {
-      try {
-        existingController.abort();
-      } catch {
-        // best effort
-      }
-    }
+    abortStreamController(key);
   }
 
-  pendingChats.add(key);
-  if (chats.has(key)) {
-    chats.get(key).pending = true;
-  }
-  setStreamPhase(key, STREAM_PHASES.PENDING_TOOL);
+  markChatStreamPending({
+    chatId: key,
+    pendingChats,
+    chats,
+    setStreamPhase,
+  });
   syncClosingConfirmation();
   renderTabs();
   updateComposerState();
@@ -3031,13 +2914,16 @@ function isTextEntryElement(element) {
 function handleGlobalTabCycle(event) {
   if (event.defaultPrevented) return;
   if (event.isComposing) return;
-  if (event.key !== "Tab") return;
   if (event.altKey || event.ctrlKey || event.metaKey) return;
-  if (mobileQuoteMode) return;
+  if (mobileQuoteMode || !isDesktopViewport()) return;
   if (settingsModal?.open) return;
 
+  const isArrowLeft = event.key === "ArrowLeft";
+  const isArrowRight = event.key === "ArrowRight";
+  if (!isArrowLeft && !isArrowRight) return;
+
   const target = event.target;
-  if (isTextEntryElement(target) && target !== promptEl) {
+  if (isTextEntryElement(target)) {
     return;
   }
 
@@ -3047,7 +2933,7 @@ function handleGlobalTabCycle(event) {
   const nextChatId = runtimeHelpers.getNextChatTabId({
     orderedChatIds: getOrderedChatIds(),
     activeChatId: current,
-    reverse: Boolean(event.shiftKey),
+    reverse: isArrowLeft,
   });
   if (!nextChatId || nextChatId === current) return;
 
@@ -3066,6 +2952,14 @@ function isDesktopViewport() {
   return Number(window.innerWidth || 0) >= 861;
 }
 
+function scrollMessagesByArrow(direction) {
+  if (!messagesEl) return;
+  const viewportHeight = Number(messagesEl.clientHeight || 0);
+  const baseStep = Math.max(56, Math.floor(viewportHeight * 0.18));
+  const delta = direction === "down" ? baseStep : -baseStep;
+  messagesEl.scrollTop = Math.max(0, Number(messagesEl.scrollTop || 0) + delta);
+}
+
 function handleGlobalArrowJump(event) {
   if (event.defaultPrevented) return;
   if (event.isComposing) return;
@@ -3076,19 +2970,55 @@ function handleGlobalArrowJump(event) {
   const target = event.target;
   if (isTextEntryElement(target)) return;
 
-  if (!event.shiftKey) return;
+  if (event.shiftKey) {
+    if (event.key === "ArrowDown") {
+      if (jumpLatestButton?.hidden) return;
+      event.preventDefault();
+      handleJumpLatest();
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      if (jumpLastStartButton?.hidden) return;
+      event.preventDefault();
+      handleJumpLastStart();
+    }
+    return;
+  }
 
   if (event.key === "ArrowDown") {
-    if (jumpLatestButton?.hidden) return;
     event.preventDefault();
-    handleJumpLatest();
+    scrollMessagesByArrow("down");
     return;
   }
 
   if (event.key === "ArrowUp") {
-    if (jumpLastStartButton?.hidden) return;
     event.preventDefault();
-    handleJumpLastStart();
+    scrollMessagesByArrow("up");
+  }
+}
+
+function handleGlobalComposerFocusShortcut(event) {
+  if (event.defaultPrevented) return;
+  if (event.isComposing) return;
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  if (mobileQuoteMode || !isDesktopViewport()) return;
+  if (settingsModal?.open) return;
+  if (event.key !== "Enter" || event.shiftKey) return;
+
+  const target = event.target;
+  if (isTextEntryElement(target)) return;
+  if (Number(activeChatId) <= 0) return;
+
+  const activeElement = document.activeElement;
+  const focusedInMessages = activeElement === messagesEl || messagesEl?.contains?.(activeElement);
+  if (!focusedInMessages) return;
+
+  event.preventDefault();
+  try {
+    promptEl.focus({ preventScroll: true });
+  } catch {
+    promptEl.focus();
   }
 }
 
@@ -3142,6 +3072,7 @@ tabsEl.addEventListener("click", handleTabClick);
 pinnedChatsEl?.addEventListener("click", handlePinnedChatClick);
 document.addEventListener("keydown", handleGlobalTabCycle);
 document.addEventListener("keydown", handleGlobalArrowJump);
+document.addEventListener("keydown", handleGlobalComposerFocusShortcut);
 messagesEl.addEventListener("scroll", handleMessagesScroll);
 jumpLatestButton?.addEventListener("click", handleJumpLatest);
 jumpLastStartButton?.addEventListener("click", handleJumpLastStart);
@@ -3389,7 +3320,7 @@ async function syncVisibleActiveChat() {
     hidden: document.visibilityState !== "visible",
     activeChatId: activeId,
     pendingChats,
-    streamAbortControllers,
+    streamAbortControllers: getStreamAbortControllers(),
   });
   const serverPendingWithoutLiveStream = Boolean(data.chat?.pending) && !hasLiveStreamController(activeId);
   if (needsVisibilityResume || serverPendingWithoutLiveStream) {
