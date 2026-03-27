@@ -4,6 +4,7 @@ from dataclasses import asdict
 from typing import Any, Callable, TypeVar
 
 from routes_chat_context import ChatRouteContext
+from routes_chat_resolution import user_and_chat_id_or_error
 
 
 T = TypeVar("T")
@@ -50,15 +51,12 @@ def register_chat_management_routes(
     def _require_json_user_and_chat_id(
         payload: dict[str, object],
     ) -> tuple[str | None, int | None, tuple[dict[str, object], int] | None]:
-        user_id, auth_error = _require_json_user_id(payload)
-        if auth_error:
-            return None, None, auth_error
-
-        chat_id, chat_id_error = chat_id_from_payload_or_error_fn(payload, user_id=user_id)
-        if chat_id_error:
-            return None, None, chat_id_error
-
-        return user_id, chat_id, None
+        return user_and_chat_id_or_error(
+            payload,
+            user_id_from_payload_or_error_fn=_require_json_user_id,
+            chat_id_from_payload_or_error_fn=chat_id_from_payload_or_error_fn,
+            map_chat_id_payload_error_fn=lambda payload_error: payload_error,
+        )
 
     def _json_user_from_request(
     ) -> tuple[dict[str, object], str | None, tuple[dict[str, object], int] | None]:
