@@ -363,6 +363,7 @@ def mini_app() -> Response:
             dev_reload=DEV_RELOAD,
             dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
             dev_reload_version=_dev_reload_version(),
+            request_debug=REQUEST_DEBUG,
             boot_skin=boot_skin,
             csp_nonce=_ensure_csp_nonce(),
             max_message_len=MAX_MESSAGE_LEN,
