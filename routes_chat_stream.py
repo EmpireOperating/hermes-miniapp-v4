@@ -7,6 +7,7 @@ from typing import Any, Callable, Iterator, TypeVar
 
 from flask import Response, g
 
+from routes_chat_error_mapping import map_chat_id_payload_error_to_sse
 from routes_chat_context import ChatRouteContext
 
 
@@ -50,11 +51,7 @@ def register_stream_routes(
     ) -> tuple[int | None, Response | None]:
         chat_id, payload_error = chat_id_from_payload_or_error_fn(payload, user_id=user_id)
         if payload_error:
-            message = str(payload_error[0].get("error") or "Invalid chat_id.")
-            status = int(payload_error[1] or 400)
-            if status == 404:
-                return None, sse_error_fn(message, 404)
-            return None, sse_error_fn(message, 400)
+            return None, map_chat_id_payload_error_to_sse(payload_error, sse_error_fn=sse_error_fn)
         try:
             store_getter().set_active_chat(user_id=user_id, chat_id=int(chat_id))
         except KeyError as exc:
