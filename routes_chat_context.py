@@ -16,7 +16,10 @@ class ChatRouteContext:
     json_user_id_or_error_fn: Callable[[dict[str, object]], tuple[str | None, tuple[dict[str, object], int] | None]]
     verify_for_json_fn: Callable[[dict[str, object]], tuple[Any | None, tuple[dict[str, object], int] | None]]
     verify_for_sse_fn: Callable[[dict[str, object]], tuple[Any | None, Response | None]]
-    chat_id_from_payload_or_error_fn: Callable[[dict[str, object]], tuple[int | None, tuple[dict[str, object], int] | None]]
+    chat_id_from_payload_or_error_fn: Callable[
+        [dict[str, object], str],
+        tuple[int | None, tuple[dict[str, object], int] | None],
+    ]
     chat_id_from_payload_fn: Callable[[dict[str, object], str], int]
     validated_title_fn: Callable[[object, str], str]
     validated_message_fn: Callable[[object], str]

@@ -22,17 +22,23 @@ def register_sync_chat_routes(
     client_getter = context.client_getter
     request_payload_fn = context.request_payload_fn
     verify_for_json_fn = context.verify_for_json_fn
-    chat_id_from_payload_fn = context.chat_id_from_payload_fn
+    chat_id_from_payload_or_error_fn = context.chat_id_from_payload_or_error_fn
     validated_message_fn = context.validated_message_fn
     json_error_fn = context.json_error_fn
 
     def _chat_history(user_id: str, chat_id: int, *, limit: int = 120) -> list[dict[str, object]]:
         return [asdict(turn) for turn in store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
 
-    def _resolve_active_chat(payload: dict[str, object], *, user_id: str) -> int:
-        chat_id = chat_id_from_payload_fn(payload, user_id)
-        store_getter().set_active_chat(user_id=user_id, chat_id=chat_id)
-        return chat_id
+    def _resolve_active_chat_or_error(
+        payload: dict[str, object],
+        *,
+        user_id: str,
+    ) -> tuple[int | None, tuple[dict[str, object], int] | None]:
+        chat_id, payload_error = chat_id_from_payload_or_error_fn(payload, user_id=user_id)
+        if payload_error:
+            return None, payload_error
+        store_getter().set_active_chat(user_id=user_id, chat_id=int(chat_id))
+        return int(chat_id), None
 
     def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
         return store_getter().add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
@@ -46,16 +52,19 @@ def register_sync_chat_routes(
     def _json_bad_request(exc: Exception) -> tuple[dict[str, object], int]:
         return json_error_fn(str(exc), 400)
 
+    def _json_not_found(exc: Exception) -> tuple[dict[str, object], int]:
+        return json_error_fn(str(exc), 404)
+
     def _verified_user_id(verified: Any) -> str:
         return str(verified.user.id)
 
-    def _json_try_bad_request(
+    def _json_try_not_found(
         action: Callable[[], T],
     ) -> tuple[T | None, tuple[dict[str, object], int] | None]:
         try:
             return action(), None
-        except (KeyError, ValueError) as exc:
-            return None, _json_bad_request(exc)
+        except KeyError as exc:
+            return None, _json_not_found(exc)
 
     @api_bp.post("/chat")
     def chat() -> tuple[object, int]:
@@ -71,16 +80,21 @@ def register_sync_chat_routes(
 
         user_id = _verified_user_id(verified)
 
-        def _action() -> int:
-            chat_id = _resolve_active_chat(payload, user_id=user_id)
-            _add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
-            return chat_id
+        chat_id, chat_id_error = _resolve_active_chat_or_error(payload, user_id=user_id)
+        if chat_id_error:
+            return chat_id_error
 
-        chat_id, bad_request_error = _json_try_bad_request(_action)
-        if bad_request_error:
-            return bad_request_error
+        _, not_found_error = _json_try_not_found(
+            lambda: _add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
+        )
+        if not_found_error:
+            return not_found_error
 
-        history = _chat_history(user_id=user_id, chat_id=chat_id, limit=120)
+        history, history_error = _json_try_not_found(
+            lambda: _chat_history(user_id=user_id, chat_id=chat_id, limit=120)
+        )
+        if history_error:
+            return history_error
 
         started = time.perf_counter()
         try:
