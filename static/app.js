@@ -15,6 +15,10 @@ const chatUiHelpers = window.HermesMiniappChatUI;
 if (!chatUiHelpers) {
   throw new Error("HermesMiniappChatUI is required before app.js");
 }
+const messageActionsHelpers = window.HermesMiniappMessageActions;
+if (!messageActionsHelpers) {
+  throw new Error("HermesMiniappMessageActions is required before app.js");
+}
 const { parseSseEvent, formatMessageTime, nowStamp, formatLatency, escapeHtml, cleanDisplayText, copyTextToClipboard } = sharedUtils;
 const authStatus = document.getElementById("auth-status");
 const streamStatus = document.getElementById("stream-status");
@@ -159,37 +163,6 @@ const selectionQuoteState = {
       this.timers[name] = null;
       callback();
     }, safeDelay);
-  },
-};
-const messageCopyState = {
-  minHandledIntervalMs: 350,
-  handledAtByButton: new WeakMap(),
-  resetTimerByButton: new WeakMap(),
-
-  wasHandledRecently(button, now = Date.now()) {
-    const lastHandledAt = Number(this.handledAtByButton.get(button) || 0);
-    return now - lastHandledAt < this.minHandledIntervalMs;
-  },
-
-  markHandled(button, now = Date.now()) {
-    this.handledAtByButton.set(button, Number(now) || Date.now());
-  },
-
-  cancelReset(button) {
-    const timerId = this.resetTimerByButton.get(button);
-    if (!timerId) return;
-    window.clearTimeout(timerId);
-    this.resetTimerByButton.delete(button);
-  },
-
-  scheduleReset(button, delayMs, callback) {
-    this.cancelReset(button);
-    const safeDelay = Math.max(0, Number(delayMs) || 0);
-    const timerId = window.setTimeout(() => {
-      this.resetTimerByButton.delete(button);
-      callback();
-    }, safeDelay);
-    this.resetTimerByButton.set(button, timerId);
   },
 };
 const mobileQuoteMode = isCoarsePointer();
@@ -3011,54 +2984,17 @@ const selectionQuoteController = {
   },
 };
 
-function copyTextFromMessageButton(copyButton) {
-  const messageNode = copyButton.closest(".message");
-  const bodyNode = messageNode?.querySelector(".message__body");
-  const rawText = bodyNode?.innerText || bodyNode?.textContent || "";
-  return normalizeQuoteSelection(rawText);
-}
-
-function setCopyButtonFeedback(copyButton, copied) {
-  copyButton.classList.remove("is-copied", "is-error");
-  copyButton.textContent = copied ? "✓" : "!";
-  copyButton.setAttribute("aria-label", copied ? "Copied" : "Copy failed");
-  copyButton.title = copied ? "Copied" : "Copy failed";
-  copyButton.classList.add(copied ? "is-copied" : "is-error");
-}
-
-function resetCopyButtonFeedback(copyButton) {
-  copyButton.classList.remove("is-copied", "is-error");
-  copyButton.textContent = "⧉";
-  copyButton.setAttribute("aria-label", "Copy message");
-  copyButton.title = "Copy message";
-}
-
-async function handleMessageCopy(event) {
-  const copyButton = event.target.closest(".message__copy");
-  if (!copyButton || !messagesEl.contains(copyButton)) return;
-
-  event.preventDefault();
-  event.stopPropagation();
-
-  const now = Date.now();
-  if (messageCopyState.wasHandledRecently(copyButton, now)) {
-    return;
-  }
-  messageCopyState.markHandled(copyButton, now);
-
-  const copyText = copyTextFromMessageButton(copyButton);
-  const copied = await copyTextToClipboard(copyText);
-
-  setCopyButtonFeedback(copyButton, copied);
-  messageCopyState.scheduleReset(copyButton, copied ? 1200 : 1600, () => {
-    resetCopyButtonFeedback(copyButton);
-  });
-}
+const messageCopyState = messageActionsHelpers.createMessageCopyState();
 
 // Use click (not pointerdown) for clipboard writes.
 // Some Telegram WebView variants reject clipboard operations on pointerdown
 // but allow them on click as a trusted user activation.
-messagesEl.addEventListener("click", handleMessageCopy);
+messageActionsHelpers.bindMessageCopyHandler({
+  messagesEl,
+  messageCopyState,
+  normalizeText: normalizeQuoteSelection,
+  copyTextToClipboard,
+});
 selectionQuoteController.bind();
 
 function getOrderedChatIds() {

@@ -193,6 +193,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
             "runtime_helpers.js": "helpers-v",
             "app_shared_utils.js": "shared-v",
             "chat_ui_helpers.js": "chat-ui-v",
+            "message_actions_helpers.js": "actions-v",
             "app.js": "app-v",
         }[filename]
 
@@ -204,12 +205,14 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     runtime_src = '/static/runtime_helpers.js?v=helpers-v'
     shared_src = '/static/app_shared_utils.js?v=shared-v'
     chat_ui_src = '/static/chat_ui_helpers.js?v=chat-ui-v'
+    actions_src = '/static/message_actions_helpers.js?v=actions-v'
     app_src = '/static/app.js?v=app-v'
     assert runtime_src in page
     assert shared_src in page
     assert chat_ui_src in page
+    assert actions_src in page
     assert app_src in page
-    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(app_src)
+    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(actions_src) < page.index(app_src)
 
 
 def test_runtime_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
@@ -234,6 +237,15 @@ def test_chat_ui_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None
     server, client = _client(monkeypatch, tmp_path)
 
     response = client.get("/static/chat_ui_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_message_actions_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/message_actions_helpers.js")
 
     assert response.status_code == 200
     assert response.headers.get("Cache-Control") == "no-store, max-age=0"
@@ -361,3 +373,16 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     # Close tab should be silent (no confirm helper UX); it only removes from active tabs via API.
     assert 'const ok = await confirmAction(`Close chat' not in script
     assert 'await apiPost("/api/chats/remove", { chat_id: currentChatId });' in script
+
+
+def test_message_action_copy_helpers_are_split_to_module() -> None:
+    template = _read_repo_file("templates", "app.html")
+    script = _read_repo_file("static", "app.js")
+    actions_script = _read_repo_file("static", "message_actions_helpers.js")
+
+    assert "HermesMiniappMessageActions" in actions_script
+    assert "function bindMessageCopyHandler" in actions_script
+    assert "createMessageCopyState" in actions_script
+    assert "bindMessageCopyHandler({" in script
+    assert "messageActionsHelpers.createMessageCopyState()" in script
+    assert '/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}' in template
