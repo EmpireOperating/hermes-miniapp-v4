@@ -7,6 +7,7 @@ from typing import Any, Callable, TypeVar
 from flask import jsonify
 
 from hermes_client import HermesClientError
+from routes_chat_error_mapping import map_chat_id_payload_error_to_json
 from routes_chat_context import ChatRouteContext
 
 
@@ -36,7 +37,7 @@ def register_sync_chat_routes(
     ) -> tuple[int | None, tuple[dict[str, object], int] | None]:
         chat_id, payload_error = chat_id_from_payload_or_error_fn(payload, user_id=user_id)
         if payload_error:
-            return None, payload_error
+            return None, map_chat_id_payload_error_to_json(payload_error, json_error_fn=json_error_fn)
         try:
             store_getter().set_active_chat(user_id=user_id, chat_id=int(chat_id))
         except KeyError as exc:
@@ -51,9 +52,6 @@ def register_sync_chat_routes(
         if auth_error:
             return None, auth_error
         return verified, None
-
-    def _json_bad_request(exc: Exception) -> tuple[dict[str, object], int]:
-        return json_error_fn(str(exc), 400)
 
     def _json_not_found(exc: Exception) -> tuple[dict[str, object], int]:
         return json_error_fn(str(exc), 404)
