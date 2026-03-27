@@ -7,8 +7,9 @@ from typing import Any, Callable, TypeVar
 from flask import jsonify
 
 from hermes_client import HermesClientError
-from routes_chat_error_mapping import map_chat_id_payload_error_to_json
 from routes_chat_context import ChatRouteContext
+from routes_chat_error_mapping import map_chat_id_payload_error_to_json
+from routes_chat_resolution import active_chat_id_or_error, verified_user_id_or_error
 
 
 T = TypeVar("T")
@@ -30,34 +31,28 @@ def register_sync_chat_routes(
     def _chat_history(user_id: str, chat_id: int, *, limit: int = 120) -> list[dict[str, object]]:
         return [asdict(turn) for turn in store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
 
+    def _json_not_found(exc: Exception) -> tuple[dict[str, object], int]:
+        return json_error_fn(str(exc), 404)
+
     def _resolve_active_chat_or_error(
         payload: dict[str, object],
         *,
         user_id: str,
     ) -> tuple[int | None, tuple[dict[str, object], int] | None]:
-        chat_id, payload_error = chat_id_from_payload_or_error_fn(payload, user_id=user_id)
-        if payload_error:
-            return None, map_chat_id_payload_error_to_json(payload_error, json_error_fn=json_error_fn)
-        try:
-            store_getter().set_active_chat(user_id=user_id, chat_id=int(chat_id))
-        except KeyError as exc:
-            return None, _json_not_found(exc)
-        return int(chat_id), None
+        return active_chat_id_or_error(
+            payload,
+            user_id=user_id,
+            chat_id_from_payload_or_error_fn=chat_id_from_payload_or_error_fn,
+            map_chat_id_payload_error_fn=lambda payload_error: map_chat_id_payload_error_to_json(
+                payload_error,
+                json_error_fn=json_error_fn,
+            ),
+            set_active_chat_fn=lambda chat_id: store_getter().set_active_chat(user_id=user_id, chat_id=chat_id),
+            not_found_error_fn=_json_not_found,
+        )
 
     def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
         return store_getter().add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
-
-    def _require_verified_json(payload: dict[str, object]) -> tuple[Any | None, tuple[dict[str, object], int] | None]:
-        verified, auth_error = verify_for_json_fn(payload)
-        if auth_error:
-            return None, auth_error
-        return verified, None
-
-    def _json_not_found(exc: Exception) -> tuple[dict[str, object], int]:
-        return json_error_fn(str(exc), 404)
-
-    def _verified_user_id(verified: Any) -> str:
-        return str(verified.user.id)
 
     def _json_try_not_found(
         action: Callable[[], T],
@@ -75,11 +70,9 @@ def register_sync_chat_routes(
         except ValueError as exc:
             return json_error_fn(str(exc), 400)
 
-        verified, auth_error = _require_verified_json(payload)
+        user_id, auth_error = verified_user_id_or_error(payload, verify_fn=verify_for_json_fn)
         if auth_error:
             return auth_error
-
-        user_id = _verified_user_id(verified)
 
         chat_id, chat_id_error = _resolve_active_chat_or_error(payload, user_id=user_id)
         if chat_id_error:
