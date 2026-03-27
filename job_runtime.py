@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -8,6 +9,9 @@ from typing import Callable
 
 from hermes_client import HermesClient, HermesClientError
 from store import SessionStore
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class JobRetryableError(Exception):
@@ -40,6 +44,8 @@ class JobRuntime:
         self.job_retry_base_seconds = int(job_retry_base_seconds)
         self.job_worker_concurrency = max(1, int(job_worker_concurrency))
         self.job_stall_timeout_seconds = max(60, int(job_stall_timeout_seconds))
+        # Keep running jobs alive even when upstream model providers are silent for long stretches.
+        self.job_keepalive_interval_seconds = max(5.0, min(30.0, self.job_stall_timeout_seconds / 6.0))
         self.assistant_chunk_len = int(assistant_chunk_len)
         self.assistant_hard_limit = int(assistant_hard_limit)
         self.job_event_history_max_jobs = max(32, int(job_event_history_max_jobs))
@@ -57,13 +63,23 @@ class JobRuntime:
         self._watchdog_started = False
         self._watchdog_lock = threading.Lock()
 
+        self.job_touch_min_interval_seconds = 1.5
+        self._touch_lock = threading.Lock()
+        self._last_touch_by_job: dict[int, float] = {}
+
+        self._best_effort_failure_lock = threading.Lock()
+        self._best_effort_failure_counts: dict[str, int] = {
+            "touch_job_write": 0,
+            "system_message_write": 0,
+        }
+
     def publish_job_event(self, job_id: int, event_name: str, payload: dict[str, object]) -> None:
         event = {"event": event_name, "payload": payload}
-        if event_name not in {"done", "error"}:
-            try:
-                self.store.touch_job(job_id)
-            except Exception:
-                pass
+        terminal_events = {"done", "error"}
+        if event_name not in terminal_events:
+            self._touch_job_best_effort(job_id)
+        else:
+            self._clear_touch_tracking(job_id)
 
         with self._event_lock:
             history = self._event_history.setdefault(job_id, [])
@@ -78,8 +94,30 @@ class JobRuntime:
         for subscriber in subscribers:
             try:
                 subscriber.put_nowait(event)
-            except queue.Full:
                 continue
+            except queue.Full:
+                pass
+
+            if event_name not in terminal_events:
+                # Non-terminal events can be dropped under backpressure.
+                continue
+
+            # Terminal events must be delivered so stream consumers can close.
+            delivered = False
+            for _ in range(4):
+                try:
+                    subscriber.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    subscriber.put_nowait(event)
+                    delivered = True
+                    break
+                except queue.Full:
+                    continue
+
+            if not delivered:
+                LOGGER.warning("job_event_terminal_drop job_id=%s event=%s", job_id, event_name)
 
     def subscribe_job_events(self, job_id: int) -> queue.Queue[dict[str, object]]:
         subscriber: queue.Queue[dict[str, object]] = queue.Queue(maxsize=512)
@@ -106,6 +144,45 @@ class JobRuntime:
                 if history and str(history[-1].get("event") or "") in terminal_events:
                     self._event_history.pop(job_id, None)
                     self._event_timestamps.pop(job_id, None)
+
+    def _clear_touch_tracking(self, job_id: int) -> None:
+        with self._touch_lock:
+            self._last_touch_by_job.pop(int(job_id), None)
+
+    def _record_best_effort_failure(self, kind: str, **context: object) -> int:
+        with self._best_effort_failure_lock:
+            next_count = int(self._best_effort_failure_counts.get(kind, 0)) + 1
+            self._best_effort_failure_counts[kind] = next_count
+
+        details = " ".join(f"{key}={value}" for key, value in sorted(context.items()))
+        if details:
+            LOGGER.warning("best_effort_write_failure kind=%s count=%s %s", kind, next_count, details)
+        else:
+            LOGGER.warning("best_effort_write_failure kind=%s count=%s", kind, next_count)
+        return next_count
+
+    def best_effort_failure_counts(self) -> dict[str, int]:
+        with self._best_effort_failure_lock:
+            return dict(self._best_effort_failure_counts)
+
+    def _touch_job_best_effort(self, job_id: int, *, force: bool = False) -> None:
+        job_id = int(job_id)
+        now = time.monotonic()
+        if not force:
+            with self._touch_lock:
+                last = self._last_touch_by_job.get(job_id, 0.0)
+                if now - last < self.job_touch_min_interval_seconds:
+                    return
+                self._last_touch_by_job[job_id] = now
+        else:
+            with self._touch_lock:
+                self._last_touch_by_job[job_id] = now
+
+        try:
+            self.store.touch_job(job_id)
+        except Exception as exc:  # noqa: BLE001
+            self._record_best_effort_failure("touch_job_write", job_id=job_id, force=bool(force), error=type(exc).__name__)
+            LOGGER.debug("touch_job_best_effort_exception job_id=%s", job_id, exc_info=exc)
 
     def is_stale_chat_job_error(self, exc: Exception) -> bool:
         if not isinstance(exc, KeyError):
@@ -152,6 +229,9 @@ class JobRuntime:
         user_id = str(job["user_id"])
         chat_id = int(job["chat_id"])
         operator_message_id = int(job["operator_message_id"])
+
+        # Avoid stale throttle state leaking across retries/tests for the same job id lifecycle.
+        self._clear_touch_tracking(job_id)
 
         try:
             operator_turn = self.store.get_message(user_id=user_id, chat_id=chat_id, message_id=operator_message_id)
@@ -211,6 +291,21 @@ class JobRuntime:
             },
         )
 
+        keepalive_stop = threading.Event()
+
+        def _keepalive_loop() -> None:
+            interval = max(0.5, float(self.job_keepalive_interval_seconds))
+            while not keepalive_stop.wait(interval):
+                # Keepalive should not be suppressed by event throttle state.
+                self._touch_job_best_effort(job_id, force=True)
+
+        keepalive_thread = threading.Thread(
+            target=_keepalive_loop,
+            name=f"miniapp-job-keepalive-{job_id}",
+            daemon=True,
+        )
+        keepalive_thread.start()
+
         try:
             for event in self.client.stream_events(
                 user_id=user_id,
@@ -243,6 +338,8 @@ class JobRuntime:
                     raise HermesClientError(str(event.get("error") or "Hermes stream failed."))
         except HermesClientError as exc:
             raise JobRetryableError(str(exc)) from exc
+        finally:
+            keepalive_stop.set()
 
         state = self.store.get_job_state(job_id)
         if not state or state.get("status") != "running":
@@ -307,7 +404,20 @@ class JobRuntime:
     def _safe_add_system_message(self, user_id: str, chat_id: int, text: str) -> None:
         try:
             self.store.add_message(user_id=user_id, chat_id=chat_id, role="system", body=text)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            self._record_best_effort_failure(
+                "system_message_write",
+                user_id=user_id,
+                chat_id=int(chat_id),
+                text_len=len(text),
+                error=type(exc).__name__,
+            )
+            LOGGER.debug(
+                "safe_add_system_message_exception user_id=%s chat_id=%s",
+                user_id,
+                chat_id,
+                exc_info=exc,
+            )
             return
 
     def _sweep_stale_running_jobs(self) -> None:
@@ -364,12 +474,31 @@ class JobRuntime:
                 except JobNonRetryableError as exc:
                     error_text = str(exc)
                     self.store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
+                    self._clear_touch_tracking(job_id)
+                    LOGGER.error(
+                        "job_non_retryable job_id=%s user_id=%s chat_id=%s attempts=%s max_attempts=%s error=%s",
+                        job_id,
+                        user_id,
+                        chat_id,
+                        attempts,
+                        max_attempts,
+                        error_text,
+                    )
                     self._safe_add_system_message(user_id=user_id, chat_id=chat_id, text=f"Hermes failed permanently: {error_text}")
                     self.publish_job_event(job_id, "error", {"error": error_text, "chat_id": chat_id, "retrying": False})
                 except JobRetryableError as exc:
                     error_text = str(exc)
                     retrying = self.store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=self.job_retry_base_seconds)
                     if retrying:
+                        LOGGER.warning(
+                            "job_retry_scheduled job_id=%s user_id=%s chat_id=%s attempts=%s max_attempts=%s error=%s",
+                            job_id,
+                            user_id,
+                            chat_id,
+                            attempts,
+                            max_attempts,
+                            error_text,
+                        )
                         self.publish_job_event(
                             job_id,
                             "meta",
@@ -383,16 +512,45 @@ class JobRuntime:
                         )
                         self.wake_event.set()
                     else:
+                        self._clear_touch_tracking(job_id)
+                        LOGGER.error(
+                            "job_retry_exhausted job_id=%s user_id=%s chat_id=%s attempts=%s max_attempts=%s error=%s",
+                            job_id,
+                            user_id,
+                            chat_id,
+                            attempts,
+                            max_attempts,
+                            error_text,
+                        )
                         self._safe_add_system_message(user_id=user_id, chat_id=chat_id, text=f"Hermes failed after {attempts} attempts: {error_text}")
                         self.publish_job_event(job_id, "error", {"error": error_text, "chat_id": chat_id, "retrying": False})
                 except Exception as exc:  # noqa: BLE001
                     if self.is_stale_chat_job_error(exc):
                         error_text = f"Stale chat job dropped: {exc}"
                         self.store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
+                        self._clear_touch_tracking(job_id)
+                        LOGGER.info(
+                            "job_stale_chat_dropped job_id=%s user_id=%s chat_id=%s attempts=%s max_attempts=%s detail=%s",
+                            job_id,
+                            user_id,
+                            chat_id,
+                            attempts,
+                            max_attempts,
+                            exc,
+                        )
                         self.publish_job_event(job_id, "meta", {"chat_id": chat_id, "source": "stale-chat", "detail": str(exc)})
                         continue
                     error_text = f"Unexpected worker failure: {exc}"
                     self.store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
+                    self._clear_touch_tracking(job_id)
+                    LOGGER.exception(
+                        "job_unexpected_failure job_id=%s user_id=%s chat_id=%s attempts=%s max_attempts=%s",
+                        job_id,
+                        user_id,
+                        chat_id,
+                        attempts,
+                        max_attempts,
+                    )
                     self._safe_add_system_message(user_id=user_id, chat_id=chat_id, text=error_text)
                     self.publish_job_event(job_id, "error", {"error": error_text, "chat_id": chat_id, "retrying": False})
 

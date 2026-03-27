@@ -341,10 +341,18 @@ button:focus-visible,
 .danger-button:focus-visible,
 .action-button:focus-visible,
 .terminal-control:focus-visible,
-.chat-tab:focus-visible,
 textarea:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 70%, white);
   outline-offset: 2px;
+}
+
+/* Keyboard shortcuts intentionally move focus across non-form UI surfaces.
+   Keep those focus targets visually quiet so no stray white rails appear. */
+.messages:focus,
+.messages:focus-visible,
+.chat-tab:focus,
+.chat-tab:focus-visible {
+  outline: none;
 }
 
 @media (hover: none) and (pointer: coarse) {
@@ -849,11 +857,12 @@ textarea:disabled {
   .masthead__status-row {
     position: static;
     padding-right: 0;
+    grid-template-columns: minmax(0, 1fr);
   }
   .status-group--settings {
     position: absolute;
-    top: 54px;
     right: 16px;
+    bottom: 16px;
     z-index: 22;
   }
   .messages {

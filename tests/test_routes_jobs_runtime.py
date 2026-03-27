@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
+import queue
 import sqlite3
+import time
 
 from server_test_utils import load_server, patch_verified_user
 
@@ -208,3 +211,128 @@ def test_run_chat_job_persists_runtime_checkpoint_from_done_event(monkeypatch, t
 
     stored = server.store.get_runtime_checkpoint(session_id)
     assert stored == checkpoint_history
+
+
+def test_publish_job_event_throttles_touch_job_frequency(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    user_id = "touch-user"
+    chat_id = server.store.ensure_default_chat(user_id)
+    operator_message_id = server.store.add_message(user_id, chat_id, "operator", "touch test")
+    job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+
+    server.runtime.job_touch_min_interval_seconds = 0.25
+
+    touch_calls: list[tuple[int, float]] = []
+    original_touch_job = server.store.touch_job
+
+    def tracking_touch_job(touched_job_id: int) -> None:
+        touch_calls.append((int(touched_job_id), time.monotonic()))
+        original_touch_job(touched_job_id)
+
+    monkeypatch.setattr(server.store, "touch_job", tracking_touch_job)
+
+    for _ in range(4):
+        server._publish_job_event(job_id, "meta", {"chat_id": chat_id, "source": "test"})
+
+    job_touch_calls = [call for call in touch_calls if call[0] == job_id]
+    assert len(job_touch_calls) == 1
+
+    time.sleep(0.3)
+    server._publish_job_event(job_id, "meta", {"chat_id": chat_id, "source": "test-2"})
+    job_touch_calls = [call for call in touch_calls if call[0] == job_id]
+    assert len(job_touch_calls) == 2
+
+
+def test_publish_job_event_delivers_done_when_subscriber_queue_is_full(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    user_id = "terminal-overflow"
+    chat_id = server.store.ensure_default_chat(user_id)
+    operator_message_id = server.store.add_message(user_id, chat_id, "operator", "overflow")
+    job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == job_id
+
+    saturated_subscriber: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
+    saturated_subscriber.put_nowait({"event": "chunk", "payload": {"text": "old"}})
+
+    with server.runtime._event_lock:
+        server.runtime._event_queues[job_id] = [saturated_subscriber]
+
+    server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
+
+    delivered = saturated_subscriber.get_nowait()
+    assert delivered["event"] == "done"
+    assert delivered["payload"]["reply"] == "ok"
+
+
+def test_run_chat_job_keeps_running_job_fresh_during_silent_upstream_wait(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    user_id = "123"
+    chat_id = server.store.ensure_default_chat(user_id)
+    operator_message_id = server.store.add_message(user_id, chat_id, "operator", "wait")
+
+    server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    job = server.store.claim_next_job()
+    assert job is not None
+
+    monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: False)
+    server.runtime.job_keepalive_interval_seconds = 0.5
+
+    touch_calls: list[float] = []
+    original_touch_job = server.store.touch_job
+
+    def tracking_touch_job(job_id: int) -> None:
+        touch_calls.append(time.monotonic())
+        original_touch_job(job_id)
+
+    monkeypatch.setattr(server.store, "touch_job", tracking_touch_job)
+
+    def fake_stream_events(*, user_id, message, conversation_history, session_id):
+        time.sleep(0.7)
+        yield {"type": "done", "reply": "ok", "latency_ms": 1}
+
+    monkeypatch.setattr(server.client, "stream_events", fake_stream_events)
+
+    server._run_chat_job(job)
+
+    assert len(touch_calls) >= 2
+
+
+def test_touch_job_best_effort_records_failure_and_logs_warning(monkeypatch, tmp_path, caplog) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    def failing_touch_job(job_id: int) -> None:
+        raise RuntimeError("touch failed")
+
+    monkeypatch.setattr(server.runtime.store, "touch_job", failing_touch_job)
+
+    with caplog.at_level(logging.WARNING, logger="job_runtime"):
+        server.runtime._touch_job_best_effort(42, force=True)
+
+    counts = server.runtime.best_effort_failure_counts()
+    assert counts["touch_job_write"] == 1
+    assert counts["system_message_write"] == 0
+    assert any("best_effort_write_failure kind=touch_job_write" in message for message in caplog.messages)
+
+
+def test_safe_add_system_message_records_failure_and_logs_warning(monkeypatch, tmp_path, caplog) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    def failing_add_message(*args, **kwargs):
+        raise RuntimeError("insert failed")
+
+    monkeypatch.setattr(server.runtime.store, "add_message", failing_add_message)
+
+    with caplog.at_level(logging.WARNING, logger="job_runtime"):
+        server.runtime._safe_add_system_message(user_id="123", chat_id=99, text="hello")
+
+    counts = server.runtime.best_effort_failure_counts()
+    assert counts["touch_job_write"] == 0
+    assert counts["system_message_write"] == 1
+    assert any("best_effort_write_failure kind=system_message_write" in message for message in caplog.messages)

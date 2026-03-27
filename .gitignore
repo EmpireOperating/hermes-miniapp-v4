@@ -18,6 +18,9 @@ venv/
 sessions.db
 sessions.db-shm
 sessions.db-wal
+miniapp.db
+miniapp.db-shm
+miniapp.db-wal
 *.log
 
 # OS/editor
