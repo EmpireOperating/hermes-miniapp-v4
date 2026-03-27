@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlite3 import Connection
 from typing import Any
 
 
@@ -142,6 +143,40 @@ class StoreJobsMixin:
                 (error[:1000], job_id),
             )
 
+    def _insert_dead_letter_if_missing(
+        self,
+        conn: Connection,
+        *,
+        job_id: int,
+        user_id: str,
+        chat_id: int,
+        operator_message_id: int,
+        attempts: int,
+        max_attempts: int,
+        error: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO chat_job_dead_letters (
+                job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1 FROM chat_job_dead_letters WHERE job_id = ?
+            )
+            """,
+            (
+                int(job_id),
+                str(user_id),
+                int(chat_id),
+                int(operator_message_id),
+                int(attempts),
+                int(max_attempts),
+                str(error)[:1000],
+                int(job_id),
+            ),
+        )
+
     def retry_or_dead_letter_job(self, job_id: int, error: str, retry_base_seconds: int = 2) -> bool:
         """Returns True if retry scheduled, False if moved to dead-letter."""
         with self._connect() as conn:
@@ -176,31 +211,25 @@ class StoreJobsMixin:
                 )
                 return True
 
-            conn.execute(
-                """
-                INSERT INTO chat_job_dead_letters (
-                    job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    int(row["id"]),
-                    str(row["user_id"]),
-                    int(row["chat_id"]),
-                    int(row["operator_message_id"]),
-                    attempts,
-                    max_attempts,
-                    error_text,
-                ),
-            )
-            conn.execute(
+            updated = conn.execute(
                 """
                 UPDATE chat_jobs
                 SET status = 'dead', error = ?, finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status IN ('queued', 'running')
                 """,
                 (error_text, job_id),
             )
+            if updated.rowcount > 0:
+                self._insert_dead_letter_if_missing(
+                    conn,
+                    job_id=int(row["id"]),
+                    user_id=str(row["user_id"]),
+                    chat_id=int(row["chat_id"]),
+                    operator_message_id=int(row["operator_message_id"]),
+                    attempts=attempts,
+                    max_attempts=max_attempts,
+                    error=error_text,
+                )
             return False
 
     def dead_letter_stale_running_jobs(self, timeout_seconds: int, error: str) -> list[dict[str, Any]]:
@@ -220,30 +249,26 @@ class StoreJobsMixin:
             results: list[dict[str, Any]] = []
             for row in stale_rows:
                 job_id = int(row["id"])
-                conn.execute(
-                    """
-                    INSERT INTO chat_job_dead_letters (
-                        job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        job_id,
-                        str(row["user_id"]),
-                        int(row["chat_id"]),
-                        int(row["operator_message_id"]),
-                        int(row["attempts"] or 0),
-                        int(row["max_attempts"] or 0),
-                        error_text,
-                    ),
-                )
-                conn.execute(
+                updated = conn.execute(
                     """
                     UPDATE chat_jobs
                     SET status = 'dead', error = ?, finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ? AND status = 'running'
                     """,
                     (error_text, job_id),
+                )
+                if updated.rowcount == 0:
+                    continue
+
+                self._insert_dead_letter_if_missing(
+                    conn,
+                    job_id=job_id,
+                    user_id=str(row["user_id"]),
+                    chat_id=int(row["chat_id"]),
+                    operator_message_id=int(row["operator_message_id"]),
+                    attempts=int(row["attempts"] or 0),
+                    max_attempts=int(row["max_attempts"] or 0),
+                    error=error_text,
                 )
                 results.append(
                     {
@@ -406,16 +431,7 @@ class StoreJobsMixin:
                 attempts = int(row["attempts"] or 0)
                 max_attempts = int(row["max_attempts"] or 1)
 
-                conn.execute(
-                    """
-                    INSERT INTO chat_job_dead_letters (
-                        job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, reason),
-                )
-                conn.execute(
+                updated = conn.execute(
                     """
                     UPDATE chat_jobs
                     SET status = 'dead',
@@ -425,6 +441,19 @@ class StoreJobsMixin:
                     WHERE id = ? AND status IN ('queued', 'running')
                     """,
                     (reason, job_id),
+                )
+                if updated.rowcount == 0:
+                    continue
+
+                self._insert_dead_letter_if_missing(
+                    conn,
+                    job_id=job_id,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    operator_message_id=operator_message_id,
+                    attempts=attempts,
+                    max_attempts=max_attempts,
+                    error=reason,
                 )
                 cleaned.append(
                     {

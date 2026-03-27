@@ -95,6 +95,19 @@ class StoreSchemaMixin:
                 """
             )
             conn.execute(
+                """
+                DELETE FROM chat_job_dead_letters
+                WHERE id NOT IN (
+                    SELECT MIN(id)
+                    FROM chat_job_dead_letters
+                    GROUP BY job_id
+                )
+                """
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_job_dead_letters_job_id ON chat_job_dead_letters(job_id)"
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_jobs_status_created ON chat_jobs(status, created_at, id)"
             )
             conn.execute(

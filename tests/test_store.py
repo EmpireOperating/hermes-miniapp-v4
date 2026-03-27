@@ -296,6 +296,24 @@ def test_retry_or_dead_letter_job_retries_then_dead_letters(tmp_path) -> None:
     assert retried is False
 
 
+def test_retry_or_dead_letter_job_is_idempotent_for_same_job(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u10b"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "retry me")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+
+    assert store.retry_or_dead_letter_job(job_id, "hard fail", retry_base_seconds=0) is False
+    assert store.retry_or_dead_letter_job(job_id, "hard fail", retry_base_seconds=0) is False
+
+    dead_letters = store.list_dead_letters(user_id, limit=20)
+    matching = [item for item in dead_letters if item["job_id"] == job_id]
+    assert len(matching) == 1
+
+
 def test_complete_job_only_applies_to_running_state(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u11"

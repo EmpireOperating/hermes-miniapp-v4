@@ -259,35 +259,31 @@ class StoreChatsMixin:
             return
 
         for row in cancelled_jobs:
-            conn.execute(
+            job_id = int(row["id"])
+            updated = conn.execute(
                 """
-                INSERT INTO chat_job_dead_letters (
-                    job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                UPDATE chat_jobs
+                SET status = 'dead',
+                    error = ?,
+                    finished_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('queued', 'running')
                 """,
-                (
-                    int(row["id"]),
-                    user_id,
-                    chat_id,
-                    int(row["operator_message_id"]),
-                    int(row["attempts"] or 0),
-                    int(row["max_attempts"] or 1),
-                    reason,
-                ),
+                (reason, job_id),
             )
+            if updated.rowcount == 0:
+                continue
 
-        conn.execute(
-            """
-            UPDATE chat_jobs
-            SET status = 'dead',
-                error = ?,
-                finished_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE user_id = ? AND chat_id = ? AND status IN ('queued', 'running')
-            """,
-            (reason, user_id, chat_id),
-        )
+            self._insert_dead_letter_if_missing(
+                conn,
+                job_id=job_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                operator_message_id=int(row["operator_message_id"]),
+                attempts=int(row["attempts"] or 0),
+                max_attempts=int(row["max_attempts"] or 1),
+                error=reason,
+            )
 
     def clear_chat(self, user_id: str, chat_id: int) -> None:
         with self._connect() as conn:

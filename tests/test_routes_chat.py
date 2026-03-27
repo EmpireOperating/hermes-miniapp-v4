@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import queue
+
 from server_test_utils import load_server, patch_verified_user
 
 
@@ -83,6 +85,22 @@ def test_pin_close_and_reopen_chat(monkeypatch, tmp_path) -> None:
     assert reopen_payload["chat"]["id"] == feature_chat.id
     assert reopen_payload["active_chat_id"] == feature_chat.id
     assert any(chat["id"] == feature_chat.id for chat in reopen_payload["chats"])
+
+
+def test_chats_status_returns_pinned_chats(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    server.store.ensure_default_chat("123")
+    pinned_chat = server.store.create_chat("123", "Pinned")
+    server.store.set_chat_pinned("123", pinned_chat.id, is_pinned=True)
+
+    response = client.post("/api/chats/status", json={"init_data": "ok"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert any(chat["id"] == pinned_chat.id for chat in payload["chats"])
+    assert [chat["id"] for chat in payload["pinned_chats"]] == [pinned_chat.id]
+
 
 def test_remove_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
@@ -210,6 +228,41 @@ def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch
     second = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
     assert second.status_code == 200
     assert "event: tool" in second.get_data(as_text=True)
+
+
+def test_stream_resume_emits_synthetic_terminal_when_queue_silent(monkeypatch, tmp_path) -> None:
+    import routes_chat_stream
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+
+    class _AlwaysEmptySubscriber:
+        def get(self, timeout=None):
+            raise queue.Empty
+
+    monotonic_ticks = iter([0.0, 5.0, 10.0, 15.0])
+    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 20.0))
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id: _AlwaysEmptySubscriber())
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+    monkeypatch.setattr(
+        server.store,
+        "get_job_state",
+        lambda _job_id: {"status": "done", "error": None, "attempts": 1, "max_attempts": 1},
+    )
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"synthetic": true' in body
+    assert '"job_status": "done"' in body
+
 
 def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)

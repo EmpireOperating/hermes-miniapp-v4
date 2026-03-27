@@ -11,6 +11,7 @@ import textwrap
 import threading
 import time
 import uuid
+from collections import deque
 from typing import Any, Iterator
 
 from hermes_client_types import HermesClientError
@@ -296,48 +297,114 @@ class HermesClientAgentMixin:
             process.kill()
             raise HermesClientError(f"Failed to send payload to Hermes direct agent: {exc}") from exc
 
-        yield {"type": "meta", "source": "agent"}
+        stream_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        stdout_done = threading.Event()
+        stderr_done = threading.Event()
+        stderr_lines: deque[str] = deque(maxlen=200)
+        started = time.monotonic()
 
-        assert process.stdout is not None
-        for raw_line in process.stdout:
-            line = raw_line.strip()
-            if not line:
-                continue
+        def _build_timeout_message() -> str:
+            message = f"Hermes direct agent timed out after {self.timeout_seconds}s."
+            if stderr_lines:
+                tail = stderr_lines[-1]
+                if len(tail) > 300:
+                    tail = tail[:297] + "..."
+                message += f" stderr: {tail}"
+            return message
+
+        def _stdout_reader() -> None:
             try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            kind = item.get("kind")
-            if kind == "tool":
-                yield {
-                    "type": "tool",
-                    "tool_name": item.get("tool_name"),
-                    "preview": item.get("preview"),
-                    "args": item.get("args"),
-                    "display": item.get("display"),
-                }
-            elif kind == "done":
-                reply = str(item.get("reply") or "")
-                chunk_size = max(1, self.stream_chunk_size)
-                for index in range(0, len(reply), chunk_size):
-                    yield {"type": "chunk", "text": reply[index : index + chunk_size]}
-                yield {
-                    "type": "done",
-                    "reply": reply,
-                    "source": item.get("source") or "agent",
-                    "latency_ms": item.get("latency_ms"),
-                }
-            elif kind == "error":
-                raise HermesClientError(str(item.get("error") or "Hermes agent run failed."))
+                assert process.stdout is not None
+                for raw_line in process.stdout:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.debug("Skipping non-JSON direct-agent stdout line: %s", line[:200])
+                        continue
+                    stream_queue.put(item)
+            except Exception as exc:  # noqa: BLE001
+                stream_queue.put({"kind": "error", "error": f"Hermes agent stream read failed: {exc}"})
+            finally:
+                stdout_done.set()
 
-        return_code = process.wait(timeout=self.timeout_seconds)
-        stderr = ""
-        if process.stderr is not None:
-            stderr = process.stderr.read().strip()
-        if return_code != 0 and stderr:
-            raise HermesClientError(stderr)
-        if return_code != 0:
-            raise HermesClientError(f"Hermes direct agent exited with status {return_code}.")
+        def _stderr_reader() -> None:
+            try:
+                if process.stderr is None:
+                    return
+                for raw_line in process.stderr:
+                    line = raw_line.strip()
+                    if line:
+                        stderr_lines.append(line)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Hermes direct-agent stderr capture failed: %s", exc)
+            finally:
+                stderr_done.set()
+
+        threading.Thread(target=_stdout_reader, name="miniapp-direct-agent-stdout", daemon=True).start()
+        threading.Thread(target=_stderr_reader, name="miniapp-direct-agent-stderr", daemon=True).start()
+
+        try:
+            yield {"type": "meta", "source": "agent"}
+
+            while True:
+                if (time.monotonic() - started) > float(self.timeout_seconds):
+                    process.kill()
+                    raise HermesClientError(_build_timeout_message())
+
+                try:
+                    item = stream_queue.get(timeout=0.2)
+                except queue.Empty:
+                    if stdout_done.is_set() and process.poll() is not None:
+                        break
+                    continue
+
+                kind = item.get("kind")
+                if kind == "tool":
+                    yield {
+                        "type": "tool",
+                        "tool_name": item.get("tool_name"),
+                        "preview": item.get("preview"),
+                        "args": item.get("args"),
+                        "display": item.get("display"),
+                    }
+                elif kind == "done":
+                    reply = str(item.get("reply") or "")
+                    chunk_size = max(1, self.stream_chunk_size)
+                    for index in range(0, len(reply), chunk_size):
+                        yield {"type": "chunk", "text": reply[index : index + chunk_size]}
+                    yield {
+                        "type": "done",
+                        "reply": reply,
+                        "source": item.get("source") or "agent",
+                        "latency_ms": item.get("latency_ms"),
+                    }
+                elif kind == "error":
+                    raise HermesClientError(str(item.get("error") or "Hermes agent run failed."))
+
+            remaining = max(0.1, float(self.timeout_seconds) - (time.monotonic() - started))
+            try:
+                return_code = process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                raise HermesClientError(_build_timeout_message()) from exc
+
+            if process.stderr is not None and not stderr_done.is_set():
+                stderr_done.wait(timeout=0.2)
+            stderr = "\n".join(stderr_lines).strip()
+            if return_code != 0 and stderr:
+                raise HermesClientError(stderr)
+            if return_code != 0:
+                raise HermesClientError(f"Hermes direct agent exited with status {return_code}.")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                try:
+                    process.wait(timeout=1)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _normalize_conversation_history(
         self,

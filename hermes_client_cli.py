@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from typing import Any, Iterator
+from typing import Any, Iterator, TextIO
 
 from hermes_client_types import HermesClientError
 
@@ -23,6 +23,37 @@ class HermesClientCLIMixin:
         cleaned = re.sub(r"\s*\(\d+(?:\.\d+)?s\)$", "", cleaned).strip()
         cleaned = re.sub(r"\s{2,}", " ", cleaned)
         return cleaned or line.strip()
+
+    def _iter_cli_stdout_lines(self, stdout: TextIO | Any) -> Iterator[str]:
+        read_fn = getattr(stdout, "read", None)
+        if callable(read_fn):
+            buffer = ""
+            while True:
+                chunk = read_fn(1)
+                if chunk == "":
+                    break
+                if chunk in {"\n", "\r"}:
+                    if buffer:
+                        yield buffer
+                        buffer = ""
+                    continue
+                buffer += chunk
+            if buffer:
+                yield buffer
+            return
+
+        iterator = getattr(stdout, "__iter__", None)
+        if not callable(iterator):
+            raise HermesClientError("Hermes CLI stream failed: stdout is not readable.")
+
+        for raw_line in stdout:
+            if raw_line is None:
+                continue
+            line = str(raw_line)
+            normalized = line.replace("\r\n", "\n").replace("\r", "\n")
+            for segment in normalized.split("\n"):
+                if segment:
+                    yield segment
 
     def _stream_via_cli_progress(self, message: str) -> Iterator[dict[str, Any]]:
         command = [self.cli_command, "chat", "--query", message]
@@ -49,18 +80,8 @@ class HermesClientCLIMixin:
         in_reply = False
         reply_lines: list[str] = []
         last_tool_line = ""
-        buffer = ""
-
-        while True:
-            chunk = process.stdout.read(1)
-            if chunk == "":
-                break
-            if chunk not in {"\n", "\r"}:
-                buffer += chunk
-                continue
-
-            line = buffer.strip()
-            buffer = ""
+        for raw_line in self._iter_cli_stdout_lines(process.stdout):
+            line = raw_line.strip()
             if not line:
                 continue
             if line.startswith("Query:"):

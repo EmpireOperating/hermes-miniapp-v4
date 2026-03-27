@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 import sys
+import time
 
 import hermes_client
 import hermes_client_agent
+import hermes_client_cli
 
 
 class _FakeAgent:
@@ -462,3 +465,129 @@ def test_api_stream_error_falls_back_to_cli_when_direct_agent_disabled(monkeypat
 
     events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-cli-fallback"))
     assert any(event.get("type") == "done" and event.get("reply") == "cli-ok" and event.get("source") == "cli" for event in events)
+
+
+class _FakeStdin:
+    def __init__(self) -> None:
+        self.writes: list[str] = []
+        self.closed = False
+
+    def write(self, data: str) -> int:
+        self.writes.append(data)
+        return len(data)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _BlockingStdout:
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> str:
+        time.sleep(2.0)
+        raise StopIteration
+
+
+class _LineStream:
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = list(lines)
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+class _FakeProcess:
+    def __init__(self, *, stdout, stderr, wait_return_code: int = 0) -> None:
+        self.stdin = _FakeStdin()
+        self.stdout = stdout
+        self.stderr = stderr
+        self._wait_return_code = int(wait_return_code)
+        self.returncode: int | None = None
+        self.killed = False
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            self.returncode = -9 if self.killed else self._wait_return_code
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+
+def test_stream_via_cli_progress_supports_iterator_only_stdout(monkeypatch) -> None:
+    client = hermes_client.HermesClient()
+
+    def fake_popen(*args, **kwargs):
+        return _FakeProcess(
+            stdout=_LineStream(
+                [
+                    "ignored before query\n",
+                    "Query: hello\n",
+                    "⚙️ read_file (0.2s)\n",
+                    "⚕ Hermes\n",
+                    "reply from iterator stdout\n",
+                    "Duration: 1.2s\n",
+                ]
+            ),
+            stderr=_LineStream([]),
+            wait_return_code=0,
+        )
+
+    monkeypatch.setattr(hermes_client_cli.subprocess, "Popen", fake_popen)
+
+    events = list(client._stream_via_cli_progress("hello"))
+    assert any(event.get("type") == "tool" and event.get("display") == "⚙️ read_file" for event in events)
+    assert any(event.get("type") == "done" and event.get("reply") == "reply from iterator stdout" for event in events)
+
+
+def test_stream_via_agent_times_out_and_kills_stalled_process(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
+    monkeypatch.setenv("HERMES_TIMEOUT_SECONDS", "1")
+
+    client = hermes_client.HermesClient()
+    monkeypatch.setattr(os.path, "exists", lambda _path: True)
+
+    process_holder: dict[str, _FakeProcess] = {}
+
+    def fake_popen(*args, **kwargs):
+        process = _FakeProcess(stdout=_BlockingStdout(), stderr=_LineStream(["still running\n"]), wait_return_code=0)
+        process_holder["process"] = process
+        return process
+
+    monkeypatch.setattr(hermes_client_agent.subprocess, "Popen", fake_popen)
+
+    try:
+        list(client._stream_via_agent(user_id="123", message="hello", session_id="miniapp-123-timeout"))
+        raise AssertionError("Expected HermesClientError timeout")
+    except hermes_client.HermesClientError as exc:
+        assert "timed out" in str(exc).lower()
+
+    assert process_holder["process"].killed is True
+
+
+def test_stream_via_agent_surfaces_stderr_on_nonzero_exit(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
+    monkeypatch.setenv("HERMES_TIMEOUT_SECONDS", "2")
+
+    client = hermes_client.HermesClient()
+    monkeypatch.setattr(os.path, "exists", lambda _path: True)
+
+    def fake_popen(*args, **kwargs):
+        process = _FakeProcess(stdout=_LineStream([]), stderr=_LineStream(["agent crashed\n"]), wait_return_code=2)
+        process.returncode = 2
+        return process
+
+    monkeypatch.setattr(hermes_client_agent.subprocess, "Popen", fake_popen)
+
+    try:
+        list(client._stream_via_agent(user_id="123", message="hello", session_id="miniapp-123-stderr"))
+        raise AssertionError("Expected HermesClientError for non-zero exit")
+    except hermes_client.HermesClientError as exc:
+        assert "agent crashed" in str(exc)
