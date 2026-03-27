@@ -192,6 +192,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
             "app.css": "css-v",
             "runtime_helpers.js": "helpers-v",
             "app_shared_utils.js": "shared-v",
+            "chat_ui_helpers.js": "chat-ui-v",
             "app.js": "app-v",
         }[filename]
 
@@ -202,11 +203,13 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     page = response.get_data(as_text=True)
     runtime_src = '/static/runtime_helpers.js?v=helpers-v'
     shared_src = '/static/app_shared_utils.js?v=shared-v'
+    chat_ui_src = '/static/chat_ui_helpers.js?v=chat-ui-v'
     app_src = '/static/app.js?v=app-v'
     assert runtime_src in page
     assert shared_src in page
+    assert chat_ui_src in page
     assert app_src in page
-    assert page.index(runtime_src) < page.index(shared_src) < page.index(app_src)
+    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(app_src)
 
 
 def test_runtime_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
@@ -222,6 +225,15 @@ def test_shared_utils_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
     server, client = _client(monkeypatch, tmp_path)
 
     response = client.get("/static/app_shared_utils.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_chat_ui_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/chat_ui_helpers.js")
 
     assert response.status_code == 200
     assert response.headers.get("Cache-Control") == "no-store, max-age=0"
@@ -313,12 +325,15 @@ def test_quote_selection_sync_is_debounced_in_client_script() -> None:
 def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     template = _read_repo_file("templates", "app.html")
     script = _read_repo_file("static", "app.js")
+    chat_ui_script = _read_repo_file("static", "chat_ui_helpers.js")
 
     assert 'id="pin-chat"' in template
     assert 'id="pinned-chats-wrap"' in template
     assert 'id="pinned-chats"' in template
     assert "chat-tab__pin" in template
 
+    assert "HermesMiniappChatUI" in chat_ui_script
+    assert "function renderPinnedChats" in chat_ui_script
     assert "function syncPinnedChats" in script
     assert "function renderPinnedChats" in script
     assert "function toggleActiveChatPin" in script
@@ -326,10 +341,10 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     assert "function handlePinnedChatClick" in script
     assert 'bindAsyncClick(pinChatButton, toggleActiveChatPin);' in script
     assert 'pinnedChatsEl?.addEventListener("click", handlePinnedChatClick);' in script
-    assert 'node.classList.toggle("is-pinned", Boolean(chat.is_pinned));' in script
-    assert 'const pinEl = node.querySelector(".chat-tab__pin");' in script
-    assert 'if (pinEl) {' in script
-    assert 'pinEl.textContent = chat.is_pinned ? "📌" : "";' in script
+    assert 'node.classList.toggle("is-pinned", Boolean(chat.is_pinned));' in chat_ui_script
+    assert 'const pinEl = node.querySelector(".chat-tab__pin");' in chat_ui_script
+    assert 'if (pinEl) {' in chat_ui_script
+    assert 'pinEl.textContent = chat.is_pinned ? "📌" : "";' in chat_ui_script
     assert 'pinChatButton.textContent = chat?.is_pinned ? "Unpin chat" : "Pin chat";' in script
 
     # Close tab should be silent (no confirm helper UX); it only removes from active tabs via API.
