@@ -4,6 +4,10 @@ const sharedUtils = window.HermesMiniappSharedUtils;
 if (!sharedUtils) {
   throw new Error("HermesMiniappSharedUtils is required before app.js");
 }
+const chatUiHelpers = window.HermesMiniappChatUI;
+if (!chatUiHelpers) {
+  throw new Error("HermesMiniappChatUI is required before app.js");
+}
 const { parseSseEvent, formatMessageTime, nowStamp, formatLatency, escapeHtml, cleanDisplayText, copyTextToClipboard } = sharedUtils;
 const authStatus = document.getElementById("auth-status");
 const streamStatus = document.getElementById("stream-status");
@@ -426,11 +430,15 @@ async function safeReadJson(response) {
 
 function syncClosingConfirmation() {
   if (!tg?.isVersionAtLeast?.("6.2")) return;
-  if (pendingChats.size > 0) {
-    tg.enableClosingConfirmation();
-    return;
+  try {
+    if (pendingChats.size > 0) {
+      tg.enableClosingConfirmation?.();
+      return;
+    }
+    tg.disableClosingConfirmation?.();
+  } catch {
+    // Best effort only; some Telegram clients expose partial WebApp APIs.
   }
-  tg.disableClosingConfirmation();
 }
 
 function syncTelegramChromeForSkin(skin) {
@@ -1545,136 +1553,57 @@ function syncChats(chatList) {
 }
 
 function getOrCreateTabNode(chatId) {
-  const key = Number(chatId);
-  if (tabNodes.has(key)) {
-    return tabNodes.get(key);
-  }
-  const node = tabTemplate.content.firstElementChild.cloneNode(true);
-  node.dataset.chatId = String(key);
-  node.setAttribute("role", "tab");
-  node.setAttribute("aria-controls", "messages");
-  tabNodes.set(key, node);
-  return node;
-}
-
-function getTabBadgeState(chat) {
-  const chatKey = Number(chat.id);
-  const pending = pendingChats.has(chatKey) || Boolean(chat.pending);
-  const unread = Number(chat.unread_count || 0);
-  const hasUnseenInViewport = unseenStreamChats.has(chatKey);
-
-  if (pending) {
-    return {
-      text: "…",
-      classes: ["is-visible", "is-pending"],
-      ariaLabel: "Pending response",
-    };
-  }
-
-  if (unread > 0 || hasUnseenInViewport) {
-    return {
-      text: "•",
-      classes: ["is-visible", "is-unread-dot"],
-      ariaLabel:
-        unread > 0
-          ? `${unread} unread ${unread === 1 ? "message" : "messages"}`
-          : "New messages below current scroll position",
-    };
-  }
-
-  return {
-    text: "",
-    classes: [],
-    ariaLabel: "",
-  };
-}
-
-function applyTabBadgeState(badge, badgeState) {
-  badge.classList.remove("is-visible", "is-pending", "is-unread-dot");
-  badge.removeAttribute("aria-label");
-  badge.textContent = badgeState.text;
-  if (badgeState.classes.length) {
-    badge.classList.add(...badgeState.classes);
-  }
-  if (badgeState.ariaLabel) {
-    badge.setAttribute("aria-label", badgeState.ariaLabel);
-  }
-}
-
-function applyTabNodeState(node, chat) {
-  const isActive = Number(chat.id) === Number(activeChatId);
-  node.classList.toggle("is-active", isActive);
-  node.classList.toggle("is-pinned", Boolean(chat.is_pinned));
-  node.setAttribute("aria-selected", isActive ? "true" : "false");
-
-  const pinEl = node.querySelector(".chat-tab__pin");
-  if (pinEl) {
-    pinEl.textContent = chat.is_pinned ? "📌" : "";
-  }
-
-  const titleEl = node.querySelector(".chat-tab__title");
-  if (titleEl) {
-    titleEl.textContent = chat.title;
-  }
-
-  const badgeEl = node.querySelector(".chat-tab__badge");
-  if (badgeEl) {
-    applyTabBadgeState(badgeEl, getTabBadgeState(chat));
-  }
-}
-
-function updateTabNode(node, chat) {
-  applyTabNodeState(node, chat);
-}
-
-function removeMissingTabNodes(nextIds) {
-  [...tabNodes.entries()].forEach(([chatId, node]) => {
-    if (!nextIds.has(chatId)) {
-      node.remove();
-      tabNodes.delete(chatId);
-    }
+  return chatUiHelpers.getOrCreateTabNode({
+    tabNodes,
+    tabTemplate,
+    chatId,
   });
 }
 
-function renderTabNode(chat) {
-  const node = getOrCreateTabNode(chat.id);
-  applyTabNodeState(node, chat);
-  if (node.parentElement !== tabsEl) {
-    tabsEl.appendChild(node);
-  }
+function getTabBadgeState(chat) {
+  return chatUiHelpers.getTabBadgeState({
+    chat,
+    pendingChats,
+    unseenStreamChats,
+  });
+}
+
+function applyTabBadgeState(badge, badgeState) {
+  chatUiHelpers.applyTabBadgeState({ badge, badgeState });
+}
+
+function applyTabNodeState(node, chat) {
+  chatUiHelpers.applyTabNodeState({
+    node,
+    chat,
+    activeChatId,
+    pendingChats,
+    unseenStreamChats,
+    getTabBadgeState,
+    applyTabBadgeState,
+  });
+}
+
+function removeMissingTabNodes(nextIds) {
+  chatUiHelpers.removeMissingTabNodes({ tabNodes, nextIds });
 }
 
 function renderTabs() {
-  const ordered = [...chats.values()].sort((a, b) => a.id - b.id);
-  const nextIds = new Set(ordered.map((chat) => Number(chat.id)));
-  removeMissingTabNodes(nextIds);
-  ordered.forEach(renderTabNode);
+  chatUiHelpers.renderTabs({
+    chats,
+    tabNodes,
+    tabTemplate,
+    tabsEl,
+    applyTabNodeState,
+  });
 }
 
 function renderPinnedChats() {
-  if (!pinnedChatsWrap || !pinnedChatsEl) return;
-  const ordered = [...pinnedChats.values()];
-  pinnedChatsWrap.hidden = ordered.length === 0;
-  pinnedChatsEl.replaceChildren();
-  ordered.forEach((chat) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "pinned-chat-item";
-    button.dataset.chatId = String(Number(chat.id));
-    button.setAttribute("role", "listitem");
-    button.title = chat.title || "Chat";
-
-    const pin = document.createElement("span");
-    pin.className = "pinned-chat-item__pin";
-    pin.setAttribute("aria-hidden", "true");
-    pin.textContent = "📌";
-
-    const title = document.createElement("span");
-    title.className = "pinned-chat-item__title";
-    title.textContent = chat.title || "Chat";
-
-    button.append(pin, title);
-    pinnedChatsEl.appendChild(button);
+  chatUiHelpers.renderPinnedChats({
+    pinnedChatsWrap,
+    pinnedChatsEl,
+    pinnedChats,
+    doc: document,
   });
 }
 
@@ -1685,27 +1614,22 @@ function syncPinChatButton() {
 }
 
 function refreshTabNode(chatId) {
-  const key = Number(chatId);
-  if (!key) return;
-  const node = tabNodes.get(key);
-  const chat = chats.get(key);
-  if (!node || !chat) return;
-  applyTabNodeState(node, chat);
+  chatUiHelpers.refreshTabNode({
+    chatId,
+    tabNodes,
+    chats,
+    applyTabNodeState,
+  });
 }
 
 function syncActiveTabSelection(previousChatId, nextChatId) {
-  const prevKey = Number(previousChatId);
-  const nextKey = Number(nextChatId);
-  const hasPrevNode = !prevKey || tabNodes.has(prevKey);
-  const hasNextNode = !!nextKey && tabNodes.has(nextKey);
-
-  if (!hasPrevNode || !hasNextNode) {
-    renderTabs();
-    return;
-  }
-
-  refreshTabNode(prevKey);
-  refreshTabNode(nextKey);
+  chatUiHelpers.syncActiveTabSelection({
+    previousChatId,
+    nextChatId,
+    tabNodes,
+    renderTabs,
+    refreshTabNode,
+  });
 }
 
 function normalizeSkin(value) {
@@ -2412,14 +2336,23 @@ async function bootstrap() {
     return;
   }
 
-  tg.ready();
-  tg.expand();
+  try {
+    tg.ready?.();
+    tg.expand?.();
+  } catch {
+    // Non-fatal: proceed with auth even when client WebApp helpers partially fail.
+  }
+
   syncRenderTraceBadge();
   loadDraftsFromStorage();
   syncClosingConfirmation();
   syncFullscreenControlState();
-  tg.onEvent?.("fullscreenChanged", syncFullscreenControlState);
-  tg.onEvent?.("fullscreenFailed", () => appendSystemMessage("Fullscreen request was denied by Telegram client."));
+  try {
+    tg.onEvent?.("fullscreenChanged", syncFullscreenControlState);
+    tg.onEvent?.("fullscreenFailed", () => appendSystemMessage("Fullscreen request was denied by Telegram client."));
+  } catch {
+    // Optional event hooks vary across Telegram clients.
+  }
   initData = tg.initData || "";
   renderTraceLog("debug-enabled", {
     enabled: renderTraceDebugEnabled,
@@ -2652,7 +2585,10 @@ async function consumeStreamResponse(chatId, response, builtReplyRef, { fallback
     buffer = events.pop() || "";
 
     for (const rawEvent of events) {
-      const { eventName, payload } = parseSseEvent(rawEvent);
+      const parsed = parseSseEvent(rawEvent);
+      if (!parsed) continue;
+      const eventName = parsed.eventName || parsed.event || "message";
+      const payload = parsed.payload;
       if (handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
         doneReceived = true;
       }
@@ -2660,7 +2596,9 @@ async function consumeStreamResponse(chatId, response, builtReplyRef, { fallback
   }
 
   if (buffer.trim()) {
-    const { eventName, payload } = parseSseEvent(buffer.trim());
+    const parsed = parseSseEvent(buffer.trim());
+    const eventName = parsed?.eventName || parsed?.event || "message";
+    const payload = parsed?.payload;
     if (eventName === "done" && payload) {
       applyDonePayload(chatId, payload, builtReplyRef, { updateUnread: false });
       doneReceived = true;

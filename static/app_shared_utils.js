@@ -6,11 +6,11 @@
     const chunk = (rawChunk || "").trim();
     if (!chunk) return null;
     const lines = chunk.split("\n");
-    let event = "message";
+    let eventName = "message";
     const dataLines = [];
     for (const line of lines) {
       if (line.startsWith("event:")) {
-        event = line.slice(6).trim() || "message";
+        eventName = line.slice(6).trim() || "message";
       } else if (line.startsWith("data:")) {
         dataLines.push(line.slice(5).trim());
       }
@@ -18,9 +18,9 @@
     if (!dataLines.length) return null;
     const payload = dataLines.join("\n");
     try {
-      return { event, payload: JSON.parse(payload) };
+      return { eventName, event: eventName, payload: JSON.parse(payload) };
     } catch {
-      return { event, payload: { text: payload } };
+      return { eventName, event: eventName, payload: { text: payload } };
     }
   }
 
@@ -235,7 +235,7 @@
     return false;
   }
 
-  global.HermesMiniappSharedUtils = {
+  const api = {
     parseSseEvent,
     formatMessageTime,
     nowStamp,
@@ -244,4 +244,9 @@
     cleanDisplayText,
     copyTextToClipboard,
   };
-})(window);
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = api;
+  }
+  global.HermesMiniappSharedUtils = api;
+})(typeof window !== "undefined" ? window : globalThis);
