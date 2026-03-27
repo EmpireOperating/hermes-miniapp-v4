@@ -325,6 +325,15 @@ def test_chat_returns_400_for_invalid_chat_id(monkeypatch, tmp_path) -> None:
     assert "Invalid chat_id." in response.get_json()["error"]
 
 
+def test_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = _post_chat_endpoint(client, "/api/chat", chat_id=999999, message="hello")
+
+    assert response.status_code == 404
+    assert "not found" in response.get_json()["error"].lower()
+
+
 def test_stream_chat_returns_400_for_invalid_chat_id(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -334,6 +343,15 @@ def test_stream_chat_returns_400_for_invalid_chat_id(monkeypatch, tmp_path) -> N
     assert "Invalid chat_id." in response.get_data(as_text=True)
 
 
+def test_stream_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = _post_chat_endpoint(client, "/api/chat/stream", chat_id=999999, message="hello")
+
+    assert response.status_code == 404
+    assert "not found" in response.get_data(as_text=True).lower()
+
+
 def test_stream_resume_returns_400_for_invalid_chat_id(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -341,3 +359,12 @@ def test_stream_resume_returns_400_for_invalid_chat_id(monkeypatch, tmp_path) ->
 
     assert response.status_code == 400
     assert "Invalid chat_id." in response.get_data(as_text=True)
+
+
+def test_stream_resume_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = _post_chat_endpoint(client, "/api/chat/stream/resume", chat_id=999999)
+
+    assert response.status_code == 404
+    assert "not found" in response.get_data(as_text=True).lower()

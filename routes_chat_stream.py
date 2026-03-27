@@ -23,7 +23,7 @@ def register_stream_routes(
     job_wake_event_getter = context.job_wake_event_getter
     request_payload_fn = context.request_payload_fn
     verify_for_sse_fn = context.verify_for_sse_fn
-    chat_id_from_payload_fn = context.chat_id_from_payload_fn
+    chat_id_from_payload_or_error_fn = context.chat_id_from_payload_or_error_fn
     validated_message_fn = context.validated_message_fn
     sse_error_fn = context.sse_error_fn
     sse_event_fn = context.sse_event_fn
@@ -31,22 +31,35 @@ def register_stream_routes(
     build_job_log_fn = context.build_job_log_fn
     logger = context.logger
 
-    def _sse_bad_request(exc: Exception) -> Response:
-        return sse_error_fn(str(exc), 400)
+    def _sse_not_found(exc: Exception) -> Response:
+        return sse_error_fn(str(exc), 404)
 
-    def _sse_try_bad_request(action: Callable[[], T]) -> tuple[T | None, Response | None]:
+    def _sse_try_not_found(action: Callable[[], T]) -> tuple[T | None, Response | None]:
         try:
             return action(), None
-        except (KeyError, ValueError) as exc:
-            return None, _sse_bad_request(exc)
+        except KeyError as exc:
+            return None, _sse_not_found(exc)
 
     def _verified_user_id(verified: Any) -> str:
         return str(verified.user.id)
 
-    def _resolve_active_chat(payload: dict[str, object], *, user_id: str) -> int:
-        chat_id = chat_id_from_payload_fn(payload, user_id)
-        store_getter().set_active_chat(user_id=user_id, chat_id=chat_id)
-        return chat_id
+    def _resolve_active_chat_or_error(
+        payload: dict[str, object],
+        *,
+        user_id: str,
+    ) -> tuple[int | None, Response | None]:
+        chat_id, payload_error = chat_id_from_payload_or_error_fn(payload, user_id=user_id)
+        if payload_error:
+            message = str(payload_error[0].get("error") or "Invalid chat_id.")
+            status = int(payload_error[1] or 400)
+            if status == 404:
+                return None, sse_error_fn(message, 404)
+            return None, sse_error_fn(message, 400)
+        try:
+            store_getter().set_active_chat(user_id=user_id, chat_id=int(chat_id))
+        except KeyError as exc:
+            return None, _sse_not_found(exc)
+        return int(chat_id), None
 
     def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
         return store_getter().add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
@@ -57,9 +70,9 @@ def register_stream_routes(
             return None, None, auth_error
 
         user_id = _verified_user_id(verified)
-        chat_id, bad_request_error = _sse_try_bad_request(lambda: _resolve_active_chat(payload, user_id=user_id))
-        if bad_request_error:
-            return None, None, bad_request_error
+        chat_id, chat_id_error = _resolve_active_chat_or_error(payload, user_id=user_id)
+        if chat_id_error:
+            return None, None, chat_id_error
 
         return user_id, chat_id, None
 
@@ -176,13 +189,13 @@ def register_stream_routes(
         if store.has_open_job(user_id=user_id, chat_id=chat_id):
             return sse_error_fn("Hermes is already working on this chat.", 409, chat_id=chat_id)
 
-        operator_message_id, bad_request_error = _sse_try_bad_request(
+        operator_message_id, not_found_error = _sse_try_not_found(
             lambda: _add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
         )
-        if bad_request_error:
-            return bad_request_error
+        if not_found_error:
+            return not_found_error
 
-        job_id, bad_request_error = _sse_try_bad_request(
+        job_id, not_found_error = _sse_try_not_found(
             lambda: store.enqueue_chat_job(
                 user_id=user_id,
                 chat_id=chat_id,
@@ -190,8 +203,8 @@ def register_stream_routes(
                 max_attempts=job_max_attempts,
             )
         )
-        if bad_request_error:
-            return bad_request_error
+        if not_found_error:
+            return not_found_error
 
         job_wake_event_getter().set()
         _log_stream_job_event(event="stream_job_enqueued", user_id=user_id, chat_id=chat_id, job_id=job_id)

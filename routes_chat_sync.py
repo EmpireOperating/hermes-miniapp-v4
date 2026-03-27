@@ -37,7 +37,10 @@ def register_sync_chat_routes(
         chat_id, payload_error = chat_id_from_payload_or_error_fn(payload, user_id=user_id)
         if payload_error:
             return None, payload_error
-        store_getter().set_active_chat(user_id=user_id, chat_id=int(chat_id))
+        try:
+            store_getter().set_active_chat(user_id=user_id, chat_id=int(chat_id))
+        except KeyError as exc:
+            return None, _json_not_found(exc)
         return int(chat_id), None
 
     def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
