@@ -50,6 +50,14 @@ def test_composer_state_helper_exports_state_api():
     assert "function applyComposerState({" in helper_js
 
 
+def test_app_resume_handles_no_active_job_reconnect_gracefully():
+    app_js = _read_static("app.js")
+
+    assert "const noActiveJob = response.status === 409" in app_js
+    assert "normalizedFallback.includes(\"no active hermes job\")" in app_js
+    assert "setStreamStatus(`Stream already complete in ${chatLabel(key)}`);" in app_js
+
+
 def test_job_runtime_event_buffers_do_not_use_hardcoded_512_caps():
     runtime_source = Path("job_runtime.py").read_text(encoding="utf-8")
 
