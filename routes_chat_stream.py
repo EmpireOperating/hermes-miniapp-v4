@@ -7,6 +7,7 @@ from typing import Callable, Iterator, TypeVar
 
 from flask import Response, g
 
+from job_status import JOB_EVENT_DONE, JOB_EVENT_ERROR, JOB_EVENT_TERMINAL, JOB_STATUS_DONE, JOB_STATUS_QUEUED, is_terminal_job_status
 from routes_chat_context import ChatRouteContext
 from routes_chat_error_mapping import map_chat_id_payload_error_to_sse
 from routes_chat_resolution import active_chat_id_or_error, verified_user_id_or_error
@@ -36,6 +37,10 @@ def register_stream_routes(
     def _sse_not_found(exc: Exception) -> Response:
         return sse_error_fn(str(exc), 404)
 
+    def _is_chat_not_found_key_error(exc: KeyError) -> bool:
+        message = str(exc).strip().lower()
+        return "chat" in message and "not found" in message
+
     def _sse_try_not_found(action: Callable[[], T]) -> tuple[T | None, Response | None]:
         try:
             return action(), None
@@ -57,6 +62,7 @@ def register_stream_routes(
             ),
             set_active_chat_fn=lambda chat_id: store_getter().set_active_chat(user_id=user_id, chat_id=chat_id),
             not_found_error_fn=_sse_not_found,
+            should_map_key_error_fn=_is_chat_not_found_key_error,
         )
 
     def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
@@ -102,7 +108,7 @@ def register_stream_routes(
                             state = store_getter().get_job_state(job_id)
                             if state:
                                 job_status = str(state.get("status") or "")
-                                if job_status in {"done", "error", "dead"}:
+                                if is_terminal_job_status(job_status):
                                     recovery_payload: dict[str, object] = {
                                         "chat_id": chat_id,
                                         "source": "queue",
@@ -113,7 +119,7 @@ def register_stream_routes(
                                     if state_error:
                                         recovery_payload["error"] = state_error
                                     recovery_payload["detail"] = "stream recovered from terminal db state"
-                                    yield sse_event_fn("done" if job_status == "done" else "error", recovery_payload)
+                                    yield sse_event_fn(JOB_EVENT_DONE if job_status == JOB_STATUS_DONE else JOB_EVENT_ERROR, recovery_payload)
                                     terminal = True
                                     last_queue_heartbeat = now
                                     continue
@@ -137,7 +143,7 @@ def register_stream_routes(
                                     "source": "queue",
                                     "detail": (
                                         f"queued (ahead: {state.get('queued_ahead', 0)})"
-                                        if state.get("status") == "queued"
+                                        if state.get("status") == JOB_STATUS_QUEUED
                                         else "running"
                                     ),
                                     "job_status": state.get("status"),
@@ -158,7 +164,7 @@ def register_stream_routes(
                     if "chat_id" not in payload:
                         payload["chat_id"] = chat_id
                     yield sse_event_fn(event_name, payload)
-                    if event_name in {"done", "error"}:
+                    if event_name in JOB_EVENT_TERMINAL:
                         terminal = True
             finally:
                 runtime.unsubscribe_job_events(job_id, subscriber)

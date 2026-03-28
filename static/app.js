@@ -2745,6 +2745,10 @@ promptEl.addEventListener("keydown", (event) => {
 
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
+    const chatId = Number(activeChatId);
+    if (chatId > 0) {
+      focusMessagesPaneIfActiveChat(chatId);
+    }
     void submitPromptWithUiError();
   }
 });
@@ -3022,6 +3026,74 @@ function handleGlobalComposerFocusShortcut(event) {
   }
 }
 
+const CONTROL_FOCUS_SELECTOR = "button, [role='button'], .chat-tab, .pinned-chat-item";
+
+function shouldReleaseControlFocusAfterClick(target) {
+  if (!target || !(target instanceof Element)) return false;
+  if (isTextEntryElement(target)) return false;
+
+  if (settingsModal?.open && settingsModal.contains(target)) {
+    return false;
+  }
+
+  const control = target.closest(CONTROL_FOCUS_SELECTOR);
+  return Boolean(control);
+}
+
+function releaseStickyControlFocus() {
+  if (mobileQuoteMode || !isDesktopViewport()) return;
+
+  const activeElement = document.activeElement;
+  if (activeElement && activeElement instanceof HTMLElement) {
+    const activeControl = activeElement.closest?.(CONTROL_FOCUS_SELECTOR);
+    if (activeControl && activeElement !== promptEl && activeElement !== messagesEl) {
+      activeElement.blur();
+    }
+  }
+
+  const chatId = Number(activeChatId);
+  if (chatId > 0 && !settingsModal?.open) {
+    focusMessagesPaneIfActiveChat(chatId);
+  }
+}
+
+function handleGlobalControlClickFocusCleanup(event) {
+  if (!shouldReleaseControlFocusAfterClick(event.target)) return;
+  window.setTimeout(() => {
+    releaseStickyControlFocus();
+  }, 0);
+}
+
+function handleGlobalControlMouseDownFocusGuard(event) {
+  if (mobileQuoteMode || !isDesktopViewport()) return;
+  if (!shouldReleaseControlFocusAfterClick(event.target)) return;
+  event.preventDefault();
+}
+
+function handleGlobalControlEnterDefuse(event) {
+  if (event.defaultPrevented) return;
+  if (event.isComposing) return;
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (mobileQuoteMode || !isDesktopViewport()) return;
+  if (event.key !== "Enter") return;
+
+  const target = event.target;
+  if (isTextEntryElement(target)) return;
+  if (settingsModal?.open && target instanceof Element && settingsModal.contains(target)) return;
+
+  const activeElement = document.activeElement;
+  const focusedControl = target instanceof Element
+    ? target.closest(CONTROL_FOCUS_SELECTOR)
+    : activeElement?.closest?.(CONTROL_FOCUS_SELECTOR);
+
+  if (!focusedControl) return;
+  if (focusedControl === promptEl || focusedControl === messagesEl) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  releaseStickyControlFocus();
+}
+
 function handleMessagesScroll() {
   cancelSelectionQuoteSync();
   cancelSelectionQuoteSettle();
@@ -3073,6 +3145,9 @@ pinnedChatsEl?.addEventListener("click", handlePinnedChatClick);
 document.addEventListener("keydown", handleGlobalTabCycle);
 document.addEventListener("keydown", handleGlobalArrowJump);
 document.addEventListener("keydown", handleGlobalComposerFocusShortcut);
+document.addEventListener("keydown", handleGlobalControlEnterDefuse, true);
+document.addEventListener("mousedown", handleGlobalControlMouseDownFocusGuard, true);
+document.addEventListener("click", handleGlobalControlClickFocusCleanup, true);
 messagesEl.addEventListener("scroll", handleMessagesScroll);
 jumpLatestButton?.addEventListener("click", handleJumpLatest);
 jumpLastStartButton?.addEventListener("click", handleJumpLastStart);

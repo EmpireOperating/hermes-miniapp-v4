@@ -292,16 +292,50 @@ def test_open_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
     _assert_missing_chat_404(client, "/api/chats/open")
 
 
+def test_rename_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/rename")
+
+
 def test_chat_history_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
     _assert_missing_chat_404(client, "/api/chats/history")
 
 
+def test_chat_history_returns_400_for_invalid_activate_flag(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    response = _post_chat_endpoint(client, "/api/chats/history", chat_id=chat_id, activate="false")
+
+    assert response.status_code == 400
+    assert "activate" in response.get_json()["error"].lower()
+
+
 def test_mark_read_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
     _assert_missing_chat_404(client, "/api/chats/mark-read")
+
+
+def test_pin_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/pin")
+
+
+def test_unpin_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/unpin")
+
+
+def test_reopen_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/reopen")
 
 
 def test_clear_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:

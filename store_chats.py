@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+from store_chat_mutations import cancel_open_jobs_for_chat, clear_chat as clear_chat_rows, remove_chat as remove_chat_row
+from store_chat_queries import (
+    first_unarchived_chat_id,
+    get_or_create_main_chat_id,
+    get_turn_count as query_turn_count,
+    hydrate_chat_thread,
+    hydrate_chat_turns,
+    list_recoverable_pending_turns as query_recoverable_pending_turns,
+    select_chat_rows,
+)
 from store_models import (
     MAX_ASSISTANT_MESSAGE_LEN,
     MAX_OPERATOR_MESSAGE_LEN,
@@ -55,36 +65,17 @@ class StoreChatsMixin:
             )
 
     def _first_unarchived_chat_id(self, conn, *, user_id: str) -> int | None:
-        row = conn.execute(
-            "SELECT id FROM chat_threads WHERE user_id = ? AND is_archived = 0 ORDER BY id ASC LIMIT 1",
-            (user_id,),
-        ).fetchone()
-        return int(row["id"]) if row else None
+        return first_unarchived_chat_id(conn, user_id=user_id)
 
     def _get_or_create_main_chat_id(self, conn, *, user_id: str) -> int:
-        chat_id = self._first_unarchived_chat_id(conn, user_id=user_id)
-        if chat_id is not None:
-            return chat_id
-        cursor = conn.execute(
-            "INSERT INTO chat_threads (user_id, title, is_archived) VALUES (?, ?, 0)",
-            (user_id, "Main"),
-        )
-        return int(cursor.lastrowid)
+        return get_or_create_main_chat_id(conn, user_id=user_id)
 
     def ensure_default_chat(self, user_id: str) -> int:
         with self._connect() as conn:
             return self._get_or_create_main_chat_id(conn, user_id=user_id)
 
     def _hydrate_chat_thread(self, row) -> ChatThread:
-        return ChatThread(
-            id=int(row["id"]),
-            title=str(row["title"]),
-            unread_count=int(row["unread_count"] or 0),
-            pending=bool(int(row["pending"] or 0)),
-            is_pinned=bool(int(row["is_pinned"] or 0)),
-            updated_at=str(row["updated_at"]),
-            created_at=str(row["created_at"]),
-        )
+        return hydrate_chat_thread(row)
 
     def _select_chat_rows(
         self,
@@ -95,39 +86,13 @@ class StoreChatsMixin:
         pinned_only: bool,
         chat_id: int | None = None,
     ):
-        where_clauses = ["ct.user_id = ?"]
-        params: list[object] = [user_id]
-
-        if not include_archived:
-            where_clauses.append("ct.is_archived = 0")
-        if pinned_only:
-            where_clauses.append("ct.is_pinned = 1")
-        if chat_id is not None:
-            where_clauses.append("ct.id = ?")
-            params.append(chat_id)
-
-        query = f"""
-            SELECT
-                ct.id,
-                ct.title,
-                ct.updated_at,
-                ct.created_at,
-                ct.is_pinned,
-                SUM(CASE WHEN cm.role = 'hermes' AND cm.id > ct.last_read_message_id THEN 1 ELSE 0 END) AS unread_count,
-                CASE WHEN (
-                    SELECT last_msg.role
-                    FROM chat_messages last_msg
-                    WHERE last_msg.user_id = ct.user_id AND last_msg.chat_id = ct.id
-                    ORDER BY last_msg.id DESC
-                    LIMIT 1
-                ) = 'operator' THEN 1 ELSE 0 END AS pending
-            FROM chat_threads ct
-            LEFT JOIN chat_messages cm ON cm.chat_id = ct.id AND cm.user_id = ct.user_id
-            WHERE {' AND '.join(where_clauses)}
-            GROUP BY ct.id, ct.title, ct.updated_at, ct.created_at, ct.is_pinned
-            ORDER BY ct.id ASC
-        """
-        return conn.execute(query, tuple(params)).fetchall()
+        return select_chat_rows(
+            conn,
+            user_id=user_id,
+            include_archived=include_archived,
+            pinned_only=pinned_only,
+            chat_id=chat_id,
+        )
 
     def list_chats(self, user_id: str) -> list[ChatThread]:
         self.ensure_default_chat(user_id)
@@ -179,16 +144,7 @@ class StoreChatsMixin:
         return self._hydrate_chat_thread(rows[0])
 
     def _hydrate_chat_turns(self, rows) -> list[ChatTurn]:
-        ordered = reversed(rows)
-        return [
-            ChatTurn(
-                id=int(row["id"]),
-                role=str(row["role"]),
-                body=str(row["body"]),
-                created_at=str(row["created_at"]),
-            )
-            for row in ordered
-        ]
+        return hydrate_chat_turns(rows)
 
     def add_message(self, user_id: str, chat_id: int, role: str, body: str) -> int:
         cleaned = body.strip()
@@ -246,79 +202,47 @@ class StoreChatsMixin:
             )
 
     def _cancel_open_jobs_for_chat(self, conn, *, user_id: str, chat_id: int, reason: str) -> None:
-        cancelled_jobs = conn.execute(
-            """
-            SELECT id, operator_message_id, attempts, max_attempts
-            FROM chat_jobs
-            WHERE user_id = ? AND chat_id = ? AND status IN ('queued', 'running')
-            """,
-            (user_id, chat_id),
-        ).fetchall()
-
-        if not cancelled_jobs:
-            return
-
-        for row in cancelled_jobs:
-            job_id = int(row["id"])
-            updated = conn.execute(
-                """
-                UPDATE chat_jobs
-                SET status = 'dead',
-                    error = ?,
-                    finished_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND status IN ('queued', 'running')
-                """,
-                (reason, job_id),
-            )
-            if updated.rowcount == 0:
-                continue
-
-            self._insert_dead_letter_if_missing(
-                conn,
-                job_id=job_id,
-                user_id=user_id,
-                chat_id=chat_id,
-                operator_message_id=int(row["operator_message_id"]),
-                attempts=int(row["attempts"] or 0),
-                max_attempts=int(row["max_attempts"] or 1),
-                error=reason,
-            )
+        cancel_open_jobs_for_chat(
+            conn,
+            user_id=user_id,
+            chat_id=chat_id,
+            reason=reason,
+            insert_dead_letter_if_missing=self._insert_dead_letter_if_missing,
+        )
 
     def clear_chat(self, user_id: str, chat_id: int) -> None:
         with self._connect() as conn:
             self._ensure_chat_exists(conn, user_id, chat_id)
-            self._cancel_open_jobs_for_chat(
+            clear_chat_rows(
                 conn,
                 user_id=user_id,
                 chat_id=chat_id,
-                reason="Chat cleared by user before job completed",
-            )
-
-            conn.execute(
-                "DELETE FROM chat_messages WHERE user_id = ? AND chat_id = ?",
-                (user_id, chat_id),
-            )
-            conn.execute(
-                "UPDATE chat_threads SET last_read_message_id = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND id = ?",
-                (user_id, chat_id),
+                cancel_open_jobs_for_chat_fn=lambda active_conn: self._cancel_open_jobs_for_chat(
+                    active_conn,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    reason="Chat cleared by user before job completed",
+                ),
             )
 
     def remove_chat(self, user_id: str, chat_id: int) -> int:
         with self._connect() as conn:
             self._ensure_chat_exists(conn, user_id, chat_id)
-            self._cancel_open_jobs_for_chat(
+            return remove_chat_row(
                 conn,
                 user_id=user_id,
                 chat_id=chat_id,
-                reason="Chat archived by user before job completed",
+                cancel_open_jobs_for_chat_fn=lambda active_conn: self._cancel_open_jobs_for_chat(
+                    active_conn,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    reason="Chat archived by user before job completed",
+                ),
+                get_or_create_main_chat_id_fn=lambda active_conn, active_user_id: self._get_or_create_main_chat_id(
+                    active_conn,
+                    user_id=active_user_id,
+                ),
             )
-
-            conn.execute(
-                "UPDATE chat_threads SET is_archived = 1, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND id = ?",
-                (user_id, chat_id),
-            )
-            return self._get_or_create_main_chat_id(conn, user_id=user_id)
 
     def list_pinned_chats(self, user_id: str) -> list[ChatThread]:
         with self._connect() as conn:
@@ -385,62 +309,8 @@ class StoreChatsMixin:
 
     def list_recoverable_pending_turns(self, user_id: str) -> list[tuple[int, int]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT ct.id AS chat_id,
-                       (
-                           SELECT lm.id
-                           FROM chat_messages lm
-                           WHERE lm.user_id = ct.user_id AND lm.chat_id = ct.id
-                           ORDER BY lm.id DESC
-                           LIMIT 1
-                       ) AS latest_message_id,
-                       (
-                           SELECT lm.role
-                           FROM chat_messages lm
-                           WHERE lm.user_id = ct.user_id AND lm.chat_id = ct.id
-                           ORDER BY lm.id DESC
-                           LIMIT 1
-                       ) AS latest_role
-                FROM chat_threads ct
-                WHERE ct.user_id = ? AND ct.is_archived = 0
-                """,
-                (user_id,),
-            ).fetchall()
-
-            recoverable: list[tuple[int, int]] = []
-            for row in rows:
-                if str(row["latest_role"] or "") != "operator":
-                    continue
-                chat_id = int(row["chat_id"])
-                message_id = int(row["latest_message_id"] or 0)
-                if message_id <= 0:
-                    continue
-                open_job = conn.execute(
-                    """
-                    SELECT 1 AS present
-                    FROM chat_jobs
-                    WHERE user_id = ? AND chat_id = ? AND status IN ('queued', 'running')
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (user_id, chat_id),
-                ).fetchone()
-                if open_job:
-                    continue
-                recoverable.append((chat_id, message_id))
-            return recoverable
+            return query_recoverable_pending_turns(conn, user_id=user_id)
 
     def get_turn_count(self, user_id: str, chat_id: int | None = None) -> int:
         with self._connect() as conn:
-            if chat_id is None:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS count FROM chat_messages WHERE user_id = ?",
-                    (user_id,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT COUNT(*) AS count FROM chat_messages WHERE user_id = ? AND chat_id = ?",
-                    (user_id, chat_id),
-                ).fetchone()
-        return int(row["count"]) if row else 0
+            return query_turn_count(conn, user_id=user_id, chat_id=chat_id)

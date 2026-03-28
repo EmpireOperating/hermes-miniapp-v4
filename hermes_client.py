@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import logging
 import os
 import sys
@@ -10,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from hermes_client_agent import HermesClientAgentMixin
+from hermes_client_bootstrap import HermesClientBootstrap
 from hermes_client_cli import HermesClientCLIMixin
 from hermes_client_http import HermesClientHTTPMixin
 from hermes_client_types import HermesClientError, HermesReply, PersistentSessionManager
@@ -48,6 +48,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         self.agent_workdir = os.environ.get("MINI_APP_AGENT_WORKDIR") or f"{self.agent_hermes_home}/hermes-agent"
         self.agent_venv = os.environ.get("MINI_APP_AGENT_VENV") or f"{self.agent_workdir}/venv"
         self._session_db = self._init_session_db()
+        self._bootstrap = HermesClientBootstrap(agent_hermes_home=self.agent_hermes_home, logger=logger)
         self.model = env_model if env_model and env_model.lower() != "auto" else self._load_default_model_from_config()
         self.provider, self.base_url = self._resolve_agent_routing(env_provider=env_provider, env_base_url=env_base_url)
         self.persistent_sessions_enabled = os.environ.get("MINI_APP_PERSISTENT_SESSIONS", "0") == "1"
@@ -58,6 +59,63 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             idle_ttl_seconds=self.persistent_idle_ttl_seconds,
         )
         self._warn_if_recall_unavailable()
+        self._log_startup_diagnostics()
+
+    def _safe_info_log(self, message: str, **kwargs: Any) -> None:
+        log_info = getattr(logger, "info", None)
+        if not callable(log_info):
+            return
+        try:
+            log_info(message, **kwargs)
+        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort logger wrapper must never break caller
+            pass
+
+    def _safe_failure_reason(self, exc: Exception) -> str:
+        return exc.__class__.__name__
+
+    def _selected_transport(self) -> str:
+        if self.stream_url:
+            return "http-stream"
+        if self.api_url:
+            return "http"
+        if self.direct_agent_enabled and self.persistent_sessions_enabled:
+            return "agent-persistent"
+        if self.direct_agent_enabled:
+            return "agent"
+        return "cli"
+
+    def startup_diagnostics(self) -> dict[str, Any]:
+        health = self._recall_health()
+        return {
+            "routing": {
+                "selected_transport": self._selected_transport(),
+                "stream_url_configured": bool(self.stream_url),
+                "api_url_configured": bool(self.api_url),
+                "direct_agent_enabled": self.direct_agent_enabled,
+                "persistent_sessions_enabled": self.persistent_sessions_enabled,
+                "provider_configured": bool(self.provider),
+                "model_configured": bool(self.model),
+                "base_url_configured": bool(self.base_url),
+            },
+            "agent_runtime": {
+                "agent_python_exists": Path(self.agent_python).exists(),
+                "agent_workdir_exists": Path(self.agent_workdir).exists(),
+                "agent_venv_exists": Path(self.agent_venv).exists(),
+                "session_db_available": bool(health.get("session_db_available")),
+                "session_search_ready": bool(health.get("session_search_ready")),
+            },
+            "limits": {
+                "timeout_seconds": self.timeout_seconds,
+                "stream_chunk_size": self.stream_chunk_size,
+                "max_iterations": self.max_iterations,
+                "persistent_max_sessions": self.persistent_max_sessions,
+                "persistent_idle_ttl_seconds": self.persistent_idle_ttl_seconds,
+            },
+        }
+
+    def _log_startup_diagnostics(self) -> None:
+        payload = self.startup_diagnostics()
+        self._safe_info_log("HermesClient startup diagnostics", extra={"startup": payload})
 
     def _init_session_db(self):
         try:
@@ -69,65 +127,24 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             from hermes_state import SessionDB
 
             return SessionDB()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Miniapp session DB unavailable: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - broad-except-policy: optional runtime dependency fallback
+            logger.debug("Miniapp session DB unavailable: %s", exc.__class__.__name__)
             return None
 
     def _resolve_agent_routing(self, *, env_provider: str, env_base_url: str) -> tuple[str | None, str | None]:
-        provider = env_provider if env_provider and env_provider.lower() != "auto" else None
-        base_url = env_base_url if env_base_url and env_base_url.lower() != "auto" else None
-
-        if provider is None:
-            provider = self._load_active_provider_from_auth_store()
-
-        if base_url is None:
-            base_url = self._load_base_url_from_config()
-
-        return provider, base_url
+        return self._bootstrap.resolve_agent_routing(env_provider=env_provider, env_base_url=env_base_url)
 
     def _load_active_provider_from_auth_store(self) -> str | None:
-        auth_path = Path(self.agent_hermes_home) / "auth.json"
-        if not auth_path.exists():
-            return None
-        try:
-            data = json.loads(auth_path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
-        provider = data.get("active_provider")
-        if isinstance(provider, str) and provider.strip():
-            return provider.strip()
-        return None
+        return self._bootstrap.load_active_provider_from_auth_store()
 
     def _load_base_url_from_config(self) -> str | None:
-        model_cfg = self._load_model_cfg_from_config()
-        if not isinstance(model_cfg, dict):
-            return None
-        base_url = model_cfg.get("base_url")
-        if isinstance(base_url, str) and base_url.strip():
-            return base_url.strip()
-        return None
+        return self._bootstrap.load_base_url_from_config()
 
     def _load_default_model_from_config(self) -> str | None:
-        model_cfg = self._load_model_cfg_from_config()
-        if not isinstance(model_cfg, dict):
-            return None
-        default_model = model_cfg.get("default")
-        if isinstance(default_model, str) and default_model.strip():
-            return default_model.strip()
-        return None
+        return self._bootstrap.load_default_model_from_config()
 
     def _load_model_cfg_from_config(self) -> dict[str, Any] | None:
-        config_path = Path(self.agent_hermes_home) / "config.yaml"
-        if not config_path.exists():
-            return None
-        try:
-            import yaml
-
-            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            return None
-        model_cfg = data.get("model") if isinstance(data, dict) else None
-        return model_cfg if isinstance(model_cfg, dict) else None
+        return self._bootstrap.load_model_cfg_from_config()
 
     def should_include_conversation_history(self, *, session_id: str | None) -> bool:
         """Whether caller should include DB history for this request.
@@ -168,7 +185,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                     session_id="miniapp-healthcheck",
                     tool_progress_callback=lambda *_args, **_kwargs: None,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - broad-except-policy: healthcheck kwargs construction is best-effort and should degrade gracefully
                 logger.debug("Miniapp recall healthcheck failed building agent kwargs: %s", exc)
                 kwargs = {}
             kwargs_has_session_db = "session_db" in kwargs
@@ -212,6 +229,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "persistent_sessions_enabled": self.persistent_sessions_enabled,
             },
             "health": self._recall_health(),
+            "startup": self.startup_diagnostics(),
         }
 
     def ask(self, user_id: str, message: str, *, conversation_history: list[dict[str, Any]] | None = None) -> HermesReply:
@@ -307,7 +325,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                     session_id=session_id,
                 )
                 return
-            except Exception as exc:
+            except Exception as exc:  # broad-except-policy: persistent runtime failures must fall back to non-persistent transport
                 # Fall back to existing subprocess/CLI path when persistent runtime fails.
                 logger.warning(
                     "Persistent miniapp runtime failed; falling back to non-persistent path",

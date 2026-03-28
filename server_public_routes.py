@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from typing import Callable
+
+from flask import Blueprint, Flask, Response, jsonify, make_response, render_template, request, send_from_directory
+
+
+def register_public_routes(
+    public_bp: Blueprint,
+    *,
+    app: Flask,
+    allowed_skins: set[str],
+    skin_cookie_name: str,
+    max_message_len: int,
+    dev_reload: bool,
+    dev_reload_interval_ms: int,
+    request_debug: bool,
+    static_no_store_filenames: set[str],
+    asset_version_fn: Callable[[str], str],
+    dev_reload_version_fn: Callable[[], str],
+    ensure_csp_nonce_fn: Callable[[], str],
+) -> None:
+    @public_bp.get("/")
+    def root() -> tuple[dict[str, str], int]:
+        return {"status": "ok", "service": "hermes-miniapp"}, 200
+
+    @public_bp.get("/app")
+    def mini_app() -> Response:
+        boot_skin = str(request.cookies.get(skin_cookie_name, "terminal")).strip().lower()
+        if boot_skin not in allowed_skins:
+            boot_skin = "terminal"
+
+        response = make_response(
+            render_template(
+                "app.html",
+                css_version=asset_version_fn("app.css"),
+                helpers_version=asset_version_fn("runtime_helpers.js"),
+                shared_utils_version=asset_version_fn("app_shared_utils.js"),
+                chat_ui_helpers_version=asset_version_fn("chat_ui_helpers.js"),
+                message_actions_helpers_version=asset_version_fn("message_actions_helpers.js"),
+                stream_state_helpers_version=asset_version_fn("stream_state_helpers.js"),
+                stream_controller_version=asset_version_fn("stream_controller.js"),
+                composer_state_helpers_version=asset_version_fn("composer_state_helpers.js"),
+                app_js_version=asset_version_fn("app.js"),
+                dev_reload=dev_reload,
+                dev_reload_interval_ms=dev_reload_interval_ms,
+                dev_reload_version=dev_reload_version_fn(),
+                request_debug=request_debug,
+                boot_skin=boot_skin,
+                csp_nonce=ensure_csp_nonce_fn(),
+                max_message_len=max_message_len,
+            )
+        )
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+
+    @public_bp.get("/health")
+    def health() -> tuple[dict[str, str], int]:
+        return {"status": "ok"}, 200
+
+    @public_bp.get("/dev/reload-state")
+    def dev_reload_state() -> Response | tuple[dict[str, object], int]:
+        if not dev_reload:
+            return {"ok": False, "enabled": False}, 404
+        response = jsonify(
+            {
+                "ok": True,
+                "enabled": True,
+                "version": dev_reload_version_fn(),
+                "interval_ms": dev_reload_interval_ms,
+            }
+        )
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+
+    @public_bp.get("/static/<path:filename>")
+    def static_files(filename: str):
+        response = send_from_directory(app.static_folder, filename)
+        if filename in static_no_store_filenames:
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+

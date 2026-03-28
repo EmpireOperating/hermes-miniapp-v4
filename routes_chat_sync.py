@@ -34,6 +34,10 @@ def register_sync_chat_routes(
     def _json_not_found(exc: Exception) -> tuple[dict[str, object], int]:
         return json_error_fn(str(exc), 404)
 
+    def _is_chat_not_found_key_error(exc: KeyError) -> bool:
+        message = str(exc).strip().lower()
+        return "chat" in message and "not found" in message
+
     def _resolve_active_chat_or_error(
         payload: dict[str, object],
         *,
@@ -49,6 +53,7 @@ def register_sync_chat_routes(
             ),
             set_active_chat_fn=lambda chat_id: store_getter().set_active_chat(user_id=user_id, chat_id=chat_id),
             not_found_error_fn=_json_not_found,
+            should_map_key_error_fn=_is_chat_not_found_key_error,
         )
 
     def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
