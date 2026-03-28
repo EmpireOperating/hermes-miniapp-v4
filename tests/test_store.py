@@ -128,6 +128,25 @@ def test_remove_chat_cancels_open_jobs(tmp_path) -> None:
     assert "archived" in str(matching[0]["error"] or "").lower()
 
 
+def test_clear_chat_cancels_open_jobs(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u5c"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "queued")
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id)
+
+    store.clear_chat(user_id, chat_id)
+
+    assert store.get_turn_count(user_id, chat_id) == 0
+    state = store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+    dead_letters = store.list_dead_letters(user_id, limit=10)
+    matching = [item for item in dead_letters if item["job_id"] == job_id]
+    assert matching
+    assert "cleared" in str(matching[0]["error"] or "").lower()
+
+
 def test_store_tracks_active_chat_preference(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u6"
@@ -158,6 +177,163 @@ def test_pending_flag_reflects_latest_operator_turn(tmp_path) -> None:
     store.add_message(user_id, chat_id, "hermes", "hi")
     resolved_chat = store.get_chat(user_id, chat_id)
     assert resolved_chat.pending is False
+
+
+def test_list_chats_preserves_pending_and_unread_derivations(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u7b"
+
+    main_chat_id = store.ensure_default_chat(user_id)
+    second_chat = store.create_chat(user_id, "Second")
+
+    store.add_message(user_id, main_chat_id, "operator", "question")
+    store.add_message(user_id, main_chat_id, "hermes", "answer")
+    store.add_message(user_id, second_chat.id, "operator", "need follow-up")
+
+    chats = {chat.id: chat for chat in store.list_chats(user_id)}
+    assert chats[main_chat_id].unread_count == 1
+    assert chats[main_chat_id].pending is False
+    assert chats[second_chat.id].unread_count == 0
+    assert chats[second_chat.id].pending is True
+
+    store.mark_chat_read(user_id, main_chat_id)
+    chats_after_read = {chat.id: chat for chat in store.list_chats(user_id)}
+    assert chats_after_read[main_chat_id].unread_count == 0
+    assert chats_after_read[second_chat.id].pending is True
+
+
+def test_store_init_migrates_legacy_chat_threads_before_flags_index(tmp_path) -> None:
+    import sqlite3
+
+    db_path = tmp_path / "sessions.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE chat_threads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            last_read_message_id INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            chat_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute("INSERT INTO chat_threads(user_id, title) VALUES(?, ?)", ("legacy-user", "Main"))
+    conn.commit()
+    conn.close()
+
+    store = SessionStore(db_path)
+    chats = store.list_chats("legacy-user")
+    assert len(chats) == 1
+    assert chats[0].is_pinned is False
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()}
+    assert "is_archived" in columns
+    assert "is_pinned" in columns
+    indexes = {row[1] for row in conn.execute("PRAGMA index_list('chat_threads')").fetchall()}
+    assert "idx_chat_threads_user_flags" in indexes
+    conn.close()
+
+
+def test_store_init_migrates_chat_jobs_invariants_and_normalizes_invalid_rows(tmp_path) -> None:
+    import sqlite3
+
+    db_path = tmp_path / "sessions.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE chat_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            chat_id INTEGER NOT NULL,
+            operator_message_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 4,
+            next_attempt_at TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at TEXT,
+            finished_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO chat_jobs (user_id, chat_id, operator_message_id, status, attempts, max_attempts)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("legacy", 9, 12, "mystery", -3, 0),
+    )
+    conn.commit()
+    conn.close()
+
+    store = SessionStore(db_path)
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT status, attempts, max_attempts FROM chat_jobs WHERE user_id = ?",
+        ("legacy",),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "dead"
+    assert row[1] == 0
+    assert row[2] == 1
+
+    table_sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_jobs'"
+    ).fetchone()
+    assert table_sql_row is not None
+    table_sql = str(table_sql_row[0] or "")
+    assert "CHECK (status IN ('queued', 'running', 'done', 'error', 'dead'))" in table_sql
+    assert "CHECK (attempts >= 0)" in table_sql
+    assert "CHECK (max_attempts >= 1)" in table_sql
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO chat_jobs (user_id, chat_id, operator_message_id, status, attempts, max_attempts)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("legacy", 9, 13, "bad-status", 0, 1),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO chat_jobs (user_id, chat_id, operator_message_id, status, attempts, max_attempts)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("legacy", 9, 14, "queued", -1, 1),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            """
+            INSERT INTO chat_jobs (user_id, chat_id, operator_message_id, status, attempts, max_attempts)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("legacy", 9, 15, "queued", 0, 0),
+        )
+    conn.close()
+
+    # Store should still operate normally after migration rebuild.
+    assert store.ensure_default_chat("legacy") > 0
 
 
 def test_chat_job_queue_lifecycle(tmp_path) -> None:
@@ -296,6 +472,58 @@ def test_retry_or_dead_letter_job_retries_then_dead_letters(tmp_path) -> None:
     assert retried is False
 
 
+def test_claim_next_job_dead_letters_exhausted_queued_jobs(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u10aa"
+    chat_id = store.ensure_default_chat(user_id)
+    exhausted_op = store.add_message(user_id, chat_id, "operator", "exhausted")
+    live_op = store.add_message(user_id, chat_id, "operator", "live")
+
+    exhausted_job_id = store.enqueue_chat_job(user_id, chat_id, exhausted_op, max_attempts=2)
+    live_job_id = store.enqueue_chat_job(user_id, chat_id, live_op, max_attempts=2)
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    conn.execute("UPDATE chat_jobs SET attempts = 2 WHERE id = ?", (exhausted_job_id,))
+    conn.commit()
+    conn.close()
+
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == live_job_id
+
+    exhausted_state = store.get_job_state(exhausted_job_id)
+    assert exhausted_state is not None
+    assert exhausted_state["status"] == "dead"
+
+    dead_letters = store.list_dead_letters(user_id, limit=20)
+    assert any(item["job_id"] == exhausted_job_id for item in dead_letters)
+
+
+def test_retry_or_dead_letter_job_does_not_resurrect_dead_job(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u10ab"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "retry me")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=2)
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    conn.execute("UPDATE chat_jobs SET status = 'dead', attempts = 1 WHERE id = ?", (job_id,))
+    conn.commit()
+    conn.close()
+
+    retried = store.retry_or_dead_letter_job(job_id, "should not requeue", retry_base_seconds=1)
+    assert retried is False
+
+    state = store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+
+
 def test_retry_or_dead_letter_job_is_idempotent_for_same_job(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u10b"
@@ -400,6 +628,28 @@ def test_cleanup_stale_jobs_dead_letters_invalid_open_jobs(tmp_path) -> None:
     dangling_state = store.get_job_state(dangling_job_id)
     assert dangling_state is not None
     assert dangling_state["status"] == "dead"
+
+
+def test_cleanup_stale_jobs_thread_missing_reason_mapping(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u13-missing-thread"
+    chat = store.create_chat(user_id, "Transient")
+    op_id = store.add_message(user_id, chat.id, "operator", "hello")
+    job_id = store.enqueue_chat_job(user_id, chat.id, op_id)
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    conn.execute("DELETE FROM chat_threads WHERE user_id = ? AND id = ?", (user_id, chat.id))
+    conn.commit()
+    conn.close()
+
+    cleaned = store.cleanup_stale_jobs(user_id, limit=10)
+
+    assert any(item["job_id"] == job_id and "thread missing" in item["reason"].lower() for item in cleaned)
+    state = store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
 
 
 def test_runtime_checkpoint_round_trip_and_delete(tmp_path) -> None:

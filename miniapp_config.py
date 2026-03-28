@@ -5,6 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from runtime_limits import (
+    DEFAULT_JOB_EVENT_HISTORY_MAX_JOBS,
+    DEFAULT_JOB_EVENT_HISTORY_TTL_SECONDS,
+    MIN_JOB_EVENT_HISTORY_MAX_JOBS,
+    MIN_JOB_EVENT_HISTORY_TTL_SECONDS,
+    MIN_JOB_STALL_TIMEOUT_SECONDS,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class MiniAppConfig:
@@ -56,7 +64,12 @@ class MiniAppConfig:
             job_max_attempts=_as_int_in_range("MINI_APP_JOB_MAX_ATTEMPTS", 4, min_value=1, max_value=20),
             job_retry_base_seconds=_as_int_in_range("MINI_APP_JOB_RETRY_BASE_SECONDS", 2, min_value=1, max_value=120),
             job_worker_concurrency=_as_int_in_range("MINI_APP_JOB_WORKER_CONCURRENCY", 6, min_value=1, max_value=64),
-            job_stall_timeout_seconds=_as_int_in_range("MINI_APP_JOB_STALL_TIMEOUT_SECONDS", 240, min_value=60, max_value=7200),
+            job_stall_timeout_seconds=_as_int_in_range(
+                "MINI_APP_JOB_STALL_TIMEOUT_SECONDS",
+                240,
+                min_value=MIN_JOB_STALL_TIMEOUT_SECONDS,
+                max_value=7200,
+            ),
             telegram_init_data_max_age_seconds=_as_int_in_range("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", 21600, min_value=60, max_value=604800),
             auth_session_max_age_seconds=_as_int_in_range("AUTH_SESSION_MAX_AGE_SECONDS", 60 * 60 * 24 * 7, min_value=60, max_value=60 * 60 * 24 * 90),
             force_secure_cookies=_as_bool("MINI_APP_FORCE_SECURE_COOKIES", default=True),
@@ -68,8 +81,18 @@ class MiniAppConfig:
             rate_limit_stream_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", 24, min_value=1, max_value=1000),
             enable_hsts=_as_bool("MINI_APP_ENABLE_HSTS", default=False),
             request_debug=_as_bool_any("MINI_APP_REQUEST_DEBUG", "MINIAPP_REQUEST_DEBUG", default=False),
-            job_event_history_max_jobs=_as_int_in_range("MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS", 256, min_value=32, max_value=10000),
-            job_event_history_ttl_seconds=_as_int_in_range("MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS", 1800, min_value=60, max_value=86400),
+            job_event_history_max_jobs=_as_int_in_range(
+                "MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS",
+                DEFAULT_JOB_EVENT_HISTORY_MAX_JOBS,
+                min_value=MIN_JOB_EVENT_HISTORY_MAX_JOBS,
+                max_value=10000,
+            ),
+            job_event_history_ttl_seconds=_as_int_in_range(
+                "MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS",
+                DEFAULT_JOB_EVENT_HISTORY_TTL_SECONDS,
+                min_value=MIN_JOB_EVENT_HISTORY_TTL_SECONDS,
+                max_value=86400,
+            ),
             dev_reload_watch_paths=(
                 base_dir / "server.py",
                 base_dir / "templates" / "app.html",

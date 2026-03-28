@@ -187,6 +187,7 @@ python -m pytest -q
 - Unread badges are designed for replies that finish after you switch tabs.
 - If a stream client disconnects mid-response (close/reopen), queue worker continues processing independently.
 - Retries use exponential backoff; exhausted jobs move to dead-letter storage (`chat_job_dead_letters`) and a system message is written in-chat.
+- Startup now emits structured dependency diagnostics (`HermesClient startup diagnostics` and `miniapp startup diagnostics`) with config/dependency readiness flags and redacted values.
 - True external push from unrelated Hermes events is not implemented yet.
 - Port `8080` may already be occupied on this machine; keep using the `.env` `PORT` value (`8787`) unless intentionally changed.
 

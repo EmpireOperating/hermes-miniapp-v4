@@ -5,6 +5,7 @@ import queue
 import sqlite3
 import time
 
+from job_runtime import JobRetryableError
 from server_test_utils import load_server, patch_verified_user
 
 
@@ -270,6 +271,46 @@ def test_publish_job_event_delivers_done_when_subscriber_queue_is_full(monkeypat
     assert delivered["payload"]["reply"] == "ok"
 
 
+def test_job_event_buffers_follow_configured_cap(monkeypatch, tmp_path) -> None:
+    configured_cap = 64
+    monkeypatch.setenv("MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS", str(configured_cap))
+    server = load_server(monkeypatch, tmp_path)
+
+    user_id = "event-cap"
+    chat_id = server.store.ensure_default_chat(user_id)
+    operator_message_id = server.store.add_message(user_id, chat_id, "operator", "cap test")
+    job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+
+    for idx in range(configured_cap + 6):
+        server._publish_job_event(job_id, "chunk", {"chat_id": chat_id, "index": idx})
+    server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
+
+    with server.runtime._event_lock:
+        history = list(server.runtime._event_history[job_id])
+
+    assert len(history) == configured_cap
+    assert history[0]["event"] == "chunk"
+    assert history[0]["payload"]["index"] == 7
+    assert history[-1]["event"] == "done"
+
+    subscriber = server._subscribe_job_events(job_id)
+    assert subscriber.maxsize == configured_cap
+
+    replayed: list[dict[str, object]] = []
+    while True:
+        try:
+            replayed.append(subscriber.get_nowait())
+        except queue.Empty:
+            break
+
+    assert len(replayed) == configured_cap
+    assert replayed[0]["event"] == "chunk"
+    assert replayed[0]["payload"]["index"] == 7
+    assert replayed[-1]["event"] == "done"
+
+
 def test_run_chat_job_keeps_running_job_fresh_during_silent_upstream_wait(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
 
@@ -336,3 +377,106 @@ def test_safe_add_system_message_records_failure_and_logs_warning(monkeypatch, t
     assert counts["touch_job_write"] == 0
     assert counts["system_message_write"] == 1
     assert any("best_effort_write_failure kind=system_message_write" in message for message in caplog.messages)
+
+
+def test_bounded_attempts_for_display_caps_retry_count(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    assert server.runtime._bounded_attempts_for_display(123, 4) == 4
+    assert server.runtime._bounded_attempts_for_display(0, 4) == 1
+    assert server.runtime._bounded_attempts_for_display(2, 0) == 1
+
+
+def test_worker_retry_exhaustion_stops_at_max_and_surfaces_terminal_error(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server._RUNTIME_DEPS.bind_runtime()
+
+    user_id = "retry-user"
+    chat_id = server.store.ensure_default_chat(user_id)
+    operator_message_id = server.store.add_message(user_id, chat_id, "operator", "please retry")
+    job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=2)
+
+    run_attempts: list[int] = []
+
+    def always_retryable(job: dict[str, object]) -> None:
+        run_attempts.append(int(job.get("attempts") or 0))
+        raise JobRetryableError("temporary upstream outage")
+
+    monkeypatch.setattr(runtime, "run_chat_job", always_retryable)
+    monkeypatch.setattr(runtime, "_fd_metrics", lambda: (42, 1024))
+
+    runtime._process_available_jobs_once()
+
+    state_after_first = server.store.get_job_state(job_id)
+    assert state_after_first is not None
+    assert state_after_first["status"] == "queued"
+    assert state_after_first["attempts"] == 1
+
+    conn = sqlite3.connect(server.store.db_path)
+    conn.execute("UPDATE chat_jobs SET next_attempt_at = CURRENT_TIMESTAMP WHERE id = ?", (job_id,))
+    conn.commit()
+    conn.close()
+
+    runtime._process_available_jobs_once()
+    runtime._process_available_jobs_once()
+
+    state_final = server.store.get_job_state(job_id)
+    assert state_final is not None
+    assert state_final["status"] == "dead"
+    assert state_final["attempts"] == 2
+    assert run_attempts == [1, 2]
+
+    dead_letters = server.store.list_dead_letters(user_id, limit=10)
+    matching = [item for item in dead_letters if item["job_id"] == job_id]
+    assert len(matching) == 1
+
+    history = server.store.get_history(user_id=user_id, chat_id=chat_id, limit=10)
+    system_messages = [turn.body for turn in history if turn.role == "system"]
+    assert any("failed after 2 attempts" in body and "temporary upstream outage" in body for body in system_messages)
+
+    with runtime._event_lock:
+        event_history = list(runtime._event_history.get(job_id) or [])
+    retry_meta_events = [
+        event
+        for event in event_history
+        if event.get("event") == "meta" and str((event.get("payload") or {}).get("source") or "") == "retry"
+    ]
+    error_events = [event for event in event_history if event.get("event") == "error"]
+    assert len(retry_meta_events) == 1
+    assert len(error_events) == 1
+    assert (error_events[-1].get("payload") or {}).get("retrying") is False
+
+
+def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+    runtime = server._RUNTIME_DEPS.bind_runtime()
+
+    user_id = "diag-user"
+    chat_id = server.store.ensure_default_chat(user_id)
+    operator_message_id = server.store.add_message(user_id, chat_id, "operator", "diag")
+    job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+
+    def force_retry_exhausted(job: dict[str, object]) -> None:
+        raise JobRetryableError("boom")
+
+    monkeypatch.setattr(runtime, "run_chat_job", force_retry_exhausted)
+    monkeypatch.setattr(runtime, "_fd_metrics", lambda: (77, 4096))
+
+    runtime._process_available_jobs_once()
+
+    response = client.post("/api/runtime/status", json={"init_data": "ok"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["ok"] is True
+    runtime = data["runtime"]
+    assert runtime["fd_open"] == 77
+    assert runtime["fd_limit_soft"] == 4096
+    assert runtime["retry_scheduled_total"] == 0
+    assert runtime["dead_letter_total"] >= 1
+    assert runtime["counters"]["retry_exhausted_dead"] >= 1
+    assert runtime["best_effort_failures"]["touch_job_write"] >= 0
+
+    state = server.store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"

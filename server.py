@@ -3,35 +3,23 @@ from __future__ import annotations
 import json
 import os
 import queue
-import threading
 import time
 from pathlib import Path
 
-from flask import Flask, Response, g, jsonify, make_response, render_template, request, send_from_directory
+from flask import Flask, Response, g, request
 
-from app_factory import create_flask_app
+from app_factory import create_flask_app, create_runtime_dependencies
 from assets import asset_version, dev_reload_version
-from auth import TelegramAuthError, VerifiedTelegramInitData, verify_telegram_init_data
-from auth_session import (
-    create_auth_session_token,
-    verified_from_session_cookie,
-    verify_auth_session_token,
-    verify_from_payload,
-)
+from auth import TelegramAuthError, verify_telegram_init_data
+from auth_session import verify_from_payload as auth_verify_from_payload
 from blueprints import create_api_blueprint, create_public_blueprint
 from hermes_client import HermesClient
-from job_runtime import JobRuntime
 from miniapp_config import MiniAppConfig, normalize_origin
-from rate_limiter import SlidingWindowRateLimiter
 from request_context import (
-    chat_id_from_payload_or_error,
-    json_error,
-    json_user_id_or_error,
-    request_payload,
-    sse_error,
-    sse_user_id_or_error,
-    verify_for_json,
-    verify_for_sse,
+    json_user_id_or_error as request_json_user_id_or_error,
+    verify_for_json as request_verify_for_json,
+    verify_for_sse as request_verify_for_sse,
+    sse_user_id_or_error as request_sse_user_id_or_error,
 )
 from request_guards import enforce_api_request_guards
 from request_logging import build_job_log, build_request_log, new_request_id, now_ms
@@ -41,6 +29,9 @@ from routes_chat_context import ChatRouteContext
 from routes_jobs_runtime import register_jobs_runtime_routes
 from routes_meta import register_meta_routes
 from security_headers import apply_security_headers, generate_csp_nonce
+from server_public_routes import register_public_routes
+from server_request_adapters import build_server_request_adapters
+from server_startup import log_startup_diagnostics, startup_diagnostics_payload
 from store import ChatThread, SessionStore
 from validators import parse_chat_id, validate_message, validate_title
 
@@ -105,7 +96,7 @@ def _log_request_debug() -> None:
         return
     try:
         app.logger.info("miniapp req method=%s path=%s host=%s ua=%s", request.method, request.path, request.host, request.headers.get("User-Agent", "")[:160])
-    except Exception:
+    except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log debug instrumentation must never block requests
         pass
 
 
@@ -114,17 +105,15 @@ api_bp = create_api_blueprint()
 client = HermesClient()
 store = SessionStore(BASE_DIR / "sessions.db")
 
-_JOB_WAKE_EVENT = threading.Event()
-_RATE_LIMITER = SlidingWindowRateLimiter()
 
 
 def _session_id_for(user_id: str, chat_id: int) -> str:
     return f"miniapp-{user_id}-{chat_id}"
 
 
-runtime = JobRuntime(
-    store=store,
-    client=client,
+_RUNTIME_DEPS = create_runtime_dependencies(
+    store_getter=lambda: store,
+    client_getter=lambda: client,
     job_max_attempts=JOB_MAX_ATTEMPTS,
     job_retry_base_seconds=JOB_RETRY_BASE_SECONDS,
     job_worker_concurrency=JOB_WORKER_CONCURRENCY,
@@ -133,16 +122,11 @@ runtime = JobRuntime(
     assistant_hard_limit=ASSISTANT_HARD_LIMIT,
     job_event_history_max_jobs=JOB_EVENT_HISTORY_MAX_JOBS,
     job_event_history_ttl_seconds=JOB_EVENT_HISTORY_TTL_SECONDS,
-    session_id_builder=lambda user_id, chat_id: _session_id_for(user_id, chat_id),
+    session_id_builder=_session_id_for,
 )
+runtime = _RUNTIME_DEPS.runtime
 _JOB_WAKE_EVENT = runtime.wake_event
-
-
-def _sync_runtime_bindings() -> None:
-    # Tests monkeypatch module globals (`store`, `client`) after import.
-    # Keep runtime wired to current globals so wrappers stay back-compat.
-    runtime.store = store
-    runtime.client = client
+_RATE_LIMITER = _RUNTIME_DEPS.rate_limiter
 
 
 def _cookie_secure() -> bool:
@@ -181,62 +165,23 @@ def _check_rate_limit(key: str, limit: int, window_seconds: int) -> bool:
 
 
 def _publish_job_event(job_id: int, event_name: str, payload: dict[str, object]) -> None:
-    _sync_runtime_bindings()
-    runtime.publish_job_event(job_id, event_name, payload)
+    _RUNTIME_DEPS.bind_runtime().publish_job_event(job_id, event_name, payload)
 
 
 def _subscribe_job_events(job_id: int) -> queue.Queue[dict[str, object]]:
-    _sync_runtime_bindings()
-    return runtime.subscribe_job_events(job_id)
+    return _RUNTIME_DEPS.bind_runtime().subscribe_job_events(job_id)
 
 
 def _unsubscribe_job_events(job_id: int, subscriber: queue.Queue[dict[str, object]]) -> None:
-    _sync_runtime_bindings()
-    runtime.unsubscribe_job_events(job_id, subscriber)
+    _RUNTIME_DEPS.bind_runtime().unsubscribe_job_events(job_id, subscriber)
 
 
 def _run_chat_job(job: dict[str, object]) -> None:
-    _sync_runtime_bindings()
-    runtime.run_chat_job(job)
+    _RUNTIME_DEPS.bind_runtime().run_chat_job(job)
 
 
 def _is_stale_chat_job_error(exc: Exception) -> bool:
     return runtime.is_stale_chat_job_error(exc)
-
-
-def _create_auth_session_token(user_id: str) -> str:
-    return create_auth_session_token(
-        user_id,
-        bot_token=BOT_TOKEN,
-        auth_session_max_age_seconds=AUTH_SESSION_MAX_AGE_SECONDS,
-        upsert_auth_session_fn=store.upsert_auth_session,
-    )
-
-
-def _verify_auth_session_token(token: str) -> str | None:
-    return verify_auth_session_token(
-        token,
-        bot_token=BOT_TOKEN,
-        is_auth_session_active_fn=store.is_auth_session_active,
-    )
-
-
-def _verified_from_session_cookie() -> VerifiedTelegramInitData | None:
-    token = request.cookies.get(AUTH_COOKIE_NAME, "")
-    return verified_from_session_cookie(
-        token=token,
-        verify_auth_session_token_fn=_verify_auth_session_token,
-    )
-
-
-def _verify_from_payload(payload: dict[str, object]) -> VerifiedTelegramInitData:
-    return verify_from_payload(
-        payload,
-        bot_token=BOT_TOKEN,
-        telegram_init_data_max_age_seconds=TELEGRAM_INIT_DATA_MAX_AGE_SECONDS,
-        verified_from_session_cookie_fn=_verified_from_session_cookie,
-        verify_telegram_init_data_fn=verify_telegram_init_data,
-    )
 
 
 def _serialize_chat(chat: ChatThread) -> dict[str, object]:
@@ -255,6 +200,18 @@ def _chat_id_from_payload(payload: dict[str, object], user_id: str) -> int:
     return parse_chat_id(payload, default_chat_id=store.ensure_default_chat(user_id))
 
 
+_REQUEST_ADAPTERS = build_server_request_adapters(
+    bot_token=BOT_TOKEN,
+    auth_cookie_name=AUTH_COOKIE_NAME,
+    auth_session_max_age_seconds=AUTH_SESSION_MAX_AGE_SECONDS,
+    telegram_init_data_max_age_seconds=TELEGRAM_INIT_DATA_MAX_AGE_SECONDS,
+    upsert_auth_session_fn=lambda **kwargs: store.upsert_auth_session(**kwargs),
+    is_auth_session_active_fn=lambda **kwargs: store.is_auth_session_active(**kwargs),
+    verify_telegram_init_data_fn=lambda **kwargs: verify_telegram_init_data(**kwargs),
+    chat_id_from_payload_fn=lambda payload, user_id: _chat_id_from_payload(payload, user_id=user_id),
+)
+
+
 def _validated_title(raw_title: object, *, default: str) -> str:
     return validate_title(raw_title, default=default, max_length=MAX_TITLE_LEN)
 
@@ -263,45 +220,45 @@ def _validated_message(raw_message: object) -> str:
     return validate_message(raw_message, max_length=MAX_MESSAGE_LEN)
 
 
-def _json_error(message: str, status: int) -> tuple[dict[str, object], int]:
-    return json_error(message, status)
+# Bind adapter-backed implementations after local helper definitions so exported symbols stay stable.
+_create_auth_session_token = _REQUEST_ADAPTERS.create_auth_session_token_fn
+_verify_auth_session_token = _REQUEST_ADAPTERS.verify_auth_session_token_fn
 
 
-def _sse_event(event: str, data: dict[str, object]) -> str:
-    payload = json.dumps(data, ensure_ascii=False)
-    return f"event: {event}\ndata: {payload}\n\n"
+def _verified_from_session_cookie():
+    return _REQUEST_ADAPTERS.verified_from_session_cookie_fn()
 
 
-def _sse_error(message: str, status: int, *, chat_id: int | None = None) -> Response:
-    return sse_error(message, status, chat_id=chat_id, sse_event_fn=_sse_event)
-
-
-def _verify_for_json(payload: dict[str, object]) -> tuple[VerifiedTelegramInitData | None, tuple[dict[str, object], int] | None]:
-    return verify_for_json(payload, verify_from_payload_fn=_verify_from_payload)
-
-
-def _verify_for_sse(payload: dict[str, object]) -> tuple[VerifiedTelegramInitData | None, Response | None]:
-    return verify_for_sse(payload, verify_from_payload_fn=_verify_from_payload, sse_event_fn=_sse_event)
-
-
-def _request_payload() -> dict[str, object]:
-    return request_payload()
-
-
-def _json_user_id_or_error(payload: dict[str, object]) -> tuple[str | None, tuple[dict[str, object], int] | None]:
-    return json_user_id_or_error(payload, verify_for_json_fn=_verify_for_json)
-
-
-def _sse_user_id_or_error(payload: dict[str, object]) -> tuple[str | None, Response | None]:
-    return sse_user_id_or_error(payload, verify_for_sse_fn=_verify_for_sse)
-
-
-def _chat_id_from_payload_or_error(payload: dict[str, object], *, user_id: str) -> tuple[int | None, tuple[dict[str, object], int] | None]:
-    return chat_id_from_payload_or_error(
+def _verify_from_payload(payload: dict[str, object]):
+    return auth_verify_from_payload(
         payload,
-        user_id=user_id,
-        chat_id_from_payload_fn=_chat_id_from_payload,
+        bot_token=BOT_TOKEN,
+        telegram_init_data_max_age_seconds=TELEGRAM_INIT_DATA_MAX_AGE_SECONDS,
+        verified_from_session_cookie_fn=_verified_from_session_cookie,
+        verify_telegram_init_data_fn=lambda **kwargs: verify_telegram_init_data(**kwargs),
     )
+
+_json_error = _REQUEST_ADAPTERS.json_error_fn
+_sse_event = _REQUEST_ADAPTERS.sse_event_fn
+_sse_error = _REQUEST_ADAPTERS.sse_error_fn
+_request_payload = _REQUEST_ADAPTERS.request_payload_fn
+_chat_id_from_payload_or_error = lambda payload, *, user_id: _REQUEST_ADAPTERS.chat_id_from_payload_or_error_fn(payload, user_id)
+
+
+def _verify_for_json(payload: dict[str, object]):
+    return request_verify_for_json(payload, verify_from_payload_fn=_verify_from_payload)
+
+
+def _verify_for_sse(payload: dict[str, object]):
+    return request_verify_for_sse(payload, verify_from_payload_fn=_verify_from_payload, sse_event_fn=_sse_event)
+
+
+def _json_user_id_or_error(payload: dict[str, object]):
+    return request_json_user_id_or_error(payload, verify_for_json_fn=_verify_for_json)
+
+
+def _sse_user_id_or_error(payload: dict[str, object]):
+    return request_sse_user_id_or_error(payload, verify_for_sse_fn=_verify_for_sse)
 
 
 def _asset_version(filename: str) -> str:
@@ -312,8 +269,33 @@ def _dev_reload_version() -> str:
     return dev_reload_version(BASE_DIR, DEV_RELOAD_WATCH_PATHS)
 
 
-_sync_runtime_bindings()
+def _startup_diagnostics_payload() -> dict[str, object]:
+    return startup_diagnostics_payload(
+        client=client,
+        session_store_path=str(store.db_path),
+        bot_token_configured=bool(BOT_TOKEN),
+        debug=DEBUG,
+        dev_reload=DEV_RELOAD,
+        request_debug=REQUEST_DEBUG,
+        force_secure_cookies=FORCE_SECURE_COOKIES,
+        trust_proxy_headers=TRUST_PROXY_HEADERS,
+        enforce_origin_check=ENFORCE_ORIGIN_CHECK,
+        allowed_origins_count=len(ALLOWED_ORIGINS),
+        rate_limit_window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+        rate_limit_api_requests=RATE_LIMIT_API_REQUESTS,
+        rate_limit_stream_requests=RATE_LIMIT_STREAM_REQUESTS,
+        assistant_chunk_len=ASSISTANT_CHUNK_LEN,
+        assistant_hard_limit=ASSISTANT_HARD_LIMIT,
+    )
+
+
+def _log_startup_diagnostics() -> None:
+    payload = _startup_diagnostics_payload()
+    log_startup_diagnostics(logger=app.logger, payload=payload)
+
+
 runtime.start_once()
+_log_startup_diagnostics()
 
 
 @app.before_request
@@ -357,75 +339,26 @@ def add_security_headers(response: Response) -> Response:
     return response
 
 
-@public_bp.get("/")
-def root() -> tuple[dict[str, str], int]:
-    return {"status": "ok", "service": "hermes-miniapp"}, 200
-
-
-@public_bp.get("/app")
-def mini_app() -> Response:
-    boot_skin = str(request.cookies.get(SKIN_COOKIE_NAME, "terminal")).strip().lower()
-    if boot_skin not in ALLOWED_SKINS:
-        boot_skin = "terminal"
-
-    response = make_response(
-        render_template(
-            "app.html",
-            css_version=_asset_version("app.css"),
-            helpers_version=_asset_version("runtime_helpers.js"),
-            shared_utils_version=_asset_version("app_shared_utils.js"),
-            chat_ui_helpers_version=_asset_version("chat_ui_helpers.js"),
-            message_actions_helpers_version=_asset_version("message_actions_helpers.js"),
-            stream_state_helpers_version=_asset_version("stream_state_helpers.js"),
-            stream_controller_version=_asset_version("stream_controller.js"),
-            composer_state_helpers_version=_asset_version("composer_state_helpers.js"),
-            app_js_version=_asset_version("app.js"),
-            dev_reload=DEV_RELOAD,
-            dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
-            dev_reload_version=_dev_reload_version(),
-            request_debug=REQUEST_DEBUG,
-            boot_skin=boot_skin,
-            csp_nonce=_ensure_csp_nonce(),
-            max_message_len=MAX_MESSAGE_LEN,
-        )
-    )
-    response.headers["Cache-Control"] = "no-store, max-age=0"
-    return response
-
-
-@public_bp.get("/health")
-def health() -> tuple[dict[str, str], int]:
-    return {"status": "ok"}, 200
-
-
-@public_bp.get("/dev/reload-state")
-def dev_reload_state() -> Response | tuple[dict[str, object], int]:
-    if not DEV_RELOAD:
-        return {"ok": False, "enabled": False}, 404
-    response = jsonify(
-        {
-            "ok": True,
-            "enabled": True,
-            "version": _dev_reload_version(),
-            "interval_ms": DEV_RELOAD_INTERVAL_MS,
-        }
-    )
-    response.headers["Cache-Control"] = "no-store, max-age=0"
-    return response
-
-
-@public_bp.get("/static/<path:filename>")
-def static_files(filename: str):
-    response = send_from_directory(app.static_folder, filename)
-    if filename in STATIC_NO_STORE_FILENAMES:
-        response.headers["Cache-Control"] = "no-store, max-age=0"
-    return response
+register_public_routes(
+    public_bp,
+    app=app,
+    allowed_skins=ALLOWED_SKINS,
+    skin_cookie_name=SKIN_COOKIE_NAME,
+    max_message_len=MAX_MESSAGE_LEN,
+    dev_reload=DEV_RELOAD,
+    dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
+    request_debug=REQUEST_DEBUG,
+    static_no_store_filenames=STATIC_NO_STORE_FILENAMES,
+    asset_version_fn=lambda filename: _asset_version(filename),
+    dev_reload_version_fn=lambda: _dev_reload_version(),
+    ensure_csp_nonce_fn=_ensure_csp_nonce,
+)
 
 
 register_auth_routes(
     api_bp,
-    store_getter=lambda: store,
-    runtime_getter=lambda: runtime,
+    store_getter=_RUNTIME_DEPS.store_getter,
+    runtime_getter=_RUNTIME_DEPS.runtime_getter,
     request_payload_fn=_request_payload,
     verify_for_json_fn=_verify_for_json,
     serialize_chat_fn=_serialize_chat,
@@ -443,10 +376,10 @@ register_auth_routes(
 register_chat_routes(
     api_bp,
     context=ChatRouteContext(
-        store_getter=lambda: store,
-        client_getter=lambda: client,
-        runtime_getter=lambda: runtime,
-        job_wake_event_getter=lambda: _JOB_WAKE_EVENT,
+        store_getter=_RUNTIME_DEPS.store_getter,
+        client_getter=_RUNTIME_DEPS.client_getter,
+        runtime_getter=_RUNTIME_DEPS.runtime_getter,
+        job_wake_event_getter=_RUNTIME_DEPS.job_wake_event_getter,
         request_payload_fn=_request_payload,
         json_user_id_or_error_fn=_json_user_id_or_error,
         verify_for_json_fn=_verify_for_json,
@@ -469,8 +402,9 @@ register_chat_routes(
 
 register_jobs_runtime_routes(
     api_bp,
-    store_getter=lambda: store,
-    client_getter=lambda: client,
+    store_getter=_RUNTIME_DEPS.store_getter,
+    client_getter=_RUNTIME_DEPS.client_getter,
+    runtime_getter=_RUNTIME_DEPS.runtime_getter,
     request_payload_fn=_request_payload,
     json_user_id_or_error_fn=_json_user_id_or_error,
     verify_for_json_fn=_verify_for_json,

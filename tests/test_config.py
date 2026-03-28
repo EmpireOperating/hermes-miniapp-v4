@@ -3,6 +3,11 @@ from __future__ import annotations
 import pytest
 
 from miniapp_config import MiniAppConfig
+from runtime_limits import (
+    DEFAULT_JOB_EVENT_HISTORY_MAX_JOBS,
+    DEFAULT_JOB_EVENT_HISTORY_TTL_SECONDS,
+    MIN_JOB_STALL_TIMEOUT_SECONDS,
+)
 
 
 def _cfg() -> MiniAppConfig:
@@ -51,3 +56,15 @@ def test_config_rejects_invalid_rate_limit_window(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="MINI_APP_RATE_LIMIT_WINDOW_SECONDS"):
         _cfg()
+
+
+def test_config_uses_centralized_runtime_limit_defaults(monkeypatch) -> None:
+    monkeypatch.delenv("MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS", raising=False)
+    monkeypatch.delenv("MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS", raising=False)
+    monkeypatch.delenv("MINI_APP_JOB_STALL_TIMEOUT_SECONDS", raising=False)
+
+    cfg = _cfg()
+
+    assert cfg.job_event_history_max_jobs == DEFAULT_JOB_EVENT_HISTORY_MAX_JOBS
+    assert cfg.job_event_history_ttl_seconds == DEFAULT_JOB_EVENT_HISTORY_TTL_SECONDS
+    assert cfg.job_stall_timeout_seconds >= MIN_JOB_STALL_TIMEOUT_SECONDS

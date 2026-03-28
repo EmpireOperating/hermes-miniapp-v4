@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any, Callable, TypeVar
+from typing import Any
 
 from routes_chat_context import ChatRouteContext
-from routes_chat_resolution import user_and_chat_id_or_error
-
-
-T = TypeVar("T")
+from routes_chat_resolution import (
+    guard_json_payload_user_chat_route,
+    guard_json_payload_user_route,
+    guard_key_error_as_route_error,
+    user_and_chat_id_or_error,
+)
 
 
 def register_chat_management_routes(
@@ -58,22 +60,6 @@ def register_chat_management_routes(
             map_chat_id_payload_error_fn=lambda payload_error: payload_error,
         )
 
-    def _json_user_from_request(
-    ) -> tuple[dict[str, object], str | None, tuple[dict[str, object], int] | None]:
-        payload = request_payload_fn()
-        user_id, auth_error = _require_json_user_id(payload)
-        if auth_error:
-            return payload, None, auth_error
-        return payload, user_id, None
-
-    def _json_user_and_chat_from_request(
-    ) -> tuple[dict[str, object], str | None, int | None, tuple[dict[str, object], int] | None]:
-        payload = request_payload_fn()
-        user_id, chat_id, payload_error = _require_json_user_and_chat_id(payload)
-        if payload_error:
-            return payload, None, None, payload_error
-        return payload, user_id, chat_id, None
-
     def _chat_history_payload(user_id: str, chat_id: int, *, activate: bool) -> dict[str, object]:
         store = store_getter()
         if activate:
@@ -83,16 +69,20 @@ def register_chat_management_routes(
         chat = store.get_chat(user_id=user_id, chat_id=chat_id)
         return {"ok": True, "chat": serialize_chat_fn(chat), "history": history}
 
-    def _json_not_found(exc: KeyError) -> tuple[dict[str, object], int]:
+    def _json_not_found(exc: Exception) -> tuple[dict[str, object], int]:
         return json_error_fn(str(exc), 404)
 
-    def _json_try_not_found(
-        action: Callable[[], T],
-    ) -> tuple[T | None, tuple[dict[str, object], int] | None]:
-        try:
-            return action(), None
-        except KeyError as exc:
-            return None, _json_not_found(exc)
+    def _is_chat_not_found_key_error(exc: KeyError) -> bool:
+        message = str(exc).strip().lower()
+        return "chat" in message and "not found" in message
+
+    def _parse_activate_flag(payload: dict[str, object]) -> tuple[bool | None, tuple[dict[str, object], int] | None]:
+        raw_activate = payload.get("activate", False)
+        if isinstance(raw_activate, bool):
+            return raw_activate, None
+        if raw_activate is None:
+            return False, None
+        return None, json_error_fn("Invalid activate flag. Expected boolean.", 400)
 
     @api_bp.post("/chats")
     def create_chat() -> tuple[dict[str, object], int]:
@@ -113,79 +103,76 @@ def register_chat_management_routes(
         return {"ok": True, "chat": serialize_chat_fn(chat), "history": history}, 201
 
     @api_bp.post("/chats/rename")
-    def rename_chat() -> tuple[dict[str, object], int]:
-        payload, user_id, chat_id, payload_error = _json_user_and_chat_from_request()
-        if payload_error:
-            return payload_error
-
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def rename_chat(payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
         try:
             title = validated_title_fn(payload.get("title"), "Untitled")
-            chat = store_getter().rename_chat(user_id=user_id, chat_id=chat_id, title=title)
         except ValueError as exc:
             return json_error_fn(str(exc), 400)
-        except KeyError as exc:
-            return _json_not_found(exc)
+
+        chat = store_getter().rename_chat(user_id=user_id, chat_id=chat_id, title=title)
         return {"ok": True, "chat": serialize_chat_fn(chat)}, 200
 
     @api_bp.post("/chats/open")
-    def open_chat() -> tuple[dict[str, object], int]:
-        _, user_id, chat_id, payload_error = _json_user_and_chat_from_request()
-        if payload_error:
-            return payload_error
-
-        response_payload, not_found_error = _json_try_not_found(
-            lambda: _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=True)
-        )
-        if not_found_error:
-            return not_found_error
-
-        return response_payload, 200
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def open_chat(_payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        return _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=True), 200
 
     @api_bp.post("/chats/history")
-    def chat_history() -> tuple[dict[str, object], int]:
-        payload, user_id, chat_id, payload_error = _json_user_and_chat_from_request()
-        if payload_error:
-            return payload_error
-
-        activate = bool(payload.get("activate", False))
-        response_payload, not_found_error = _json_try_not_found(
-            lambda: _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=activate)
-        )
-        if not_found_error:
-            return not_found_error
-
-        return response_payload, 200
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def chat_history(payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        activate, activate_error = _parse_activate_flag(payload)
+        if activate_error:
+            return activate_error
+        return _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=bool(activate)), 200
 
     @api_bp.post("/chats/mark-read")
-    def mark_chat_read() -> tuple[dict[str, object], int]:
-        _, user_id, chat_id, payload_error = _json_user_and_chat_from_request()
-        if payload_error:
-            return payload_error
-
-        def _action() -> Any:
-            store = store_getter()
-            store.mark_chat_read(user_id=user_id, chat_id=chat_id)
-            return store.get_chat(user_id=user_id, chat_id=chat_id)
-
-        chat, not_found_error = _json_try_not_found(_action)
-        if not_found_error:
-            return not_found_error
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def mark_chat_read(_payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        store = store_getter()
+        store.mark_chat_read(user_id=user_id, chat_id=chat_id)
+        chat = store.get_chat(user_id=user_id, chat_id=chat_id)
         return {"ok": True, "chat": serialize_chat_fn(chat)}, 200
 
     @api_bp.post("/chats/pin")
-    def pin_chat() -> tuple[dict[str, object], int]:
-        _, user_id, chat_id, payload_error = _json_user_and_chat_from_request()
-        if payload_error:
-            return payload_error
-
-        def _action() -> Any:
-            store = store_getter()
-            return store.set_chat_pinned(user_id=user_id, chat_id=chat_id, is_pinned=True)
-
-        chat, not_found_error = _json_try_not_found(_action)
-        if not_found_error:
-            return not_found_error
-
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def pin_chat(_payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        chat = store_getter().set_chat_pinned(user_id=user_id, chat_id=chat_id, is_pinned=True)
         return {
             "ok": True,
             "chat": serialize_chat_fn(chat),
@@ -193,19 +180,16 @@ def register_chat_management_routes(
         }, 200
 
     @api_bp.post("/chats/unpin")
-    def unpin_chat() -> tuple[dict[str, object], int]:
-        _, user_id, chat_id, payload_error = _json_user_and_chat_from_request()
-        if payload_error:
-            return payload_error
-
-        def _action() -> Any:
-            store = store_getter()
-            return store.set_chat_pinned(user_id=user_id, chat_id=chat_id, is_pinned=False)
-
-        chat, not_found_error = _json_try_not_found(_action)
-        if not_found_error:
-            return not_found_error
-
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def unpin_chat(_payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        chat = store_getter().set_chat_pinned(user_id=user_id, chat_id=chat_id, is_pinned=False)
         return {
             "ok": True,
             "chat": serialize_chat_fn(chat),
@@ -213,26 +197,23 @@ def register_chat_management_routes(
         }, 200
 
     @api_bp.post("/chats/reopen")
-    def reopen_chat() -> tuple[dict[str, object], int]:
-        _, user_id, chat_id, payload_error = _json_user_and_chat_from_request()
-        if payload_error:
-            return payload_error
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def reopen_chat(_payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        store = store_getter()
+        chat_record = store.reopen_chat(user_id=user_id, chat_id=chat_id)
+        store.mark_chat_read(user_id=user_id, chat_id=chat_id)
+        store.set_active_chat(user_id=user_id, chat_id=chat_id)
+        history = _chat_history(user_id=user_id, chat_id=chat_id, limit=120)
+        chats = _serialize_chats(user_id=user_id)
+        pinned_chats = _serialize_pinned_chats(user_id=user_id)
 
-        def _action() -> tuple[Any, list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
-            store = store_getter()
-            chat_record = store.reopen_chat(user_id=user_id, chat_id=chat_id)
-            store.mark_chat_read(user_id=user_id, chat_id=chat_id)
-            store.set_active_chat(user_id=user_id, chat_id=chat_id)
-            history = _chat_history(user_id=user_id, chat_id=chat_id, limit=120)
-            chats = _serialize_chats(user_id=user_id)
-            pinned_chats = _serialize_pinned_chats(user_id=user_id)
-            return chat_record, history, chats, pinned_chats
-
-        action_result, not_found_error = _json_try_not_found(_action)
-        if not_found_error:
-            return not_found_error
-
-        chat_record, history, chats, pinned_chats = action_result
         return {
             "ok": True,
             "chat": serialize_chat_fn(chat_record),
@@ -243,46 +224,41 @@ def register_chat_management_routes(
         }, 200
 
     @api_bp.post("/chats/clear")
-    def clear_chat() -> tuple[dict[str, object], int]:
-        _, user_id, chat_id, payload_error = _json_user_and_chat_from_request()
-        if payload_error:
-            return payload_error
-
-        def _action() -> Any:
-            store = store_getter()
-            store.clear_chat(user_id=user_id, chat_id=chat_id)
-            chat_record = store.get_chat(user_id=user_id, chat_id=chat_id)
-            _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
-            return chat_record
-
-        chat, not_found_error = _json_try_not_found(_action)
-        if not_found_error:
-            return not_found_error
-        return {"ok": True, "chat": serialize_chat_fn(chat), "history": []}, 200
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def clear_chat(_payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        store = store_getter()
+        store.clear_chat(user_id=user_id, chat_id=chat_id)
+        chat_record = store.get_chat(user_id=user_id, chat_id=chat_id)
+        _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
+        return {"ok": True, "chat": serialize_chat_fn(chat_record), "history": []}, 200
 
     @api_bp.post("/chats/remove")
-    def remove_chat() -> tuple[dict[str, object], int]:
-        _, user_id, chat_id, payload_error = _json_user_and_chat_from_request()
-        if payload_error:
-            return payload_error
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def remove_chat(_payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        store = store_getter()
+        _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
+        next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id)
+        history = _chat_history(user_id=user_id, chat_id=next_chat_id, limit=120)
+        store.mark_chat_read(user_id=user_id, chat_id=next_chat_id)
+        store.set_active_chat(user_id=user_id, chat_id=next_chat_id)
+        active_chat = store.get_chat(user_id=user_id, chat_id=next_chat_id)
+        chats = _serialize_chats(user_id=user_id)
+        pinned_chats = _serialize_pinned_chats(user_id=user_id)
 
-        def _action() -> tuple[int, list[dict[str, object]], Any, list[dict[str, object]], list[dict[str, object]]]:
-            store = store_getter()
-            _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
-            next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id)
-            history = _chat_history(user_id=user_id, chat_id=next_chat_id, limit=120)
-            store.mark_chat_read(user_id=user_id, chat_id=next_chat_id)
-            store.set_active_chat(user_id=user_id, chat_id=next_chat_id)
-            active_chat = store.get_chat(user_id=user_id, chat_id=next_chat_id)
-            chats = _serialize_chats(user_id=user_id)
-            pinned_chats = _serialize_pinned_chats(user_id=user_id)
-            return next_chat_id, history, active_chat, chats, pinned_chats
-
-        action_result, not_found_error = _json_try_not_found(_action)
-        if not_found_error:
-            return not_found_error
-
-        next_chat_id, history, active_chat, chats, pinned_chats = action_result
         return {
             "ok": True,
             "removed_chat_id": chat_id,
@@ -294,11 +270,11 @@ def register_chat_management_routes(
         }, 200
 
     @api_bp.post("/chats/status")
-    def chats_status() -> tuple[dict[str, object], int]:
-        _, user_id, auth_error = _json_user_from_request()
-        if auth_error:
-            return auth_error
-
+    @guard_json_payload_user_route(
+        request_payload_fn=request_payload_fn,
+        user_id_from_payload_or_error_fn=_require_json_user_id,
+    )
+    def chats_status(_payload: dict[str, object], user_id: str) -> tuple[dict[str, object], int]:
         runtime_getter().ensure_pending_jobs(user_id)
         chats = _serialize_chats(user_id=user_id)
         pinned_chats = _serialize_pinned_chats(user_id=user_id)

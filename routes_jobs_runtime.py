@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from job_status import JOB_STATUS_DEAD, JOB_STATUS_DONE, JOB_STATUS_ERROR, JOB_STATUS_QUEUED, JOB_STATUS_RUNNING
 from validators import parse_bounded_int
 
 
@@ -10,6 +11,7 @@ def register_jobs_runtime_routes(
     *,
     store_getter: Callable[[], Any],
     client_getter: Callable[[], Any],
+    runtime_getter: Callable[[], Any],
     request_payload_fn: Callable[[], dict[str, object]],
     json_user_id_or_error_fn: Callable[[dict[str, object]], tuple[str | None, tuple[dict[str, object], int] | None]],
     verify_for_json_fn: Callable[[dict[str, object]], tuple[Any | None, tuple[dict[str, object], int] | None]],
@@ -29,11 +31,11 @@ def register_jobs_runtime_routes(
         jobs = store.list_jobs(user_id=user_id, limit=limit)
         dead_letters = store.list_dead_letters(user_id=user_id, limit=limit)
         summary = {
-            "queued": sum(1 for job in jobs if job["status"] == "queued"),
-            "running": sum(1 for job in jobs if job["status"] == "running"),
-            "done": sum(1 for job in jobs if job["status"] == "done"),
-            "error": sum(1 for job in jobs if job["status"] == "error"),
-            "dead": sum(1 for job in jobs if job["status"] == "dead"),
+            "queued": sum(1 for job in jobs if job["status"] == JOB_STATUS_QUEUED),
+            "running": sum(1 for job in jobs if job["status"] == JOB_STATUS_RUNNING),
+            "done": sum(1 for job in jobs if job["status"] == JOB_STATUS_DONE),
+            "error": sum(1 for job in jobs if job["status"] == JOB_STATUS_ERROR),
+            "dead": sum(1 for job in jobs if job["status"] == JOB_STATUS_DEAD),
             "dead_letter_count": len(dead_letters),
         }
         return {"ok": True, "summary": summary, "jobs": jobs, "dead_letters": dead_letters}, 200
@@ -64,9 +66,11 @@ def register_jobs_runtime_routes(
             return auth_error
 
         runtime_payload = client_getter().runtime_status()
+        runtime_diagnostics = runtime_getter().runtime_diagnostics()
         return {
             "ok": True,
             "persistent": runtime_payload.get("persistent") or {},
             "routing": runtime_payload.get("routing") or {},
             "health": runtime_payload.get("health") or {},
+            "runtime": runtime_diagnostics,
         }, 200

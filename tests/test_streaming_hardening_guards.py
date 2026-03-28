@@ -48,3 +48,10 @@ def test_composer_state_helper_exports_state_api():
     assert "HermesMiniappComposerState" in helper_js
     assert "function deriveComposerState({ activeChatId, pendingChats, chats, isAuthenticated })" in helper_js
     assert "function applyComposerState({" in helper_js
+
+
+def test_job_runtime_event_buffers_do_not_use_hardcoded_512_caps():
+    runtime_source = Path("job_runtime.py").read_text(encoding="utf-8")
+
+    assert "maxsize=512" not in runtime_source
+    assert "len(history) > 512" not in runtime_source

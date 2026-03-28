@@ -61,15 +61,18 @@ class StoreSchemaMixin:
                 "CREATE INDEX IF NOT EXISTS idx_chat_messages_user_chat ON chat_messages(user_id, chat_id, id)"
             )
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_messages_user_chat_role ON chat_messages(user_id, chat_id, role, id)"
+            )
+            conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS chat_jobs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     chat_id INTEGER NOT NULL,
                     operator_message_id INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    max_attempts INTEGER NOT NULL DEFAULT 4,
+                    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'error', 'dead')),
+                    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                    max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
                     next_attempt_at TEXT,
                     error TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -133,6 +136,10 @@ class StoreSchemaMixin:
                     "ALTER TABLE chat_threads ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0"
                 )
 
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_threads_user_flags ON chat_threads(user_id, is_archived, is_pinned, id)"
+            )
+
             user_pref_columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(user_preferences)").fetchall()
@@ -150,6 +157,8 @@ class StoreSchemaMixin:
                 conn.execute("ALTER TABLE chat_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 4")
             if "next_attempt_at" not in chat_job_columns:
                 conn.execute("ALTER TABLE chat_jobs ADD COLUMN next_attempt_at TEXT")
+
+            self._migrate_chat_jobs_invariants(conn)
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_jobs_next_attempt ON chat_jobs(status, next_attempt_at, id)"
@@ -186,6 +195,115 @@ class StoreSchemaMixin:
             )
 
             self._migrate_legacy_history(conn)
+
+    def _migrate_chat_jobs_invariants(self, conn: sqlite3.Connection) -> None:
+        table_sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_jobs'"
+        ).fetchone()
+        table_sql = str(table_sql_row["sql"] or "") if table_sql_row else ""
+
+        conn.execute(
+            """
+            UPDATE chat_jobs
+            SET status = CASE
+                WHEN status IN ('queued', 'running', 'done', 'error', 'dead') THEN status
+                ELSE 'dead'
+            END,
+            attempts = CASE
+                WHEN attempts IS NULL OR attempts < 0 THEN 0
+                ELSE attempts
+            END,
+            max_attempts = CASE
+                WHEN max_attempts IS NULL OR max_attempts < 1 THEN 1
+                ELSE max_attempts
+            END,
+            updated_at = CURRENT_TIMESTAMP
+            WHERE status NOT IN ('queued', 'running', 'done', 'error', 'dead')
+               OR attempts IS NULL
+               OR attempts < 0
+               OR max_attempts IS NULL
+               OR max_attempts < 1
+            """
+        )
+
+        has_status_check = "CHECK (status IN ('queued', 'running', 'done', 'error', 'dead'))" in table_sql
+        has_attempts_check = "CHECK (attempts >= 0)" in table_sql
+        has_max_attempts_check = "CHECK (max_attempts >= 1)" in table_sql
+        if has_status_check and has_attempts_check and has_max_attempts_check:
+            return
+
+        conn.execute("ALTER TABLE chat_jobs RENAME TO chat_jobs__legacy_invariants")
+        conn.execute(
+            """
+            CREATE TABLE chat_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                operator_message_id INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'error', 'dead')),
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
+                next_attempt_at TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                finished_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO chat_jobs (
+                id,
+                user_id,
+                chat_id,
+                operator_message_id,
+                status,
+                attempts,
+                max_attempts,
+                next_attempt_at,
+                error,
+                created_at,
+                started_at,
+                finished_at,
+                updated_at
+            )
+            SELECT
+                id,
+                user_id,
+                chat_id,
+                operator_message_id,
+                CASE
+                    WHEN status IN ('queued', 'running', 'done', 'error', 'dead') THEN status
+                    ELSE 'dead'
+                END,
+                CASE
+                    WHEN attempts IS NULL OR attempts < 0 THEN 0
+                    ELSE attempts
+                END,
+                CASE
+                    WHEN max_attempts IS NULL OR max_attempts < 1 THEN 1
+                    ELSE max_attempts
+                END,
+                next_attempt_at,
+                error,
+                created_at,
+                started_at,
+                finished_at,
+                updated_at
+            FROM chat_jobs__legacy_invariants
+            ORDER BY id ASC
+            """
+        )
+        conn.execute("DROP TABLE chat_jobs__legacy_invariants")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_jobs_status_created ON chat_jobs(status, created_at, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_jobs_user_chat_status ON chat_jobs(user_id, chat_id, status, id)"
+        )
 
     def _migrate_legacy_history(self, conn: sqlite3.Connection) -> None:
         tables = {
