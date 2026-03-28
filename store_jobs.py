@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sqlite3 import Connection
+import threading
 from typing import Any
 
 from job_status import (
@@ -35,15 +36,40 @@ class StoreJobsMixin:
         with self._connect() as conn:
             return get_open_job(conn, user_id=user_id, chat_id=chat_id)
 
+    def _queue_diag_lock(self) -> threading.Lock:
+        lock = getattr(self, "_job_queue_diag_lock", None)
+        if lock is not None and hasattr(lock, "acquire") and hasattr(lock, "release"):
+            return lock
+        new_lock = threading.Lock()
+        self._job_queue_diag_lock = new_lock
+        return new_lock
+
+    def _record_preclaim_dead_letter_total(self, delta: int) -> None:
+        increment = max(0, int(delta or 0))
+        if increment <= 0:
+            return
+        with self._queue_diag_lock():
+            current = int(getattr(self, "_preclaim_dead_letter_total", 0) or 0)
+            self._preclaim_dead_letter_total = current + increment
+
+    def job_queue_diagnostics(self) -> dict[str, int]:
+        with self._queue_diag_lock():
+            preclaim_dead_letter_total = int(getattr(self, "_preclaim_dead_letter_total", 0) or 0)
+        startup = self.startup_recovery_stats() if hasattr(self, "startup_recovery_stats") else {}
+        return {
+            "startup_recovered_running_total": int(startup.get("startup_recovered_running_total", 0) or 0),
+            "startup_clamped_exhausted_total": int(startup.get("startup_clamped_exhausted_total", 0) or 0),
+            "preclaim_dead_letter_total": preclaim_dead_letter_total,
+        }
+
     def claim_next_job(self) -> dict[str, Any] | None:
         with self._connect() as conn:
-            return claim_next_job(
+            preclaim_dead_lettered = dead_letter_exhausted_queued_jobs(
                 conn,
-                dead_letter_exhausted_queued_jobs_fn=lambda active_conn: dead_letter_exhausted_queued_jobs(
-                    active_conn,
-                    insert_dead_letter_if_missing=self._insert_dead_letter_if_missing,
-                ),
+                insert_dead_letter_if_missing=self._insert_dead_letter_if_missing,
             )
+            self._record_preclaim_dead_letter_total(preclaim_dead_lettered)
+            return claim_next_job(conn)
 
     def complete_job(self, job_id: int) -> None:
         with self._connect() as conn:

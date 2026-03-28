@@ -77,6 +77,8 @@ STATIC_NO_STORE_FILENAMES = {
     "stream_state_helpers.js",
     "stream_controller.js",
     "composer_state_helpers.js",
+    "keyboard_shortcuts_helpers.js",
+    "interaction_helpers.js",
 }
 STATIC_NO_STORE_PATHS = {f"/static/{name}" for name in STATIC_NO_STORE_FILENAMES}
 

@@ -41,6 +41,8 @@ def register_public_routes(
                 stream_state_helpers_version=asset_version_fn("stream_state_helpers.js"),
                 stream_controller_version=asset_version_fn("stream_controller.js"),
                 composer_state_helpers_version=asset_version_fn("composer_state_helpers.js"),
+                keyboard_shortcuts_helpers_version=asset_version_fn("keyboard_shortcuts_helpers.js"),
+                interaction_helpers_version=asset_version_fn("interaction_helpers.js"),
                 app_js_version=asset_version_fn("app.js"),
                 dev_reload=dev_reload,
                 dev_reload_interval_ms=dev_reload_interval_ms,

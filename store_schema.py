@@ -16,6 +16,10 @@ class StoreSchemaMixin:
         return connection
 
     def _init_db(self) -> None:
+        self._startup_recovery_stats = {
+            "startup_recovered_running_total": 0,
+            "startup_clamped_exhausted_total": 0,
+        }
         with self._connect() as conn:
             conn.execute(
                 """
@@ -116,13 +120,49 @@ class StoreSchemaMixin:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_jobs_user_chat_status ON chat_jobs(user_id, chat_id, status, id)"
             )
+            # Crash-recovery for orphaned running jobs. We always requeue, but clamp
+            # exhausted attempt counters back to one-claim-remaining so startup recovery
+            # doesn't immediately dead-letter before the worker can run once more.
+            running_recovery_row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS running_total,
+                    SUM(
+                        CASE
+                            WHEN COALESCE(attempts, 0) >= CASE WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0) ELSE 1 END
+                            THEN 1
+                            ELSE 0
+                        END
+                    ) AS clamped_total
+                FROM chat_jobs
+                WHERE status = 'running'
+                """
+            ).fetchone()
+            running_total = int((running_recovery_row["running_total"] if running_recovery_row else 0) or 0)
+            clamped_total = int((running_recovery_row["clamped_total"] if running_recovery_row else 0) or 0)
             conn.execute(
                 """
                 UPDATE chat_jobs
-                SET status = 'queued', started_at = NULL, updated_at = CURRENT_TIMESTAMP
+                SET status = 'queued',
+                    attempts = CASE
+                        WHEN COALESCE(attempts, 0) >= CASE WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0) ELSE 1 END
+                            THEN CASE
+                                WHEN (CASE WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0) ELSE 1 END) > 1
+                                    THEN (CASE WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0) ELSE 1 END) - 1
+                                ELSE 0
+                            END
+                        ELSE COALESCE(attempts, 0)
+                    END,
+                    next_attempt_at = COALESCE(next_attempt_at, CURRENT_TIMESTAMP),
+                    started_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE status = 'running'
                 """
             )
+            self._startup_recovery_stats = {
+                "startup_recovered_running_total": running_total,
+                "startup_clamped_exhausted_total": clamped_total,
+            }
             columns = {
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
@@ -371,3 +411,15 @@ class StoreSchemaMixin:
         ).fetchone()
         if not row:
             raise KeyError(f"Chat {chat_id} not found")
+
+    def startup_recovery_stats(self) -> dict[str, int]:
+        stats = getattr(self, "_startup_recovery_stats", None)
+        if not isinstance(stats, dict):
+            return {
+                "startup_recovered_running_total": 0,
+                "startup_clamped_exhausted_total": 0,
+            }
+        return {
+            "startup_recovered_running_total": int(stats.get("startup_recovered_running_total", 0) or 0),
+            "startup_clamped_exhausted_total": int(stats.get("startup_clamped_exhausted_total", 0) or 0),
+        }

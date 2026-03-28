@@ -500,6 +500,62 @@ def test_claim_next_job_dead_letters_exhausted_queued_jobs(tmp_path) -> None:
     dead_letters = store.list_dead_letters(user_id, limit=20)
     assert any(item["job_id"] == exhausted_job_id for item in dead_letters)
 
+    queue_diag = store.job_queue_diagnostics()
+    assert queue_diag["preclaim_dead_letter_total"] >= 1
+
+
+def test_store_startup_requeues_recoverable_running_jobs(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u10ac"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "recover me")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=3)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == job_id
+    assert claimed["attempts"] == 1
+
+    # Simulate process restart: schema recovery should move running -> queued when budget remains.
+    recovered_store = SessionStore(store.db_path)
+    state = recovered_store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "queued"
+    assert state["attempts"] == 1
+    startup_stats = recovered_store.startup_recovery_stats()
+    assert startup_stats["startup_recovered_running_total"] >= 1
+    assert startup_stats["startup_clamped_exhausted_total"] == 0
+
+
+def test_store_startup_requeues_exhausted_running_jobs_with_one_claim_remaining(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u10ad"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "last attempt")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == job_id
+    assert claimed["attempts"] == 1
+
+    # Simulate process restart with an exhausted running job.
+    recovered_store = SessionStore(store.db_path)
+    state = recovered_store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "queued"
+    assert state["attempts"] == 0
+    startup_stats = recovered_store.startup_recovery_stats()
+    assert startup_stats["startup_recovered_running_total"] >= 1
+    assert startup_stats["startup_clamped_exhausted_total"] >= 1
+    assert not any(item["job_id"] == job_id for item in recovered_store.list_dead_letters(user_id, limit=20))
+
+    # The job should be claimable exactly once more after startup recovery.
+    reclaimed = recovered_store.claim_next_job()
+    assert reclaimed is not None
+    assert reclaimed["id"] == job_id
+    assert reclaimed["attempts"] == 1
+
 
 def test_retry_or_dead_letter_job_does_not_resurrect_dead_job(tmp_path) -> None:
     store = _store(tmp_path)
