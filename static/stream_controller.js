@@ -205,9 +205,10 @@
         updatePendingAssistant(chatId, payload.error || "Hermes stream failed.", false);
         markStreamUpdate(chatId);
         syncActiveMessageView(chatId, { preserveViewport: true });
+        setChatLatency(chatId, "--");
         setStreamStatus("Stream error");
         setActivityChip(streamChip, "stream: error");
-        return false;
+        return true;
       }
 
       if (eventName === "done") {
@@ -226,6 +227,7 @@
       updatePendingAssistant(chatId, fallbackReply, false);
       triggerIncomingMessageHaptic(chatId, { fallbackToLatestHistory: true });
       markStreamUpdate(chatId);
+      setChatLatency(chatId, "--");
       const patchedAssistant = patchVisiblePendingAssistant(chatId, fallbackReply, false);
       const patchedToolTrace = patchVisibleToolTrace(chatId);
       renderTraceLog(fallbackTraceEvent, {
@@ -244,11 +246,11 @@
       }
     }
 
-    async function consumeStreamResponse(chatId, response, builtReplyRef, { fallbackTraceEvent } = {}) {
+    async function consumeStreamResponse(chatId, response, builtReplyRef, { fallbackTraceEvent, suppressEarlyCloseFallback = false } = {}) {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let doneReceived = false;
+      let terminalReceived = false;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -268,12 +270,25 @@
             payloadKeys: payload && typeof payload === "object" ? Object.keys(payload) : [],
           });
           if (handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
-            doneReceived = true;
+            terminalReceived = true;
+            break;
           }
+        }
+
+        if (terminalReceived) {
+          break;
         }
       }
 
-      if (buffer.trim()) {
+      if (terminalReceived) {
+        try {
+          await reader.cancel();
+        } catch {
+          // best effort
+        }
+      }
+
+      if (!terminalReceived && buffer.trim()) {
         const parsed = parseSseEvent(buffer.trim());
         const eventName = parsed?.eventName || parsed?.event || "message";
         const payload = parsed?.payload;
@@ -282,15 +297,20 @@
           eventName,
           hasPayload: Boolean(payload),
         });
-        if (eventName === "done" && payload) {
-          applyDonePayload(chatId, payload, builtReplyRef, { updateUnread: false });
-          doneReceived = true;
+        if (payload && handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
+          terminalReceived = true;
         }
       }
 
-      if (!doneReceived) {
+      const earlyClosed = !terminalReceived;
+      if (earlyClosed && !suppressEarlyCloseFallback) {
         applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent);
       }
+
+      return {
+        terminalReceived,
+        earlyClosed,
+      };
     }
 
     function focusMessagesPaneIfActiveChat(chatId) {

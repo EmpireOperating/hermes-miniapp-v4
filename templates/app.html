@@ -90,7 +90,13 @@
           </div>
 
           <div class="pinned-chats" id="pinned-chats-wrap" hidden>
-            <div class="panel__header panel__header--subsection">Pinned chats</div>
+            <div class="pinned-chats__header-row">
+              <div class="panel__header panel__header--subsection pinned-chats__title-wrap">
+                <span>Pinned chats</span>
+                <span id="pinned-chats-count" class="pinned-chats__count" hidden></span>
+              </div>
+              <button type="button" id="pinned-chats-toggle" class="pinned-chats__toggle" aria-controls="pinned-chats" aria-expanded="true">Hide</button>
+            </div>
             <div id="pinned-chats" class="pinned-chats__list" role="list" aria-label="Pinned chats"></div>
           </div>
 
@@ -201,6 +207,8 @@
     <script src="/static/stream_state_helpers.js?v={{ stream_state_helpers_version }}"></script>
     <script src="/static/stream_controller.js?v={{ stream_controller_version }}"></script>
     <script src="/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}"></script>
+    <script src="/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}"></script>
+    <script src="/static/interaction_helpers.js?v={{ interaction_helpers_version }}"></script>
     <script src="/static/app.js?v={{ app_js_version }}"></script>
   </body>
 </html>
