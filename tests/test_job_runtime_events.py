@@ -48,6 +48,31 @@ def test_unsubscribe_clears_terminal_history_when_last_listener_leaves() -> None
     assert 22 not in broker._event_timestamps
 
 
+def test_terminal_rollup_summarizes_recent_terminal_events() -> None:
+    broker = JobEventBroker(event_buffer_cap=6, history_max_jobs=10, history_ttl_seconds=300)
+    broker.publish(8, "chunk", {"text": "partial"})
+    broker.publish(8, "error", {"message": "upstream timeout", "retrying": False})
+    broker.publish(9, "chunk", {"text": "partial"})
+    broker.publish(9, "done", {"message": "ok"})
+
+    rollup = broker.terminal_rollup(limit=5, error_limit=3)
+
+    assert rollup["terminal_counts"]["error"] == 1
+    assert rollup["terminal_counts"]["done"] == 1
+    assert len(rollup["recent_terminal"]) == 2
+    assert any(item["event"] == "error" and item["job_id"] == 8 for item in rollup["recent_terminal"])
+    assert rollup["recent_error_messages"] == ["upstream timeout"]
+
+    age_stats = rollup["age_stats_seconds"]
+    assert age_stats["sample_size"] == 2
+    assert age_stats["median"] >= 0
+    assert age_stats["p95"] >= age_stats["median"]
+
+    window_counts = rollup["window_counts"]
+    assert window_counts["5m"]["error"] == 1
+    assert window_counts["5m"]["done"] == 1
+
+
 def test_prune_removes_expired_unsubscribed_jobs() -> None:
     broker = JobEventBroker(event_buffer_cap=4, history_max_jobs=2, history_ttl_seconds=1)
     broker.publish(1, "chunk", {"t": 1})

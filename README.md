@@ -217,6 +217,30 @@ curl -sS -X POST http://127.0.0.1:8787/api/jobs/status \
   -d '{"init_data":"<telegram-init-data>","limit":25}'
 ```
 
+6) Inspect internal runtime recovery counters (operator-facing diagnostics):
+
+```bash
+curl -sS -X POST http://127.0.0.1:8787/api/runtime/status \
+  -H 'Content-Type: application/json' \
+  -d '{"init_data":"<telegram-init-data>"}'
+```
+
+Look under `runtime.queue_diagnostics` (and mirrored flat fields) for:
+- `startup_recovered_running_total`
+- `startup_clamped_exhausted_total`
+- `preclaim_dead_letter_total`
+
+For a fast incident snapshot, also inspect `runtime.incident_snapshot`:
+- `workers.configured` / `workers.alive` and `wake_event_set` (runtime loop health)
+- `terminal_events.terminal_counts` (`done` vs `error`)
+- `terminal_events.recent_terminal` (most recent terminal event per job, with `age_seconds`)
+- `terminal_events.age_stats_seconds` (`sample_size`, `median`, `p95` terminal age in seconds)
+- `terminal_events.window_counts` (rolling `5m`/`15m`/`60m` done/error counts)
+- `terminal_events.recent_error_messages` (deduped recent error messages for quick triage)
+- `rate_windows.runtime` (rolling retry/dead-letter event counts)
+- `rate_windows.terminal` (rolling terminal done/error counts)
+- `severity_hint.level` + `severity_hint.reason` (quick triage hint without log-diving)
+
 ## Files
 
 - `server.py` — Flask server and API routes

@@ -476,6 +476,34 @@ def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_pa
     assert runtime["dead_letter_total"] >= 1
     assert runtime["counters"]["retry_exhausted_dead"] >= 1
     assert runtime["best_effort_failures"]["touch_job_write"] >= 0
+    assert runtime["queue_diagnostics"]["startup_recovered_running_total"] >= 0
+    assert runtime["queue_diagnostics"]["startup_clamped_exhausted_total"] >= 0
+    assert runtime["queue_diagnostics"]["preclaim_dead_letter_total"] >= 0
+    assert runtime["startup_recovered_running_total"] == runtime["queue_diagnostics"]["startup_recovered_running_total"]
+    assert runtime["startup_clamped_exhausted_total"] == runtime["queue_diagnostics"]["startup_clamped_exhausted_total"]
+    assert runtime["preclaim_dead_letter_total"] == runtime["queue_diagnostics"]["preclaim_dead_letter_total"]
+
+    incident = runtime["incident_snapshot"]
+    assert incident["generated_at"] >= 1
+    assert incident["workers"]["configured"] >= 1
+    assert incident["workers"]["alive"] >= 0
+    terminal_events = incident["terminal_events"]
+    assert terminal_events["terminal_counts"]["done"] >= 0
+    assert terminal_events["terminal_counts"]["error"] >= 1
+    assert terminal_events["recent_terminal"]
+    assert terminal_events["recent_error_messages"]
+    assert terminal_events["age_stats_seconds"]["sample_size"] >= 1
+    assert terminal_events["window_counts"]["5m"]["error"] >= 1
+
+    rate_windows = incident["rate_windows"]
+    assert rate_windows["runtime"]["5m"]["retry_scheduled"] >= 0
+    assert rate_windows["runtime"]["5m"]["dead_letter"] >= 1
+    assert rate_windows["terminal"]["5m"]["error"] >= 1
+
+    severity = incident["severity_hint"]
+    assert severity["level"] in {"ok", "warning", "critical"}
+    assert isinstance(severity["reason"], str)
+    assert severity["reason"]
 
     state = server.store.get_job_state(job_id)
     assert state is not None

@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 import time
+from collections import deque
 from typing import Callable
 
 from hermes_client import HermesClient, HermesClientError
@@ -105,6 +106,7 @@ class JobRuntime:
             "stale_chat_dead": 0,
             "stale_timeout_dead": 0,
         }
+        self._runtime_counter_timeline: deque[tuple[float, str, int]] = deque(maxlen=4096)
 
     def publish_job_event(self, job_id: int, event_name: str, payload: dict[str, object]) -> None:
         if event_name not in JOB_EVENT_TERMINAL:
@@ -140,9 +142,71 @@ class JobRuntime:
             return dict(self._best_effort_failure_counts)
 
     def _record_runtime_counter(self, key: str, delta: int = 1) -> None:
+        now = time.monotonic()
         with self._runtime_counter_lock:
-            next_value = int(self._runtime_counters.get(key, 0)) + int(delta)
+            safe_delta = int(delta)
+            next_value = int(self._runtime_counters.get(key, 0)) + safe_delta
             self._runtime_counters[key] = next_value
+            self._runtime_counter_timeline.append((now, str(key), safe_delta))
+
+    @staticmethod
+    def _rate_windows() -> dict[str, int]:
+        return {"5m": 300, "15m": 900, "60m": 3600}
+
+    def _runtime_rate_windows(self) -> dict[str, dict[str, int]]:
+        windows = self._rate_windows()
+        dead_letter_keys = {
+            "retry_exhausted_dead",
+            "non_retryable_dead",
+            "unexpected_dead",
+            "stale_chat_dead",
+            "stale_timeout_dead",
+        }
+        now = time.monotonic()
+        with self._runtime_counter_lock:
+            timeline = list(self._runtime_counter_timeline)
+
+        result: dict[str, dict[str, int]] = {}
+        for label, window_seconds in windows.items():
+            retry_scheduled = 0
+            dead_letter = 0
+            for ts, key, delta in timeline:
+                if now - ts > window_seconds:
+                    continue
+                if key == "retry_scheduled":
+                    retry_scheduled += int(delta)
+                if key in dead_letter_keys:
+                    dead_letter += int(delta)
+            result[label] = {
+                "retry_scheduled": int(retry_scheduled),
+                "dead_letter": int(dead_letter),
+            }
+        return result
+
+    @staticmethod
+    def _severity_hint(
+        *,
+        worker_alive: int,
+        worker_configured: int,
+        terminal_window_5m: dict[str, int],
+        runtime_window_5m: dict[str, int],
+    ) -> dict[str, str]:
+        if int(worker_alive) <= 0 and int(worker_configured) > 0:
+            return {"level": "critical", "reason": "no_alive_workers"}
+
+        dead_5m = int((runtime_window_5m or {}).get("dead_letter", 0))
+        error_5m = int((terminal_window_5m or {}).get("error", 0))
+        retry_5m = int((runtime_window_5m or {}).get("retry_scheduled", 0))
+
+        if dead_5m >= 3:
+            return {"level": "critical", "reason": "dead_letter_spike_5m"}
+        if error_5m >= 5:
+            return {"level": "warning", "reason": "terminal_error_spike_5m"}
+        if retry_5m >= 5:
+            return {"level": "warning", "reason": "retry_spike_5m"}
+        if dead_5m >= 1 or error_5m >= 1:
+            return {"level": "warning", "reason": "recent_failures_detected"}
+        return {"level": "ok", "reason": "healthy"}
 
     def runtime_diagnostics(self) -> dict[str, object]:
         fd_open, fd_limit_soft = self._fd_metrics()
@@ -157,6 +221,39 @@ class JobRuntime:
             + int(counters.get("stale_timeout_dead", 0))
         )
 
+        queue_diagnostics = self.store.job_queue_diagnostics() if hasattr(self.store, "job_queue_diagnostics") else {}
+        startup_recovered_running_total = int(queue_diagnostics.get("startup_recovered_running_total", 0) or 0)
+        startup_clamped_exhausted_total = int(queue_diagnostics.get("startup_clamped_exhausted_total", 0) or 0)
+        preclaim_dead_letter_total = int(queue_diagnostics.get("preclaim_dead_letter_total", 0) or 0)
+
+        with self._worker_start_lock:
+            worker_alive = sum(1 for worker in self._worker_threads if worker.is_alive())
+
+        terminal_events = self._event_broker.terminal_rollup(limit=12, error_limit=6)
+        runtime_rate_windows = self._runtime_rate_windows()
+        terminal_rate_windows = self._event_broker.terminal_window_counts(windows=self._rate_windows())
+        severity_hint = self._severity_hint(
+            worker_alive=worker_alive,
+            worker_configured=self.job_worker_concurrency,
+            terminal_window_5m=terminal_rate_windows.get("5m", {}),
+            runtime_window_5m=runtime_rate_windows.get("5m", {}),
+        )
+
+        incident_snapshot = {
+            "generated_at": int(time.time()),
+            "workers": {
+                "configured": int(self.job_worker_concurrency),
+                "alive": int(worker_alive),
+            },
+            "wake_event_set": bool(self.wake_event.is_set()),
+            "terminal_events": terminal_events,
+            "rate_windows": {
+                "runtime": runtime_rate_windows,
+                "terminal": terminal_rate_windows,
+            },
+            "severity_hint": severity_hint,
+        }
+
         return {
             "fd_open": fd_open,
             "fd_limit_soft": fd_limit_soft,
@@ -164,6 +261,16 @@ class JobRuntime:
             "dead_letter_total": dead_letter_total,
             "counters": counters,
             "best_effort_failures": self.best_effort_failure_counts(),
+            "queue_diagnostics": {
+                "startup_recovered_running_total": startup_recovered_running_total,
+                "startup_clamped_exhausted_total": startup_clamped_exhausted_total,
+                "preclaim_dead_letter_total": preclaim_dead_letter_total,
+            },
+            "incident_snapshot": incident_snapshot,
+            # Flat aliases for quick grep/debug snapshots.
+            "startup_recovered_running_total": startup_recovered_running_total,
+            "startup_clamped_exhausted_total": startup_clamped_exhausted_total,
+            "preclaim_dead_letter_total": preclaim_dead_letter_total,
         }
 
     def _touch_job_best_effort(self, job_id: int, *, force: bool = False) -> None:

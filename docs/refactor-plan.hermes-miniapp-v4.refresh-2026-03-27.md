@@ -1,5 +1,7 @@
 # Refactor Plan — hermes-miniapp-v4 (refresh 2026-03-27)
 
+> Archive snapshot only. Live canonical plan: `docs/refactor-plan.hermes-miniapp-v4.md`.
+
 ## Project snapshot
 - Project: hermes-miniapp-v4
 - Project slug: hermes-miniapp-v4

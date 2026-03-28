@@ -197,6 +197,8 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
             "stream_state_helpers.js": "stream-state-v",
             "stream_controller.js": "stream-controller-v",
             "composer_state_helpers.js": "composer-v",
+            "keyboard_shortcuts_helpers.js": "keyboard-v",
+            "interaction_helpers.js": "interaction-v",
             "app.js": "app-v",
         }[filename]
 
@@ -212,6 +214,8 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     stream_state_src = '/static/stream_state_helpers.js?v=stream-state-v'
     stream_controller_src = '/static/stream_controller.js?v=stream-controller-v'
     composer_src = '/static/composer_state_helpers.js?v=composer-v'
+    keyboard_src = '/static/keyboard_shortcuts_helpers.js?v=keyboard-v'
+    interaction_src = '/static/interaction_helpers.js?v=interaction-v'
     app_src = '/static/app.js?v=app-v'
     assert runtime_src in page
     assert shared_src in page
@@ -220,8 +224,10 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert stream_state_src in page
     assert stream_controller_src in page
     assert composer_src in page
+    assert keyboard_src in page
+    assert interaction_src in page
     assert app_src in page
-    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(app_src)
+    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(keyboard_src) < page.index(interaction_src) < page.index(app_src)
 
 
 def test_runtime_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
@@ -282,6 +288,24 @@ def test_composer_state_helpers_static_asset_is_no_store(monkeypatch, tmp_path) 
     server, client = _client(monkeypatch, tmp_path)
 
     response = client.get("/static/composer_state_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_keyboard_shortcuts_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/keyboard_shortcuts_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_interaction_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/interaction_helpers.js")
 
     assert response.status_code == 200
     assert response.headers.get("Cache-Control") == "no-store, max-age=0"
@@ -354,31 +378,35 @@ def test_mobile_viewport_and_composer_zoom_guards_present() -> None:
     assert "margin-left: auto !important;" in css
 
 def test_quote_selection_sync_is_debounced_in_client_script() -> None:
-    script = _read_repo_file("static", "app.js")
+    app_script = _read_repo_file("static", "app.js")
+    interaction_script = _read_repo_file("static", "interaction_helpers.js")
 
-    assert "function scheduleSelectionQuoteSync" in script
-    assert "function scheduleSelectionQuoteClear" in script
-    assert "function cancelSelectionQuoteSettle" in script
-    assert "selectionQuoteSettleTimer" in script
-    assert "scheduleSelectionQuoteSync(140);" in script
-    assert "cancelSelectionQuoteSync();" in script
-    assert "const mobileQuoteMode = isCoarsePointer();" in script
-    assert "selection-quote-button--docked" not in script
-    assert "selectionQuoteButton.hidden = false;" in script
-    assert "scheduleSelectionQuoteSync(220);" in script
-    assert "scheduleSelectionQuoteClear(220);" in script
-    assert "mobileToolbarUnsafeTop" in script
-    assert "composerTop" in script
-    assert "composer-quote-apply" not in script
-    assert "const skipTouchDismiss = mobileQuoteMode && target === messagesEl;" in script
-    assert "function formatQuoteBlock" in script
-    assert "function unwrapLegacyQuoteBlock" in script
-    assert "return `┌ Quote\\n${lines.join(\"\\n\")}\\n└\\n\\n\\n`;" in script
-    assert "lines.push(line ? `│ ${line}` : \"│\");" in script
-    assert "looksLikeLegacyFrame" in script
-    assert "╭─ Quote ─" not in script
-    assert "╰────────" not in script
-    assert "\\n\\n\\n" in script
+    assert "function scheduleSelectionQuoteSync" in app_script
+    assert "function scheduleSelectionQuoteClear" in app_script
+    assert "function cancelSelectionQuoteSettle" in app_script
+    assert "selectionQuoteSettleTimer" in app_script
+    assert "const mobileQuoteMode = isCoarsePointer();" in app_script
+    assert "selection-quote-button--docked" not in app_script
+    assert "selectionQuoteButton.hidden = false;" in app_script
+    assert "mobileToolbarUnsafeTop" in app_script
+    assert "composerTop" in app_script
+    assert "composer-quote-apply" not in app_script
+    assert "function formatQuoteBlock" in app_script
+    assert "function unwrapLegacyQuoteBlock" in app_script
+    assert "return `┌ Quote\\n${lines.join(\"\\n\")}\\n└\\n\\n\\n`;" in app_script
+    assert "lines.push(line ? `│ ${line}` : \"│\");" in app_script
+    assert "looksLikeLegacyFrame" in app_script
+    assert "╭─ Quote ─" not in app_script
+    assert "╰────────" not in app_script
+    assert "\\n\\n\\n" in app_script
+
+    assert "HermesMiniappInteraction" in interaction_script
+    assert "function createSelectionQuoteController" in interaction_script
+    assert "scheduleSelectionQuoteSync(140);" in interaction_script
+    assert "scheduleSelectionQuoteSync(220);" in interaction_script
+    assert "scheduleSelectionQuoteClear(220);" in interaction_script
+    assert "cancelSelectionQuoteSync();" in interaction_script
+    assert "handleComposerSubmitShortcut" in interaction_script
 
 
 def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
@@ -389,6 +417,7 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     assert 'id="pin-chat"' in template
     assert 'id="pinned-chats-wrap"' in template
     assert 'id="pinned-chats"' in template
+    assert 'id="pinned-chats-toggle"' in template
     assert "chat-tab__pin" in template
 
     assert "HermesMiniappChatUI" in chat_ui_script
@@ -398,8 +427,11 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     assert "function toggleActiveChatPin" in script
     assert "function openPinnedChat" in script
     assert "function handlePinnedChatClick" in script
+    assert "function syncPinnedChatsCollapseUi" in script
+    assert "function togglePinnedChatsCollapsed" in script
     assert 'bindAsyncClick(pinChatButton, toggleActiveChatPin);' in script
     assert 'pinnedChatsEl?.addEventListener("click", handlePinnedChatClick);' in script
+    assert 'pinnedChatsToggleButton?.addEventListener("click", togglePinnedChatsCollapsed);' in script
     assert 'node.classList.toggle("is-pinned", Boolean(chat.is_pinned));' in chat_ui_script
     assert 'const pinEl = node.querySelector(".chat-tab__pin");' in chat_ui_script
     assert 'if (pinEl) {' in chat_ui_script
@@ -418,12 +450,23 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     template = _read_repo_file("templates", "app.html")
     script = _read_repo_file("static", "app.js")
     actions_script = _read_repo_file("static", "message_actions_helpers.js")
+    keyboard_script = _read_repo_file("static", "keyboard_shortcuts_helpers.js")
+    interaction_script = _read_repo_file("static", "interaction_helpers.js")
 
     assert "HermesMiniappMessageActions" in actions_script
     assert "function bindMessageCopyHandler" in actions_script
     assert "createMessageCopyState" in actions_script
     assert "bindMessageCopyHandler({" in script
     assert "messageActionsHelpers.createMessageCopyState()" in script
+    assert "HermesMiniappKeyboardShortcuts" in keyboard_script
+    assert "function handleGlobalTabCycle" in keyboard_script
+    assert "keyboardShortcutsHelpers.handleGlobalTabCycle" in script
+    assert "HermesMiniappInteraction" in interaction_script
+    assert "function createSelectionQuoteController" in interaction_script
+    assert "interactionHelpers.createSelectionQuoteController" in script
+    assert "interactionHelpers.handleComposerSubmitShortcut" in script
     assert '/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}' in template
     assert '/static/stream_controller.js?v={{ stream_controller_version }}' in template
     assert '/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}' in template
+    assert '/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}' in template
+    assert '/static/interaction_helpers.js?v={{ interaction_helpers_version }}' in template
