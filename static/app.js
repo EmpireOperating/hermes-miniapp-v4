@@ -23,6 +23,14 @@ const composerStateHelpers = window.HermesMiniappComposerState;
 if (!composerStateHelpers) {
   throw new Error("HermesMiniappComposerState is required before app.js");
 }
+const keyboardShortcutsHelpers = window.HermesMiniappKeyboardShortcuts;
+if (!keyboardShortcutsHelpers) {
+  throw new Error("HermesMiniappKeyboardShortcuts is required before app.js");
+}
+const interactionHelpers = window.HermesMiniappInteraction;
+if (!interactionHelpers) {
+  throw new Error("HermesMiniappInteraction is required before app.js");
+}
 const { parseSseEvent, formatMessageTime, nowStamp, formatLatency, escapeHtml, cleanDisplayText, copyTextToClipboard } = sharedUtils;
 const authStatus = document.getElementById("auth-status");
 const streamStatus = document.getElementById("stream-status");
@@ -39,6 +47,8 @@ const jumpLatestButton = document.getElementById("jump-latest");
 const jumpLastStartButton = document.getElementById("jump-last-start");
 const body = document.body;
 const SKIN_STORAGE_KEY = "hermes_skin";
+const PINNED_CHATS_COLLAPSED_STORAGE_KEY = "hermes_pinned_chats_collapsed";
+const PINNED_CHATS_AUTO_COLLAPSE_THRESHOLD = 8;
 const ALLOWED_SKINS = new Set(["terminal", "oracle", "obsidian"]);
 const bootSkin = document.documentElement?.getAttribute("data-skin") || window.__HERMES_SKIN_BOOT__ || "terminal";
 const skinSyncChannel = (() => {
@@ -65,6 +75,8 @@ const renameChatButton = document.getElementById("rename-chat");
 const pinChatButton = document.getElementById("pin-chat");
 const pinnedChatsWrap = document.getElementById("pinned-chats-wrap");
 const pinnedChatsEl = document.getElementById("pinned-chats");
+const pinnedChatsCountEl = document.getElementById("pinned-chats-count");
+const pinnedChatsToggleButton = document.getElementById("pinned-chats-toggle");
 const fullscreenAppTopButton = document.getElementById("fullscreen-app-top");
 const closeAppTopButton = document.getElementById("close-app-top");
 const settingsButton = document.getElementById("settings-button");
@@ -90,6 +102,9 @@ let operatorDisplayName = "Operator";
 const chats = new Map();
 const pinnedChats = new Map();
 const histories = new Map();
+const storedPinnedChatsCollapsed = getStoredPinnedChatsCollapsed();
+let pinnedChatsCollapsed = storedPinnedChatsCollapsed ?? false;
+let hasPinnedChatsCollapsePreference = storedPinnedChatsCollapsed !== null;
 const pendingChats = new Set();
 const latencyByChat = new Map();
 const runtimeHelpers = window.HermesMiniappRuntime;
@@ -1665,13 +1680,71 @@ function renderTabs() {
   });
 }
 
+function getStoredPinnedChatsCollapsed() {
+  try {
+    const value = localStorage.getItem(PINNED_CHATS_COLLAPSED_STORAGE_KEY);
+    if (value == null) return null;
+    return value === "1";
+  } catch {
+    return null;
+  }
+}
+
+function persistPinnedChatsCollapsed() {
+  try {
+    localStorage.setItem(PINNED_CHATS_COLLAPSED_STORAGE_KEY, pinnedChatsCollapsed ? "1" : "0");
+  } catch {
+    // non-fatal
+  }
+}
+
+function syncPinnedChatsCollapseUi() {
+  if (!pinnedChatsToggleButton || !pinnedChatsWrap || !pinnedChatsEl) return;
+  const pinnedCount = pinnedChats.size;
+  const hasPinnedChats = pinnedCount > 0;
+
+  if (pinnedChatsCountEl) {
+    pinnedChatsCountEl.hidden = !hasPinnedChats;
+    pinnedChatsCountEl.textContent = hasPinnedChats ? `(${pinnedCount})` : "";
+  }
+
+  pinnedChatsToggleButton.hidden = !hasPinnedChats;
+  pinnedChatsEl.hidden = hasPinnedChats ? pinnedChatsCollapsed : false;
+  pinnedChatsWrap.classList.toggle("is-collapsed", hasPinnedChats && pinnedChatsCollapsed);
+  pinnedChatsToggleButton.setAttribute("aria-expanded", hasPinnedChats && !pinnedChatsCollapsed ? "true" : "false");
+  pinnedChatsToggleButton.setAttribute("aria-label", pinnedChatsCollapsed ? `Show pinned chats (${pinnedCount})` : `Hide pinned chats (${pinnedCount})`);
+  pinnedChatsToggleButton.textContent = pinnedChatsCollapsed ? "Show" : "Hide";
+}
+
+function maybeAutoCollapsePinnedChats() {
+  if (hasPinnedChatsCollapsePreference) return;
+  if (pinnedChats.size < PINNED_CHATS_AUTO_COLLAPSE_THRESHOLD) return;
+  setPinnedChatsCollapsed(true, { persist: false });
+}
+
+function setPinnedChatsCollapsed(nextCollapsed, { persist = true } = {}) {
+  pinnedChatsCollapsed = Boolean(nextCollapsed);
+  syncPinnedChatsCollapseUi();
+  if (persist) {
+    hasPinnedChatsCollapsePreference = true;
+    persistPinnedChatsCollapsed();
+  }
+}
+
+function togglePinnedChatsCollapsed() {
+  if (pinnedChats.size === 0) return;
+  setPinnedChatsCollapsed(!pinnedChatsCollapsed);
+}
+
 function renderPinnedChats() {
+  maybeAutoCollapsePinnedChats();
   chatUiHelpers.renderPinnedChats({
     pinnedChatsWrap,
     pinnedChatsEl,
     pinnedChats,
     doc: document,
   });
+  syncPinnedChatsCollapseUi();
 }
 
 function syncPinChatButton() {
@@ -2626,9 +2699,15 @@ async function sendPrompt(message) {
       return;
     }
 
-    await consumeStreamResponse(chatId, response, builtReplyRef, {
+    const consumeResult = await consumeStreamResponse(chatId, response, builtReplyRef, {
       fallbackTraceEvent: "stream-fallback-patch",
+      suppressEarlyCloseFallback: true,
     });
+    if (consumeResult?.earlyClosed) {
+      wasAborted = true;
+      await resumePendingChatStream(chatId, { force: true });
+      return;
+    }
   } catch (error) {
     if (error?.name === "AbortError") {
       wasAborted = true;
@@ -2743,143 +2822,43 @@ form.addEventListener("submit", (event) => {
   void submitPromptWithUiError();
 });
 
-promptEl.addEventListener("keydown", (event) => {
-  if (event.isComposing) return;
+function handleComposerSubmitShortcut(event) {
+  interactionHelpers.handleComposerSubmitShortcut(event, {
+    mobileQuoteMode,
+    activeChatId,
+    focusMessagesPaneIfActiveChat,
+    submitPromptWithUiError,
+  });
+}
 
-  // On coarse-pointer/mobile keyboards, Enter should always insert a newline.
-  // Telegram/iOS modifier reporting is inconsistent (e.g. shift double-tap/caps-lock),
-  // which can accidentally flip shiftKey=false and trigger unwanted sends.
-  if (mobileQuoteMode) {
-    return;
-  }
-
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    const chatId = Number(activeChatId);
-    if (chatId > 0) {
-      focusMessagesPaneIfActiveChat(chatId);
-    }
-    void submitPromptWithUiError();
-  }
-});
+promptEl.addEventListener("keydown", handleComposerSubmitShortcut);
 
 promptEl.addEventListener("input", () => {
   if (!activeChatId) return;
   setDraft(activeChatId, promptEl.value || "");
 });
 
-function quoteSelectionTextForInsert() {
-  const picked = mobileQuoteMode ? activeSelectionQuote() : null;
-  return mobileQuoteMode ? (picked?.text || selectionQuoteState.getText()) : selectionQuoteState.getText();
+function createSelectionQuoteController() {
+  return interactionHelpers.createSelectionQuoteController({
+    mobileQuoteMode,
+    windowObject: window,
+    documentObject: document,
+    promptEl,
+    messagesEl,
+    selectionQuoteButton,
+    selectionQuoteState,
+    activeSelectionQuote,
+    cancelSelectionQuoteSync,
+    cancelSelectionQuoteSettle,
+    cancelSelectionQuoteClear,
+    scheduleSelectionQuoteSync,
+    scheduleSelectionQuoteClear,
+    applyQuoteIntoPrompt,
+    clearSelectionQuoteState,
+  });
 }
 
-function hasMessageSelection(selection) {
-  const hasSelection = Boolean(selection && selection.rangeCount >= 1 && !selection.isCollapsed);
-  return Boolean(hasSelection && messagesEl.contains(selection.anchorNode || null));
-}
-
-const selectionQuoteController = {
-  handleQuoteButtonClick() {
-    const textToQuote = quoteSelectionTextForInsert();
-    if (!textToQuote) return;
-    cancelSelectionQuoteSync();
-    cancelSelectionQuoteSettle();
-    cancelSelectionQuoteClear();
-    applyQuoteIntoPrompt(textToQuote);
-    window.getSelection?.()?.removeAllRanges?.();
-    clearSelectionQuoteState();
-  },
-
-  handleMessagesMouseUp() {
-    if (mobileQuoteMode) return;
-    cancelSelectionQuoteClear();
-    scheduleSelectionQuoteSync(80);
-  },
-
-  handleMessagesTouchStart() {
-    if (!mobileQuoteMode) return;
-    // Freeze quote action while selection handles are moving.
-    cancelSelectionQuoteSync();
-    cancelSelectionQuoteSettle();
-    cancelSelectionQuoteClear();
-    selectionQuoteState.clearPlacement();
-    if (selectionQuoteButton) {
-      selectionQuoteButton.hidden = true;
-    }
-  },
-
-  handleMessagesTouchEnd() {
-    if (!mobileQuoteMode) return;
-    cancelSelectionQuoteClear();
-    // Wait for native toolbar/handles to settle before showing popup.
-    scheduleSelectionQuoteSync(220);
-  },
-
-  handleMessagesTouchCancel() {
-    if (!mobileQuoteMode) return;
-    cancelSelectionQuoteSync();
-    cancelSelectionQuoteSettle();
-    scheduleSelectionQuoteClear(220);
-  },
-
-  handleDocumentSelectionChange() {
-    const active = document.activeElement;
-    if (active === promptEl) {
-      return;
-    }
-
-    const selection = document.getSelection?.();
-    const inMessages = hasMessageSelection(selection);
-
-    if (mobileQuoteMode) {
-      if (!inMessages) {
-        cancelSelectionQuoteSync();
-        cancelSelectionQuoteSettle();
-        scheduleSelectionQuoteClear(220);
-        return;
-      }
-
-      // On mobile, hide while selection changes and only reveal after touchend settle.
-      cancelSelectionQuoteSync();
-      cancelSelectionQuoteSettle();
-      selectionQuoteState.clearPlacement();
-      if (selectionQuoteButton) {
-        selectionQuoteButton.hidden = true;
-      }
-      return;
-    }
-
-    if (!inMessages) {
-      cancelSelectionQuoteSync();
-      clearSelectionQuoteState();
-      return;
-    }
-
-    // Desktop selection can update live while dragging.
-    scheduleSelectionQuoteSync(140);
-  },
-
-  handleDocumentTouchStart(event) {
-    if (!mobileQuoteMode) return;
-    const target = event.target;
-    if (!target) return;
-    if (messagesEl.contains(target)) return;
-    if (target === promptEl || promptEl?.contains?.(target)) return;
-    cancelSelectionQuoteSync();
-    cancelSelectionQuoteSettle();
-    scheduleSelectionQuoteClear(220);
-  },
-
-  bind() {
-    selectionQuoteButton?.addEventListener("click", () => this.handleQuoteButtonClick());
-    messagesEl.addEventListener("mouseup", () => this.handleMessagesMouseUp());
-    messagesEl.addEventListener("touchstart", () => this.handleMessagesTouchStart());
-    messagesEl.addEventListener("touchend", () => this.handleMessagesTouchEnd());
-    messagesEl.addEventListener("touchcancel", () => this.handleMessagesTouchCancel());
-    document.addEventListener("selectionchange", () => this.handleDocumentSelectionChange());
-    document.addEventListener("touchstart", (event) => this.handleDocumentTouchStart(event));
-  },
-};
+const selectionQuoteController = createSelectionQuoteController();
 
 const messageCopyState = messageActionsHelpers.createMessageCopyState();
 
@@ -2895,213 +2874,123 @@ messageActionsHelpers.bindMessageCopyHandler({
 selectionQuoteController.bind();
 
 function getOrderedChatIds() {
-  return [...chats.values()]
-    .map((chat) => Number(chat?.id || 0))
-    .filter((id) => Number.isInteger(id) && id > 0)
-    .sort((a, b) => a - b);
-}
-
-function handleTabClick(event) {
-  const tab = event.target.closest(".chat-tab");
-  if (!tab) return;
-  const chatId = Number(tab.dataset.chatId);
-  if (!chatId || chatId === Number(activeChatId)) return;
-  void openChat(chatId);
-}
-
-function handlePinnedChatClick(event) {
-  const item = event.target.closest(".pinned-chat-item");
-  if (!item) return;
-  const chatId = Number(item.dataset.chatId);
-  if (!chatId) return;
-  if (chatId === Number(activeChatId) && chats.has(chatId)) return;
-  void openPinnedChat(chatId);
+  return keyboardShortcutsHelpers.getOrderedChatIds(chats);
 }
 
 function isTextEntryElement(element) {
-  if (!element || !(element instanceof Element)) return false;
-  const tag = String(element.tagName || "").toLowerCase();
-  if (tag === "textarea" || tag === "input" || tag === "select") return true;
-  return Boolean(element.closest("[contenteditable='true']"));
-}
-
-function handleGlobalTabCycle(event) {
-  if (event.defaultPrevented) return;
-  if (event.isComposing) return;
-  if (event.altKey || event.ctrlKey || event.metaKey) return;
-  if (mobileQuoteMode || !isDesktopViewport()) return;
-  if (settingsModal?.open) return;
-
-  const isArrowLeft = event.key === "ArrowLeft";
-  const isArrowRight = event.key === "ArrowRight";
-  if (!isArrowLeft && !isArrowRight) return;
-
-  const target = event.target;
-  if (isTextEntryElement(target)) {
-    return;
-  }
-
-  const current = Number(activeChatId);
-  if (!current) return;
-
-  const nextChatId = runtimeHelpers.getNextChatTabId({
-    orderedChatIds: getOrderedChatIds(),
-    activeChatId: current,
-    reverse: isArrowLeft,
-  });
-  if (!nextChatId || nextChatId === current) return;
-
-  event.preventDefault();
-  void openChat(nextChatId);
+  return keyboardShortcutsHelpers.isTextEntryElement(element);
 }
 
 function isDesktopViewport() {
-  try {
-    if (window.matchMedia?.("(min-width: 861px)")?.matches) {
-      return true;
-    }
-  } catch {
-    // Fallback below.
-  }
-  return Number(window.innerWidth || 0) >= 861;
+  return keyboardShortcutsHelpers.isDesktopViewport(window);
+}
+
+function handleTabClick(event) {
+  keyboardShortcutsHelpers.handleTabClick(event, {
+    activeChatId,
+    openChat,
+  });
+}
+
+function handlePinnedChatClick(event) {
+  keyboardShortcutsHelpers.handlePinnedChatClick(event, {
+    activeChatId,
+    chats,
+    openPinnedChat,
+  });
+}
+
+function handleGlobalTabCycle(event) {
+  keyboardShortcutsHelpers.handleGlobalTabCycle(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn: isDesktopViewport,
+    settingsModal,
+    isTextEntryElementFn: isTextEntryElement,
+    activeChatId,
+    chats,
+    getNextChatTabId: runtimeHelpers.getNextChatTabId,
+    openChat,
+  });
 }
 
 function scrollMessagesByArrow(direction) {
-  if (!messagesEl) return;
-  const viewportHeight = Number(messagesEl.clientHeight || 0);
-  const baseStep = Math.max(56, Math.floor(viewportHeight * 0.18));
-  const delta = direction === "down" ? baseStep : -baseStep;
-  messagesEl.scrollTop = Math.max(0, Number(messagesEl.scrollTop || 0) + delta);
+  keyboardShortcutsHelpers.scrollMessagesByArrow(messagesEl, direction);
 }
 
 function handleGlobalArrowJump(event) {
-  if (event.defaultPrevented) return;
-  if (event.isComposing) return;
-  if (event.altKey || event.ctrlKey || event.metaKey) return;
-  if (mobileQuoteMode || !isDesktopViewport()) return;
-  if (settingsModal?.open) return;
-
-  const target = event.target;
-  if (isTextEntryElement(target)) return;
-
-  if (event.shiftKey) {
-    if (event.key === "ArrowDown") {
-      if (jumpLatestButton?.hidden) return;
-      event.preventDefault();
-      handleJumpLatest();
-      return;
-    }
-
-    if (event.key === "ArrowUp") {
-      if (jumpLastStartButton?.hidden) return;
-      event.preventDefault();
-      handleJumpLastStart();
-    }
-    return;
-  }
-
-  if (event.key === "ArrowDown") {
-    event.preventDefault();
-    scrollMessagesByArrow("down");
-    return;
-  }
-
-  if (event.key === "ArrowUp") {
-    event.preventDefault();
-    scrollMessagesByArrow("up");
-  }
+  keyboardShortcutsHelpers.handleGlobalArrowJump(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn: isDesktopViewport,
+    settingsModal,
+    isTextEntryElementFn: isTextEntryElement,
+    jumpLatestButton,
+    jumpLastStartButton,
+    handleJumpLatest,
+    handleJumpLastStart,
+    scrollMessages: scrollMessagesByArrow,
+  });
 }
 
 function handleGlobalComposerFocusShortcut(event) {
-  if (event.defaultPrevented) return;
-  if (event.isComposing) return;
-  if (event.altKey || event.ctrlKey || event.metaKey) return;
-  if (mobileQuoteMode || !isDesktopViewport()) return;
-  if (settingsModal?.open) return;
-  if (event.key !== "Enter" || event.shiftKey) return;
-
-  const target = event.target;
-  if (isTextEntryElement(target)) return;
-  if (Number(activeChatId) <= 0) return;
-
-  const activeElement = document.activeElement;
-  const focusedInMessages = activeElement === messagesEl || messagesEl?.contains?.(activeElement);
-  if (!focusedInMessages) return;
-
-  event.preventDefault();
-  try {
-    promptEl.focus({ preventScroll: true });
-  } catch {
-    promptEl.focus();
-  }
+  keyboardShortcutsHelpers.handleGlobalComposerFocusShortcut(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn: isDesktopViewport,
+    settingsModal,
+    isTextEntryElementFn: isTextEntryElement,
+    activeChatId,
+    messagesEl,
+    promptEl,
+    documentObject: document,
+  });
 }
 
-const CONTROL_FOCUS_SELECTOR = "button, [role='button'], .chat-tab, .pinned-chat-item";
-
 function shouldReleaseControlFocusAfterClick(target) {
-  if (!target || !(target instanceof Element)) return false;
-  if (isTextEntryElement(target)) return false;
-
-  if (settingsModal?.open && settingsModal.contains(target)) {
-    return false;
-  }
-
-  const control = target.closest(CONTROL_FOCUS_SELECTOR);
-  return Boolean(control);
+  return keyboardShortcutsHelpers.shouldReleaseControlFocusAfterClick(target, {
+    isTextEntryElementFn: isTextEntryElement,
+    settingsModal,
+  });
 }
 
 function releaseStickyControlFocus() {
-  if (mobileQuoteMode || !isDesktopViewport()) return;
-
-  const activeElement = document.activeElement;
-  if (activeElement && activeElement instanceof HTMLElement) {
-    const activeControl = activeElement.closest?.(CONTROL_FOCUS_SELECTOR);
-    if (activeControl && activeElement !== promptEl && activeElement !== messagesEl) {
-      activeElement.blur();
-    }
-  }
-
-  const chatId = Number(activeChatId);
-  if (chatId > 0 && !settingsModal?.open) {
-    focusMessagesPaneIfActiveChat(chatId);
-  }
+  keyboardShortcutsHelpers.releaseStickyControlFocus({
+    mobileQuoteMode,
+    isDesktopViewportFn: isDesktopViewport,
+    documentObject: document,
+    promptEl,
+    messagesEl,
+    activeChatId,
+    settingsModal,
+    focusMessagesPaneIfActiveChat,
+  });
 }
 
 function handleGlobalControlClickFocusCleanup(event) {
-  if (!shouldReleaseControlFocusAfterClick(event.target)) return;
-  window.setTimeout(() => {
-    releaseStickyControlFocus();
-  }, 0);
+  keyboardShortcutsHelpers.handleGlobalControlClickFocusCleanup(event, {
+    shouldReleaseControlFocusAfterClickFn: shouldReleaseControlFocusAfterClick,
+    releaseStickyControlFocusFn: releaseStickyControlFocus,
+    windowObject: window,
+  });
 }
 
 function handleGlobalControlMouseDownFocusGuard(event) {
-  if (mobileQuoteMode || !isDesktopViewport()) return;
-  if (!shouldReleaseControlFocusAfterClick(event.target)) return;
-  event.preventDefault();
+  keyboardShortcutsHelpers.handleGlobalControlMouseDownFocusGuard(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn: isDesktopViewport,
+    shouldReleaseControlFocusAfterClickFn: shouldReleaseControlFocusAfterClick,
+  });
 }
 
 function handleGlobalControlEnterDefuse(event) {
-  if (event.defaultPrevented) return;
-  if (event.isComposing) return;
-  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-  if (mobileQuoteMode || !isDesktopViewport()) return;
-  if (event.key !== "Enter") return;
-
-  const target = event.target;
-  if (isTextEntryElement(target)) return;
-  if (settingsModal?.open && target instanceof Element && settingsModal.contains(target)) return;
-
-  const activeElement = document.activeElement;
-  const focusedControl = target instanceof Element
-    ? target.closest(CONTROL_FOCUS_SELECTOR)
-    : activeElement?.closest?.(CONTROL_FOCUS_SELECTOR);
-
-  if (!focusedControl) return;
-  if (focusedControl === promptEl || focusedControl === messagesEl) return;
-
-  event.preventDefault();
-  event.stopPropagation();
-  releaseStickyControlFocus();
+  keyboardShortcutsHelpers.handleGlobalControlEnterDefuse(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn: isDesktopViewport,
+    isTextEntryElementFn: isTextEntryElement,
+    settingsModal,
+    documentObject: document,
+    promptEl,
+    messagesEl,
+    releaseStickyControlFocusFn: releaseStickyControlFocus,
+  });
 }
 
 function handleMessagesScroll() {
@@ -3152,6 +3041,7 @@ function handleJumpLastStart() {
 
 tabsEl.addEventListener("click", handleTabClick);
 pinnedChatsEl?.addEventListener("click", handlePinnedChatClick);
+pinnedChatsToggleButton?.addEventListener("click", togglePinnedChatsCollapsed);
 document.addEventListener("keydown", handleGlobalTabCycle);
 document.addEventListener("keydown", handleGlobalArrowJump);
 document.addEventListener("keydown", handleGlobalComposerFocusShortcut);
@@ -3459,4 +3349,5 @@ skinSyncChannel?.addEventListener?.("message", (event) => {
 startDevAutoRefresh();
 installTapToDismissKeyboard();
 installKeyboardViewportSync();
+syncPinnedChatsCollapseUi();
 void bootstrap();

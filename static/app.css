@@ -295,14 +295,49 @@ h1 {
   gap: 8px;
   padding: 12px 16px 0;
 }
+.pinned-chats__header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pinned-chats__title-wrap {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.pinned-chats__count {
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
 .panel__header--subsection {
   font-size: 11px;
   letter-spacing: 0.11em;
   padding: 0;
 }
+.pinned-chats__toggle {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  padding: 4px 9px;
+  min-height: 0;
+}
+.pinned-chats.is-collapsed .pinned-chats__toggle {
+  color: var(--ink);
+}
+.pinned-chats__toggle[hidden] {
+  display: none;
+}
 .pinned-chats__list {
   display: grid;
   gap: 8px;
+}
+.pinned-chats__list[hidden] {
+  display: none;
 }
 .pinned-chat-item {
   display: inline-flex;

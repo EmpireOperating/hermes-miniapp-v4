@@ -1,0 +1,299 @@
+(function initHermesMiniappKeyboardShortcuts(globalScope) {
+  const CONTROL_FOCUS_SELECTOR = "button, [role='button'], .chat-tab, .pinned-chat-item";
+
+  function getOrderedChatIds(chatsMap) {
+    return [...chatsMap.values()]
+      .map((chat) => Number(chat?.id || 0))
+      .filter((id) => Number.isInteger(id) && id > 0)
+      .sort((a, b) => a - b);
+  }
+
+  function isTextEntryElement(element) {
+    if (typeof Element === "undefined") return false;
+    if (!element || !(element instanceof Element)) return false;
+    const tag = String(element.tagName || "").toLowerCase();
+    if (tag === "textarea" || tag === "input" || tag === "select") return true;
+    return Boolean(element.closest("[contenteditable='true']"));
+  }
+
+  function isDesktopViewport(windowObject) {
+    try {
+      if (windowObject.matchMedia?.("(min-width: 861px)")?.matches) {
+        return true;
+      }
+    } catch {
+      // Fallback below.
+    }
+    return Number(windowObject.innerWidth || 0) >= 861;
+  }
+
+  function handleTabClick(event, { activeChatId, openChat }) {
+    const tab = event.target.closest(".chat-tab");
+    if (!tab) return;
+    const chatId = Number(tab.dataset.chatId);
+    if (!chatId || chatId === Number(activeChatId)) return;
+    void openChat(chatId);
+  }
+
+  function handlePinnedChatClick(event, { activeChatId, chats, openPinnedChat }) {
+    const item = event.target.closest(".pinned-chat-item");
+    if (!item) return;
+    const chatId = Number(item.dataset.chatId);
+    if (!chatId) return;
+    if (chatId === Number(activeChatId) && chats.has(chatId)) return;
+    void openPinnedChat(chatId);
+  }
+
+  function handleGlobalTabCycle(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn,
+    settingsModal,
+    isTextEntryElementFn,
+    activeChatId,
+    chats,
+    getNextChatTabId,
+    openChat,
+  }) {
+    if (event.defaultPrevented) return;
+    if (event.isComposing) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (mobileQuoteMode || !isDesktopViewportFn()) return;
+    if (settingsModal?.open) return;
+
+    const isArrowLeft = event.key === "ArrowLeft";
+    const isArrowRight = event.key === "ArrowRight";
+    if (!isArrowLeft && !isArrowRight) return;
+
+    const target = event.target;
+    if (isTextEntryElementFn(target)) return;
+
+    const current = Number(activeChatId);
+    if (!current) return;
+
+    const nextChatId = getNextChatTabId({
+      orderedChatIds: getOrderedChatIds(chats),
+      activeChatId: current,
+      reverse: isArrowLeft,
+    });
+    if (!nextChatId || nextChatId === current) return;
+
+    event.preventDefault();
+    void openChat(nextChatId);
+  }
+
+  function scrollMessagesByArrow(messagesEl, direction) {
+    if (!messagesEl) return;
+    const viewportHeight = Number(messagesEl.clientHeight || 0);
+    const baseStep = Math.max(56, Math.floor(viewportHeight * 0.18));
+    const delta = direction === "down" ? baseStep : -baseStep;
+    messagesEl.scrollTop = Math.max(0, Number(messagesEl.scrollTop || 0) + delta);
+  }
+
+  function handleGlobalArrowJump(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn,
+    settingsModal,
+    isTextEntryElementFn,
+    jumpLatestButton,
+    jumpLastStartButton,
+    handleJumpLatest,
+    handleJumpLastStart,
+    scrollMessages,
+  }) {
+    if (event.defaultPrevented) return;
+    if (event.isComposing) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (mobileQuoteMode || !isDesktopViewportFn()) return;
+    if (settingsModal?.open) return;
+
+    const target = event.target;
+    if (isTextEntryElementFn(target)) return;
+
+    if (event.shiftKey) {
+      if (event.key === "ArrowDown") {
+        if (jumpLatestButton?.hidden) return;
+        event.preventDefault();
+        handleJumpLatest();
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        if (jumpLastStartButton?.hidden) return;
+        event.preventDefault();
+        handleJumpLastStart();
+      }
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      scrollMessages("down");
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      scrollMessages("up");
+    }
+  }
+
+  function handleGlobalComposerFocusShortcut(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn,
+    settingsModal,
+    isTextEntryElementFn,
+    activeChatId,
+    messagesEl,
+    promptEl,
+    documentObject,
+  }) {
+    if (event.defaultPrevented) return;
+    if (event.isComposing) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (mobileQuoteMode || !isDesktopViewportFn()) return;
+    if (settingsModal?.open) return;
+    if (event.key !== "Enter" || event.shiftKey) return;
+
+    const target = event.target;
+    if (isTextEntryElementFn(target)) return;
+    if (Number(activeChatId) <= 0) return;
+
+    const activeElement = documentObject.activeElement;
+    const focusedInMessages = activeElement === messagesEl || messagesEl?.contains?.(activeElement);
+    if (!focusedInMessages) return;
+
+    event.preventDefault();
+    try {
+      promptEl.focus({ preventScroll: true });
+    } catch {
+      promptEl.focus();
+    }
+  }
+
+  function shouldReleaseControlFocusAfterClick(target, {
+    isTextEntryElementFn,
+    settingsModal,
+    controlFocusSelector = CONTROL_FOCUS_SELECTOR,
+  }) {
+    if (typeof Element === "undefined") return false;
+    if (!target || !(target instanceof Element)) return false;
+    if (isTextEntryElementFn(target)) return false;
+
+    if (settingsModal?.open && settingsModal.contains(target)) {
+      return false;
+    }
+
+    const control = target.closest(controlFocusSelector);
+    return Boolean(control);
+  }
+
+  function releaseStickyControlFocus({
+    mobileQuoteMode,
+    isDesktopViewportFn,
+    documentObject,
+    promptEl,
+    messagesEl,
+    activeChatId,
+    settingsModal,
+    focusMessagesPaneIfActiveChat,
+    controlFocusSelector = CONTROL_FOCUS_SELECTOR,
+  }) {
+    if (mobileQuoteMode || !isDesktopViewportFn()) return;
+
+    const activeElement = documentObject.activeElement;
+    if (typeof HTMLElement !== "undefined" && activeElement instanceof HTMLElement) {
+      const activeControl = activeElement.closest?.(controlFocusSelector);
+      if (activeControl && activeElement !== promptEl && activeElement !== messagesEl) {
+        activeElement.blur();
+      }
+    }
+
+    const chatId = Number(activeChatId);
+    if (chatId > 0 && !settingsModal?.open) {
+      focusMessagesPaneIfActiveChat(chatId);
+    }
+  }
+
+  function handleGlobalControlClickFocusCleanup(event, {
+    shouldReleaseControlFocusAfterClickFn,
+    releaseStickyControlFocusFn,
+    windowObject,
+  }) {
+    if (!shouldReleaseControlFocusAfterClickFn(event.target)) return;
+    windowObject.setTimeout(() => {
+      releaseStickyControlFocusFn();
+    }, 0);
+  }
+
+  function handleGlobalControlMouseDownFocusGuard(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn,
+    shouldReleaseControlFocusAfterClickFn,
+  }) {
+    if (mobileQuoteMode || !isDesktopViewportFn()) return;
+    if (!shouldReleaseControlFocusAfterClickFn(event.target)) return;
+    event.preventDefault();
+  }
+
+  function handleGlobalControlEnterDefuse(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn,
+    isTextEntryElementFn,
+    settingsModal,
+    documentObject,
+    promptEl,
+    messagesEl,
+    releaseStickyControlFocusFn,
+    controlFocusSelector = CONTROL_FOCUS_SELECTOR,
+  }) {
+    if (event.defaultPrevented) return;
+    if (event.isComposing) return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (mobileQuoteMode || !isDesktopViewportFn()) return;
+    if (event.key !== "Enter") return;
+
+    const target = event.target;
+    if (isTextEntryElementFn(target)) return;
+    if (
+      typeof Element !== "undefined"
+      && settingsModal?.open
+      && target instanceof Element
+      && settingsModal.contains(target)
+    ) return;
+
+    const activeElement = documentObject.activeElement;
+    const focusedControl = (typeof Element !== "undefined" && target instanceof Element)
+      ? target.closest(controlFocusSelector)
+      : activeElement?.closest?.(controlFocusSelector);
+
+    if (!focusedControl) return;
+    if (focusedControl === promptEl || focusedControl === messagesEl) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    releaseStickyControlFocusFn();
+  }
+
+  const api = {
+    CONTROL_FOCUS_SELECTOR,
+    getOrderedChatIds,
+    isTextEntryElement,
+    isDesktopViewport,
+    handleTabClick,
+    handlePinnedChatClick,
+    handleGlobalTabCycle,
+    scrollMessagesByArrow,
+    handleGlobalArrowJump,
+    handleGlobalComposerFocusShortcut,
+    shouldReleaseControlFocusAfterClick,
+    releaseStickyControlFocus,
+    handleGlobalControlClickFocusCleanup,
+    handleGlobalControlMouseDownFocusGuard,
+    handleGlobalControlEnterDefuse,
+  };
+
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = api;
+  }
+  globalScope.HermesMiniappKeyboardShortcuts = api;
+})(typeof window !== "undefined" ? window : globalThis);
