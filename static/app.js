@@ -2689,6 +2689,16 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
 
     if (!response.ok || !response.body) {
       const fallback = await response.text();
+      const normalizedFallback = String(fallback || "").toLowerCase();
+      const noActiveJob = response.status === 409 && normalizedFallback.includes("no active hermes job");
+      if (noActiveJob) {
+        setStreamPhase(key, STREAM_PHASES.FINALIZED);
+        if (Number(activeChatId) === key) {
+          setStreamStatus(`Stream already complete in ${chatLabel(key)}`);
+          setActivityChip(streamChip, `stream: complete · ${compactChatLabel(key)}`);
+        }
+        return;
+      }
       throw new Error(fallback || `Resume failed: ${response.status}`);
     }
 
