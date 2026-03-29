@@ -287,6 +287,42 @@ test('consumeStreamResponse skips replayed events using monotonic _event_id acro
 
 });
 
+test('createToolTraceController upserts tool deltas by message_id + tool_call_id + phase', () => {
+  const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
+  const toolTrace = streamController.createToolTraceController({
+    toolStreamEl: { hidden: false },
+    toolStreamLinesEl: { innerHTML: '' },
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+  });
+
+  toolTrace.appendInlineToolTrace(7, '📖 read_file: opening', {
+    message_id: 'm-1',
+    tool_call_id: 'tc-1',
+    phase: 'started',
+  });
+  toolTrace.appendInlineToolTrace(7, '📖 read_file: loaded 100 bytes', {
+    message_id: 'm-1',
+    tool_call_id: 'tc-1',
+    phase: 'started',
+  });
+  toolTrace.appendInlineToolTrace(7, '📖 read_file: done', {
+    message_id: 'm-1',
+    tool_call_id: 'tc-1',
+    phase: 'completed',
+  });
+
+  const pending = toolTrace.findPendingToolTraceMessage(7);
+  assert.equal(Boolean(pending), true);
+  assert.equal(pending.body, '📖 read_file: loaded 100 bytes\n📖 read_file: done');
+
+  toolTrace.finalizeInlineToolTrace(7);
+  const finalized = histories.get(7)[0];
+  assert.equal(finalized.body, '📖 read_file: loaded 100 bytes\n📖 read_file: done');
+  assert.equal('_toolTraceOrder' in finalized, false);
+  assert.equal('_toolTraceLines' in finalized, false);
+});
+
 test('createToolTraceController appends pending tool traces and finalizes collapsed state', () => {
   const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
   const toolStreamEl = { hidden: false };
