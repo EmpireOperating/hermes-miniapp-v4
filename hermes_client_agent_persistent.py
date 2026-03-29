@@ -189,21 +189,23 @@ class HermesClientPersistentAgentMixin:
         }
 
         chunk_size = max(1, self.stream_chunk_size)
-        started = time.monotonic()
         timeout_seconds = max(1, int(getattr(self, "timeout_seconds", 120) or 120))
+        last_event_at = time.monotonic()
         while True:
-            elapsed = time.monotonic() - started
-            remaining = timeout_seconds - elapsed
-            if remaining <= 0:
+            idle_for = time.monotonic() - last_event_at
+            remaining_idle = timeout_seconds - idle_for
+            if remaining_idle <= 0:
                 raise HermesClientError(
-                    f"Hermes persistent runtime timed out after {timeout_seconds}s "
+                    f"Hermes persistent runtime timed out after {timeout_seconds}s with no progress "
                     f"(session_id={effective_session_id})."
                 )
             try:
-                item = event_queue.get(timeout=min(0.2, max(0.05, remaining)))
+                item = event_queue.get(timeout=min(0.2, max(0.05, remaining_idle)))
             except queue.Empty:
                 continue
 
+            # Count any queue activity as forward progress (tool/done/error/end).
+            last_event_at = time.monotonic()
             kind = item.get("kind")
             if kind == "tool":
                 yield {
