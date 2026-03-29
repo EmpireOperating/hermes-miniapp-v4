@@ -32,3 +32,11 @@ test('parseSseEvent preserves message default when event field is omitted', () =
   assert.equal(parsed.event, 'message');
   assert.deepEqual(parsed.payload, { ok: true });
 });
+
+test('parseSseEvent handles CRLF framing and leading whitespace', () => {
+  const parsed = shared.parseSseEvent('  event: tool\r\n  data: {"display":"Calling API"}\r\n\r\n');
+  assert.ok(parsed);
+  assert.equal(parsed.eventName, 'tool');
+  assert.equal(parsed.event, 'tool');
+  assert.deepEqual(parsed.payload, { display: 'Calling API' });
+});

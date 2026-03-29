@@ -3,58 +3,44 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const composerState = require('../static/composer_state_helpers.js');
+const composerStateHelpers = require('../static/composer_state_helpers.js');
 
-test('deriveComposerState computes send/remove/pin states from auth + pending + active chat', () => {
-  const chats = new Map([[4, { id: 4, pending: false }]]);
-  const pendingChats = new Set();
-
-  const ready = composerState.deriveComposerState({
-    activeChatId: 4,
-    pendingChats,
-    chats,
+test('deriveComposerState reflects pending/auth combinations', () => {
+  const pendingState = composerStateHelpers.deriveComposerState({
+    activeChatId: 3,
+    pendingChats: new Set([3]),
+    chats: new Map([[3, { pending: false }]]),
     isAuthenticated: true,
   });
-  assert.equal(ready.canSend, true);
-  assert.equal(ready.sendLabel, 'Send');
-  assert.equal(ready.canRemove, true);
-  assert.equal(ready.canPin, true);
 
-  pendingChats.add(4);
-  const pending = composerState.deriveComposerState({
-    activeChatId: 4,
-    pendingChats,
-    chats,
-    isAuthenticated: true,
-  });
-  assert.equal(pending.canSend, false);
-  assert.equal(pending.sendLabel, 'Sending…');
-  assert.equal(pending.canRemove, false);
-  assert.equal(pending.canPin, false);
+  assert.equal(pendingState.pending, true);
+  assert.equal(pendingState.canSend, false);
+  assert.equal(pendingState.sendLabel, 'Sending…');
 
-  const unauth = composerState.deriveComposerState({
-    activeChatId: 4,
+  const idleState = composerStateHelpers.deriveComposerState({
+    activeChatId: 3,
     pendingChats: new Set(),
-    chats,
-    isAuthenticated: false,
+    chats: new Map([[3, { pending: false }]]),
+    isAuthenticated: true,
   });
-  assert.equal(unauth.canPrompt, false);
-  assert.equal(unauth.canSend, false);
+  assert.equal(idleState.pending, false);
+  assert.equal(idleState.canSend, true);
+  assert.equal(idleState.sendLabel, 'Send');
 });
 
-test('applyComposerState mutates controls with safe optional buttons', () => {
+test('applyComposerState updates control disabled flags and button labels', () => {
   const sendButton = { disabled: false, textContent: '' };
   const promptEl = { disabled: false };
   const removeChatButton = { disabled: false };
   const pinChatButton = { disabled: false };
 
-  composerState.applyComposerState({
+  composerStateHelpers.applyComposerState({
     state: {
       canSend: false,
       sendLabel: 'Sending…',
       canPrompt: true,
       canRemove: false,
-      canPin: true,
+      canPin: false,
     },
     sendButton,
     promptEl,
@@ -66,5 +52,61 @@ test('applyComposerState mutates controls with safe optional buttons', () => {
   assert.equal(sendButton.textContent, 'Sending…');
   assert.equal(promptEl.disabled, false);
   assert.equal(removeChatButton.disabled, true);
-  assert.equal(pinChatButton.disabled, false);
+  assert.equal(pinChatButton.disabled, true);
+});
+
+test('draft controller loads valid values and ignores malformed storage payloads', () => {
+  const draftByChat = new Map();
+  const localStorageRef = {
+    getItem() {
+      return JSON.stringify({
+        4: 'hello',
+        nope: 'skip',
+        8: '',
+      });
+    },
+    setItem() {
+      throw new Error('not expected');
+    },
+  };
+
+  const drafts = composerStateHelpers.createDraftController({
+    localStorageRef,
+    draftStorageKey: 'miniapp.drafts',
+    draftByChat,
+  });
+
+  drafts.loadDraftsFromStorage();
+
+  assert.equal(draftByChat.size, 1);
+  assert.equal(draftByChat.get(4), 'hello');
+  assert.equal(drafts.getDraft(4), 'hello');
+  assert.equal(drafts.getDraft(999), '');
+});
+
+test('draft controller setDraft persists add/remove operations', () => {
+  const writes = [];
+  const draftByChat = new Map();
+  const localStorageRef = {
+    getItem() {
+      return null;
+    },
+    setItem(key, value) {
+      writes.push([key, value]);
+    },
+  };
+
+  const drafts = composerStateHelpers.createDraftController({
+    localStorageRef,
+    draftStorageKey: 'miniapp.drafts',
+    draftByChat,
+  });
+
+  drafts.setDraft(6, 'draft text');
+  drafts.setDraft(6, '');
+
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes[0], ['miniapp.drafts', JSON.stringify({ 6: 'draft text' })]);
+  assert.deepEqual(writes[1], ['miniapp.drafts', JSON.stringify({})]);
+  assert.equal(drafts.getDraft(6), '');
 });

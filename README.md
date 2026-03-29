@@ -27,6 +27,7 @@ Telegram Mini App shell for Hermes Agent with a Hermes-style themed UI.
   - `HERMES_API_URL` if available
   - otherwise direct in-process agent (when enabled) and finally local CLI
 - chat threads and messages are stored in `sessions.db`
+- optional operator-side browser fallback stack now includes a local `camofox-browser` profile (for anti-bot blocked web tasks)
 
 ### Module map (server/store/client split)
 
@@ -169,6 +170,31 @@ Run tests:
 ```bash
 python -m pytest -q
 ```
+
+## Optional: camofox-browser fallback profile
+
+Use this only as a fallback path when standard browser automation is blocked by anti-bot/fingerprint checks.
+
+Decision rule:
+
+- default: normal browser path
+- fallback: camofox only after verified block/fingerprint failure
+
+Local bootstrap (Docker, localhost-only bind):
+
+```bash
+# one-time setup + launch
+ops/camofox/setup-local.sh
+
+# manual lifecycle
+cp ops/camofox/.env.example ops/camofox/.env
+# fill CAMOFOX_API_KEY and CAMOFOX_ADMIN_KEY with strong values
+
+docker compose --env-file ops/camofox/.env -f ops/camofox/docker-compose.yml up -d
+docker compose --env-file ops/camofox/.env -f ops/camofox/docker-compose.yml logs -f
+```
+
+The compose profile publishes `127.0.0.1:9377` only and requires API/admin keys.
 
 ## Smoke test checklist
 

@@ -106,3 +106,53 @@ def test_set_skin_sets_cookie(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert response.get_json()["skin"] == "oracle"
     assert "hermes_skin=oracle" in response.headers.get("Set-Cookie", "")
+
+
+def test_dev_auth_returns_404_when_bypass_disabled(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    response = client.post("/api/dev/auth", json={"user_id": 9001, "display_name": "Desktop Tester"})
+
+    assert response.status_code == 404
+
+
+def test_dev_auth_rejects_wrong_secret(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
+    monkeypatch.setenv("MINIAPP_DEV_SECRET", "expected-secret")
+    server = load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    response = client.post(
+        "/api/dev/auth",
+        json={"user_id": 9001, "display_name": "Desktop Tester"},
+        headers={"X-Dev-Auth": "wrong-secret"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_dev_auth_sets_cookie_and_reuses_authenticated_endpoints(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
+    monkeypatch.setenv("MINIAPP_DEV_SECRET", "expected-secret")
+    server = load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    auth_response = client.post(
+        "/api/dev/auth",
+        json={"user_id": 9001, "display_name": "Desktop Tester", "username": "desktop"},
+        headers={"X-Dev-Auth": "expected-secret"},
+    )
+
+    assert auth_response.status_code == 200
+    auth_data = auth_response.get_json()
+    assert auth_data["ok"] is True
+    assert auth_data["auth_mode"] == "dev"
+    assert auth_data["user"]["id"] == 9001
+    assert auth_data["user"]["display_name"] == "Desktop Tester"
+    assert any("hermes_auth_session=" in value for value in auth_response.headers.getlist("Set-Cookie"))
+
+    create_chat = client.post("/api/chats", json={"title": "desk"})
+
+    assert create_chat.status_code == 201
+    assert create_chat.get_json()["chat"]["title"] == "desk"

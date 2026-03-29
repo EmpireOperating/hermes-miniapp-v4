@@ -193,12 +193,21 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
             "runtime_helpers.js": "helpers-v",
             "app_shared_utils.js": "shared-v",
             "chat_ui_helpers.js": "chat-ui-v",
+            "chat_tabs_helpers.js": "chat-tabs-v",
             "message_actions_helpers.js": "actions-v",
             "stream_state_helpers.js": "stream-state-v",
             "stream_controller.js": "stream-controller-v",
             "composer_state_helpers.js": "composer-v",
             "keyboard_shortcuts_helpers.js": "keyboard-v",
             "interaction_helpers.js": "interaction-v",
+            "bootstrap_auth_helpers.js": "bootstrap-auth-v",
+            "chat_history_helpers.js": "chat-history-v",
+            "chat_admin_helpers.js": "chat-admin-v",
+            "shell_ui_helpers.js": "shell-ui-v",
+            "composer_viewport_helpers.js": "composer-viewport-v",
+            "visibility_skin_helpers.js": "visibility-skin-v",
+            "startup_bindings_helpers.js": "startup-bindings-v",
+            "render_trace_helpers.js": "render-trace-v",
             "app.js": "app-v",
         }[filename]
 
@@ -210,24 +219,42 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     runtime_src = '/static/runtime_helpers.js?v=helpers-v'
     shared_src = '/static/app_shared_utils.js?v=shared-v'
     chat_ui_src = '/static/chat_ui_helpers.js?v=chat-ui-v'
+    chat_tabs_src = '/static/chat_tabs_helpers.js?v=chat-tabs-v'
     actions_src = '/static/message_actions_helpers.js?v=actions-v'
     stream_state_src = '/static/stream_state_helpers.js?v=stream-state-v'
     stream_controller_src = '/static/stream_controller.js?v=stream-controller-v'
     composer_src = '/static/composer_state_helpers.js?v=composer-v'
     keyboard_src = '/static/keyboard_shortcuts_helpers.js?v=keyboard-v'
     interaction_src = '/static/interaction_helpers.js?v=interaction-v'
+    bootstrap_auth_src = '/static/bootstrap_auth_helpers.js?v=bootstrap-auth-v'
+    chat_history_src = '/static/chat_history_helpers.js?v=chat-history-v'
+    chat_admin_src = '/static/chat_admin_helpers.js?v=chat-admin-v'
+    shell_ui_src = '/static/shell_ui_helpers.js?v=shell-ui-v'
+    composer_viewport_src = '/static/composer_viewport_helpers.js?v=composer-viewport-v'
+    visibility_skin_src = '/static/visibility_skin_helpers.js?v=visibility-skin-v'
+    startup_bindings_src = '/static/startup_bindings_helpers.js?v=startup-bindings-v'
+    render_trace_src = '/static/render_trace_helpers.js?v=render-trace-v'
     app_src = '/static/app.js?v=app-v'
     assert runtime_src in page
     assert shared_src in page
     assert chat_ui_src in page
+    assert chat_tabs_src in page
     assert actions_src in page
     assert stream_state_src in page
     assert stream_controller_src in page
     assert composer_src in page
     assert keyboard_src in page
     assert interaction_src in page
+    assert bootstrap_auth_src in page
+    assert chat_history_src in page
+    assert chat_admin_src in page
+    assert shell_ui_src in page
+    assert composer_viewport_src in page
+    assert visibility_skin_src in page
+    assert startup_bindings_src in page
+    assert render_trace_src in page
     assert app_src in page
-    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(keyboard_src) < page.index(interaction_src) < page.index(app_src)
+    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(chat_tabs_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(keyboard_src) < page.index(interaction_src) < page.index(bootstrap_auth_src) < page.index(chat_history_src) < page.index(chat_admin_src) < page.index(shell_ui_src) < page.index(composer_viewport_src) < page.index(visibility_skin_src) < page.index(startup_bindings_src) < page.index(render_trace_src) < page.index(app_src)
 
 
 def test_runtime_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
@@ -252,6 +279,15 @@ def test_chat_ui_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None
     server, client = _client(monkeypatch, tmp_path)
 
     response = client.get("/static/chat_ui_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_chat_tabs_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/chat_tabs_helpers.js")
 
     assert response.status_code == 200
     assert response.headers.get("Cache-Control") == "no-store, max-age=0"
@@ -311,6 +347,78 @@ def test_interaction_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> 
     assert response.headers.get("Cache-Control") == "no-store, max-age=0"
 
 
+def test_bootstrap_auth_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/bootstrap_auth_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_chat_history_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/chat_history_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_chat_admin_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/chat_admin_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_shell_ui_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/shell_ui_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_composer_viewport_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/composer_viewport_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_visibility_skin_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/visibility_skin_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_startup_bindings_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/startup_bindings_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
+def test_render_trace_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/render_trace_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
 def test_request_debug_logging_disabled_by_default(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("MINI_APP_REQUEST_DEBUG", raising=False)
     monkeypatch.delenv("MINIAPP_REQUEST_DEBUG", raising=False)
@@ -352,6 +460,19 @@ def test_request_debug_logging_enabled_via_legacy_env(monkeypatch, tmp_path) -> 
     assert calls[0][0] == "miniapp req method=%s path=%s host=%s ua=%s"
 
 
+def test_request_debug_redacts_sensitive_query_params(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_REQUEST_DEBUG", "1")
+    server = load_server(monkeypatch, tmp_path)
+
+    calls = _capture_request_debug_calls(server, monkeypatch)
+
+    with server.app.test_request_context("/app?dev_secret=supersecret&safe=1", method="GET", headers={"User-Agent": "UA"}):
+        server._log_request_debug()
+
+    assert len(calls) == 1
+    assert calls[0][2] == "/app?dev_secret=%5Bredacted%5D&safe=1"
+
+
 def test_app_dev_config_exposes_request_debug_flag(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_REQUEST_DEBUG", "1")
     monkeypatch.delenv("MINIAPP_REQUEST_DEBUG", raising=False)
@@ -361,6 +482,141 @@ def test_app_dev_config_exposes_request_debug_flag(monkeypatch, tmp_path) -> Non
 
     assert "window.__HERMES_DEV__" in page
     assert "requestDebug: true" in page
+
+
+def test_app_dev_config_exposes_dev_auth_flag(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
+    _, client = _client(monkeypatch, tmp_path)
+
+    page = _app_page(client)
+
+    assert "devAuthEnabled: true" in page
+
+
+def test_desktop_dev_auth_bootstrap_guards_present() -> None:
+    app_script = _read_repo_file("static", "app.js")
+    template = _read_repo_file("templates", "app.html")
+    bootstrap_auth_script = _read_repo_file("static", "bootstrap_auth_helpers.js")
+    chat_tabs_script = _read_repo_file("static", "chat_tabs_helpers.js")
+    chat_history_script = _read_repo_file("static", "chat_history_helpers.js")
+    chat_admin_script = _read_repo_file("static", "chat_admin_helpers.js")
+    shell_ui_script = _read_repo_file("static", "shell_ui_helpers.js")
+    composer_viewport_script = _read_repo_file("static", "composer_viewport_helpers.js")
+    visibility_skin_script = _read_repo_file("static", "visibility_skin_helpers.js")
+    startup_bindings_script = _read_repo_file("static", "startup_bindings_helpers.js")
+    render_trace_script = _read_repo_file("static", "render_trace_helpers.js")
+
+    assert "HermesMiniappBootstrapAuth" in bootstrap_auth_script
+    assert "function createController(deps)" in bootstrap_auth_script
+    assert "async function askForDevAuth" in bootstrap_auth_script
+    assert 'fetchImpl("/api/dev/auth"' in bootstrap_auth_script
+    assert "bootstrapAuthHelpers.createController({" in app_script
+    assert 'throw new Error("HermesMiniappBootstrapAuth is required before app.js")' in app_script
+    assert "HermesMiniappChatTabs" in chat_tabs_script
+    assert "function createController(deps)" in chat_tabs_script
+    assert "chatTabsHelpers.createController({" in app_script
+    assert 'throw new Error("HermesMiniappChatTabs is required before app.js")' in app_script
+    assert "HermesMiniappChatHistory" in chat_history_script
+    assert "function createController(deps)" in chat_history_script
+    assert "function addLocalMessage(chatId, message)" in chat_history_script
+    assert "function updatePendingAssistant(chatId, nextBody, pendingState = true)" in chat_history_script
+    assert "function syncActiveMessageView(chatId, options = {})" in chat_history_script
+    assert "function scheduleActiveMessageView(chatId)" in chat_history_script
+    assert "function maybeMarkRead(chatId, { force = false } = {})" in chat_history_script
+    assert "chatHistoryHelpers.createController({" in app_script
+    assert "chatHistoryController.addLocalMessage(chatId, message)" in app_script
+    assert "chatHistoryController.updatePendingAssistant(chatId, nextBody, pendingState)" in app_script
+    assert "chatHistoryController.syncActiveMessageView(chatId, options)" in app_script
+    assert "chatHistoryController.scheduleActiveMessageView(chatId)" in app_script
+    assert "chatHistoryController.maybeMarkRead(chatId, options)" in app_script
+    assert 'throw new Error("HermesMiniappChatHistory is required before app.js")' in app_script
+    assert "HermesMiniappChatAdmin" in chat_admin_script
+    assert "function createController(deps)" in chat_admin_script
+    assert "async function askForChatTitle" in chat_admin_script
+    assert "chatAdminHelpers.createController({" in app_script
+    assert 'throw new Error("HermesMiniappChatAdmin is required before app.js")' in app_script
+    assert "HermesMiniappShellUI" in shell_ui_script
+    assert "function createController(deps)" in shell_ui_script
+    assert "function syncFullscreenControlState()" in shell_ui_script
+    assert "shellUiHelpers.createController({" in app_script
+    assert 'throw new Error("HermesMiniappShellUI is required before app.js")' in app_script
+    assert "HermesMiniappComposerViewport" in composer_viewport_script
+    assert "function createController(deps)" in composer_viewport_script
+    assert "function ensureComposerVisible" in composer_viewport_script
+    assert "composerViewportHelpers.createController({" in app_script
+    assert 'throw new Error("HermesMiniappComposerViewport is required before app.js")' in app_script
+    assert "HermesMiniappVisibilitySkin" in visibility_skin_script
+    assert "function createController(deps)" in visibility_skin_script
+    assert "function handleVisibilityChange()" in visibility_skin_script
+    assert "visibilitySkinHelpers.createController({" in app_script
+    assert 'throw new Error("HermesMiniappVisibilitySkin is required before app.js")' in app_script
+    assert "HermesMiniappStartupBindings" in startup_bindings_script
+    assert "function createController(deps)" in startup_bindings_script
+    assert "function installCoreEventBindings()" in startup_bindings_script
+    assert "startupBindingsHelpers.createController({" in app_script
+    assert 'throw new Error("HermesMiniappStartupBindings is required before app.js")' in app_script
+    assert "HermesMiniappRenderTrace" in render_trace_script
+    assert "function createController(deps)" in render_trace_script
+    assert "function renderBody(container, rawText" in render_trace_script
+    assert "function renderToolTraceBody(container, message" in render_trace_script
+    assert "function roleLabelForMessage(message" in render_trace_script
+    assert "function messageVariantForRole(role)" in render_trace_script
+    assert "function shouldSkipMessageRender({ role, renderedBody, pending })" in render_trace_script
+    assert "function applyMessageMeta(node, message" in render_trace_script
+    assert "function renderMessageContent(node, message, renderedBody" in render_trace_script
+    assert "function messageStableKey(message, index = 0)" in render_trace_script
+    assert "function messageStableKeyForPendingState(message, index = 0, pendingState = false)" in render_trace_script
+    assert "function upsertMessageNode(node, message" in render_trace_script
+    assert "function createMessageNode(message," in render_trace_script
+    assert "function appendMessages(fragment, messages" in render_trace_script
+    assert "function findMessageNodeByKey(container, selector, messageKey, alternateMessageKey = \"\")" in render_trace_script
+    assert "function findLatestHistoryMessageByRole(history, role" in render_trace_script
+    assert "function findLatestAssistantHistoryMessage(history," in render_trace_script
+    assert "function patchVisiblePendingAssistant({" in render_trace_script
+    assert "function patchVisibleToolTrace({" in render_trace_script
+    assert "function renderTraceLog(eventName, details = null)" in render_trace_script
+    assert "renderTraceHelpers.createController({" in app_script
+    assert "renderTraceHelpers.renderBody(container, rawText" in app_script
+    assert "renderTraceHelpers.renderToolTraceBody(container, message" in app_script
+    assert "renderTraceHelpers.messageVariantForRole(role)" in app_script
+    assert "renderTraceHelpers.shouldSkipMessageRender({ role, renderedBody, pending })" in app_script
+    assert "renderTraceHelpers.applyMessageMeta(node, message" in app_script
+    assert "renderTraceHelpers.renderMessageContent(node, message, renderedBody" in app_script
+    assert "renderTraceHelpers.messageStableKey(message, index)" in app_script
+    assert "renderTraceHelpers.messageStableKeyForPendingState(message, index, pendingState)" in app_script
+    assert "renderTraceHelpers.upsertMessageNode(node, message" in app_script
+    assert "renderTraceHelpers.createMessageNode(message, {" in app_script
+    assert "renderTraceHelpers.appendMessages(fragment, messages, {" in app_script
+    assert "renderTraceHelpers.findMessageNodeByKey(messagesEl, selector, messageKey, alternateMessageKey)" in app_script
+    assert "renderTraceHelpers.findLatestHistoryMessageByRole(histories.get(Number(chatId)) || [], role" in app_script
+    assert "renderTraceHelpers.findLatestAssistantHistoryMessage(histories.get(Number(chatId)) || [], {" in app_script
+    assert "renderTraceHelpers.patchVisiblePendingAssistant({" in app_script
+    assert "renderTraceHelpers.patchVisibleToolTrace({" in app_script
+    assert 'throw new Error("HermesMiniappRenderTrace is required before app.js")' in app_script
+    assert "dev-auth-modal" in template
+    assert "chat-title-modal" in template
+    assert "dev-auth-secret" in template
+    assert "tg?.initData || \"\"" in app_script
+    assert "Telegram connection missing" not in app_script
+    assert "dev_secret" not in app_script
+
+
+def test_resume_keeps_existing_latency_value_instead_of_recalculating_flash() -> None:
+    app_script = _read_repo_file("static", "app.js")
+
+    assert 'syncActiveLatencyChip();' in app_script
+    assert 'setActivityChip(latencyChip, "latency: recalculating...");' not in app_script
+    assert 'setChatLatency(key, "recalculating...");' not in app_script
+
+
+def test_stream_resume_and_graceful_completion_helpers_are_centralized() -> None:
+    app_script = _read_repo_file("static", "app.js")
+
+    assert "async function hydrateChatAfterGracefulResumeCompletion" in app_script
+    assert "async function consumeStreamWithReconnect" in app_script
+    assert 'await hydrateChatAfterGracefulResumeCompletion(key);' in app_script
+    assert 'const resumed = await consumeStreamWithReconnect(chatId, response, builtReplyRef' in app_script
+    assert 'const resumed = await consumeStreamWithReconnect(key, response, builtReplyRef' in app_script
 
 
 def test_mobile_viewport_and_composer_zoom_guards_present() -> None:
@@ -387,21 +643,28 @@ def test_quote_selection_sync_is_debounced_in_client_script() -> None:
     assert "selectionQuoteSettleTimer" in app_script
     assert "const mobileQuoteMode = isCoarsePointer();" in app_script
     assert "selection-quote-button--docked" not in app_script
-    assert "selectionQuoteButton.hidden = false;" in app_script
-    assert "mobileToolbarUnsafeTop" in app_script
-    assert "composerTop" in app_script
+    assert "interactionHelpers.showSelectionQuoteAction(" in app_script
+    assert "mobileToolbarUnsafeTop" in interaction_script
+    assert "composerTop" in interaction_script
     assert "composer-quote-apply" not in app_script
     assert "function formatQuoteBlock" in app_script
     assert "function unwrapLegacyQuoteBlock" in app_script
-    assert "return `┌ Quote\\n${lines.join(\"\\n\")}\\n└\\n\\n\\n`;" in app_script
-    assert "lines.push(line ? `│ ${line}` : \"│\");" in app_script
-    assert "looksLikeLegacyFrame" in app_script
+    assert "return `┌ Quote\\n${lines.join(\"\\n\")}\\n└\\n\\n\\n`;" in interaction_script
+    assert "lines.push(line ? `│ ${line}` : \"│\");" in interaction_script
+    assert "looksLikeLegacyFrame" in interaction_script
     assert "╭─ Quote ─" not in app_script
     assert "╰────────" not in app_script
-    assert "\\n\\n\\n" in app_script
+    assert "\\n\\n\\n" in interaction_script
 
     assert "HermesMiniappInteraction" in interaction_script
     assert "function createSelectionQuoteController" in interaction_script
+    assert "function showSelectionQuoteAction" in interaction_script
+    assert "function syncSelectionQuoteAction" in interaction_script
+    assert "function clearSelectionQuoteState" in interaction_script
+    assert "function cancelSelectionQuoteTimer" in interaction_script
+    assert "function scheduleSelectionQuoteClear" in interaction_script
+    assert "function scheduleSelectionQuoteSync" in interaction_script
+    assert "function applyQuoteIntoPrompt" in interaction_script
     assert "scheduleSelectionQuoteSync(140);" in interaction_script
     assert "scheduleSelectionQuoteSync(220);" in interaction_script
     assert "scheduleSelectionQuoteClear(220);" in interaction_script
@@ -413,6 +676,8 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     template = _read_repo_file("templates", "app.html")
     script = _read_repo_file("static", "app.js")
     chat_ui_script = _read_repo_file("static", "chat_ui_helpers.js")
+    chat_tabs_script = _read_repo_file("static", "chat_tabs_helpers.js")
+    chat_admin_script = _read_repo_file("static", "chat_admin_helpers.js")
 
     assert 'id="pin-chat"' in template
     assert 'id="pinned-chats-wrap"' in template
@@ -422,6 +687,10 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
 
     assert "HermesMiniappChatUI" in chat_ui_script
     assert "function renderPinnedChats" in chat_ui_script
+    assert "HermesMiniappChatTabs" in chat_tabs_script
+    assert "function syncChats" in chat_tabs_script
+    assert "function syncPinnedChatsCollapseUi" in chat_tabs_script
+    assert "HermesMiniappChatAdmin" in chat_admin_script
     assert "function syncPinnedChats" in script
     assert "function renderPinnedChats" in script
     assert "function toggleActiveChatPin" in script
@@ -429,21 +698,23 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     assert "function handlePinnedChatClick" in script
     assert "function syncPinnedChatsCollapseUi" in script
     assert "function togglePinnedChatsCollapsed" in script
-    assert 'bindAsyncClick(pinChatButton, toggleActiveChatPin);' in script
-    assert 'pinnedChatsEl?.addEventListener("click", handlePinnedChatClick);' in script
-    assert 'pinnedChatsToggleButton?.addEventListener("click", togglePinnedChatsCollapsed);' in script
+    assert "function installActionButtonBindings()" in script
+    assert "function installCoreEventBindings()" in script
+    assert "startupBindingsController.installActionButtonBindings();" in script
+    assert "startupBindingsController.installCoreEventBindings();" in script
     assert 'node.classList.toggle("is-pinned", Boolean(chat.is_pinned));' in chat_ui_script
     assert 'const pinEl = node.querySelector(".chat-tab__pin");' in chat_ui_script
     assert 'if (pinEl) {' in chat_ui_script
     assert 'pinEl.textContent = chat.is_pinned ? "📌" : "";' in chat_ui_script
-    assert 'pinChatButton.textContent = chat?.is_pinned ? "Unpin chat" : "Pin chat";' in script
+    assert "pinChatButton.textContent = chat?.is_pinned ? 'Unpin chat' : 'Pin chat';" in chat_tabs_script
 
     # Close tab should be silent (no confirm helper UX); it only removes from active tabs via API.
     # Pinned chats should remain visible in the pinned section after close.
     assert 'const ok = await confirmAction(`Close chat' not in script
-    assert 'await apiPost("/api/chats/remove", { chat_id: currentChatId });' in script
-    assert 'const removedChatSnapshot = chats.get(currentChatId) || pinnedChats.get(currentChatId) || null;' in script
-    assert 'if (removedWasPinned && !pinnedChats.has(currentChatId) && removedChatSnapshot) {' in script
+    assert "async function removeActiveChat()" in chat_admin_script
+    assert 'const data = await apiPost(\'/api/chats/remove\', { chat_id: activeChatId });' in chat_admin_script
+    assert 'const removedChatSnapshot = chats.get(activeChatId) || pinnedChats.get(activeChatId) || null;' in chat_admin_script
+    assert 'if (removedWasPinned && !pinnedChats.has(activeChatId) && removedChatSnapshot) {' in chat_admin_script
 
 
 def test_message_action_copy_helpers_are_split_to_module() -> None:
@@ -465,8 +736,14 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert "function createSelectionQuoteController" in interaction_script
     assert "interactionHelpers.createSelectionQuoteController" in script
     assert "interactionHelpers.handleComposerSubmitShortcut" in script
+    assert '/static/chat_tabs_helpers.js?v={{ chat_tabs_helpers_version }}' in template
     assert '/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}' in template
     assert '/static/stream_controller.js?v={{ stream_controller_version }}' in template
     assert '/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}' in template
     assert '/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}' in template
     assert '/static/interaction_helpers.js?v={{ interaction_helpers_version }}' in template
+    assert '/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}' in template
+    assert '/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}' in template
+    assert '/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}' in template
+    assert '/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}' in template
+    assert '/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}' in template
