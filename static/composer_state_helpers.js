@@ -31,9 +31,69 @@
     }
   }
 
+  function createDraftController({ localStorageRef, draftStorageKey, draftByChat }) {
+    function loadDraftsFromStorage() {
+      try {
+        const raw = localStorageRef.getItem(draftStorageKey);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return;
+        for (const [chatId, value] of Object.entries(parsed)) {
+          const key = Number(chatId);
+          if (!key) continue;
+          const text = String(value || "");
+          if (text) {
+            draftByChat.set(key, text);
+          }
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+
+    function persistDraftsToStorage() {
+      try {
+        const payload = {};
+        for (const [chatId, draft] of draftByChat.entries()) {
+          if (!draft) continue;
+          payload[String(chatId)] = draft;
+        }
+        localStorageRef.setItem(draftStorageKey, JSON.stringify(payload));
+      } catch {
+        // non-fatal
+      }
+    }
+
+    function setDraft(chatId, value) {
+      const key = Number(chatId);
+      if (!key) return;
+      const text = String(value || "");
+      if (text) {
+        draftByChat.set(key, text);
+      } else {
+        draftByChat.delete(key);
+      }
+      persistDraftsToStorage();
+    }
+
+    function getDraft(chatId) {
+      const key = Number(chatId);
+      if (!key) return "";
+      return String(draftByChat.get(key) || "");
+    }
+
+    return {
+      loadDraftsFromStorage,
+      persistDraftsToStorage,
+      setDraft,
+      getDraft,
+    };
+  }
+
   const api = {
     deriveComposerState,
     applyComposerState,
+    createDraftController,
   };
 
   if (typeof module !== "undefined" && module.exports) {

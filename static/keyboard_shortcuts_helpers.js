@@ -201,6 +201,15 @@
     if (mobileQuoteMode || !isDesktopViewportFn()) return;
 
     const activeElement = documentObject.activeElement;
+    const focusedWithinOpenDialog = (typeof Element !== "undefined" && activeElement instanceof Element)
+      ? Boolean(activeElement.closest?.('dialog[open], [aria-modal="true"]'))
+      : false;
+    if (focusedWithinOpenDialog) {
+      // Don't steal focus from modal inputs (e.g. chat rename title), otherwise
+      // mobile browsers may close the software keyboard and refuse to reopen it.
+      return;
+    }
+
     if (typeof HTMLElement !== "undefined" && activeElement instanceof HTMLElement) {
       const activeControl = activeElement.closest?.(controlFocusSelector);
       if (activeControl && activeElement !== promptEl && activeElement !== messagesEl) {

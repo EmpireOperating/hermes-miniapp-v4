@@ -200,6 +200,11 @@ h1 {
 .status-pill-button--icon:active {
   transform: translateY(1px) rotate(8deg);
 }
+.status-group--dev {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .status-dot {
   width: 9px;
   height: 9px;
@@ -466,6 +471,15 @@ textarea:focus-visible {
 .settings-modal__skins {
   display: grid;
   gap: 10px;
+}
+.chat-title-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.chat-title-tag {
+  text-transform: lowercase;
 }
 .settings-modal__debug {
   display: grid;

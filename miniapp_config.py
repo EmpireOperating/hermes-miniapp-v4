@@ -40,6 +40,8 @@ class MiniAppConfig:
     rate_limit_stream_requests: int
     enable_hsts: bool
     request_debug: bool
+    dev_auth_enabled: bool
+    dev_auth_secret: str
     job_event_history_max_jobs: int
     job_event_history_ttl_seconds: int
     dev_reload_watch_paths: tuple[Path, ...]
@@ -81,6 +83,13 @@ class MiniAppConfig:
             rate_limit_stream_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", 24, min_value=1, max_value=1000),
             enable_hsts=_as_bool("MINI_APP_ENABLE_HSTS", default=False),
             request_debug=_as_bool_any("MINI_APP_REQUEST_DEBUG", "MINIAPP_REQUEST_DEBUG", default=False),
+            dev_auth_enabled=_as_bool_any("MINIAPP_DEV_BYPASS", "MINI_APP_DEV_BYPASS", default=False),
+            dev_auth_secret=str(
+                os.environ.get("MINIAPP_DEV_SECRET")
+                or os.environ.get("MINI_APP_DEV_AUTH_SECRET")
+                or os.environ.get("MINI_APP_DEV_SECRET")
+                or ""
+            ).strip(),
             job_event_history_max_jobs=_as_int_in_range(
                 "MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS",
                 DEFAULT_JOB_EVENT_HISTORY_MAX_JOBS,
