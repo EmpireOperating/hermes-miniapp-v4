@@ -95,6 +95,7 @@ def test_dev_reload_state_and_static_cache_headers(tmp_path) -> None:
         dev_reload=True,
         dev_reload_interval_ms=123,
         request_debug=False,
+        dev_auth_enabled=False,
         static_no_store_filenames={"app.js"},
         asset_version_fn=lambda _: "v1",
         dev_reload_version_fn=lambda: "ver-1",
@@ -112,3 +113,38 @@ def test_dev_reload_state_and_static_cache_headers(tmp_path) -> None:
     assert reload_state.headers["Cache-Control"] == "no-store, max-age=0"
     assert static_resp.status_code == 200
     assert static_resp.headers["Cache-Control"] == "no-store, max-age=0"
+
+
+def test_mini_app_route_exposes_dev_auth_flag(monkeypatch, tmp_path) -> None:
+    app, public_bp = _build_app(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    def fake_render_template(_name: str, **kwargs):
+        captured.update(kwargs)
+        return "<html>ok</html>"
+
+    monkeypatch.setattr(server_public_routes, "render_template", fake_render_template)
+
+    register_public_routes(
+        public_bp,
+        app=app,
+        allowed_skins={"terminal", "minimal"},
+        skin_cookie_name="skin",
+        max_message_len=4096,
+        dev_reload=False,
+        dev_reload_interval_ms=300,
+        request_debug=False,
+        dev_auth_enabled=True,
+        static_no_store_filenames={"app.js"},
+        asset_version_fn=lambda _: "v1",
+        dev_reload_version_fn=lambda: "r1",
+        ensure_csp_nonce_fn=lambda: "nonce",
+    )
+    app.register_blueprint(public_bp)
+    client = app.test_client()
+
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert captured["dev_auth_enabled"] is True

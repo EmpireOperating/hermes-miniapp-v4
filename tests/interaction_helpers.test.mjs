@@ -81,6 +81,151 @@ test('quoteSelectionTextForInsert prefers active mobile selection and falls back
   );
 });
 
+test('normalizeQuoteSelection unwraps legacy frame and normalizes whitespace/newlines', () => {
+  const raw = [
+    '╭─ Quote ─',
+    '│ hello\u00a0world   ',
+    '│ second line\r',
+    '╰────',
+  ].join('\n');
+
+  assert.equal(interaction.unwrapLegacyQuoteBlock(raw), 'hello\u00a0world   \nsecond line\r');
+  assert.equal(interaction.normalizeQuoteSelection(raw), 'hello world\nsecond line');
+});
+
+test('wrapQuoteLine hard-wraps long grapheme runs and formatQuoteBlock emits framed quote block', () => {
+  const wrapped = interaction.wrapQuoteLine('abcdefghijk', 4);
+  // wrapQuoteLine clamps to a minimum width of 8 for readability.
+  assert.deepEqual(wrapped, ['abcdefgh', 'ijk']);
+
+  const formatted = interaction.formatQuoteBlock('Line 1\n\nLine 2');
+  assert.equal(formatted, '┌ Quote\n│ Line 1\n│\n│ Line 2\n└\n\n\n');
+});
+
+test('getQuoteWrapWidth computes bounded estimate and falls back on missing prompt', () => {
+  const promptInput = { clientWidth: 420, offsetWidth: 0 };
+  const width = interaction.getQuoteWrapWidth({
+    promptInput,
+    windowObject: { getComputedStyle: () => ({ fontSize: '16px' }) },
+  });
+  assert.equal(width, 40);
+  assert.equal(interaction.getQuoteWrapWidth({ promptInput: null }), 46);
+});
+
+test('isCoarsePointer uses matchMedia when available and ontouchstart fallback', () => {
+  assert.equal(
+    interaction.isCoarsePointer({
+      windowObject: { matchMedia: () => ({ matches: true }) },
+    }),
+    true,
+  );
+  assert.equal(interaction.isCoarsePointer({ windowObject: { ontouchstart: () => {} } }), true);
+});
+
+test('clearSelectionQuoteState resets state and hides quote button', () => {
+  const calls = [];
+  const selectionQuoteState = { reset: () => calls.push('reset') };
+  const selectionQuoteButton = { hidden: false };
+
+  interaction.clearSelectionQuoteState({ selectionQuoteState, selectionQuoteButton });
+  assert.deepEqual(calls, ['reset']);
+  assert.equal(selectionQuoteButton.hidden, true);
+});
+
+test('cancelSelectionQuoteTimer delegates to state cancelTimer', () => {
+  const calls = [];
+  interaction.cancelSelectionQuoteTimer('sync', {
+    selectionQuoteState: {
+      cancelTimer: (name) => calls.push(name),
+    },
+  });
+  assert.deepEqual(calls, ['sync']);
+});
+
+test('scheduleSelectionQuoteClear clears only when selection is absent', () => {
+  const callbacks = {};
+  let cleared = 0;
+  const selectionQuoteState = {
+    scheduleTimer: (name, _delay, cb) => {
+      callbacks[name] = cb;
+    },
+  };
+
+  interaction.scheduleSelectionQuoteClear(
+    {
+      selectionQuoteState,
+      activeSelectionQuoteFn: () => null,
+      clearSelectionQuoteStateFn: () => {
+        cleared += 1;
+      },
+    },
+    220,
+  );
+  callbacks.clear();
+  assert.equal(cleared, 1);
+
+  interaction.scheduleSelectionQuoteClear(
+    {
+      selectionQuoteState,
+      activeSelectionQuoteFn: () => ({ text: 'selected' }),
+      clearSelectionQuoteStateFn: () => {
+        cleared += 1;
+      },
+    },
+    220,
+  );
+  callbacks.clear();
+  assert.equal(cleared, 1);
+});
+
+test('scheduleSelectionQuoteSync cancels pending timers and schedules sync action', () => {
+  const calls = [];
+  const callbacks = {};
+  interaction.scheduleSelectionQuoteSync(
+    {
+      selectionQuoteState: {
+        scheduleTimer: (name, delay, cb) => {
+          calls.push(`schedule:${name}:${delay}`);
+          callbacks[name] = cb;
+        },
+      },
+      cancelSelectionQuoteSyncFn: () => calls.push('cancel-sync'),
+      cancelSelectionQuoteSettleFn: () => calls.push('cancel-settle'),
+      syncSelectionQuoteActionFn: () => calls.push('sync-action'),
+    },
+    140,
+  );
+
+  callbacks.sync();
+  assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'schedule:sync:140', 'sync-action']);
+});
+
+test('applyQuoteIntoPrompt inserts quote block at cursor and keeps caret in sync', () => {
+  const promptEl = {
+    value: 'Hello world',
+    maxLength: 6000,
+    selectionStart: 6,
+    selectionEnd: 11,
+    focus: () => {},
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
+    },
+  };
+  let visibleCalls = 0;
+  interaction.applyQuoteIntoPrompt('quoted line', {
+    promptEl,
+    formatQuoteBlockFn: interaction.formatQuoteBlock,
+    ensureComposerVisible: () => {
+      visibleCalls += 1;
+    },
+  });
+
+  assert.equal(promptEl.value.includes('┌ Quote\n│ quoted line\n└\n\n\n'), true);
+  assert.equal(promptEl.selectionStart, promptEl.selectionEnd);
+  assert.equal(visibleCalls, 1);
+});
+
 test('hasMessageSelection only returns true when non-collapsed selection is within messages container', () => {
   const insideNode = {};
   const messagesEl = {

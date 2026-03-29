@@ -7,6 +7,7 @@ def _read_static(name: str) -> str:
 
 def test_app_wires_stream_state_helper_before_stream_lifecycle_calls():
     app_js = _read_static("app.js")
+    chat_tabs_helper_js = _read_static("chat_tabs_helpers.js")
 
     assert "HermesMiniappStreamState is required before app.js" in app_js
     assert "HermesMiniappStreamController is required before app.js" in app_js
@@ -16,7 +17,7 @@ def test_app_wires_stream_state_helper_before_stream_lifecycle_calls():
     assert "streamControllerHelpers.createController({" in app_js
     assert "markChatStreamPending({" in app_js
     assert "finalizeChatStreamState({" in app_js
-    assert "clearChatStreamState({" in app_js
+    assert "clearChatStreamState({" in app_js or "clearChatStreamState({" in chat_tabs_helper_js
 
 
 def test_stream_state_helper_exports_phase_api_and_guardrails():
@@ -36,10 +37,15 @@ def test_stream_controller_module_exports_core_api():
     controller_js = _read_static("stream_controller.js")
 
     assert "HermesMiniappStreamController" in controller_js
+    assert "function createToolTraceController({" in controller_js
     assert "function createController(deps)" in controller_js
     assert "function setStreamAbortController(chatId, controller)" in controller_js
     assert "function consumeStreamResponse(chatId, response, builtReplyRef" in controller_js
+    assert "async function hydrateChatAfterGracefulResumeCompletion(chatId)" in controller_js
+    assert "async function consumeStreamWithReconnect(chatId, response, builtReplyRef" in controller_js
     assert "function finalizeStreamLifecycle(chatId, streamController, { wasAborted })" in controller_js
+    assert 'streamDebugLog("sse-read"' in controller_js
+    assert 'tailPreview: trimmedBuffer.slice(0, 220)' in controller_js
 
 
 def test_composer_state_helper_exports_state_api():
@@ -52,10 +58,30 @@ def test_composer_state_helper_exports_state_api():
 
 def test_app_resume_handles_no_active_job_reconnect_gracefully():
     app_js = _read_static("app.js")
+    runtime_helpers_js = _read_static("runtime_helpers.js")
 
     assert "const noActiveJob = response.status === 409" in app_js
     assert "normalizedFallback.includes(\"no active hermes job\")" in app_js
-    assert "setStreamStatus(`Stream already complete in ${chatLabel(key)}`);" in app_js
+    assert "await hydrateChatAfterGracefulResumeCompletion(key);" in app_js
+    assert "triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });" in app_js
+    assert "streamActivityController.markResumeAlreadyComplete(key);" in app_js
+    assert "setStreamStatus?.(`Stream already complete in ${chatLabel?.(key) || \"Chat\"}`);" in runtime_helpers_js
+    assert "setActivityChip?.(latencyChip, \"latency: --\");" in runtime_helpers_js
+    assert "setChatLatency?.(key, \"--\");" in runtime_helpers_js
+    assert "function createHapticUnreadController({" in runtime_helpers_js
+    assert "consumeStreamWithReconnect(key, response, builtReplyRef" in app_js
+    assert "await resumePendingChatStream(key, { force: true });" in app_js
+
+
+def test_routes_chat_stream_supports_mobile_segment_rollover_controls():
+    stream_routes = Path("routes_chat_stream.py").read_text(encoding="utf-8")
+
+    assert "MINI_APP_STREAM_SEGMENT_SECONDS" in stream_routes
+    assert "MINI_APP_STREAM_SEGMENT_SECONDS_MOBILE" in stream_routes
+    assert "event=\"stream_segment_rollover\"" in stream_routes
+    assert "segment_seconds=_stream_segment_seconds_for_request()" in stream_routes
+    assert "request_id = str(getattr(g, \"request_id\", \"\")) or None" in stream_routes
+    assert "event=\"stream_segment_rollover\",\n                                        request_id=request_id," in stream_routes
 
 
 def test_job_runtime_event_buffers_do_not_use_hardcoded_512_caps():
