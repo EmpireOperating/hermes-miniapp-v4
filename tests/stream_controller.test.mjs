@@ -13,6 +13,11 @@ function buildControllerHarness() {
   const streamStatuses = [];
   const streamChipUpdates = [];
   const latencyUpdates = [];
+  const chatsUpserted = [];
+  const renderedMessages = [];
+  const toolTraceLines = [];
+  const streamDebugEvents = [];
+  const histories = new Map();
 
   const deps = {
     parseSseEvent: sharedUtils.parseSseEvent,
@@ -58,9 +63,22 @@ function buildControllerHarness() {
     updateComposerState: () => {},
     syncClosingConfirmation: () => {},
     appendSystemMessage: () => {},
-    streamDebugLog: () => {},
+    streamDebugLog: (eventName, details = null) => {
+      streamDebugEvents.push({ eventName: String(eventName || ''), details });
+    },
     finalizeStreamPendingState: () => {},
-    appendInlineToolTrace: () => {},
+    appendInlineToolTrace: (chatId, text) => {
+      toolTraceLines.push({ chatId: Number(chatId), text: String(text || '') });
+    },
+    loadChatHistory: async (chatId, { activate } = {}) => ({
+      chat: { id: Number(chatId), pending: false, title: `chat-${chatId}` },
+      history: [{ role: 'assistant', body: 'hydrated', pending: false }],
+      activate: Boolean(activate),
+    }),
+    upsertChat: (chat) => chatsUpserted.push(chat),
+    histories,
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    renderMessages: (chatId, options = {}) => renderedMessages.push({ chatId: Number(chatId), options }),
   };
 
   const controller = streamController.createController(deps);
@@ -71,6 +89,11 @@ function buildControllerHarness() {
     streamStatuses,
     streamChipUpdates,
     latencyUpdates,
+    chatsUpserted,
+    renderedMessages,
+    toolTraceLines,
+    streamDebugEvents,
+    histories,
   };
 }
 
@@ -161,4 +184,152 @@ test('consumeStreamResponse can suppress early-close fallback and report non-ter
   assert.equal(harness.pendingAssistantUpdates.length, 0);
   assert.equal(harness.streamStatuses.includes('Stream closed early'), false);
   assert.equal(harness.streamChipUpdates.includes('stream: closed early'), false);
+});
+
+test('consumeStreamResponse parses CRLF-framed SSE events incrementally', async () => {
+  const harness = buildControllerHarness();
+  const { response } = makeSseResponse([
+    'event: tool\r\n',
+    'data: {"display":"read_file"}\r\n',
+    '\r\n',
+    'event: chunk\r\n',
+    'data: {"text":"hello"}\r\n',
+    '\r\n',
+    'event: done\r\n',
+    'data: {"reply":"hello","latency_ms":7,"turn_count":3}\r\n',
+    '\r\n',
+  ].join(''));
+
+  const result = await harness.controller.consumeStreamResponse(9, response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+    suppressEarlyCloseFallback: true,
+  });
+
+  assert.equal(result.terminalReceived, true);
+  assert.equal(result.earlyClosed, false);
+  assert.equal(harness.pendingAssistantUpdates.at(-1)?.text, 'hello');
+  assert.equal(harness.pendingAssistantUpdates.at(-1)?.isStreaming, false);
+  assert.equal(harness.streamStatuses.at(-1), 'Reply received in chat-9');
+  assert.equal(harness.streamChipUpdates.at(-1), 'stream: complete · #9');
+  assert.deepEqual(harness.latencyUpdates.at(-1), { chatId: 9, text: '7 ms' });
+});
+
+test('hydrateChatAfterGracefulResumeCompletion merges hydrated history and rerenders active chat', async () => {
+  const harness = buildControllerHarness();
+
+  await harness.controller.hydrateChatAfterGracefulResumeCompletion(9);
+
+  assert.equal(harness.chatsUpserted.length, 1);
+  assert.deepEqual(harness.histories.get(9), [{ role: 'assistant', body: 'hydrated', pending: false }]);
+  assert.deepEqual(harness.renderedMessages.at(-1), { chatId: 9, options: { preserveViewport: true } });
+});
+
+test('consumeStreamWithReconnect invokes reconnect callback only on early close', async () => {
+  const harness = buildControllerHarness();
+  let earlyCloseCalls = 0;
+  const { response } = makeSseResponse('event: meta\ndata: {"detail":"running","source":"queue"}\n\n');
+
+  const resumed = await harness.controller.consumeStreamWithReconnect(9, response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+    onEarlyClose: async () => {
+      earlyCloseCalls += 1;
+    },
+  });
+
+  assert.equal(resumed, true);
+  assert.equal(earlyCloseCalls, 1);
+});
+
+test('consumeStreamResponse skips replayed events using monotonic _event_id across reconnects', async () => {
+  const harness = buildControllerHarness();
+
+  const first = makeSseResponse([
+    'event: tool\n',
+    'data: {"display":"read_file","_event_id":1}\n',
+    '\n',
+  ].join(''));
+
+  const firstResult = await harness.controller.consumeStreamResponse(9, first.response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+    suppressEarlyCloseFallback: true,
+    resetReplayCursor: true,
+  });
+
+  assert.equal(firstResult.terminalReceived, false);
+  assert.equal(firstResult.earlyClosed, true);
+  assert.equal(harness.toolTraceLines.length, 1);
+  assert.equal(harness.toolTraceLines[0].text, 'read_file');
+
+  const second = makeSseResponse([
+    'event: tool\n',
+    'data: {"display":"read_file","_event_id":1}\n',
+    '\n',
+    'event: tool\n',
+    'data: {"display":"search_files","_event_id":2}\n',
+    '\n',
+    'event: done\n',
+    'data: {"reply":"ok","latency_ms":9,"turn_count":4,"_event_id":3}\n',
+    '\n',
+  ].join(''));
+
+  const secondResult = await harness.controller.consumeStreamResponse(9, second.response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+    suppressEarlyCloseFallback: true,
+  });
+
+  assert.equal(secondResult.terminalReceived, true);
+  assert.equal(secondResult.earlyClosed, false);
+  assert.deepEqual(
+    harness.toolTraceLines.map((entry) => entry.text),
+    ['read_file', 'search_files'],
+  );
+  assert.equal(harness.pendingAssistantUpdates.at(-1)?.text, 'ok');
+
+});
+
+test('createToolTraceController appends pending tool traces and finalizes collapsed state', () => {
+  const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
+  const toolStreamEl = { hidden: false };
+  const toolStreamLinesEl = { innerHTML: 'existing lines' };
+
+  const toolTrace = streamController.createToolTraceController({
+    toolStreamEl,
+    toolStreamLinesEl,
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+  });
+
+  toolTrace.appendInlineToolTrace(7, 'read_file');
+  toolTrace.appendInlineToolTrace(7, 'search_files');
+
+  const pending = toolTrace.findPendingToolTraceMessage(7);
+  assert.equal(Boolean(pending), true);
+  assert.equal(pending.body, 'read_file\nsearch_files');
+
+  toolTrace.finalizeInlineToolTrace(7);
+  const finalized = histories.get(7)[0];
+  assert.equal(finalized.role, 'tool');
+  assert.equal(finalized.pending, false);
+  assert.equal(finalized.collapsed, true);
+  assert.equal(finalized.body, 'read_file\nsearch_files');
+});
+
+test('createToolTraceController drops empty finalized traces and resets tool stream UI', () => {
+  const histories = new Map([[5, [{ role: 'tool', body: '   ', pending: true, collapsed: false }]]]);
+  const toolStreamEl = { hidden: false };
+  const toolStreamLinesEl = { innerHTML: 'line 1\nline 2' };
+
+  const toolTrace = streamController.createToolTraceController({
+    toolStreamEl,
+    toolStreamLinesEl,
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+  });
+
+  toolTrace.finalizeInlineToolTrace(5);
+  assert.equal(histories.get(5).length, 0);
+
+  toolTrace.resetToolStream();
+  assert.equal(toolStreamLinesEl.innerHTML, '');
+  assert.equal(toolStreamEl.hidden, true);
 });

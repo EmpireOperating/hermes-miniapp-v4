@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import queue
 import time
 from datetime import datetime, timezone
 from typing import Callable, Iterator, TypeVar
 
-from flask import Response, g
+from flask import Response, g, request
 
 from job_status import JOB_EVENT_DONE, JOB_EVENT_ERROR, JOB_EVENT_TERMINAL, JOB_STATUS_DONE, JOB_STATUS_QUEUED, is_terminal_job_status
 from routes_chat_context import ChatRouteContext
@@ -90,21 +91,61 @@ def register_stream_routes(
             )
         )
 
-    def _stream_job_response(*, user_id: str, chat_id: int, job_id: int) -> Response:
+    def _stream_segment_seconds_for_request() -> float:
+        def _parse_env_float(name: str, default: float) -> float:
+            raw = str(os.environ.get(name, "") or "").strip()
+            if not raw:
+                return default
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                return default
+            return value if value > 0 else 0.0
+
+        default_segment = _parse_env_float("MINI_APP_STREAM_SEGMENT_SECONDS", 0.0)
+        mobile_segment = _parse_env_float("MINI_APP_STREAM_SEGMENT_SECONDS_MOBILE", default_segment)
+        user_agent = (request.headers.get("User-Agent") or "").lower()
+        is_mobile_webview = "iphone" in user_agent or "android" in user_agent or "mobile" in user_agent
+        return mobile_segment if is_mobile_webview else default_segment
+
+    def _stream_job_response(*, user_id: str, chat_id: int, job_id: int, segment_seconds: float = 0.0) -> Response:
+        stream_timing_debug = os.environ.get("MINI_APP_STREAM_TIMING_DEBUG", "0") == "1"
+        heartbeat_seconds = 1.5
+        request_id = str(getattr(g, "request_id", "")) or None
+
+        def _with_emit_timing(payload: dict[str, object]) -> dict[str, object]:
+            next_payload = dict(payload or {})
+            if not stream_timing_debug:
+                return next_payload
+            timing_payload = next_payload.get("_timing")
+            if isinstance(timing_payload, dict):
+                merged_timing = dict(timing_payload)
+            else:
+                merged_timing = {}
+            merged_timing["sse_emit_monotonic_ms"] = int(time.monotonic() * 1000)
+            next_payload["_timing"] = merged_timing
+            return next_payload
+
         def generate() -> Iterator[str]:
             runtime = runtime_getter()
             subscriber = runtime.subscribe_job_events(job_id)
             terminal = False
             last_queue_heartbeat = 0.0
+            segment_deadline = (time.monotonic() + segment_seconds) if segment_seconds > 0 else 0.0
 
             try:
-                yield sse_event_fn("meta", {"skin": store_getter().get_skin(user_id), "source": "queue", "chat_id": chat_id})
+                # SSE prelude comments help prevent intermediary buffering in some WebView/proxy paths.
+                yield ": stream-open\n"
+                yield f": {' ' * 2048}\n\n"
+                yield sse_event_fn("meta", _with_emit_timing({"skin": store_getter().get_skin(user_id), "source": "queue", "chat_id": chat_id}))
                 while not terminal:
                     try:
                         event = subscriber.get(timeout=0.6)
                     except queue.Empty:
                         now = time.monotonic()
-                        if (now - last_queue_heartbeat) >= 4.0:
+                        if (now - last_queue_heartbeat) >= heartbeat_seconds:
+                            # Keep SSE connection actively flushing through intermediaries.
+                            yield f": hb {int(now * 1000)}\n\n"
                             state = store_getter().get_job_state(job_id)
                             if state:
                                 job_status = str(state.get("status") or "")
@@ -119,7 +160,10 @@ def register_stream_routes(
                                     if state_error:
                                         recovery_payload["error"] = state_error
                                     recovery_payload["detail"] = "stream recovered from terminal db state"
-                                    yield sse_event_fn(JOB_EVENT_DONE if job_status == JOB_STATUS_DONE else JOB_EVENT_ERROR, recovery_payload)
+                                    yield sse_event_fn(
+                                        JOB_EVENT_DONE if job_status == JOB_STATUS_DONE else JOB_EVENT_ERROR,
+                                        _with_emit_timing(recovery_payload),
+                                    )
                                     terminal = True
                                     last_queue_heartbeat = now
                                     continue
@@ -155,22 +199,49 @@ def register_stream_routes(
                                     "created_at": state.get("created_at"),
                                     "elapsed_ms": elapsed_ms,
                                 }
-                                yield sse_event_fn("meta", heartbeat_payload)
+                                yield sse_event_fn("meta", _with_emit_timing(heartbeat_payload))
                             last_queue_heartbeat = now
+                        if segment_deadline and now >= segment_deadline:
+                            if stream_timing_debug:
+                                logger.info(
+                                    build_job_log_fn(
+                                        event="stream_segment_rollover",
+                                        request_id=request_id,
+                                        chat_id=chat_id,
+                                        job_id=job_id,
+                                        extra={"user_id": user_id, "segment_seconds": segment_seconds},
+                                    )
+                                )
+                            break
                         continue
 
                     event_name = str(event.get("event") or "message")
                     payload = dict(event.get("payload") or {})
                     if "chat_id" not in payload:
                         payload["chat_id"] = chat_id
-                    yield sse_event_fn(event_name, payload)
+                    event_id = event.get("event_id")
+                    if "_event_id" not in payload and isinstance(event_id, int) and event_id > 0:
+                        payload["_event_id"] = event_id
+                    yield sse_event_fn(event_name, _with_emit_timing(payload))
                     if event_name in JOB_EVENT_TERMINAL:
                         terminal = True
+                    elif segment_deadline and time.monotonic() >= segment_deadline:
+                        if stream_timing_debug:
+                            logger.info(
+                                build_job_log_fn(
+                                    event="stream_segment_rollover",
+                                    request_id=request_id,
+                                    chat_id=chat_id,
+                                    job_id=job_id,
+                                    extra={"user_id": user_id, "segment_seconds": segment_seconds},
+                                )
+                            )
+                        break
             finally:
                 runtime.unsubscribe_job_events(job_id, subscriber)
 
         headers = {
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
         }
@@ -211,7 +282,12 @@ def register_stream_routes(
 
         job_wake_event_getter().set()
         _log_stream_job_event(event="stream_job_enqueued", user_id=user_id, chat_id=chat_id, job_id=job_id)
-        return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=job_id)
+        return _stream_job_response(
+            user_id=user_id,
+            chat_id=chat_id,
+            job_id=job_id,
+            segment_seconds=_stream_segment_seconds_for_request(),
+        )
 
     @api_bp.post("/chat/stream/resume")
     def stream_chat_resume() -> Response:
@@ -227,4 +303,9 @@ def register_stream_routes(
         job_wake_event_getter().set()
         resumed_job_id = int(open_job["id"])
         _log_stream_job_event(event="stream_job_resumed", user_id=user_id, chat_id=chat_id, job_id=resumed_job_id)
-        return _stream_job_response(user_id=user_id, chat_id=chat_id, job_id=resumed_job_id)
+        return _stream_job_response(
+            user_id=user_id,
+            chat_id=chat_id,
+            job_id=resumed_job_id,
+            segment_seconds=_stream_segment_seconds_for_request(),
+        )

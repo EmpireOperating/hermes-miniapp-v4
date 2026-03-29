@@ -20,13 +20,19 @@ class JobEventBroker:
         self._event_queues: dict[int, list[queue.Queue[dict[str, object]]]] = {}
         self._event_history: dict[int, list[dict[str, object]]] = {}
         self._event_timestamps: dict[int, float] = {}
+        self._event_sequence: dict[int, int] = {}
         self._terminal_timeline: deque[tuple[float, str]] = deque(maxlen=max(512, self.event_buffer_cap * 8))
 
     def publish(self, job_id: int, event_name: str, payload: dict[str, object]) -> None:
-        event = {"event": event_name, "payload": payload}
         terminal_events = {"done", "error"}
 
         with self._event_lock:
+            next_event_id = int(self._event_sequence.get(job_id, 0)) + 1
+            self._event_sequence[job_id] = next_event_id
+            payload_with_event_id = dict(payload or {})
+            payload_with_event_id.setdefault("_event_id", next_event_id)
+            event = {"event": event_name, "payload": payload_with_event_id, "event_id": next_event_id}
+
             history = self._event_history.setdefault(job_id, [])
             history.append(event)
             if len(history) > self.event_buffer_cap:
@@ -92,6 +98,7 @@ class JobEventBroker:
                 if history and str(history[-1].get("event") or "") in terminal_events:
                     self._event_history.pop(job_id, None)
                     self._event_timestamps.pop(job_id, None)
+                    self._event_sequence.pop(job_id, None)
 
     @staticmethod
     def _age_stats(ages: list[int]) -> dict[str, int]:
@@ -203,8 +210,10 @@ class JobEventBroker:
                 for job_id, _ in sorted(removable, key=lambda item: item[1])[:overage]:
                     self._event_history.pop(job_id, None)
                     self._event_timestamps.pop(job_id, None)
+                    self._event_sequence.pop(job_id, None)
 
             for job_id, _ in removable:
                 if job_id not in self._event_queues:
                     self._event_history.pop(job_id, None)
                     self._event_timestamps.pop(job_id, None)
+                    self._event_sequence.pop(job_id, None)
