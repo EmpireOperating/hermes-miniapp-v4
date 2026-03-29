@@ -33,6 +33,27 @@ def test_subscribe_replays_buffered_history() -> None:
     assert len(replayed) == 3
     assert replayed[0]["payload"]["index"] == 2
     assert replayed[-1]["payload"]["index"] == 4
+    assert replayed[0]["payload"]["_event_id"] == 3
+    assert replayed[-1]["payload"]["_event_id"] == 5
+
+
+def test_publish_assigns_monotonic_event_ids_and_preserves_custom_ids() -> None:
+    broker = JobEventBroker(event_buffer_cap=6, history_max_jobs=10, history_ttl_seconds=300)
+    broker.publish(11, "tool", {"display": "read_file"})
+    broker.publish(11, "tool", {"display": "search_files"})
+    broker.publish(11, "meta", {"detail": "running", "_event_id": 999})
+
+    subscriber = broker.subscribe(11)
+    replayed: list[dict[str, object]] = []
+    while True:
+        try:
+            replayed.append(subscriber.get_nowait())
+        except queue.Empty:
+            break
+
+    assert replayed[0]["payload"]["_event_id"] == 1
+    assert replayed[1]["payload"]["_event_id"] == 2
+    assert replayed[2]["payload"]["_event_id"] == 999
 
 
 def test_unsubscribe_clears_terminal_history_when_last_listener_leaves() -> None:
@@ -46,6 +67,7 @@ def test_unsubscribe_clears_terminal_history_when_last_listener_leaves() -> None
     assert 22 not in broker._event_queues
     assert 22 not in broker._event_history
     assert 22 not in broker._event_timestamps
+    assert 22 not in broker._event_sequence
 
 
 def test_terminal_rollup_summarizes_recent_terminal_events() -> None:
@@ -88,3 +110,4 @@ def test_prune_removes_expired_unsubscribed_jobs() -> None:
 
     assert broker._event_history == {}
     assert broker._event_timestamps == {}
+    assert broker._event_sequence == {}

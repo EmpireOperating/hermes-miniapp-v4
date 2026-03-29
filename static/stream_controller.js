@@ -1,4 +1,96 @@
 (function initHermesMiniappStreamController(globalScope) {
+  function createToolTraceController({
+    toolStreamEl,
+    toolStreamLinesEl,
+    histories,
+    cleanDisplayText,
+  }) {
+    function resetToolStream() {
+      if (!toolStreamEl || !toolStreamLinesEl) return;
+      toolStreamLinesEl.innerHTML = "";
+      toolStreamEl.hidden = true;
+    }
+
+    function findPendingToolTraceMessage(chatId) {
+      const key = Number(chatId);
+      const history = histories.get(key) || [];
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const item = history[index];
+        if (item?.role === "tool" && item?.pending) {
+          return item;
+        }
+      }
+      return null;
+    }
+
+    function ensurePendingToolTraceMessage(chatId) {
+      const key = Number(chatId);
+      const history = histories.get(key) || [];
+      const existing = findPendingToolTraceMessage(key);
+      if (existing) return existing;
+
+      const next = {
+        role: "tool",
+        body: "",
+        created_at: new Date().toISOString(),
+        pending: true,
+        collapsed: false,
+      };
+
+      const firstPendingHermesIndex = history.findIndex((item) => item?.role === "hermes" && item?.pending);
+      if (firstPendingHermesIndex >= 0) {
+        history.splice(firstPendingHermesIndex, 0, next);
+      } else {
+        history.push(next);
+      }
+
+      histories.set(key, history);
+      return next;
+    }
+
+    function appendInlineToolTrace(chatId, text) {
+      const line = String(text || "").trim();
+      if (!line) return;
+      const key = Number(chatId);
+      const trace = ensurePendingToolTraceMessage(key);
+      trace.body = trace.body ? `${trace.body}\n${line}` : line;
+    }
+
+    function finalizeInlineToolTrace(chatId) {
+      const key = Number(chatId);
+      const history = histories.get(key) || [];
+      let changed = false;
+
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const item = history[index];
+        if (item?.role !== "tool" || !item?.pending) continue;
+
+        const content = cleanDisplayText(item.body || "");
+        if (!content) {
+          history.splice(index, 1);
+        } else {
+          item.body = content;
+          item.pending = false;
+          item.collapsed = true;
+        }
+        changed = true;
+        break;
+      }
+
+      if (changed) {
+        histories.set(key, history);
+      }
+    }
+
+    return {
+      resetToolStream,
+      findPendingToolTraceMessage,
+      ensurePendingToolTraceMessage,
+      appendInlineToolTrace,
+      finalizeInlineToolTrace,
+    };
+  }
+
   function createController(deps) {
     const {
       parseSseEvent,
@@ -40,9 +132,34 @@
       appendSystemMessage,
       streamDebugLog,
       finalizeStreamPendingState,
+      loadChatHistory,
+      upsertChat,
+      histories,
+      mergeHydratedHistory,
+      renderMessages,
     } = deps;
 
     const streamAbortControllers = new Map();
+    const lastStreamEventIdByChat = new Map();
+
+    function parseStreamEventId(payload) {
+      if (!payload || typeof payload !== "object") return null;
+      const eventId = Number(payload._event_id);
+      if (!Number.isFinite(eventId) || eventId <= 0) return null;
+      return Math.floor(eventId);
+    }
+
+    function shouldSkipReplayedEvent(chatId, payload) {
+      const eventId = parseStreamEventId(payload);
+      if (eventId == null) return false;
+      const key = Number(chatId);
+      const lastEventId = Number(lastStreamEventIdByChat.get(key) || 0);
+      if (eventId <= lastEventId) {
+        return true;
+      }
+      lastStreamEventIdByChat.set(key, eventId);
+      return false;
+    }
 
     function setStreamAbortController(chatId, controller) {
       const key = Number(chatId);
@@ -246,7 +363,15 @@
       }
     }
 
-    async function consumeStreamResponse(chatId, response, builtReplyRef, { fallbackTraceEvent, suppressEarlyCloseFallback = false } = {}) {
+    async function consumeStreamResponse(chatId, response, builtReplyRef, {
+      fallbackTraceEvent,
+      suppressEarlyCloseFallback = false,
+      resetReplayCursor = false,
+    } = {}) {
+      const key = Number(chatId);
+      if (resetReplayCursor) {
+        lastStreamEventIdByChat.delete(key);
+      }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -255,8 +380,14 @@
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split("\n\n");
+        const decodedChunk = decoder.decode(value, { stream: true });
+        streamDebugLog("sse-read", {
+          chatId: Number(chatId),
+          chunkLength: decodedChunk.length,
+          chunkPreview: decodedChunk.slice(0, 180),
+        });
+        buffer += decodedChunk;
+        const events = buffer.split(/\r?\n\r?\n/);
         buffer = events.pop() || "";
 
         for (const rawEvent of events) {
@@ -264,11 +395,26 @@
           if (!parsed) continue;
           const eventName = parsed.eventName || parsed.event || "message";
           const payload = parsed.payload;
+          const timing = payload && typeof payload === "object" && payload._timing && typeof payload._timing === "object"
+            ? payload._timing
+            : null;
           streamDebugLog("sse-event", {
             chatId: Number(chatId),
             eventName,
             payloadKeys: payload && typeof payload === "object" ? Object.keys(payload) : [],
+            clientReceiveMonotonicMs: typeof performance !== "undefined" && typeof performance.now === "function"
+              ? Math.round(performance.now())
+              : null,
+            runtimePublishMonotonicMs: timing && Number.isFinite(Number(timing.runtime_publish_monotonic_ms))
+              ? Number(timing.runtime_publish_monotonic_ms)
+              : null,
+            sseEmitMonotonicMs: timing && Number.isFinite(Number(timing.sse_emit_monotonic_ms))
+              ? Number(timing.sse_emit_monotonic_ms)
+              : null,
           });
+          if (shouldSkipReplayedEvent(key, payload)) {
+            continue;
+          }
           if (handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
             terminalReceived = true;
             break;
@@ -289,15 +435,18 @@
       }
 
       if (!terminalReceived && buffer.trim()) {
-        const parsed = parseSseEvent(buffer.trim());
+        const trimmedBuffer = buffer.trim();
+        const parsed = parseSseEvent(trimmedBuffer);
         const eventName = parsed?.eventName || parsed?.event || "message";
         const payload = parsed?.payload;
         streamDebugLog("sse-buffer-tail", {
           chatId: Number(chatId),
           eventName,
           hasPayload: Boolean(payload),
+          tailLength: trimmedBuffer.length,
+          tailPreview: trimmedBuffer.slice(0, 220),
         });
-        if (payload && handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
+        if (payload && !shouldSkipReplayedEvent(key, payload) && handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
           terminalReceived = true;
         }
       }
@@ -311,6 +460,50 @@
         terminalReceived,
         earlyClosed,
       };
+    }
+
+    async function hydrateChatAfterGracefulResumeCompletion(chatId) {
+      const key = Number(chatId);
+      if (!key || typeof loadChatHistory !== "function") return;
+      try {
+        const hydrated = await loadChatHistory(key, { activate: Number(getActiveChatId()) === key });
+        if (typeof upsertChat === "function") {
+          upsertChat(hydrated.chat);
+        }
+        const previousHistory = histories?.get?.(key) || [];
+        const nextHistory = typeof mergeHydratedHistory === "function"
+          ? mergeHydratedHistory({
+            previousHistory,
+            nextHistory: hydrated.history || [],
+            chatPending: Boolean(hydrated.chat?.pending),
+          })
+          : (hydrated.history || []);
+        histories?.set?.(key, nextHistory);
+        if (Number(getActiveChatId()) === key && typeof renderMessages === "function") {
+          renderMessages(key, { preserveViewport: true });
+        }
+      } catch {
+        // Best-effort hydration when reconnect says no active job.
+      }
+    }
+
+    async function consumeStreamWithReconnect(chatId, response, builtReplyRef, {
+      fallbackTraceEvent,
+      onEarlyClose,
+      resetReplayCursor = false,
+    } = {}) {
+      const consumeResult = await consumeStreamResponse(chatId, response, builtReplyRef, {
+        fallbackTraceEvent,
+        suppressEarlyCloseFallback: true,
+        resetReplayCursor,
+      });
+      if (!consumeResult?.earlyClosed) {
+        return false;
+      }
+      if (typeof onEarlyClose === "function") {
+        await onEarlyClose();
+      }
+      return true;
     }
 
     function focusMessagesPaneIfActiveChat(chatId) {
@@ -377,11 +570,13 @@
       handleStreamEvent,
       applyEarlyStreamCloseFallback,
       consumeStreamResponse,
+      hydrateChatAfterGracefulResumeCompletion,
+      consumeStreamWithReconnect,
       finalizeStreamLifecycle,
     };
   }
 
-  const api = { createController };
+  const api = { createController, createToolTraceController };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   }

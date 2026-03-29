@@ -207,6 +207,10 @@ def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_pat
     assert "read_file: test" in body
     assert "event: done" in body
     assert '"reply": "ok"' in body
+    assert "event: tool\ndata:" in body
+    assert '"_event_id": 1' in body
+    assert '"_event_id": 2' in body
+    assert "\\ndata:" not in body
 
 def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
