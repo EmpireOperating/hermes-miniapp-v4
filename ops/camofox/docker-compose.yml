@@ -1,0 +1,17 @@
+services:
+  camofox-browser:
+    image: camofox-browser-local:latest
+    build:
+      context: https://github.com/jo-inc/camofox-browser.git#master
+      dockerfile: Dockerfile
+    container_name: camofox-browser
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9377:9377"
+    environment:
+      PORT: 9377
+      CAMOFOX_PORT: 9377
+      CAMOFOX_API_KEY: ${CAMOFOX_API_KEY}
+      CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY}
+    volumes:
+      - ${CAMOFOX_COOKIES_DIR:-./cookies}:/home/node/.camofox/cookies:ro
