@@ -1321,13 +1321,7 @@ async function apiPost(url, payload) {
 }
 
 async function refreshChats() {
-  const data = await apiPost("/api/chats/status", {});
-  syncChats(data.chats || []);
-  syncPinnedChats(data.pinned_chats || []);
-  renderTabs();
-  renderPinnedChats();
-  syncActivePendingStatus();
-  updateComposerState();
+  return chatHistoryController.refreshChats();
 }
 
 const chatHistoryController = chatHistoryHelpers.createController({
@@ -1359,8 +1353,13 @@ const chatHistoryController = chatHistoryHelpers.createController({
   unseenStreamChats,
   markReadInFlight,
   renderTabs,
+  syncChats,
+  syncPinnedChats,
+  renderPinnedChats,
   syncActivePendingStatus,
   updateComposerState,
+  pendingChats,
+  shouldResumeOnVisibilityChange: runtimeHelpers.shouldResumeOnVisibilityChange,
 });
 
 const chatAdminController = chatAdminHelpers.createController({
@@ -1466,15 +1465,8 @@ const visibilitySkinController = visibilitySkinHelpers.createController({
   syncTelegramChromeForSkin,
   getIsAuthenticated: () => isAuthenticated,
   getActiveChatId: () => Number(activeChatId),
-  maybeMarkRead,
-  loadChatHistory,
-  runtimeHelpers,
-  histories,
-  upsertChat,
-  renderMessages,
-  hasLiveStreamController,
-  resumePendingChatStream,
   refreshChats,
+  syncVisibleActiveChat,
   syncActiveMessageView,
   getStreamAbortControllers,
 });
@@ -2297,8 +2289,8 @@ function installShellModalBindings() {
   return startupBindingsController.installShellModalBindings();
 }
 
-async function syncVisibleActiveChat() {
-  return visibilitySkinController.syncVisibleActiveChat();
+async function syncVisibleActiveChat(options = {}) {
+  return chatHistoryController.syncVisibleActiveChat(options);
 }
 
 async function handleVisibilityChange() {

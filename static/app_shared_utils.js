@@ -5,10 +5,11 @@
   function parseSseEvent(rawChunk) {
     const chunk = (rawChunk || "").trim();
     if (!chunk) return null;
-    const lines = chunk.split("\n");
+    const lines = chunk.split(/\r?\n/);
     let eventName = "message";
     const dataLines = [];
-    for (const line of lines) {
+    for (const rawLine of lines) {
+      const line = String(rawLine || "").trimStart();
       if (line.startsWith("event:")) {
         eventName = line.slice(6).trim() || "message";
       } else if (line.startsWith("data:")) {

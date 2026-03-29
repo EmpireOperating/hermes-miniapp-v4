@@ -22,7 +22,7 @@ from request_context import (
     sse_user_id_or_error as request_sse_user_id_or_error,
 )
 from request_guards import enforce_api_request_guards
-from request_logging import build_job_log, build_request_log, new_request_id, now_ms
+from request_logging import build_job_log, build_request_log, new_request_id, now_ms, sanitized_request_target
 from routes_auth import register_auth_routes
 from routes_chat import register_chat_routes
 from routes_chat_context import ChatRouteContext
@@ -64,6 +64,8 @@ RATE_LIMIT_API_REQUESTS = CONFIG.rate_limit_api_requests
 RATE_LIMIT_STREAM_REQUESTS = CONFIG.rate_limit_stream_requests
 ENABLE_HSTS = CONFIG.enable_hsts
 REQUEST_DEBUG = CONFIG.request_debug
+DEV_AUTH_ENABLED = CONFIG.dev_auth_enabled
+DEV_AUTH_SECRET = CONFIG.dev_auth_secret
 JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
 JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
 DEV_RELOAD_WATCH_PATHS = CONFIG.dev_reload_watch_paths
@@ -73,12 +75,21 @@ STATIC_NO_STORE_FILENAMES = {
     "runtime_helpers.js",
     "app_shared_utils.js",
     "chat_ui_helpers.js",
+    "chat_tabs_helpers.js",
     "message_actions_helpers.js",
     "stream_state_helpers.js",
     "stream_controller.js",
     "composer_state_helpers.js",
     "keyboard_shortcuts_helpers.js",
     "interaction_helpers.js",
+    "bootstrap_auth_helpers.js",
+    "chat_history_helpers.js",
+    "chat_admin_helpers.js",
+    "shell_ui_helpers.js",
+    "composer_viewport_helpers.js",
+    "visibility_skin_helpers.js",
+    "startup_bindings_helpers.js",
+    "render_trace_helpers.js",
 }
 STATIC_NO_STORE_PATHS = {f"/static/{name}" for name in STATIC_NO_STORE_FILENAMES}
 
@@ -97,7 +108,13 @@ def _log_request_debug() -> None:
     if not REQUEST_DEBUG:
         return
     try:
-        app.logger.info("miniapp req method=%s path=%s host=%s ua=%s", request.method, request.path, request.host, request.headers.get("User-Agent", "")[:160])
+        app.logger.info(
+            "miniapp req method=%s path=%s host=%s ua=%s",
+            request.method,
+            sanitized_request_target(request),
+            request.host,
+            request.headers.get("User-Agent", "")[:160],
+        )
     except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log debug instrumentation must never block requests
         pass
 
@@ -350,6 +367,7 @@ register_public_routes(
     dev_reload=DEV_RELOAD,
     dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
     request_debug=REQUEST_DEBUG,
+    dev_auth_enabled=DEV_AUTH_ENABLED,
     static_no_store_filenames=STATIC_NO_STORE_FILENAMES,
     asset_version_fn=lambda filename: _asset_version(filename),
     dev_reload_version_fn=lambda: _dev_reload_version(),
@@ -372,6 +390,8 @@ register_auth_routes(
     auth_session_max_age_seconds=AUTH_SESSION_MAX_AGE_SECONDS,
     build_job_log_fn=build_job_log,
     logger=app.logger,
+    dev_auth_enabled=DEV_AUTH_ENABLED,
+    dev_auth_secret=DEV_AUTH_SECRET,
 )
 
 
@@ -428,4 +448,5 @@ def create_app() -> Flask:
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT, debug=DEBUG, threaded=True)
+    bind_host = os.environ.get("MINI_APP_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    app.run(host=bind_host, port=PORT, debug=DEBUG, threaded=True)

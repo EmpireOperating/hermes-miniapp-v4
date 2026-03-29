@@ -113,7 +113,18 @@ class JobRuntime:
             self._touch_job_best_effort(job_id)
         else:
             self._clear_touch_tracking(job_id)
-        self._event_broker.publish(int(job_id), event_name, payload)
+
+        safe_payload = dict(payload or {})
+        if os.environ.get("MINI_APP_STREAM_TIMING_DEBUG", "0") == "1":
+            timing_payload = safe_payload.get("_timing")
+            if isinstance(timing_payload, dict):
+                merged_timing = dict(timing_payload)
+            else:
+                merged_timing = {}
+            merged_timing.setdefault("runtime_publish_monotonic_ms", int(time.monotonic() * 1000))
+            safe_payload["_timing"] = merged_timing
+
+        self._event_broker.publish(int(job_id), event_name, safe_payload)
 
     def subscribe_job_events(self, job_id: int) -> queue.Queue[dict[str, object]]:
         return self._event_broker.subscribe(int(job_id))

@@ -89,7 +89,7 @@ def build_server_request_adapters(
 
     def _sse_event(event: str, data: dict[str, object]) -> str:
         payload = json.dumps(data, ensure_ascii=False)
-        return f"event: {event}\\ndata: {payload}\\n\\n"
+        return f"event: {event}\ndata: {payload}\n\n"
 
     def _sse_error(message: str, status: int, *, chat_id: int | None = None) -> Response:
         return sse_error(message, status, chat_id=chat_id, sse_event_fn=_sse_event)

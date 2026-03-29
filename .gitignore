@@ -21,6 +21,7 @@ sessions.db-wal
 miniapp.db
 miniapp.db-shm
 miniapp.db-wal
+ops/camofox/cookies/
 *.log
 
 # OS/editor

@@ -34,6 +34,81 @@
     return current + 1;
   }
 
+  function latestCompletedAssistantHapticKey({ chatId, histories }) {
+    const key = normalizeChatId(chatId);
+    if (!key) return "";
+    const history = histories?.get?.(key) || [];
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const item = history[index];
+      const role = String(item?.role || "").toLowerCase();
+      if (role !== "assistant" && role !== "hermes") continue;
+      if (Boolean(item?.pending)) continue;
+
+      const messageId = Number(item?.id || 0);
+      if (messageId > 0) {
+        return `chat:${key}:msg:${messageId}`;
+      }
+
+      return [
+        `chat:${key}:local`,
+        String(item?.created_at || ""),
+        String(item?.body || ""),
+      ].join("|");
+    }
+    return "";
+  }
+
+  function createHapticUnreadController({
+    tg,
+    histories,
+    incomingMessageHapticKeys,
+    chats,
+    getActiveChatId,
+    isDocumentHidden,
+    nextUnreadCountFn = nextUnreadCount,
+  }) {
+    function resolveLatestCompletedAssistantHapticKey(chatId) {
+      return latestCompletedAssistantHapticKey({ chatId, histories });
+    }
+
+    function triggerIncomingMessageHaptic(chatId, { messageKey = "", fallbackToLatestHistory = true } = {}) {
+      const key = normalizeChatId(chatId);
+      if (!key) return;
+
+      const normalizedMessageKey = String(messageKey || "").trim();
+      const resolvedKey = normalizedMessageKey
+        || (fallbackToLatestHistory ? resolveLatestCompletedAssistantHapticKey(key) : "");
+      if (!resolvedKey || incomingMessageHapticKeys.has(resolvedKey)) {
+        return;
+      }
+
+      incomingMessageHapticKeys.add(resolvedKey);
+      try {
+        tg?.HapticFeedback?.impactOccurred?.("heavy");
+      } catch {
+        // Haptics are best-effort and may be unavailable on some clients/devices.
+      }
+    }
+
+    function incrementUnread(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key || !chats?.has?.(key)) return;
+      const chat = chats.get(key);
+      chat.unread_count = nextUnreadCountFn({
+        currentUnreadCount: chat.unread_count,
+        targetChatId: key,
+        activeChatId: getActiveChatId?.(),
+        hidden: Boolean(isDocumentHidden?.()),
+      });
+    }
+
+    return {
+      latestCompletedAssistantHapticKey: resolveLatestCompletedAssistantHapticKey,
+      triggerIncomingMessageHaptic,
+      incrementUnread,
+    };
+  }
+
   function nextLatencyState({ latencyByChat, targetChatId, text, activeChatId }) {
     const key = normalizeChatId(targetChatId);
     if (!key) {
@@ -45,6 +120,148 @@
       return { nextMap: latencyByChat, chipText: `latency: ${normalized}` };
     }
     return { nextMap: latencyByChat, chipText: null };
+  }
+
+  function createLatencyController({
+    latencyByChat,
+    getActiveChatId,
+    setActivityChip,
+    preserveViewportDuringUiMutation,
+    latencyChip,
+    streamDebugLog,
+  }) {
+    function setChatLatency(chatId, text) {
+      const activeChatId = normalizeChatId(getActiveChatId?.());
+      const result = nextLatencyState({
+        latencyByChat,
+        targetChatId: chatId,
+        text,
+        activeChatId,
+      });
+
+      streamDebugLog?.("latency-set", {
+        chatId: Number(chatId),
+        activeChatId: Number(activeChatId),
+        text: String(text || "").trim() || "--",
+        hasChipText: Boolean(result.chipText),
+      });
+
+      if (result.chipText) {
+        preserveViewportDuringUiMutation?.(() => {
+          setActivityChip?.(latencyChip, result.chipText);
+        });
+        return;
+      }
+
+      // Defensive fallback: when active chat bookkeeping lags behind a send/resume tick,
+      // still keep latency chip populated for the current stream chat.
+      const targetKey = normalizeChatId(chatId);
+      if (targetKey && activeChatId === targetKey) {
+        preserveViewportDuringUiMutation?.(() => {
+          const normalized = String(text || "--").trim() || "--";
+          setActivityChip?.(latencyChip, `latency: ${normalized}`);
+        });
+        streamDebugLog?.("latency-fallback", {
+          chatId: targetKey,
+          activeChatId: Number(activeChatId),
+        });
+      }
+    }
+
+    function syncActiveLatencyChip() {
+      const key = normalizeChatId(getActiveChatId?.());
+      if (!key) {
+        setActivityChip?.(latencyChip, "latency: --");
+        return;
+      }
+      const value = latencyByChat.get(key) || "--";
+      setActivityChip?.(latencyChip, `latency: ${value}`);
+    }
+
+    return {
+      setChatLatency,
+      syncActiveLatencyChip,
+    };
+  }
+
+  function createStreamActivityController({
+    chats,
+    getActiveChatId,
+    chatLabel,
+    compactChatLabel,
+    setStreamStatus,
+    setActivityChip,
+    streamChip,
+    latencyChip,
+    setChatLatency,
+    syncActiveLatencyChip,
+  }) {
+    function syncActivePendingStatus() {
+      const activeKey = normalizeChatId(getActiveChatId?.());
+      const chat = activeKey ? chats.get(activeKey) : null;
+      if (chat?.pending) {
+        setStreamStatus?.(`Waiting for Hermes in ${chatLabel?.(activeKey) || "Chat"}`);
+        setActivityChip?.(streamChip, `stream: pending · ${compactChatLabel?.(activeKey) || "Chat"}`);
+        return;
+      }
+      if ((streamChip?.textContent || "").startsWith("stream: pending")) {
+        setActivityChip?.(streamChip, "stream: idle");
+      }
+    }
+
+    function markStreamActive(chatId) {
+      setStreamStatus?.(`Hermes responding in ${chatLabel?.(chatId) || "Chat"}`);
+      setActivityChip?.(streamChip, `stream: active · ${compactChatLabel?.(chatId) || "Chat"}`);
+      setActivityChip?.(latencyChip, "latency: calculating...");
+      setChatLatency?.(chatId, "calculating...");
+    }
+
+    function markStreamError() {
+      setStreamStatus?.("Stream error");
+      setActivityChip?.(streamChip, "stream: error");
+    }
+
+    function markNetworkFailure() {
+      setStreamStatus?.("Network failure");
+      setActivityChip?.(streamChip, "stream: network failure");
+    }
+
+    function markStreamReconnecting(chatId) {
+      const key = normalizeChatId(chatId);
+      const activeKey = normalizeChatId(getActiveChatId?.());
+      if (!key || key !== activeKey) return;
+      setStreamStatus?.(`Reconnecting stream in ${chatLabel?.(key) || "Chat"}...`);
+      setActivityChip?.(streamChip, `stream: reconnecting · ${compactChatLabel?.(key) || "Chat"}`);
+      syncActiveLatencyChip?.();
+    }
+
+    function markResumeAlreadyComplete(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key) return;
+      setActivityChip?.(latencyChip, "latency: --");
+      setChatLatency?.(key, "--");
+      if (normalizeChatId(getActiveChatId?.()) === key) {
+        setStreamStatus?.(`Stream already complete in ${chatLabel?.(key) || "Chat"}`);
+        setActivityChip?.(streamChip, `stream: complete · ${compactChatLabel?.(key) || "Chat"}`);
+      }
+    }
+
+    function markReconnectFailed(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key || normalizeChatId(getActiveChatId?.()) !== key) return;
+      setStreamStatus?.("Stream reconnect failed");
+      setActivityChip?.(streamChip, "stream: reconnect failed");
+    }
+
+    return {
+      syncActivePendingStatus,
+      markStreamActive,
+      markStreamError,
+      markNetworkFailure,
+      markStreamReconnecting,
+      markResumeAlreadyComplete,
+      markReconnectFailed,
+    };
   }
 
   function shouldPreservePendingLocalMessage(message) {
@@ -146,7 +363,11 @@
     shouldResumeOnVisibilityChange,
     shouldIncrementUnread,
     nextUnreadCount,
+    latestCompletedAssistantHapticKey,
+    createHapticUnreadController,
     nextLatencyState,
+    createLatencyController,
+    createStreamActivityController,
     mergeHydratedHistory,
     shouldUseAppendOnlyRender,
     getNextChatTabId,

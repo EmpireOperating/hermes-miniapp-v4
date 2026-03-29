@@ -64,6 +64,10 @@
           <div class="masthead__status-row">
             <div class="status-group status-group--stacked">
               <div class="status-pill"><span class="status-dot"></span><span id="auth-status">Checking session…</span></div>
+              <div class="status-group status-group--dev" id="dev-auth-controls" {% if not dev_auth_enabled %}hidden{% endif %}>
+                <span class="status-pill status-pill--debug" id="dev-mode-badge">DEV MODE</span>
+                <button type="button" class="status-pill status-pill--muted status-pill-button" id="dev-signin-button">Dev sign-in</button>
+              </div>
             </div>
 
             <div class="status-group status-group--settings">
@@ -144,6 +148,12 @@
       <form method="dialog" id="chat-title-form" class="modal__card">
         <h2 id="chat-title-modal-title" class="modal__title">Chat title</h2>
         <p class="modal__hint" id="chat-title-modal-hint">Name this chat.</p>
+        <div id="chat-title-tag-label" class="modal__label chat-title-tag-label" hidden>Tag</div>
+        <div id="chat-title-tag-row" class="chat-title-tags" role="group" aria-label="Rename tag" hidden>
+          <button type="button" class="skin-toggle chat-title-tag is-active" data-chat-title-tag="none" aria-pressed="true">none</button>
+          <button type="button" class="skin-toggle chat-title-tag" data-chat-title-tag="feat" aria-pressed="false">feat</button>
+          <button type="button" class="skin-toggle chat-title-tag" data-chat-title-tag="bug" aria-pressed="false">bug</button>
+        </div>
         <label for="chat-title-input" class="modal__label">Title</label>
         <input id="chat-title-input" class="modal__input" type="text" maxlength="120" autocomplete="off" required>
         <div class="modal__actions">
@@ -168,6 +178,25 @@
         </div>
         <div class="modal__actions">
           <button type="button" id="settings-close" class="action-button">Close</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="dev-auth-modal" class="modal" aria-labelledby="dev-auth-modal-title">
+      <form method="dialog" id="dev-auth-form" class="modal__card">
+        <h2 id="dev-auth-modal-title" class="modal__title">Dev sign-in</h2>
+        <p class="modal__hint">Desktop-only auth for debugging outside Telegram. Keep the secret out of URLs and shared screenshots.</p>
+        <label for="dev-auth-secret" class="modal__label">Secret</label>
+        <input id="dev-auth-secret" class="modal__input" type="password" autocomplete="off" required>
+        <label for="dev-auth-user-id" class="modal__label">User ID</label>
+        <input id="dev-auth-user-id" class="modal__input" type="text" inputmode="numeric" autocomplete="off" required>
+        <label for="dev-auth-display-name" class="modal__label">Display name</label>
+        <input id="dev-auth-display-name" class="modal__input" type="text" autocomplete="off" required>
+        <label for="dev-auth-username" class="modal__label">Username</label>
+        <input id="dev-auth-username" class="modal__input" type="text" autocomplete="off">
+        <div class="modal__actions">
+          <button type="button" id="dev-auth-cancel" class="action-button">Cancel</button>
+          <button type="submit" id="dev-auth-confirm" class="action-button">Sign in</button>
         </div>
       </form>
     </dialog>
@@ -197,18 +226,28 @@
         reloadStateUrl: "/dev/reload-state",
         intervalMs: {{ dev_reload_interval_ms }},
         version: "{{ dev_reload_version }}",
-        requestDebug: {{ 'true' if request_debug else 'false' }}
+        requestDebug: {{ 'true' if request_debug else 'false' }},
+        devAuthEnabled: {{ 'true' if dev_auth_enabled else 'false' }}
       };
     </script>
     <script src="/static/runtime_helpers.js?v={{ helpers_version }}"></script>
     <script src="/static/app_shared_utils.js?v={{ shared_utils_version }}"></script>
     <script src="/static/chat_ui_helpers.js?v={{ chat_ui_helpers_version }}"></script>
+    <script src="/static/chat_tabs_helpers.js?v={{ chat_tabs_helpers_version }}"></script>
     <script src="/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}"></script>
     <script src="/static/stream_state_helpers.js?v={{ stream_state_helpers_version }}"></script>
     <script src="/static/stream_controller.js?v={{ stream_controller_version }}"></script>
     <script src="/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}"></script>
     <script src="/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}"></script>
     <script src="/static/interaction_helpers.js?v={{ interaction_helpers_version }}"></script>
+    <script src="/static/bootstrap_auth_helpers.js?v={{ bootstrap_auth_helpers_version }}"></script>
+    <script src="/static/chat_history_helpers.js?v={{ chat_history_helpers_version }}"></script>
+    <script src="/static/chat_admin_helpers.js?v={{ chat_admin_helpers_version }}"></script>
+    <script src="/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}"></script>
+    <script src="/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}"></script>
+    <script src="/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}"></script>
+    <script src="/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}"></script>
+    <script src="/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}"></script>
     <script src="/static/app.js?v={{ app_js_version }}"></script>
   </body>
 </html>

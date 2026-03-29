@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from flask import Request
 
@@ -14,6 +15,22 @@ def new_request_id() -> str:
 
 def now_ms() -> float:
     return time.perf_counter() * 1000.0
+
+
+def sanitized_request_target(request: Request) -> str:
+    raw_query = str(request.query_string.decode("utf-8", errors="ignore") or "").strip()
+    if not raw_query:
+        return request.path
+
+    redacted_pairs = []
+    for key, value in parse_qsl(raw_query, keep_blank_values=True, strict_parsing=False):
+        normalized = str(key or "").strip().lower()
+        if normalized in {"dev_secret", "secret", "token", "auth", "api_key"}:
+            redacted_pairs.append((key, "[redacted]"))
+        else:
+            redacted_pairs.append((key, value))
+    encoded = urlencode(redacted_pairs, doseq=True)
+    return f"{request.path}?{encoded}" if encoded else request.path
 
 
 def build_request_log(*, request: Request, request_id: str, status_code: int, elapsed_ms: int) -> str:

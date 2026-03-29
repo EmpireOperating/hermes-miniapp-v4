@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hmac
 import time
 from dataclasses import asdict
+from types import SimpleNamespace
 from typing import Any, Callable
 
-from flask import Response, g, jsonify
+from flask import Response, g, jsonify, request
 
 
 def register_auth_routes(
@@ -23,20 +25,16 @@ def register_auth_routes(
     auth_session_max_age_seconds: int,
     build_job_log_fn: Callable[..., str],
     logger,
+    dev_auth_enabled: bool = False,
+    dev_auth_secret: str = "",
 ) -> None:
-    @api_bp.post("/auth")
-    def auth() -> Response | tuple[dict[str, object], int]:
+    def build_auth_success_response(verified_user, *, auth_mode: str) -> Response:
         store = store_getter()
         runtime = runtime_getter()
-        payload = request_payload_fn()
-        verified, auth_error = verify_for_json_fn(payload)
-        if auth_error:
-            return auth_error
-
-        user_id = str(verified.user.id)
+        user_id = str(verified_user.id)
         store.prune_expired_auth_sessions(int(time.time()))
         runtime.ensure_pending_jobs(user_id)
-        display_name = verified.user.first_name or verified.user.username or "Operator"
+        display_name = verified_user.first_name or verified_user.username or "Operator"
         default_chat_id = store.ensure_default_chat(user_id)
         active_chat_id = store.get_active_chat(user_id) or default_chat_id
         try:
@@ -53,10 +51,11 @@ def register_auth_routes(
         response = jsonify(
             {
                 "ok": True,
+                "auth_mode": auth_mode,
                 "user": {
-                    "id": verified.user.id,
+                    "id": verified_user.id,
                     "display_name": display_name,
-                    "username": verified.user.username,
+                    "username": verified_user.username,
                 },
                 "skin": skin,
                 "active_chat_id": active_chat_id,
@@ -82,6 +81,51 @@ def register_auth_routes(
             secure=cookie_secure_fn(),
         )
         return response
+
+    @api_bp.post("/auth")
+    def auth() -> Response | tuple[dict[str, object], int]:
+        payload = request_payload_fn()
+        verified, auth_error = verify_for_json_fn(payload)
+        if auth_error:
+            return auth_error
+        return build_auth_success_response(verified.user, auth_mode="telegram")
+
+    @api_bp.post("/dev/auth")
+    def dev_auth() -> Response | tuple[dict[str, object], int]:
+        if not dev_auth_enabled or not dev_auth_secret:
+            return {"ok": False, "error": "Not found."}, 404
+
+        payload = request_payload_fn()
+        provided_secret = str(request.headers.get("X-Dev-Auth") or payload.get("secret") or "").strip()
+        if not hmac.compare_digest(provided_secret, dev_auth_secret):
+            return {"ok": False, "error": "Invalid dev auth secret."}, 401
+
+        raw_user_id = payload.get("user_id", 9001)
+        try:
+            user_id = int(raw_user_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Invalid dev user id."}, 400
+        if user_id <= 0:
+            return {"ok": False, "error": "Invalid dev user id."}, 400
+
+        display_name = str(payload.get("display_name") or "Desktop Tester").strip() or "Desktop Tester"
+        username = str(payload.get("username") or "desktop").strip() or None
+        verified = SimpleNamespace(
+            user=SimpleNamespace(
+                id=user_id,
+                first_name=display_name,
+                username=username,
+            )
+        )
+        logger.info(
+            build_job_log_fn(
+                event="dev_auth_login",
+                request_id=str(getattr(g, "request_id", "")) or None,
+                chat_id=0,
+                extra={"user_id": str(user_id), "username": username},
+            )
+        )
+        return build_auth_success_response(verified.user, auth_mode="dev")
 
     @api_bp.post("/auth/logout-all")
     def logout_all_sessions() -> Response | tuple[dict[str, object], int]:
