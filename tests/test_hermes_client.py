@@ -266,6 +266,42 @@ def test_persistent_agent_stream_times_out_when_worker_stalls(monkeypatch) -> No
         assert "miniapp-123-persistent-timeout" in text
 
 
+def test_persistent_agent_timeout_resets_on_progress_events(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("HERMES_TIMEOUT_SECONDS", "1")
+
+    class _ProgressAgent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.tool_progress_callback = kwargs.get("tool_progress_callback")
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            for idx in range(4):
+                time.sleep(0.35)
+                if self.tool_progress_callback:
+                    self.tool_progress_callback("search_files", f"step-{idx}")
+            return {"final_response": "progress-ok", "error": None, "messages": []}
+
+    class _ProgressRunAgentModule:
+        AIAgent = _ProgressAgent
+
+    monkeypatch.setitem(sys.modules, "run_agent", _ProgressRunAgentModule())
+
+    client = hermes_client.HermesClient()
+    events = list(
+        client._stream_via_persistent_agent(
+            user_id="123",
+            message="hello",
+            session_id="miniapp-123-persistent-progress",
+            conversation_history=[{"role": "operator", "body": "old"}],
+        )
+    )
+
+    assert any(event.get("type") == "tool" for event in events)
+    assert any(event.get("type") == "done" and event.get("reply") == "progress-ok" for event in events)
+
+
 def test_persistent_agent_wraps_worker_exception_as_hermes_client_error(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
     monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
