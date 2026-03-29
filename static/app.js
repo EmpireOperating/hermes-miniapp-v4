@@ -538,8 +538,8 @@ function ensurePendingToolTraceMessage(chatId) {
   return toolTraceController.ensurePendingToolTraceMessage(chatId);
 }
 
-function appendInlineToolTrace(chatId, text) {
-  return toolTraceController.appendInlineToolTrace(chatId, text);
+function appendInlineToolTrace(chatId, textOrPayload, payload = null) {
+  return toolTraceController.appendInlineToolTrace(chatId, textOrPayload, payload);
 }
 
 function finalizeInlineToolTrace(chatId) {

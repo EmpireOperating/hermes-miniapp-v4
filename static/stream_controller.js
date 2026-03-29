@@ -48,12 +48,76 @@
       return next;
     }
 
-    function appendInlineToolTrace(chatId, text) {
-      const line = String(text || "").trim();
+    function parseToolEventPayload(textOrPayload, explicitPayload) {
+      if (explicitPayload && typeof explicitPayload === "object") {
+        return explicitPayload;
+      }
+      if (textOrPayload && typeof textOrPayload === "object") {
+        return textOrPayload;
+      }
+      return null;
+    }
+
+    function resolveToolLine(textOrPayload, payload) {
+      if (typeof textOrPayload === "string" && textOrPayload.trim()) {
+        return textOrPayload.trim();
+      }
+      if (!payload || typeof payload !== "object") return "";
+      const line = payload.display || payload.preview || payload.tool_name || "Tool running";
+      return String(line || "").trim();
+    }
+
+    function resolveToolDedupeKey(payload) {
+      if (!payload || typeof payload !== "object") return "";
+      const messageId = payload.message_id || payload.msg_id || payload.assistant_message_id || payload.turn_id;
+      const toolCallId = payload.tool_call_id || payload.call_id;
+      if (!messageId || !toolCallId) {
+        return "";
+      }
+      const phase = payload.phase || payload.status || "";
+      return `${messageId}::${toolCallId}::${phase}`;
+    }
+
+    function rebuildToolTraceBodyFromEntries(trace) {
+      if (!trace || typeof trace !== "object") return;
+      const order = Array.isArray(trace._toolTraceOrder) ? trace._toolTraceOrder : [];
+      const linesByKey = trace._toolTraceLines && typeof trace._toolTraceLines === "object"
+        ? trace._toolTraceLines
+        : {};
+      const lines = [];
+      for (const dedupeKey of order) {
+        const line = String(linesByKey[dedupeKey] || "").trim();
+        if (line) {
+          lines.push(line);
+        }
+      }
+      trace.body = lines.join("\n");
+    }
+
+    function appendInlineToolTrace(chatId, textOrPayload, explicitPayload = null) {
+      const payload = parseToolEventPayload(textOrPayload, explicitPayload);
+      const line = resolveToolLine(textOrPayload, payload);
       if (!line) return;
       const key = Number(chatId);
       const trace = ensurePendingToolTraceMessage(key);
-      trace.body = trace.body ? `${trace.body}\n${line}` : line;
+      const dedupeKey = resolveToolDedupeKey(payload);
+
+      if (!dedupeKey) {
+        trace.body = trace.body ? `${trace.body}\n${line}` : line;
+        return;
+      }
+
+      if (!Array.isArray(trace._toolTraceOrder)) {
+        trace._toolTraceOrder = [];
+      }
+      if (!trace._toolTraceLines || typeof trace._toolTraceLines !== "object") {
+        trace._toolTraceLines = {};
+      }
+      if (!trace._toolTraceOrder.includes(dedupeKey)) {
+        trace._toolTraceOrder.push(dedupeKey);
+      }
+      trace._toolTraceLines[dedupeKey] = line;
+      rebuildToolTraceBodyFromEntries(trace);
     }
 
     function finalizeInlineToolTrace(chatId) {
@@ -72,6 +136,8 @@
           item.body = content;
           item.pending = false;
           item.collapsed = true;
+          delete item._toolTraceOrder;
+          delete item._toolTraceLines;
         }
         changed = true;
         break;
@@ -279,7 +345,7 @@
       if (eventName === "tool") {
         setStreamPhase(chatId, STREAM_PHASES.STREAMING_TOOL);
         const display = payload.display || payload.preview || payload.tool_name || "Tool running";
-        deps.appendInlineToolTrace(chatId, display);
+        deps.appendInlineToolTrace(chatId, display, payload);
         markStreamUpdate(chatId);
         const patchedToolTrace = patchVisibleToolTrace(chatId);
         renderTraceLog("stream-tool-patch", {
