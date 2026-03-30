@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import textwrap
 import threading
@@ -53,6 +54,13 @@ _TOOL_PROGRESS_EMOJIS: dict[str, str] = {
     "skill_manage": "📝",
 }
 
+_CAMOFOX_FALLBACK_MARKER = "[miniapp-camofox-fallback]"
+_CAMOFOX_ANTIBOT_PATTERN = re.compile(
+    r"(cloudflare|captcha|bot\s*detect|anti[-\s]*bot|fingerprint|access\s*denied|forbidden|challenge)"
+    r"|(?:\b4(?:01|03|29)\b)",
+    re.IGNORECASE,
+)
+
 
 class HermesClientDirectAgentMixin:
     def _ask_via_agent(
@@ -91,6 +99,77 @@ class HermesClientDirectAgentMixin:
         conversation_history: list[dict[str, Any]] | None = None,
         session_id: str | None = None,
     ) -> Iterator[dict[str, Any]]:
+        had_assistant_output = False
+        try:
+            for event in self._stream_via_agent_once(
+                user_id=user_id,
+                message=message,
+                conversation_history=conversation_history,
+                session_id=session_id,
+            ):
+                if event.get("type") in {"chunk", "done"}:
+                    had_assistant_output = True
+                yield event
+            return
+        except HermesClientError as exc:
+            if had_assistant_output or not self._should_retry_with_camofox(message=message, error=exc):
+                raise
+
+            logger.warning(
+                "Miniapp direct-agent hit anti-bot/fingerprint failure; retrying with camofox fallback guidance",
+                extra={
+                    "session_id": session_id or "",
+                    "user_id": user_id,
+                    "error": str(exc),
+                    "camofox_base_url": self.camofox_base_url,
+                },
+            )
+            fallback_message = self._build_camofox_fallback_message(message=message, error=exc)
+            yield {
+                "type": "meta",
+                "source": "agent",
+                "fallback": "camofox",
+            }
+            yield from self._stream_via_agent_once(
+                user_id=user_id,
+                message=fallback_message,
+                conversation_history=conversation_history,
+                session_id=session_id,
+                camofox_fallback=True,
+            )
+
+    def _should_retry_with_camofox(self, *, message: str, error: HermesClientError) -> bool:
+        if not getattr(self, "camofox_fallback_enabled", False):
+            return False
+        if not str(getattr(self, "camofox_base_url", "")).strip():
+            return False
+        if _CAMOFOX_FALLBACK_MARKER in str(message or ""):
+            return False
+        return bool(_CAMOFOX_ANTIBOT_PATTERN.search(str(error or "")))
+
+    def _build_camofox_fallback_message(self, *, message: str, error: HermesClientError) -> str:
+        base_url = str(getattr(self, "camofox_base_url", "http://127.0.0.1:9377") or "http://127.0.0.1:9377").rstrip("/")
+        return (
+            f"{_CAMOFOX_FALLBACK_MARKER}\n"
+            "The normal browser tool path appears blocked by anti-bot/fingerprint protections.\n"
+            "Retry this task using the local camofox-browser HTTP API instead of browser_* tools.\n"
+            f"Base URL: {base_url}\n"
+            "Authentication: send header x-api-key: $CAMOFOX_API_KEY if configured.\n"
+            "Useful endpoints: POST /tabs/open, POST /navigate, GET /snapshot, POST /act, GET /health, POST /stop.\n"
+            "Use terminal/execute_code to call those endpoints and continue the user task end-to-end.\n"
+            f"Previous browser failure: {str(error).strip()}\n\n"
+            f"Original user request:\n{message}"
+        )
+
+    def _stream_via_agent_once(
+        self,
+        *,
+        user_id: str,
+        message: str,
+        conversation_history: list[dict[str, Any]] | None = None,
+        session_id: str | None = None,
+        camofox_fallback: bool = False,
+    ) -> Iterator[dict[str, Any]]:
         if not os.path.exists(self.agent_python):
             raise HermesClientError(f"Hermes direct agent python not found: {self.agent_python}")
 
@@ -108,6 +187,11 @@ class HermesClientDirectAgentMixin:
         child_env["HERMES_HOME"] = self.agent_hermes_home
         child_env["VIRTUAL_ENV"] = self.agent_venv
         child_env["PATH"] = f"{self.agent_venv}/bin:{child_env.get('PATH', '')}"
+        child_env["MINI_APP_CAMOFOX_FALLBACK_ACTIVE"] = "1" if camofox_fallback else "0"
+        if str(getattr(self, "camofox_base_url", "")).strip():
+            child_env["CAMOFOX_BASE_URL"] = str(self.camofox_base_url).strip().rstrip("/")
+        if str(getattr(self, "camofox_api_key", "")).strip():
+            child_env["CAMOFOX_API_KEY"] = str(self.camofox_api_key).strip()
 
         try:
             process = subprocess.Popen(
@@ -152,13 +236,13 @@ class HermesClientDirectAgentMixin:
         started = time.monotonic()
 
         def _build_timeout_message() -> str:
-            message = f"Hermes direct agent timed out after {self.timeout_seconds}s."
+            timeout_message = f"Hermes direct agent timed out after {self.timeout_seconds}s."
             if stderr_lines:
                 tail = stderr_lines[-1]
                 if len(tail) > 300:
                     tail = tail[:297] + "..."
-                message += f" stderr: {tail}"
-            return message
+                timeout_message += f" stderr: {tail}"
+            return timeout_message
 
         def _stdout_reader() -> None:
             try:

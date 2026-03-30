@@ -44,6 +44,9 @@ class MiniAppConfig:
     dev_auth_secret: str
     job_event_history_max_jobs: int
     job_event_history_ttl_seconds: int
+    file_preview_allowed_roots: tuple[Path, ...]
+    file_preview_max_lines: int
+    file_preview_max_file_bytes: int
     dev_reload_watch_paths: tuple[Path, ...]
 
     @classmethod
@@ -102,6 +105,19 @@ class MiniAppConfig:
                 min_value=MIN_JOB_EVENT_HISTORY_TTL_SECONDS,
                 max_value=86400,
             ),
+            file_preview_allowed_roots=_parse_allowed_roots(os.environ.get("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", "")),
+            file_preview_max_lines=_as_int_in_range(
+                "MINI_APP_FILE_PREVIEW_MAX_LINES",
+                400,
+                min_value=1,
+                max_value=4000,
+            ),
+            file_preview_max_file_bytes=_as_int_in_range(
+                "MINI_APP_FILE_PREVIEW_MAX_FILE_BYTES",
+                1_048_576,
+                min_value=1024,
+                max_value=8_388_608,
+            ),
             dev_reload_watch_paths=(
                 base_dir / "server.py",
                 base_dir / "templates" / "app.html",
@@ -131,6 +147,22 @@ def _parse_allowed_origins(raw: str) -> set[str]:
             raise ValueError(f"Invalid origin in MINI_APP_ALLOWED_ORIGINS: {value.strip()}")
         origins.add(candidate)
     return origins
+
+
+def _parse_allowed_roots(raw: str) -> tuple[Path, ...]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for value in str(raw).split(","):
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        resolved = Path(cleaned).expanduser().resolve(strict=False)
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(resolved)
+    return tuple(roots)
 
 
 def _as_int(name: str, default: int) -> int:

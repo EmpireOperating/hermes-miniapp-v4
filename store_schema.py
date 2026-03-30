@@ -59,6 +59,30 @@ class StoreSchemaMixin:
                 """
             )
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_message_file_refs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    ref_id TEXT NOT NULL,
+                    raw_text TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(chat_id) REFERENCES chat_threads(id) ON DELETE CASCADE,
+                    FOREIGN KEY(message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_message_file_refs_ref_id ON chat_message_file_refs(ref_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_message_file_refs_message ON chat_message_file_refs(user_id, chat_id, message_id, id)"
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_threads_user_id ON chat_threads(user_id, id)"
             )
             conn.execute(

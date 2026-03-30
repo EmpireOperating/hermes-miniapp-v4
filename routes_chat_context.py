@@ -29,5 +29,8 @@ class ChatRouteContext:
     serialize_chat_fn: Callable[[Any], dict[str, object]]
     session_id_builder_fn: Callable[[str, int], str]
     job_max_attempts: int
+    file_preview_allowed_roots: tuple[Any, ...]
+    file_preview_max_lines: int
+    file_preview_max_file_bytes: int
     build_job_log_fn: Callable[..., str]
     logger: Any

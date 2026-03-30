@@ -103,14 +103,16 @@ def select_chat_rows(
     return conn.execute(query, tuple(params)).fetchall()
 
 
-def hydrate_chat_turns(rows) -> list[ChatTurn]:
+def hydrate_chat_turns(rows, *, file_refs_by_message_id: dict[int, list[dict[str, object]]] | None = None) -> list[ChatTurn]:
     ordered = reversed(rows)
+    refs_by_id = file_refs_by_message_id or {}
     return [
         ChatTurn(
             id=int(row["id"]),
             role=str(row["role"]),
             body=str(row["body"]),
             created_at=str(row["created_at"]),
+            file_refs=list(refs_by_id.get(int(row["id"]), [])),
         )
         for row in ordered
     ]

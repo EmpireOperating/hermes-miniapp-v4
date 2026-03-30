@@ -42,6 +42,9 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         self.direct_agent_enabled = os.environ.get("MINI_APP_DIRECT_AGENT", "1") == "1"
         self.max_iterations = int(os.environ.get("HERMES_MAX_ITERATIONS", "90"))
         self.tool_progress_mode = (os.environ.get("HERMES_TOOL_PROGRESS_MODE") or "all").strip().lower()
+        self.camofox_fallback_enabled = os.environ.get("MINI_APP_CAMOFOX_FALLBACK_ENABLED", "0") == "1"
+        self.camofox_base_url = (os.environ.get("MINI_APP_CAMOFOX_BASE_URL") or "http://127.0.0.1:9377").strip().rstrip("/")
+        self.camofox_api_key = (os.environ.get("MINI_APP_CAMOFOX_API_KEY") or "").strip()
         self.agent_python = os.environ.get("MINI_APP_AGENT_PYTHON") or "/home/hermes-agent/.hermes/hermes-agent/venv/bin/python"
         self.agent_home = os.environ.get("MINI_APP_AGENT_HOME") or "/home/hermes-agent"
         self.agent_hermes_home = os.environ.get("MINI_APP_AGENT_HERMES_HOME") or f"{self.agent_home}/.hermes"
@@ -96,6 +99,9 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "provider_configured": bool(self.provider),
                 "model_configured": bool(self.model),
                 "base_url_configured": bool(self.base_url),
+                "camofox_fallback_enabled": self.camofox_fallback_enabled,
+                "camofox_base_url_configured": bool(self.camofox_base_url),
+                "camofox_api_key_configured": bool(self.camofox_api_key),
             },
             "agent_runtime": {
                 "agent_python_exists": Path(self.agent_python).exists(),
@@ -218,6 +224,43 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             },
         )
 
+    def _persistent_session_id(self, *, user_id: str, session_id: str | None) -> str:
+        return session_id or f"miniapp-{user_id}"
+
+    def _recover_fallback_history(
+        self,
+        *,
+        user_id: str,
+        session_id: str | None,
+        conversation_history: list[dict[str, Any]] | None,
+    ) -> list[dict[str, str]]:
+        normalized = self._normalize_conversation_history(conversation_history)
+        if normalized:
+            return list(normalized)
+
+        effective_session_id = self._persistent_session_id(user_id=user_id, session_id=session_id)
+        runtime = self._session_manager.get_runtime(effective_session_id)
+        checkpoint_history = list(getattr(runtime, "checkpoint_history", []) or [])
+        return [item for item in checkpoint_history if isinstance(item, dict)]
+
+    def _build_fallback_runtime_checkpoint(
+        self,
+        *,
+        recovered_history: list[dict[str, str]] | None,
+        message: str,
+        reply: str,
+    ) -> list[dict[str, str]]:
+        checkpoint_history = [
+            {"role": str(item.get("role") or ""), "content": str(item.get("content") or "")}
+            for item in (recovered_history or [])
+            if isinstance(item, dict) and str(item.get("role") or "") and str(item.get("content") or "")
+        ]
+        checkpoint_history.append({"role": "user", "content": message})
+        checkpoint_history.append({"role": "assistant", "content": reply})
+        if len(checkpoint_history) > 160:
+            checkpoint_history = checkpoint_history[-160:]
+        return checkpoint_history
+
     def runtime_status(self) -> dict[str, Any]:
         return {
             "persistent": self.persistent_stats(),
@@ -227,6 +270,8 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "base_url": self.base_url,
                 "direct_agent_enabled": self.direct_agent_enabled,
                 "persistent_sessions_enabled": self.persistent_sessions_enabled,
+                "camofox_fallback_enabled": self.camofox_fallback_enabled,
+                "camofox_base_url": self.camofox_base_url,
             },
             "health": self._recall_health(),
             "startup": self.startup_diagnostics(),
@@ -316,6 +361,9 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             except HermesClientError:
                 pass
 
+        direct_fallback_history = conversation_history
+        persistent_failed = False
+
         if self.direct_agent_enabled and self.persistent_sessions_enabled:
             try:
                 yield from self._stream_via_persistent_agent(
@@ -326,26 +374,53 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 )
                 return
             except Exception as exc:  # broad-except-policy: persistent runtime failures must fall back to non-persistent transport
+                persistent_failed = True
+                direct_fallback_history = self._recover_fallback_history(
+                    user_id=user_id,
+                    session_id=session_id,
+                    conversation_history=conversation_history,
+                )
+                effective_session_id = self._persistent_session_id(user_id=user_id, session_id=session_id)
+                self._session_manager.evict(effective_session_id)
                 # Fall back to existing subprocess/CLI path when persistent runtime fails.
                 logger.warning(
                     "Persistent miniapp runtime failed; falling back to non-persistent path",
                     extra={
-                        "session_id": session_id or "",
+                        "session_id": effective_session_id,
                         "user_id": user_id,
                         "error": str(exc),
                         "fallback_to": "agent" if self.direct_agent_enabled else "cli",
+                        "recovered_history_turns": len(direct_fallback_history or []),
                     },
                     exc_info=True,
                 )
 
         if self.direct_agent_enabled:
             try:
-                yield from self._stream_via_agent(
+                direct_events = self._stream_via_agent(
                     user_id=user_id,
                     message=cleaned,
-                    conversation_history=conversation_history,
+                    conversation_history=direct_fallback_history,
                     session_id=session_id,
                 )
+                for event in direct_events:
+                    if (
+                        persistent_failed
+                        and event.get("type") == "done"
+                        and not isinstance(event.get("runtime_checkpoint"), list)
+                    ):
+                        reply = str(event.get("reply") or "").strip()
+                        if reply:
+                            yield {
+                                **event,
+                                "runtime_checkpoint": self._build_fallback_runtime_checkpoint(
+                                    recovered_history=direct_fallback_history,
+                                    message=cleaned,
+                                    reply=reply,
+                                ),
+                            }
+                            continue
+                    yield event
                 return
             except HermesClientError:
                 pass

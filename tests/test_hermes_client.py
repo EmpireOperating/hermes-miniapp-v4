@@ -164,6 +164,99 @@ def test_persistent_agent_runtime_reuses_agent_for_same_session(monkeypatch) -> 
     assert len(second_done.get("runtime_checkpoint") or []) == 5
 
 
+def test_stream_events_recovers_checkpoint_history_when_persistent_runtime_fails(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+    runtime = client._session_manager.get_or_create(
+        session_id="miniapp-123-fallback",
+        model="m1",
+        max_iterations=90,
+        create_agent=lambda: object(),
+    )
+    runtime.bootstrapped = True
+    runtime.checkpoint_history = [
+        {"role": "user", "content": "Earlier request"},
+        {"role": "assistant", "content": "Earlier answer"},
+    ]
+
+    captured = {"history": None}
+
+    def fake_persistent(**_kwargs):
+        raise hermes_client.HermesClientError("synthetic persistent failure")
+
+    def fake_direct(**kwargs):
+        captured["history"] = kwargs.get("conversation_history")
+        yield {"type": "meta", "source": "agent"}
+        yield {"type": "done", "reply": "Recovered reply", "source": "agent", "latency_ms": 7}
+
+    monkeypatch.setattr(client, "_stream_via_persistent_agent", fake_persistent)
+    monkeypatch.setattr(client, "_stream_via_agent", fake_direct)
+
+    events = list(
+        client.stream_events(
+            user_id="123",
+            message="implement this",
+            session_id="miniapp-123-fallback",
+            conversation_history=[],
+        )
+    )
+
+    assert captured["history"] == runtime.checkpoint_history
+    done = next(event for event in events if event.get("type") == "done")
+    assert done.get("runtime_checkpoint") == [
+        {"role": "user", "content": "Earlier request"},
+        {"role": "assistant", "content": "Earlier answer"},
+        {"role": "user", "content": "implement this"},
+        {"role": "assistant", "content": "Recovered reply"},
+    ]
+    assert client._session_manager.get_runtime("miniapp-123-fallback") is None
+
+
+def test_stream_events_preserves_explicit_history_on_persistent_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+    explicit_history = [
+        {"role": "operator", "body": "Original ask"},
+        {"role": "hermes", "body": "Original answer"},
+    ]
+    captured = {"history": None}
+
+    def fake_persistent(**_kwargs):
+        raise hermes_client.HermesClientError("synthetic persistent failure")
+
+    def fake_direct(**kwargs):
+        captured["history"] = kwargs.get("conversation_history")
+        yield {"type": "done", "reply": "fallback ok", "source": "agent", "latency_ms": 3}
+
+    monkeypatch.setattr(client, "_stream_via_persistent_agent", fake_persistent)
+    monkeypatch.setattr(client, "_stream_via_agent", fake_direct)
+
+    events = list(
+        client.stream_events(
+            user_id="123",
+            message="follow up",
+            session_id="miniapp-123-explicit",
+            conversation_history=explicit_history,
+        )
+    )
+
+    assert captured["history"] == [
+        {"role": "user", "content": "Original ask"},
+        {"role": "assistant", "content": "Original answer"},
+    ]
+    done = next(event for event in events if event.get("type") == "done")
+    assert done.get("runtime_checkpoint") == [
+        {"role": "user", "content": "Original ask"},
+        {"role": "assistant", "content": "Original answer"},
+        {"role": "user", "content": "follow up"},
+        {"role": "assistant", "content": "fallback ok"},
+    ]
+
+
 def test_persistent_agent_passes_session_db_to_run_agent(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
     monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
@@ -1121,3 +1214,96 @@ def test_stream_via_agent_surfaces_stderr_on_nonzero_exit(monkeypatch) -> None:
     assert process.stdin.close_calls == 1
     assert process.stdout.close_calls == 1
     assert process.stderr.close_calls == 1
+
+
+def test_stream_via_agent_retries_with_camofox_fallback_on_antibot_failure(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_CAMOFOX_FALLBACK_ENABLED", "1")
+    monkeypatch.setenv("MINI_APP_CAMOFOX_BASE_URL", "http://127.0.0.1:9377")
+
+    client = hermes_client.HermesClient()
+
+    attempts: list[dict[str, object]] = []
+
+    def fake_stream_once(*, user_id, message, conversation_history=None, session_id=None, camofox_fallback=False):
+        attempts.append({
+            "user_id": user_id,
+            "message": message,
+            "session_id": session_id,
+            "camofox_fallback": camofox_fallback,
+        })
+        if len(attempts) == 1:
+            raise hermes_client.HermesClientError("Cloudflare challenge 403")
+        yield {"type": "done", "reply": "recovered", "source": "agent", "latency_ms": 2}
+
+    monkeypatch.setattr(client, "_stream_via_agent_once", fake_stream_once)
+
+    events = list(client._stream_via_agent(user_id="123", message="open site", session_id="miniapp-camofox-retry"))
+
+    assert len(attempts) == 2
+    assert attempts[0]["camofox_fallback"] is False
+    assert attempts[1]["camofox_fallback"] is True
+    assert "[miniapp-camofox-fallback]" in str(attempts[1]["message"])
+    assert any(event.get("fallback") == "camofox" for event in events)
+    assert any(event.get("type") == "done" and event.get("reply") == "recovered" for event in events)
+
+
+def test_stream_via_agent_does_not_retry_after_partial_output(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_CAMOFOX_FALLBACK_ENABLED", "1")
+
+    client = hermes_client.HermesClient()
+
+    attempts = {"count": 0}
+
+    def fake_stream_once(*, user_id, message, conversation_history=None, session_id=None, camofox_fallback=False):
+        attempts["count"] += 1
+        yield {"type": "chunk", "text": "partial"}
+        raise hermes_client.HermesClientError("Cloudflare challenge 403")
+
+    monkeypatch.setattr(client, "_stream_via_agent_once", fake_stream_once)
+
+    try:
+        list(client._stream_via_agent(user_id="123", message="open site", session_id="miniapp-camofox-no-retry"))
+        raise AssertionError("Expected HermesClientError for partial-output failure")
+    except hermes_client.HermesClientError as exc:
+        assert "Cloudflare" in str(exc)
+
+    assert attempts["count"] == 1
+
+
+def test_stream_via_agent_once_sets_camofox_env_for_fallback_run(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
+    monkeypatch.setenv("MINI_APP_CAMOFOX_BASE_URL", "http://127.0.0.1:9377")
+    monkeypatch.setenv("MINI_APP_CAMOFOX_API_KEY", "test-key")
+
+    client = hermes_client.HermesClient()
+    monkeypatch.setattr(os.path, "exists", lambda _path: True)
+
+    captured_env: dict[str, str] = {}
+
+    def fake_popen(*args, **kwargs):
+        nonlocal captured_env
+        captured_env = dict(kwargs.get("env") or {})
+        process = _FakeProcess(
+            stdout=_LineStream(['{"kind":"done","reply":"ok","source":"agent","latency_ms":1}\n']),
+            stderr=_LineStream([]),
+            wait_return_code=0,
+        )
+        process.returncode = 0
+        return process
+
+    monkeypatch.setattr(hermes_client_agent.subprocess, "Popen", fake_popen)
+
+    events = list(
+        client._stream_via_agent_once(
+            user_id="123",
+            message="fallback run",
+            session_id="miniapp-camofox-env",
+            camofox_fallback=True,
+        )
+    )
+
+    assert any(event.get("type") == "done" for event in events)
+    assert captured_env.get("MINI_APP_CAMOFOX_FALLBACK_ACTIVE") == "1"
+    assert captured_env.get("CAMOFOX_BASE_URL") == "http://127.0.0.1:9377"
+    assert captured_env.get("CAMOFOX_API_KEY") == "test-key"

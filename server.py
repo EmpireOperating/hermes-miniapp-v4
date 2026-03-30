@@ -68,6 +68,9 @@ DEV_AUTH_ENABLED = CONFIG.dev_auth_enabled
 DEV_AUTH_SECRET = CONFIG.dev_auth_secret
 JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
 JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
+FILE_PREVIEW_ALLOWED_ROOTS = CONFIG.file_preview_allowed_roots
+FILE_PREVIEW_MAX_LINES = CONFIG.file_preview_max_lines
+FILE_PREVIEW_MAX_FILE_BYTES = CONFIG.file_preview_max_file_bytes
 DEV_RELOAD_WATCH_PATHS = CONFIG.dev_reload_watch_paths
 STATIC_NO_STORE_FILENAMES = {
     "app.js",
@@ -416,6 +419,9 @@ register_chat_routes(
         serialize_chat_fn=_serialize_chat,
         session_id_builder_fn=_session_id_for,
         job_max_attempts=JOB_MAX_ATTEMPTS,
+        file_preview_allowed_roots=FILE_PREVIEW_ALLOWED_ROOTS,
+        file_preview_max_lines=FILE_PREVIEW_MAX_LINES,
+        file_preview_max_file_bytes=FILE_PREVIEW_MAX_FILE_BYTES,
         build_job_log_fn=build_job_log,
         logger=app.logger,
     ),

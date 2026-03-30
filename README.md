@@ -196,6 +196,21 @@ docker compose --env-file ops/camofox/.env -f ops/camofox/docker-compose.yml log
 
 The compose profile publishes `127.0.0.1:9377` only and requires API/admin keys.
 
+Optional Mini App auto-fallback (feature-flagged):
+
+```bash
+# keep disabled unless you want automatic retry behavior
+MINI_APP_CAMOFOX_FALLBACK_ENABLED=1
+MINI_APP_CAMOFOX_BASE_URL=http://127.0.0.1:9377
+MINI_APP_CAMOFOX_API_KEY=<same CAMOFOX_API_KEY used by the camofox service>
+```
+
+Behavior when enabled:
+- first attempt still uses the normal browser path
+- if the run fails with anti-bot/fingerprint indicators (e.g. Cloudflare/CAPTCHA/403),
+  Mini App re-runs the same request once with explicit camofox HTTP guidance
+- fallback is single-shot (no loop), and only triggers before assistant output starts
+
 ## Smoke test checklist
 
 1) Start backend and tunnel with real values in `.env`

@@ -27,6 +27,9 @@ def register_chat_management_routes(
     json_error_fn = context.json_error_fn
     serialize_chat_fn = context.serialize_chat_fn
     session_id_builder_fn = context.session_id_builder_fn
+    file_preview_allowed_roots = context.file_preview_allowed_roots
+    file_preview_max_lines = context.file_preview_max_lines
+    file_preview_max_file_bytes = context.file_preview_max_file_bytes
 
     def _chat_history(user_id: str, chat_id: int, *, limit: int = 120) -> list[dict[str, object]]:
         return [asdict(turn) for turn in store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
@@ -146,6 +149,38 @@ def register_chat_management_routes(
         if activate_error:
             return activate_error
         return _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=bool(activate)), 200
+
+    @api_bp.post("/chats/file-preview")
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def file_preview(payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        ref_id = str(payload.get("ref_id") or "").strip()
+        if not ref_id:
+            return json_error_fn("ref_id is required", 400)
+
+        try:
+            preview = store_getter().resolve_file_ref_preview(
+                user_id=user_id,
+                chat_id=chat_id,
+                ref_id=ref_id,
+                allowed_roots=list(file_preview_allowed_roots),
+                max_lines=file_preview_max_lines,
+                max_file_bytes=file_preview_max_file_bytes,
+            )
+        except PermissionError as exc:
+            return json_error_fn(str(exc), 403)
+        except ValueError as exc:
+            return json_error_fn(str(exc), 400)
+        except KeyError as exc:
+            return json_error_fn(str(exc), 404)
+
+        return {"ok": True, "preview": preview}, 200
 
     @api_bp.post("/chats/mark-read")
     @guard_json_payload_user_chat_route(

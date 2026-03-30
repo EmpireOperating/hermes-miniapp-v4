@@ -57,6 +57,90 @@ def test_store_accepts_long_assistant_message(tmp_path) -> None:
     assert history[-1].body == long_reply
 
 
+def test_store_extracts_file_refs_and_hydrates_turn_metadata(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "refs-user"
+    chat_id = store.ensure_default_chat(user_id)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / "src" / "main.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("print('ok')\n", encoding="utf-8")
+
+    body = f"Check {target}:12 and {target}#L20-L24"
+    store.add_message(user_id, chat_id, "operator", body)
+
+    turn = store.get_history(user_id, chat_id)[-1]
+    assert turn.file_refs
+    assert len(turn.file_refs) == 2
+
+    first_ref = turn.file_refs[0]
+    assert first_ref["path"] == str(target)
+    assert first_ref["line_start"] == 12
+    assert first_ref["line_end"] == 12
+    assert str(first_ref["ref_id"]).startswith("fr_")
+
+    second_ref = turn.file_refs[1]
+    assert second_ref["line_start"] == 20
+    assert second_ref["line_end"] == 24
+
+
+def test_store_resolves_file_ref_preview_with_root_and_binary_guards(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "preview-user"
+    chat_id = store.ensure_default_chat(user_id)
+
+    allowed_root = tmp_path / "workspace"
+    allowed_root.mkdir(parents=True, exist_ok=True)
+    allowed_file = allowed_root / "src" / "sample.py"
+    allowed_file.parent.mkdir(parents=True, exist_ok=True)
+    allowed_file.write_text("\n".join([f"line {idx}" for idx in range(1, 31)]) + "\n", encoding="utf-8")
+
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("outside\n", encoding="utf-8")
+
+    binary_file = allowed_root / "src" / "blob.bin"
+    binary_file.write_bytes(b"\x00\x01\x02")
+
+    store.add_message(
+        user_id,
+        chat_id,
+        "operator",
+        f"inside {allowed_file}:8 outside {outside_file}:1 binary {binary_file}:1",
+    )
+    turn = store.get_history(user_id, chat_id)[-1]
+    refs = {ref["raw_text"]: ref for ref in turn.file_refs}
+
+    inside = store.resolve_file_ref_preview(
+        user_id=user_id,
+        chat_id=chat_id,
+        ref_id=str(refs[f"{allowed_file}:8"]["ref_id"]),
+        allowed_roots=[allowed_root],
+        max_lines=12,
+    )
+    assert inside["path"] == str(allowed_file)
+    assert inside["line_start"] == 8
+    assert inside["from_line"] <= 8 <= inside["to_line"]
+    assert len(inside["lines"]) <= 12
+
+    with pytest.raises(PermissionError):
+        store.resolve_file_ref_preview(
+            user_id=user_id,
+            chat_id=chat_id,
+            ref_id=str(refs[f"{outside_file}:1"]["ref_id"]),
+            allowed_roots=[allowed_root],
+        )
+
+    with pytest.raises(ValueError, match="binary"):
+        store.resolve_file_ref_preview(
+            user_id=user_id,
+            chat_id=chat_id,
+            ref_id=str(refs[f"{binary_file}:1"]["ref_id"]),
+            allowed_roots=[allowed_root],
+        )
+
+
 def test_remove_chat_archives_thread_and_keeps_messages_while_hiding_it(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u4"

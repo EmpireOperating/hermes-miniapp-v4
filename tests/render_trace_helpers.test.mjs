@@ -134,6 +134,25 @@ test('renderBody supports fenced and non-fenced text rendering', () => {
   assert.match(container.innerHTML, /<pre class="code-block" data-lang="js"><code>const x = 1;<\/code><\/pre>/);
 });
 
+test('renderBody linkifies known file refs in plain text', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceHelpers.renderBody(
+    container,
+    'Open /tmp/demo.py:12 please',
+    {
+      cleanDisplayTextFn,
+      escapeHtmlFn,
+      fileRefs: [{ ref_id: 'fr_1', raw_text: '/tmp/demo.py:12' }],
+    },
+  );
+
+  assert.match(container.innerHTML, /data-file-ref-id="fr_1"/);
+  assert.match(container.innerHTML, /message-file-ref/);
+});
+
 test('renderToolTraceBody builds expandable trace and syncs collapsed state on toggle', () => {
   function createNode(tagName) {
     return {

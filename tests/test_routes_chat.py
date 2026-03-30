@@ -290,6 +290,57 @@ def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path
     assert server.store.get_chat("123", alt_chat.id).unread_count == 1
 
 
+def test_file_preview_endpoint_returns_preview_for_authorized_chat(monkeypatch, tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(workspace))
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    target = workspace / "src" / "preview.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join([f"line {idx}" for idx in range(1, 21)]) + "\n", encoding="utf-8")
+
+    server.store.add_message("123", chat_id, "operator", f"review {target}:10")
+    turn = server.store.get_history("123", chat_id)[-1]
+    ref_id = str(turn.file_refs[0]["ref_id"])
+
+    response = client.post(
+        "/api/chats/file-preview",
+        json={"init_data": "ok", "chat_id": chat_id, "ref_id": ref_id},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["preview"]["ref_id"] == ref_id
+    assert payload["preview"]["line_start"] == 10
+    assert payload["preview"]["lines"]
+
+
+def test_file_preview_endpoint_rejects_ref_outside_allowed_roots(monkeypatch, tmp_path) -> None:
+    allowed = tmp_path / "workspace"
+    allowed.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(allowed))
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    server.store.add_message("123", chat_id, "operator", f"read {outside}:1")
+    ref_id = str(server.store.get_history("123", chat_id)[-1].file_refs[0]["ref_id"])
+
+    response = client.post(
+        "/api/chats/file-preview",
+        json={"init_data": "ok", "chat_id": chat_id, "ref_id": ref_id},
+    )
+
+    assert response.status_code == 403
+    assert "outside" in str(response.get_json()["error"]).lower()
+
+
 def test_open_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 

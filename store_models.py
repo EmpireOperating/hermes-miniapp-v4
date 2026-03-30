@@ -37,3 +37,4 @@ class ChatTurn:
     role: str
     body: str
     created_at: str
+    file_refs: list[dict[str, object]]
