@@ -145,6 +145,13 @@ const chatTitleTagLabel = document.getElementById("chat-title-tag-label");
 const chatTitleTagRow = document.getElementById("chat-title-tag-row");
 const chatTitleTagButtons = Array.from(document.querySelectorAll("[data-chat-title-tag]"));
 const selectionQuoteButton = document.getElementById("selection-quote-button");
+const filePreviewModal = document.getElementById("file-preview-modal");
+const filePreviewPath = document.getElementById("file-preview-path");
+const filePreviewStatus = document.getElementById("file-preview-status");
+const filePreviewLines = document.getElementById("file-preview-lines");
+const filePreviewClose = document.getElementById("file-preview-close");
+const chatTabContextMenu = document.getElementById("chat-tab-context-menu");
+const chatTabContextFork = document.getElementById("chat-tab-context-fork");
 
 let initData = "";
 let isAuthenticated = false;
@@ -287,7 +294,9 @@ const mobileQuoteMode = isCoarsePointer();
 const draftByChat = new Map();
 const DRAFT_STORAGE_KEY = "hermes_miniapp_chat_drafts_v1";
 const RENDER_TRACE_STORAGE_KEY = "hermes_render_trace_debug";
+const LATENCY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 let renderTraceDebugEnabled = false;
+loadLatencyByChatFromStorage();
 
 const draftController = composerStateHelpers.createDraftController({
   localStorageRef: localStorage,
@@ -358,7 +367,9 @@ function preserveViewportDuringUiMutation(mutator) {
 }
 
 function setChatLatency(chatId, text) {
-  return latencyViewController.setChatLatency(chatId, text);
+  const result = latencyViewController.setChatLatency(chatId, text);
+  persistLatencyByChatToStorage();
+  return result;
 }
 
 function syncActiveLatencyChip() {
@@ -392,6 +403,22 @@ function setStreamStatus(text) {
   streamStatus.textContent = String(text || "");
 }
 
+function loadLatencyByChatFromStorage() {
+  runtimeHelpers.loadLatencyByChatFromStorage?.({
+    localStorageRef: localStorage,
+    storageKey: "hermes_miniapp_latency_by_chat_v1",
+    latencyByChat,
+  });
+}
+
+function persistLatencyByChatToStorage() {
+  runtimeHelpers.persistLatencyByChatToStorage?.({
+    localStorageRef: localStorage,
+    storageKey: "hermes_miniapp_latency_by_chat_v1",
+    latencyByChat,
+  });
+}
+
 function authPayload(extra = {}) {
   return { init_data: initData, ...extra };
 }
@@ -402,6 +429,115 @@ async function safeReadJson(response) {
   } catch {
     return null;
   }
+}
+
+function resetFilePreviewState() {
+  if (filePreviewPath) filePreviewPath.textContent = "";
+  if (filePreviewStatus) {
+    filePreviewStatus.textContent = "";
+    filePreviewStatus.hidden = true;
+  }
+  if (filePreviewLines) {
+    filePreviewLines.innerHTML = "";
+    filePreviewLines.scrollTop = 0;
+  }
+}
+
+function closeFilePreviewModal() {
+  if (!filePreviewModal) return;
+  if (filePreviewModal.open) {
+    filePreviewModal.close();
+  }
+  resetFilePreviewState();
+}
+
+function renderFilePreview(preview) {
+  if (!filePreviewLines) return;
+  const rows = Array.isArray(preview?.lines) ? preview.lines : [];
+  const focusStart = Number(preview?.line_start || 0);
+  const focusEnd = Number(preview?.line_end || 0);
+  if (filePreviewPath) {
+    filePreviewPath.textContent = String(preview?.path || "Preview");
+  }
+  filePreviewLines.innerHTML = "";
+  const fragment = document.createDocumentFragment();
+  let firstFocusLine = null;
+  rows.forEach((row) => {
+    const lineNumber = Number(row?.line || 0);
+    const wrap = document.createElement("div");
+    wrap.className = "file-preview-line";
+    if (focusStart > 0 && lineNumber >= focusStart && lineNumber <= Math.max(focusStart, focusEnd)) {
+      wrap.classList.add("is-focus");
+      if (!firstFocusLine) {
+        firstFocusLine = wrap;
+      }
+    }
+
+    const numberEl = document.createElement("span");
+    numberEl.className = "file-preview-line__number";
+    numberEl.textContent = String(lineNumber || "");
+
+    const textEl = document.createElement("span");
+    textEl.className = "file-preview-line__text";
+    textEl.textContent = String(row?.text || "");
+
+    wrap.appendChild(numberEl);
+    wrap.appendChild(textEl);
+    fragment.appendChild(wrap);
+  });
+  filePreviewLines.appendChild(fragment);
+
+  if (firstFocusLine) {
+    requestAnimationFrame(() => {
+      const targetTop = Math.max(
+        0,
+        firstFocusLine.offsetTop - Math.floor(filePreviewLines.clientHeight / 2) + Math.floor(firstFocusLine.offsetHeight / 2),
+      );
+      filePreviewLines.scrollTop = targetTop;
+    });
+  }
+}
+
+function showFilePreviewStatus(message) {
+  if (!filePreviewStatus) return;
+  filePreviewStatus.hidden = false;
+  filePreviewStatus.textContent = String(message || "Preview unavailable");
+}
+
+async function openFilePreviewByRef(refId) {
+  if (!filePreviewModal || !refId) return;
+  resetFilePreviewState();
+  showFilePreviewStatus("Loading preview…");
+  if (!filePreviewModal.open) {
+    filePreviewModal.showModal();
+  }
+
+  try {
+    const data = await apiPost("/api/chats/file-preview", {
+      chat_id: activeChatId,
+      ref_id: refId,
+    });
+    const preview = data?.preview || null;
+    if (!preview) {
+      throw new Error("Preview unavailable");
+    }
+    if (filePreviewStatus) {
+      filePreviewStatus.hidden = true;
+      filePreviewStatus.textContent = "";
+    }
+    renderFilePreview(preview);
+  } catch (error) {
+    showFilePreviewStatus(error?.message || "Preview unavailable");
+  }
+}
+
+function handleMessageFileRefClick(event) {
+  const trigger = event?.target?.closest?.(".message-file-ref[data-file-ref-id]");
+  if (!trigger) return;
+  event.preventDefault();
+  const refId = String(trigger.dataset.fileRefId || "").trim();
+  if (!refId || !activeChatId) return;
+  void openFilePreviewByRef(refId);
 }
 
 const bootstrapAuthController = bootstrapAuthHelpers.createController({
@@ -706,10 +842,11 @@ function syncSelectionQuoteAction() {
   });
 }
 
-function renderBody(container, rawText) {
+function renderBody(container, rawText, { fileRefs = null } = {}) {
   renderTraceHelpers.renderBody(container, rawText, {
     cleanDisplayTextFn: cleanDisplayText,
     escapeHtmlFn: escapeHtml,
+    fileRefs,
   });
 }
 
@@ -1395,6 +1532,7 @@ const chatAdminController = chatAdminHelpers.createController({
   chatLabel,
   getActiveChatId: () => Number(activeChatId),
   openChat,
+  onLatencyByChatMutated: persistLatencyByChatToStorage,
 });
 
 const shellUiController = shellUiHelpers.createController({
@@ -2103,7 +2241,81 @@ messageActionsHelpers.bindMessageCopyHandler({
   normalizeText: normalizeQuoteSelection,
   copyTextToClipboard,
 });
+messagesEl?.addEventListener("click", handleMessageFileRefClick);
+filePreviewClose?.addEventListener("click", closeFilePreviewModal);
+filePreviewModal?.addEventListener?.("cancel", (event) => {
+  event.preventDefault();
+  closeFilePreviewModal();
+});
 selectionQuoteController.bind();
+
+let tabContextTargetChatId = null;
+
+function closeChatTabContextMenu() {
+  tabContextTargetChatId = null;
+  if (!chatTabContextMenu) return;
+  chatTabContextMenu.hidden = true;
+}
+
+function openChatTabContextMenu(chatId, clientX, clientY) {
+  if (!chatTabContextMenu) return;
+  tabContextTargetChatId = Number(chatId) || null;
+  if (!tabContextTargetChatId) {
+    closeChatTabContextMenu();
+    return;
+  }
+
+  const viewportWidth = Number(window.innerWidth || 0);
+  const viewportHeight = Number(window.innerHeight || 0);
+  const menuWidth = 172;
+  const menuHeight = 44;
+  const left = Math.max(8, Math.min(Number(clientX || 0), Math.max(8, viewportWidth - menuWidth - 8)));
+  const top = Math.max(8, Math.min(Number(clientY || 0), Math.max(8, viewportHeight - menuHeight - 8)));
+
+  chatTabContextMenu.style.left = `${left}px`;
+  chatTabContextMenu.style.top = `${top}px`;
+  chatTabContextMenu.hidden = false;
+}
+
+function handleTabOverflowTriggerClick(event) {
+  const trigger = event?.target?.closest?.('[data-chat-tab-menu-trigger]');
+  if (!trigger) return;
+
+  const tab = trigger.closest('.chat-tab');
+  const chatId = Number(tab?.dataset?.chatId || 0);
+  if (!chatId || chatId !== Number(activeChatId)) {
+    closeChatTabContextMenu();
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const existingTargetId = Number(tabContextTargetChatId || 0);
+  const isAlreadyOpenForSameChat = !chatTabContextMenu?.hidden && existingTargetId === chatId;
+  if (isAlreadyOpenForSameChat) {
+    closeChatTabContextMenu();
+    return;
+  }
+
+  const rect = trigger.getBoundingClientRect();
+  openChatTabContextMenu(chatId, rect.right - 6, rect.bottom + 6);
+}
+
+async function handleTabContextForkClick(event) {
+  event.preventDefault();
+  const chatId = Number(tabContextTargetChatId || 0);
+  closeChatTabContextMenu();
+  if (!chatId) return;
+  await chatAdminController.forkChatFrom(chatId);
+}
+
+function handleGlobalChatContextMenuDismiss(event) {
+  if (chatTabContextMenu?.hidden) return;
+  const target = event?.target || null;
+  if (target && chatTabContextMenu?.contains?.(target)) return;
+  closeChatTabContextMenu();
+}
 
 function getOrderedChatIds() {
   return keyboardShortcutsHelpers.getOrderedChatIds(chats);
@@ -2300,6 +2512,21 @@ async function handleVisibilityChange() {
 function installVisibilitySkinLifecycle() {
   return visibilitySkinController.installLifecycleListeners();
 }
+
+tabsEl?.addEventListener?.("click", handleTabOverflowTriggerClick, true);
+chatTabContextFork?.addEventListener?.("click", (event) => {
+  void handleTabContextForkClick(event);
+});
+document?.addEventListener?.("pointerdown", handleGlobalChatContextMenuDismiss, true);
+document?.addEventListener?.("click", handleGlobalChatContextMenuDismiss, true);
+window?.addEventListener?.("blur", closeChatTabContextMenu);
+window?.addEventListener?.("resize", closeChatTabContextMenu);
+window?.addEventListener?.("scroll", closeChatTabContextMenu, true);
+document?.addEventListener?.("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeChatTabContextMenu();
+  }
+});
 
 installCoreEventBindings();
 installActionButtonBindings();

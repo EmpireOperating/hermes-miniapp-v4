@@ -116,3 +116,45 @@ test('scrollMessagesByArrow uses bounded proportional step', () => {
   keyboard.scrollMessagesByArrow(messagesEl, 'up');
   assert.equal(messagesEl.scrollTop, 10);
 });
+
+test('handleTabClick ignores overflow trigger clicks', () => {
+  const opened = [];
+  const event = {
+    target: {
+      closest(selector) {
+        if (selector === '[data-chat-tab-menu-trigger]') {
+          return { dataset: { chatId: '5' } };
+        }
+        return null;
+      },
+    },
+  };
+
+  keyboard.handleTabClick(event, {
+    activeChatId: 4,
+    openChat: (chatId) => opened.push(chatId),
+  });
+
+  assert.deepEqual(opened, []);
+});
+
+test('handleTabClick opens selected chat when clicking a non-active tab', () => {
+  const opened = [];
+  const tab = { dataset: { chatId: '8' } };
+  const event = {
+    target: {
+      closest(selector) {
+        if (selector === '[data-chat-tab-menu-trigger]') return null;
+        if (selector === '.chat-tab') return tab;
+        return null;
+      },
+    },
+  };
+
+  keyboard.handleTabClick(event, {
+    activeChatId: 4,
+    openChat: (chatId) => opened.push(chatId),
+  });
+
+  assert.deepEqual(opened, [8]);
+});

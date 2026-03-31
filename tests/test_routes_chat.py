@@ -87,6 +87,31 @@ def test_pin_close_and_reopen_chat(monkeypatch, tmp_path) -> None:
     assert any(chat["id"] == feature_chat.id for chat in reopen_payload["chats"])
 
 
+def test_fork_chat_creates_new_chat_with_source_history(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    source_chat = server.store.create_chat("123", "Feature")
+    server.store.add_message("123", source_chat.id, "operator", "check /tmp/source.py:7")
+    server.store.add_message("123", source_chat.id, "hermes", "ack")
+
+    response = client.post(
+        "/api/chats/fork",
+        json={"init_data": "ok", "chat_id": source_chat.id, "title": "Feature alt"},
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["chat"]["id"] != source_chat.id
+    assert payload["chat"]["title"] == "Feature alt"
+    assert payload["active_chat_id"] == payload["chat"]["id"]
+    assert payload["forked_from_chat_id"] == source_chat.id
+    assert [turn["body"] for turn in payload["history"]] == ["check /tmp/source.py:7", "ack"]
+    assert len(payload["history"][0].get("file_refs") or []) == 1
+    assert any(chat["id"] == source_chat.id for chat in payload["chats"])
+    assert any(chat["id"] == payload["chat"]["id"] for chat in payload["chats"])
+
+
 def test_chats_status_returns_pinned_chats(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -340,6 +365,12 @@ def test_reopen_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None
     server, client = _authed_client(monkeypatch, tmp_path)
 
     _assert_missing_chat_404(client, "/api/chats/reopen")
+
+
+def test_fork_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    _assert_missing_chat_404(client, "/api/chats/fork")
 
 
 def test_clear_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:

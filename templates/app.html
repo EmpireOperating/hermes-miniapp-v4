@@ -114,6 +114,9 @@
 
           <div class="tabs-wrap">
             <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Chat tabs"></div>
+            <div id="chat-tab-context-menu" class="chat-tab-context-menu" role="menu" aria-label="Chat tab actions" hidden>
+              <button type="button" id="chat-tab-context-fork" class="chat-tab-context-menu__item" role="menuitem">Fork chat</button>
+            </div>
           </div>
 
           <div id="tool-stream" class="tool-stream" aria-live="polite" aria-label="Live tool activity" hidden>
@@ -182,6 +185,18 @@
       </form>
     </dialog>
 
+    <dialog id="file-preview-modal" class="modal file-preview-modal" aria-labelledby="file-preview-title">
+      <div class="modal__card file-preview-modal__card">
+        <h2 id="file-preview-title" class="modal__title">File preview</h2>
+        <p id="file-preview-path" class="modal__hint file-preview-modal__path"></p>
+        <p id="file-preview-status" class="modal__hint file-preview-modal__status" hidden></p>
+        <div id="file-preview-lines" class="file-preview-lines" role="region" aria-live="polite" aria-label="File preview"></div>
+        <div class="modal__actions">
+          <button type="button" id="file-preview-close" class="action-button">Close</button>
+        </div>
+      </div>
+    </dialog>
+
     <dialog id="dev-auth-modal" class="modal" aria-labelledby="dev-auth-modal-title">
       <form method="dialog" id="dev-auth-form" class="modal__card">
         <h2 id="dev-auth-modal-title" class="modal__title">Dev sign-in</h2>
@@ -217,6 +232,7 @@
         <span class="chat-tab__pin" aria-hidden="true"></span>
         <span class="chat-tab__title"></span>
         <span class="chat-tab__badge"></span>
+        <span class="chat-tab__overflow" data-chat-tab-menu-trigger role="button" aria-label="Chat actions" title="Chat actions" hidden>⋮</span>
       </button>
     </template>
 

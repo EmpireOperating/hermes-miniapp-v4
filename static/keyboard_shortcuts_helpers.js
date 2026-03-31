@@ -28,6 +28,7 @@
   }
 
   function handleTabClick(event, { activeChatId, openChat }) {
+    if (event?.target?.closest?.("[data-chat-tab-menu-trigger]")) return;
     const tab = event.target.closest(".chat-tab");
     if (!tab) return;
     const chatId = Number(tab.dataset.chatId);

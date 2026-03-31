@@ -228,6 +228,110 @@ test('createLatencyController syncActiveLatencyChip resets to placeholder when a
   ]);
 });
 
+test('latency storage helpers persist and restore per-chat values', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, value) => storage.set(key, String(value)),
+  };
+  const latencyByChat = new Map([
+    [7, '88ms'],
+    [19, '2.4s · live'],
+  ]);
+
+  const storedCount = runtime.persistLatencyByChatToStorage({
+    localStorageRef,
+    storageKey: 'latency-test',
+    latencyByChat,
+    nowMs: 2_000,
+  });
+  assert.equal(storedCount, 2);
+
+  const restored = new Map();
+  const loadedCount = runtime.loadLatencyByChatFromStorage({
+    localStorageRef,
+    storageKey: 'latency-test',
+    latencyByChat: restored,
+    nowMs: 2_500,
+    maxAgeMs: 1_000,
+  });
+
+  assert.equal(loadedCount, 2);
+  assert.deepEqual([...restored.entries()], [
+    [7, '88ms'],
+    [19, '2.4s · live'],
+  ]);
+});
+
+test('latency storage helpers drop expired entries by ttl', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, value) => storage.set(key, String(value)),
+  };
+
+  storage.set('latency-test', JSON.stringify({
+    '7': { value: '90ms', ts: 10_000 },
+    '19': { value: '1.9s', ts: 1_000 },
+    '44': 'legacy-no-timestamp',
+  }));
+
+  const restored = new Map();
+  const loadedCount = runtime.loadLatencyByChatFromStorage({
+    localStorageRef,
+    storageKey: 'latency-test',
+    latencyByChat: restored,
+    nowMs: 20_000,
+    maxAgeMs: 5_000,
+  });
+
+  assert.equal(loadedCount, 0);
+  assert.deepEqual([...restored.entries()], []);
+
+  const persistedCount = runtime.persistLatencyByChatToStorage({
+    localStorageRef,
+    storageKey: 'latency-test',
+    latencyByChat: new Map([[7, '91ms']]),
+    nowMs: 21_000,
+  });
+  assert.equal(persistedCount, 1);
+
+  const persistedPayload = JSON.parse(storage.get('latency-test'));
+  assert.deepEqual(persistedPayload, {
+    '7': { value: '91ms', ts: 21_000 },
+  });
+});
+
+test('latency storage helpers preserve timestamp for unchanged entries', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, value) => storage.set(key, String(value)),
+  };
+
+  storage.set('latency-test', JSON.stringify({
+    '7': { value: '88ms', ts: 8_000 },
+    '19': { value: '1.1s', ts: 9_000 },
+  }));
+
+  const persistedCount = runtime.persistLatencyByChatToStorage({
+    localStorageRef,
+    storageKey: 'latency-test',
+    latencyByChat: new Map([
+      [7, '88ms'],
+      [19, '2.2s'],
+    ]),
+    nowMs: 10_000,
+  });
+
+  assert.equal(persistedCount, 2);
+  const persistedPayload = JSON.parse(storage.get('latency-test'));
+  assert.deepEqual(persistedPayload, {
+    '7': { value: '88ms', ts: 8_000 },
+    '19': { value: '2.2s', ts: 10_000 },
+  });
+});
+
 test('createStreamActivityController syncActivePendingStatus and stream active markers preserve chip contract', () => {
   const chats = new Map([[7, { pending: true, title: 'Project Helios' }]]);
   const streamChip = { textContent: '', title: '' };

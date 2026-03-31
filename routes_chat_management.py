@@ -223,6 +223,47 @@ def register_chat_management_routes(
             "pinned_chats": pinned_chats,
         }, 200
 
+    @api_bp.post("/chats/fork")
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def fork_chat(payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        raw_title = payload.get("title")
+        requested_title: str | None = None
+        if raw_title is not None:
+            if not isinstance(raw_title, str):
+                return json_error_fn("Invalid title. Expected string.", 400)
+            cleaned = raw_title.strip()
+            if cleaned:
+                try:
+                    requested_title = validated_title_fn(cleaned, cleaned)
+                except ValueError as exc:
+                    return json_error_fn(str(exc), 400)
+
+        store = store_getter()
+        forked_chat = store.fork_chat(user_id=user_id, source_chat_id=chat_id, title=requested_title)
+        store.set_active_chat(user_id=user_id, chat_id=forked_chat.id)
+        store.mark_chat_read(user_id=user_id, chat_id=forked_chat.id)
+
+        history = _chat_history(user_id=user_id, chat_id=forked_chat.id, limit=120)
+        chats = _serialize_chats(user_id=user_id)
+        pinned_chats = _serialize_pinned_chats(user_id=user_id)
+
+        return {
+            "ok": True,
+            "chat": serialize_chat_fn(forked_chat),
+            "active_chat_id": forked_chat.id,
+            "forked_from_chat_id": chat_id,
+            "history": history,
+            "chats": chats,
+            "pinned_chats": pinned_chats,
+        }, 201
+
     @api_bp.post("/chats/clear")
     @guard_json_payload_user_chat_route(
         request_payload_fn=request_payload_fn,
