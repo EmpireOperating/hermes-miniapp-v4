@@ -290,6 +290,9 @@
       if (!patchedAssistant || !patchedToolTrace) {
         syncActiveMessageView(chatId, { preserveViewport: true });
       }
+      // Hydrate from persisted history so server-extracted metadata (e.g. file_refs/ref_id)
+      // is attached to the finalized assistant turn in the active view.
+      void hydrateChatAfterGracefulResumeCompletion(chatId);
       setChatLatency(chatId, formatLatency(payload.latency_ms));
       setStreamStatus(`Reply received in ${chatLabel(chatId)}`);
       setActivityChip(streamChip, `stream: complete · ${compactChatLabel(chatId)}`);

@@ -111,6 +111,7 @@ function buildHarness(overrides = {}) {
   const setActiveCalls = [];
   const syncPinCalls = [];
   const promptCalls = [];
+  const latencyMutationCalls = [];
   let activeChatId = 7;
 
   const controller = chatAdmin.createController({
@@ -159,6 +160,18 @@ function buildHarness(overrides = {}) {
           pinned_chats: [{ id: 11, title: 'Pinned only', is_pinned: true }],
         };
       }
+      if (path === '/api/chats/fork') {
+        return {
+          chat: { id: 19, title: payload.title || 'Current (fork)', is_pinned: false },
+          active_chat_id: 19,
+          history: [{ id: 200, body: 'old' }],
+          chats: [
+            { id: 7, title: '[bug]Current', is_pinned: true },
+            { id: 19, title: payload.title || 'Current (fork)', is_pinned: false },
+          ],
+          pinned_chats: [{ id: 7, title: '[bug]Current', is_pinned: true }],
+        };
+      }
       if (path === '/api/chats/pin' || path === '/api/chats/unpin') {
         return {
           chat: { id: 7, title: 'Current', is_pinned: path === '/api/chats/pin' },
@@ -200,6 +213,9 @@ function buildHarness(overrides = {}) {
     openChat: async (chatId) => {
       openChatCalls.push(Number(chatId));
     },
+    onLatencyByChatMutated: (mapRef) => {
+      latencyMutationCalls.push(new Map(mapRef));
+    },
     ...overrides,
   });
 
@@ -229,6 +245,7 @@ function buildHarness(overrides = {}) {
     setActiveCalls,
     syncPinCalls,
     promptCalls,
+    latencyMutationCalls,
     setActiveChatId(value) {
       activeChatId = Number(value);
     },
@@ -287,6 +304,42 @@ test('askForChatTitle focuses input synchronously before timeout retry', async (
   assert.equal(result, null);
 });
 
+test('tag toggle interactions preserve title-input focus for mobile keyboard continuity', async () => {
+  const harness = buildHarness();
+
+  const titlePromise = harness.controller.askForChatTitle({
+    mode: 'rename',
+    currentTitle: '[bug]Current',
+    defaultTitle: 'Current',
+  });
+
+  const focusBeforeToggle = harness.chatTitleInput.focusCalls;
+  harness.chatTitleTagButtons[1].dispatch('mousedown', { currentTarget: harness.chatTitleTagButtons[1] });
+  harness.chatTitleTagButtons[1].dispatch('click', { currentTarget: harness.chatTitleTagButtons[1] });
+  assert.equal(harness.chatTitleInput.focusCalls > focusBeforeToggle, true);
+
+  harness.chatTitleModal.dispatch('cancel');
+  const result = await titlePromise;
+  assert.equal(result, null);
+});
+
+test('touchstart tag toggle still applies selection when click is suppressed by mobile webview behavior', async () => {
+  const harness = buildHarness();
+
+  const titlePromise = harness.controller.askForChatTitle({
+    mode: 'rename',
+    currentTitle: 'Current',
+    defaultTitle: 'Current',
+  });
+
+  harness.chatTitleInput.value = 'Zero Tab';
+  harness.chatTitleTagButtons[1].dispatch('touchstart', { currentTarget: harness.chatTitleTagButtons[1] });
+  harness.chatTitleForm.dispatch('submit');
+
+  const result = await titlePromise;
+  assert.equal(result, '[feat]Zero Tab');
+});
+
 test('createChat uses modal title and hydrates the new active chat', async () => {
   const harness = buildHarness({
     chatTitleModal: null,
@@ -327,6 +380,8 @@ test('removeActiveChat keeps silent-close semantics and restores pinned snapshot
   assert.equal(harness.pinnedChats.get(7)?.is_pinned, true);
   assert.deepEqual(harness.clearedStreamState.map((entry) => entry.chatId), [7]);
   assert.equal(harness.latencyByChat.has(7), false);
+  assert.equal(harness.latencyMutationCalls.length, 1);
+  assert.equal(harness.latencyMutationCalls[0].has(7), false);
   assert.deepEqual(harness.setActiveCalls, [9]);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
   assert.deepEqual(harness.renderedMessages, [9]);
@@ -344,6 +399,22 @@ test('openPinnedChat reopens missing pinned chats before delegating to openChat'
   assert.deepEqual(harness.renderedTabs, ['tabs']);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
   assert.deepEqual(harness.openChatCalls, [11]);
+});
+
+test('forkChatFrom clones selected chat into a new active tab and hydrates history', async () => {
+  const harness = buildHarness();
+
+  await harness.controller.forkChatFrom(7);
+
+  assert.deepEqual(harness.apiCalls[0], {
+    path: '/api/chats/fork',
+    payload: { chat_id: 7, title: '[bug]Current (fork)' },
+  });
+  assert.deepEqual(harness.histories.get(19), [{ id: 200, body: 'old' }]);
+  assert.deepEqual(harness.setActiveCalls, [19]);
+  assert.deepEqual(harness.renderedMessages, [19]);
+  assert.deepEqual(harness.renderedTabs, ['tabs']);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
 });
 
 test('toggleActiveChatPin switches endpoint based on current pin state and refreshes controls', async () => {

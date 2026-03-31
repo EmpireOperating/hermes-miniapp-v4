@@ -91,6 +91,11 @@
       const badgeApplier = typeof customApplyBadgeState === "function" ? customApplyBadgeState : (badge, badgeState) => applyTabBadgeState({ badge, badgeState });
       badgeApplier(badgeEl, badgeResolver(chat));
     }
+
+    const overflowTrigger = node.querySelector("[data-chat-tab-menu-trigger]");
+    if (overflowTrigger) {
+      overflowTrigger.hidden = !isActive;
+    }
   }
 
   function removeMissingTabNodes({ tabNodes, nextIds }) {

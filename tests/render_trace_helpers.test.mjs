@@ -134,6 +134,70 @@ test('renderBody supports fenced and non-fenced text rendering', () => {
   assert.match(container.innerHTML, /<pre class="code-block" data-lang="js"><code>const x = 1;<\/code><\/pre>/);
 });
 
+test('renderBody linkifies known file refs in plain text', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceHelpers.renderBody(
+    container,
+    'Open /tmp/demo.py:12 please',
+    {
+      cleanDisplayTextFn,
+      escapeHtmlFn,
+      fileRefs: [{ ref_id: 'fr_1', raw_text: '/tmp/demo.py:12' }],
+    },
+  );
+
+  assert.match(container.innerHTML, /data-file-ref-id="fr_1"/);
+  assert.match(container.innerHTML, /message-file-ref/);
+});
+
+test('renderBody consumes refs once and preserves correct ref ids for repeated raw text', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceHelpers.renderBody(
+    container,
+    'Check /tmp/demo.py:90 then /tmp/demo.py:90 again',
+    {
+      cleanDisplayTextFn,
+      escapeHtmlFn,
+      fileRefs: [
+        { ref_id: 'fr_first', raw_text: '/tmp/demo.py:90' },
+        { ref_id: 'fr_second', raw_text: '/tmp/demo.py:90' },
+      ],
+    },
+  );
+
+  assert.match(container.innerHTML, /data-file-ref-id="fr_first"/);
+  assert.match(container.innerHTML, /data-file-ref-id="fr_second"/);
+  assert.match(container.innerHTML, /fr_first[\s\S]*fr_second/);
+});
+
+test('renderBody favors longest same-position match for overlapping refs like :9 vs :90', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceHelpers.renderBody(
+    container,
+    'Jump to /tmp/demo.py:90 now',
+    {
+      cleanDisplayTextFn,
+      escapeHtmlFn,
+      fileRefs: [
+        { ref_id: 'fr_line9', raw_text: '/tmp/demo.py:9' },
+        { ref_id: 'fr_line90', raw_text: '/tmp/demo.py:90' },
+      ],
+    },
+  );
+
+  assert.match(container.innerHTML, /data-file-ref-id="fr_line90"/);
+  assert.doesNotMatch(container.innerHTML, /data-file-ref-id="fr_line9"[^\s\S]*\/tmp\/demo\.py:90/);
+});
+
 test('renderToolTraceBody builds expandable trace and syncs collapsed state on toggle', () => {
   function createNode(tagName) {
     return {
@@ -239,14 +303,14 @@ test('renderMessageContent dispatches tool vs regular body renderers', () => {
     renderToolTraceBodyFn: (target, message) => calls.push(['tool', target, message.role]),
     renderBodyFn: (target, body) => calls.push(['body', target, body]),
   });
-  renderTraceHelpers.renderMessageContent(node, { role: 'assistant' }, 'hello', {
+  renderTraceHelpers.renderMessageContent(node, { role: 'assistant', file_refs: [{ ref_id: 'fr_1' }] }, 'hello', {
     renderToolTraceBodyFn: (target, message) => calls.push(['tool', target, message.role]),
-    renderBodyFn: (target, body) => calls.push(['body', target, body]),
+    renderBodyFn: (target, body, options) => calls.push(['body', target, body, options]),
   });
 
   assert.deepEqual(calls, [
     ['tool', bodyNode, 'tool'],
-    ['body', bodyNode, 'hello'],
+    ['body', bodyNode, 'hello', { fileRefs: [{ ref_id: 'fr_1' }] }],
   ]);
 });
 
@@ -400,18 +464,22 @@ test('patchVisiblePendingAssistant updates body and pending class when stream ta
     nextBody: 'updated',
     pendingState: true,
     messagesContainer: {},
-    history: [{ role: 'hermes' }],
+    history: [{ role: 'hermes', file_refs: [{ ref_id: 'fr_7' }] }],
   }, {
     isPatchPhaseAllowedFn: () => true,
-    findLatestAssistantHistoryMessageFn: () => ({ key: 'local:hermes:pending:t3:2', alternatePendingKey: 'local:hermes:sent:t3:2' }),
+    findLatestAssistantHistoryMessageFn: () => ({
+      key: 'local:hermes:pending:t3:2',
+      alternatePendingKey: 'local:hermes:sent:t3:2',
+      message: { file_refs: [{ ref_id: 'fr_7' }] },
+    }),
     findMessageNodeByKeyFn: () => node,
     renderTraceLogFn: () => {},
     preserveViewportDuringUiMutationFn: (fn) => fn(),
-    renderBodyFn: (target, body) => renderCalls.push([target, body]),
+    renderBodyFn: (target, body, options) => renderCalls.push([target, body, options]),
   });
 
   assert.equal(result, true);
-  assert.deepEqual(renderCalls, [[bodyNode, 'updated']]);
+  assert.deepEqual(renderCalls, [[bodyNode, 'updated', { fileRefs: [{ ref_id: 'fr_7' }] }]]);
   assert.deepEqual(toggles, [['message--pending', true]]);
 });
 

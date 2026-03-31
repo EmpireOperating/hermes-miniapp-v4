@@ -70,3 +70,44 @@ test('syncActiveTabSelection refreshes previous and next tabs when both exist', 
   assert.equal(renderCalls, 0);
   assert.deepEqual(refreshed, [1, 2]);
 });
+
+test('applyTabNodeState shows overflow trigger only on active tab', () => {
+  const badge = {
+    classList: { remove() {}, add() {} },
+    removeAttribute() {},
+    setAttribute() {},
+    textContent: '',
+  };
+  const overflow = { hidden: true };
+  const title = { textContent: '' };
+  const pin = { textContent: '' };
+  const node = {
+    classList: { toggle() {} },
+    setAttribute() {},
+    querySelector(selector) {
+      if (selector === '.chat-tab__badge') return badge;
+      if (selector === '.chat-tab__title') return title;
+      if (selector === '.chat-tab__pin') return pin;
+      if (selector === '[data-chat-tab-menu-trigger]') return overflow;
+      return null;
+    },
+  };
+
+  chatUi.applyTabNodeState({
+    node,
+    chat: { id: 12, title: 'Alpha', is_pinned: false },
+    activeChatId: 12,
+    pendingChats: new Set(),
+    unseenStreamChats: new Set(),
+  });
+  assert.equal(overflow.hidden, false);
+
+  chatUi.applyTabNodeState({
+    node,
+    chat: { id: 12, title: 'Alpha', is_pinned: false },
+    activeChatId: 7,
+    pendingChats: new Set(),
+    unseenStreamChats: new Set(),
+  });
+  assert.equal(overflow.hidden, true);
+});

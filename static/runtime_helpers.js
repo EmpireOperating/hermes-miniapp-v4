@@ -122,6 +122,101 @@
     return { nextMap: latencyByChat, chipText: null };
   }
 
+  function loadLatencyByChatFromStorage({
+    localStorageRef,
+    storageKey,
+    latencyByChat,
+    maxEntries = 200,
+    maxAgeMs = 24 * 60 * 60 * 1000,
+    nowMs = Date.now(),
+  }) {
+    try {
+      const raw = localStorageRef?.getItem?.(storageKey);
+      if (!raw) return 0;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return 0;
+
+      const now = Number(nowMs);
+      const ttl = Number(maxAgeMs);
+      const hasTtl = Number.isFinite(ttl) && ttl > 0;
+
+      let loaded = 0;
+      for (const [chatId, value] of Object.entries(parsed)) {
+        if (loaded >= maxEntries) break;
+        const key = normalizeChatId(chatId);
+        if (!key) continue;
+
+        let normalized = "";
+        let ts = 0;
+        if (value && typeof value === "object") {
+          normalized = String(value.value || "").trim();
+          ts = Number(value.ts || 0);
+        }
+
+        if (!normalized) continue;
+        if (hasTtl) {
+          if (!Number.isFinite(ts) || ts <= 0) continue;
+          if (Number.isFinite(now) && now - ts > ttl) continue;
+        }
+
+        latencyByChat.set(key, normalized);
+        loaded += 1;
+      }
+      return loaded;
+    } catch {
+      return 0;
+    }
+  }
+
+  function persistLatencyByChatToStorage({
+    localStorageRef,
+    storageKey,
+    latencyByChat,
+    maxEntries = 200,
+    nowMs = Date.now(),
+  }) {
+    try {
+      const now = Number(nowMs);
+      const timestamp = Number.isFinite(now) && now > 0 ? Math.floor(now) : Date.now();
+
+      let existing = {};
+      try {
+        const raw = localStorageRef?.getItem?.(storageKey);
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (parsed && typeof parsed === "object") {
+          existing = parsed;
+        }
+      } catch {
+        existing = {};
+      }
+
+      const payload = {};
+      let stored = 0;
+      for (const [chatId, value] of latencyByChat.entries()) {
+        if (stored >= maxEntries) break;
+        const key = normalizeChatId(chatId);
+        if (!key) continue;
+        const normalized = String(value || "").trim();
+        if (!normalized) continue;
+
+        const existingEntry = existing[String(key)];
+        const existingValue = String(existingEntry?.value || "").trim();
+        const existingTs = Number(existingEntry?.ts || 0);
+        const preserveTs = existingValue === normalized && Number.isFinite(existingTs) && existingTs > 0;
+
+        payload[String(key)] = {
+          value: normalized,
+          ts: preserveTs ? Math.floor(existingTs) : timestamp,
+        };
+        stored += 1;
+      }
+      localStorageRef?.setItem?.(storageKey, JSON.stringify(payload));
+      return stored;
+    } catch {
+      return 0;
+    }
+  }
+
   function createLatencyController({
     latencyByChat,
     getActiveChatId,
@@ -129,6 +224,7 @@
     preserveViewportDuringUiMutation,
     latencyChip,
     streamDebugLog,
+    onLatencyMapMutated,
   }) {
     function setChatLatency(chatId, text) {
       const activeChatId = normalizeChatId(getActiveChatId?.());
@@ -138,6 +234,8 @@
         text,
         activeChatId,
       });
+
+      onLatencyMapMutated?.(latencyByChat);
 
       streamDebugLog?.("latency-set", {
         chatId: Number(chatId),
@@ -366,6 +464,8 @@
     latestCompletedAssistantHapticKey,
     createHapticUnreadController,
     nextLatencyState,
+    loadLatencyByChatFromStorage,
+    persistLatencyByChatToStorage,
     createLatencyController,
     createStreamActivityController,
     mergeHydratedHistory,

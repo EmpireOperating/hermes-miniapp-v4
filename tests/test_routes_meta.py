@@ -747,3 +747,10 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert '/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}' in template
     assert '/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}' in template
     assert '/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}' in template
+    assert 'id="file-preview-modal"' in template
+    assert 'id="file-preview-lines"' in template
+    assert 'id="file-preview-close"' in template
+    assert 'messagesEl?.addEventListener("click", handleMessageFileRefClick);' in script
+    assert 'apiPost("/api/chats/file-preview", {' in script
+    assert 'filePreviewLines.scrollTop = 0;' in script
+    assert 'filePreviewLines.scrollTop = targetTop;' in script

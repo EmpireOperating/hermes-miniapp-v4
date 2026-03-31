@@ -10,15 +10,79 @@
     return null;
   }
 
+  function normalizeFileRefs(fileRefs) {
+    if (!Array.isArray(fileRefs)) return [];
+    const normalized = [];
+    for (const candidate of fileRefs) {
+      const refId = String(candidate?.ref_id || "").trim();
+      const rawText = String(candidate?.raw_text || "");
+      if (!refId || !rawText) continue;
+      normalized.push({ refId, rawText });
+    }
+    return normalized;
+  }
+
+  function chooseNextFileRefMatch(text, cursor, fileRefs) {
+    let bestMatch = null;
+    for (let fileRefIndex = 0; fileRefIndex < fileRefs.length; fileRefIndex += 1) {
+      const fileRef = fileRefs[fileRefIndex];
+      const matchIndex = text.indexOf(fileRef.rawText, cursor);
+      if (matchIndex < 0) continue;
+      if (!bestMatch) {
+        bestMatch = { ...fileRef, index: matchIndex, fileRefIndex };
+        continue;
+      }
+      if (matchIndex < bestMatch.index) {
+        bestMatch = { ...fileRef, index: matchIndex, fileRefIndex };
+        continue;
+      }
+      if (matchIndex === bestMatch.index && fileRef.rawText.length > bestMatch.rawText.length) {
+        bestMatch = { ...fileRef, index: matchIndex, fileRefIndex };
+      }
+    }
+    return bestMatch;
+  }
+
+  function renderPlainTextWithFileRefs(text, fileRefs, escapeHtmlFn) {
+    const refs = normalizeFileRefs(fileRefs);
+    if (!refs.length) {
+      return escapeHtmlFn(text).replace(/\n/g, "<br>");
+    }
+
+    let html = "";
+    let cursor = 0;
+    const remainingRefs = refs.slice();
+    while (cursor < text.length) {
+      const match = chooseNextFileRefMatch(text, cursor, remainingRefs);
+      if (!match) {
+        html += escapeHtmlFn(text.slice(cursor));
+        break;
+      }
+
+      if (match.index > cursor) {
+        html += escapeHtmlFn(text.slice(cursor, match.index));
+      }
+
+      const safeRefId = escapeHtmlFn(match.refId);
+      const safeLabel = escapeHtmlFn(match.rawText);
+      html += `<button type="button" class="message-file-ref" data-file-ref-id="${safeRefId}" aria-label="Open file preview for ${safeLabel}">${safeLabel}</button>`;
+      cursor = match.index + match.rawText.length;
+      remainingRefs.splice(match.fileRefIndex, 1);
+    }
+
+    return html.replace(/\n/g, "<br>");
+  }
+
   function renderBody(container, rawText, {
     cleanDisplayTextFn,
     escapeHtmlFn,
+    fileRefs = null,
   } = {}) {
     if (!container || typeof cleanDisplayTextFn !== "function" || typeof escapeHtmlFn !== "function") return;
     const text = cleanDisplayTextFn(rawText);
     const fenced = text.includes("```");
     if (!fenced) {
-      container.innerHTML = escapeHtmlFn(text).replace(/\n/g, "<br>");
+      container.innerHTML = renderPlainTextWithFileRefs(text, fileRefs, escapeHtmlFn);
       return;
     }
 
@@ -139,7 +203,7 @@
       renderToolTraceBodyFn(bodyNode, message);
       return;
     }
-    renderBodyFn(bodyNode, renderedBody);
+    renderBodyFn(bodyNode, renderedBody, { fileRefs: message?.file_refs || null });
   }
 
   function messageStableKey(message, index = 0) {
@@ -384,8 +448,12 @@
     const bodyNode = node.querySelector(".message__body");
     if (!bodyNode) return false;
 
+    const assistantFileRefs = Array.isArray(assistantTarget?.message?.file_refs)
+      ? assistantTarget.message.file_refs
+      : null;
+
     preserveViewportDuringUiMutationFn(() => {
-      renderBodyFn(bodyNode, nextBody || (pendingState ? "…" : ""));
+      renderBodyFn(bodyNode, nextBody || (pendingState ? "…" : ""), { fileRefs: assistantFileRefs });
       node.classList.toggle("message--pending", Boolean(pendingState));
     });
     return true;
