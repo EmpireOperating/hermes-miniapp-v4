@@ -35,6 +35,7 @@
       chatLabel,
       getActiveChatId,
       openChat,
+      onLatencyByChatMutated,
     } = deps;
 
     let chatTitleSelectedTag = 'none';
@@ -111,7 +112,11 @@
           chatTitleCancel.removeEventListener('click', onCancel);
           chatTitleModal.removeEventListener('cancel', onCancel);
           chatTitleModal.removeEventListener('close', onClose);
-          chatTitleTagButtons.forEach((button) => button.removeEventListener('click', onTagSelect));
+          chatTitleTagButtons.forEach((button) => {
+            button.removeEventListener('click', onTagSelect);
+            button.removeEventListener('mousedown', onTagMouseDown);
+            button.removeEventListener('touchstart', onTagTouchStart);
+          });
         };
 
         const finish = (value) => {
@@ -141,17 +146,42 @@
 
         const onClose = () => finish(null);
 
+        const applyTagSelection = (event) => {
+          const requestedTag = String(event?.currentTarget?.dataset?.chatTitleTag || 'none').toLowerCase();
+          setChatTitleSelectedTag(requestedTag);
+          // Keep focus in the title input so mobile keyboards stay open
+          // when toggling tags.
+          chatTitleInput.focus?.();
+        };
+
+        const onTagMouseDown = (event) => {
+          // Prevent focus transfer on mouse input so desktop/webview keyboards
+          // keep title-input focus while still allowing click to fire.
+          event?.preventDefault?.();
+          chatTitleInput.focus?.();
+        };
+
+        const onTagTouchStart = (event) => {
+          // In mobile webviews, preventDefault on touchstart can suppress click.
+          // Apply selection here so taps still switch tags even when click never fires.
+          event?.preventDefault?.();
+          applyTagSelection(event);
+        };
+
         const onTagSelect = (event) => {
           event.preventDefault();
-          const requestedTag = String(event.currentTarget?.dataset?.chatTitleTag || 'none').toLowerCase();
-          setChatTitleSelectedTag(requestedTag);
+          applyTagSelection(event);
         };
 
         chatTitleForm.addEventListener('submit', onSubmit);
         chatTitleCancel.addEventListener('click', onCancel);
         chatTitleModal.addEventListener('cancel', onCancel);
         chatTitleModal.addEventListener('close', onClose);
-        chatTitleTagButtons.forEach((button) => button.addEventListener('click', onTagSelect));
+        chatTitleTagButtons.forEach((button) => {
+          button.addEventListener('click', onTagSelect);
+          button.addEventListener('mousedown', onTagMouseDown);
+          button.addEventListener('touchstart', onTagTouchStart, { passive: false });
+        });
 
         const focusChatTitleInput = () => {
           // Mobile browsers are more reliable at raising the software keyboard
@@ -219,6 +249,7 @@
         unseenStreamChats,
       });
       latencyByChat.delete(Number(data.removed_chat_id));
+      onLatencyByChatMutated?.(latencyByChat);
       histories.set(Number(data.active_chat_id), data.history || []);
       upsertChat(data.active_chat);
       setActiveChatMeta(data.active_chat_id);
@@ -238,6 +269,30 @@
         renderPinnedChats();
       }
       await openChat(targetChatId);
+    }
+
+    async function forkChatFrom(chatId) {
+      const sourceChatId = Number(chatId);
+      if (!sourceChatId) return;
+
+      const sourceTitleRaw = String(chatLabel(sourceChatId) || `Chat ${sourceChatId}`).trim();
+      const parsed = parseTaggedChatTitle(sourceTitleRaw);
+      const sourceTitle = String(parsed.title || sourceTitleRaw || `Chat ${sourceChatId}`).trim();
+      const forkBaseTitle = `${sourceTitle} (fork)`;
+      const forkTitle = formatTaggedChatTitle(forkBaseTitle, parsed.tag);
+
+      const data = await apiPost('/api/chats/fork', { chat_id: sourceChatId, title: forkTitle });
+      syncChats(data.chats || []);
+      syncPinnedChats(data.pinned_chats || []);
+      upsertChat(data.chat);
+
+      const nextActiveChatId = Number(data.active_chat_id || data.chat?.id || 0);
+      if (!nextActiveChatId) return;
+      histories.set(nextActiveChatId, data.history || []);
+      setActiveChatMeta(nextActiveChatId);
+      renderTabs();
+      renderPinnedChats();
+      renderMessages(nextActiveChatId);
     }
 
     async function toggleActiveChatPin() {
@@ -282,6 +337,7 @@
       ensureSilentCloseTabAllowed,
       removeActiveChat,
       openPinnedChat,
+      forkChatFrom,
       toggleActiveChatPin,
       openSettingsModal,
       closeSettingsModal,

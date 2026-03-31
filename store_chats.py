@@ -120,6 +120,64 @@ class StoreChatsMixin:
             chat_id = int(cursor.lastrowid)
         return self.get_chat(user_id, chat_id)
 
+    def fork_chat(self, user_id: str, source_chat_id: int, title: str | None = None) -> ChatThread:
+        with self._connect() as conn:
+            self._ensure_chat_exists(conn, user_id, source_chat_id)
+            source = conn.execute(
+                "SELECT title FROM chat_threads WHERE user_id = ? AND id = ? LIMIT 1",
+                (user_id, source_chat_id),
+            ).fetchone()
+            source_title = str(source["title"] or "Chat") if source else "Chat"
+
+            cleaned_title = str(title or "").strip() or f"{source_title} (fork)"
+            if len(cleaned_title) > MAX_TITLE_LEN:
+                raise ValueError(f"Title exceeds {MAX_TITLE_LEN} characters")
+
+            cursor = conn.execute(
+                "INSERT INTO chat_threads (user_id, title, is_archived) VALUES (?, ?, 0)",
+                (user_id, cleaned_title),
+            )
+            fork_chat_id = int(cursor.lastrowid)
+
+            source_rows = conn.execute(
+                """
+                SELECT role, body
+                FROM chat_messages
+                WHERE user_id = ? AND chat_id = ?
+                ORDER BY id ASC
+                """,
+                (user_id, source_chat_id),
+            ).fetchall()
+
+            for row in source_rows:
+                role = str(row["role"])
+                body = str(row["body"])
+                insert_cursor = conn.execute(
+                    "INSERT INTO chat_messages (user_id, chat_id, role, body) VALUES (?, ?, ?, ?)",
+                    (user_id, fork_chat_id, role, body),
+                )
+                message_id = int(insert_cursor.lastrowid)
+                refs = extract_file_refs(body)
+                self._insert_message_file_refs(
+                    conn,
+                    user_id=user_id,
+                    chat_id=fork_chat_id,
+                    message_id=message_id,
+                    refs=refs,
+                )
+
+            last_message_row = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) AS max_id FROM chat_messages WHERE user_id = ? AND chat_id = ?",
+                (user_id, fork_chat_id),
+            ).fetchone()
+            last_read_message_id = int(last_message_row["max_id"] or 0) if last_message_row else 0
+            conn.execute(
+                "UPDATE chat_threads SET last_read_message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND id = ?",
+                (last_read_message_id, user_id, fork_chat_id),
+            )
+
+        return self.get_chat(user_id, fork_chat_id)
+
     def rename_chat(self, user_id: str, chat_id: int, title: str) -> ChatThread:
         cleaned = title.strip() or "Untitled"
         if len(cleaned) > MAX_TITLE_LEN:

@@ -157,6 +157,35 @@ def test_remove_chat_archives_thread_and_keeps_messages_while_hiding_it(tmp_path
     assert [chat.id for chat in store.list_chats(user_id)] == [first_chat_id]
 
 
+def test_fork_chat_clones_history_without_mutating_source_chat(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u4fork"
+    source_chat = store.create_chat(user_id, "Source")
+
+    store.add_message(user_id, source_chat.id, "operator", "review /tmp/demo.py:12")
+    store.add_message(user_id, source_chat.id, "hermes", "looks good")
+
+    forked_chat = store.fork_chat(user_id=user_id, source_chat_id=source_chat.id, title="Source (fork)")
+
+    assert forked_chat.id != source_chat.id
+    assert forked_chat.title == "Source (fork)"
+
+    source_history = store.get_history(user_id, source_chat.id)
+    fork_history = store.get_history(user_id, forked_chat.id)
+    assert [turn.role for turn in fork_history] == [turn.role for turn in source_history]
+    assert [turn.body for turn in fork_history] == [turn.body for turn in source_history]
+    assert len(fork_history) == 2
+
+    assert source_history[0].file_refs
+    assert fork_history[0].file_refs
+    assert source_history[0].file_refs[0]["raw_text"] == fork_history[0].file_refs[0]["raw_text"]
+    assert source_history[0].file_refs[0]["ref_id"] != fork_history[0].file_refs[0]["ref_id"]
+
+    store.add_message(user_id, forked_chat.id, "operator", "branch-only")
+    assert len(store.get_history(user_id, source_chat.id)) == 2
+    assert len(store.get_history(user_id, forked_chat.id)) == 3
+
+
 def test_pinned_chat_remains_recoverable_after_close_and_can_reopen(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u4b"
