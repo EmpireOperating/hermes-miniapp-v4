@@ -61,6 +61,25 @@ def test_remove_chat_returns_replacement_active_chat(monkeypatch, tmp_path) -> N
     assert server.store.get_turn_count("123", second_chat.id) == 1
 
 
+def test_remove_chat_can_return_no_active_chat_when_allow_empty_requested(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    only_chat_id = server.store.ensure_default_chat("123")
+    server.store.set_active_chat("123", only_chat_id)
+
+    response = client.post(
+        "/api/chats/remove",
+        json={"init_data": "ok", "chat_id": only_chat_id, "allow_empty": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["active_chat_id"] is None
+    assert payload["active_chat"] is None
+    assert payload["history"] == []
+    assert payload["chats"] == []
+
+
 def test_pin_close_and_reopen_chat(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 

@@ -84,6 +84,14 @@ def register_chat_management_routes(
             return False, None
         return None, json_error_fn("Invalid activate flag. Expected boolean.", 400)
 
+    def _parse_allow_empty_flag(payload: dict[str, object]) -> tuple[bool | None, tuple[dict[str, object], int] | None]:
+        raw_allow_empty = payload.get("allow_empty", False)
+        if isinstance(raw_allow_empty, bool):
+            return raw_allow_empty, None
+        if raw_allow_empty is None:
+            return False, None
+        return None, json_error_fn("Invalid allow_empty flag. Expected boolean.", 400)
+
     @api_bp.post("/chats")
     def create_chat() -> tuple[dict[str, object], int]:
         payload = request_payload_fn()
@@ -289,10 +297,28 @@ def register_chat_management_routes(
         not_found_error_fn=_json_not_found,
         should_map_fn=_is_chat_not_found_key_error,
     )
-    def remove_chat(_payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+    def remove_chat(payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        allow_empty, allow_empty_error = _parse_allow_empty_flag(payload)
+        if allow_empty_error:
+            return allow_empty_error
+
         store = store_getter()
         _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
-        next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id)
+        next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id, allow_empty=bool(allow_empty))
+
+        if not next_chat_id:
+            chats = _serialize_chats(user_id=user_id)
+            pinned_chats = _serialize_pinned_chats(user_id=user_id)
+            return {
+                "ok": True,
+                "removed_chat_id": chat_id,
+                "active_chat_id": None,
+                "active_chat": None,
+                "history": [],
+                "chats": chats,
+                "pinned_chats": pinned_chats,
+            }, 200
+
         history = _chat_history(user_id=user_id, chat_id=next_chat_id, limit=120)
         store.mark_chat_read(user_id=user_id, chat_id=next_chat_id)
         store.set_active_chat(user_id=user_id, chat_id=next_chat_id)

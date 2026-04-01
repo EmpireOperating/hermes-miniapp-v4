@@ -2,14 +2,15 @@
   function deriveComposerState({ activeChatId, pendingChats, chats, isAuthenticated }) {
     const key = Number(activeChatId);
     const pending = pendingChats.has(key) || Boolean(chats.get(key)?.pending);
+    const hasActiveChat = Boolean(activeChatId);
     return {
-      hasActiveChat: Boolean(activeChatId),
+      hasActiveChat,
       pending,
-      canPrompt: Boolean(isAuthenticated),
-      canSend: !pending && Boolean(isAuthenticated),
+      canPrompt: Boolean(isAuthenticated) && hasActiveChat,
+      canSend: hasActiveChat && !pending && Boolean(isAuthenticated),
       sendLabel: pending ? "Sending…" : "Send",
-      canRemove: !pending && Boolean(isAuthenticated) && Boolean(activeChatId),
-      canPin: !pending && Boolean(isAuthenticated) && Boolean(activeChatId),
+      canRemove: hasActiveChat && !pending && Boolean(isAuthenticated),
+      canPin: hasActiveChat && !pending && Boolean(isAuthenticated),
     };
   }
 

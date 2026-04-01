@@ -28,6 +28,7 @@
       syncChats,
       syncPinnedChats,
       setActiveChatMeta,
+      setNoActiveChatMeta,
       renderMessages,
       renderTabs,
       renderPinnedChats,
@@ -235,7 +236,7 @@
       ensureSilentCloseTabAllowed(activeChatId);
       const removedChatSnapshot = chats.get(activeChatId) || pinnedChats.get(activeChatId) || null;
       const removedWasPinned = Boolean(removedChatSnapshot?.is_pinned);
-      const data = await apiPost('/api/chats/remove', { chat_id: activeChatId });
+      const data = await apiPost('/api/chats/remove', { chat_id: activeChatId, allow_empty: true });
       syncChats(data.chats || []);
       syncPinnedChats(data.pinned_chats || []);
       if (removedWasPinned && !pinnedChats.has(activeChatId) && removedChatSnapshot) {
@@ -250,11 +251,19 @@
       });
       latencyByChat.delete(Number(data.removed_chat_id));
       onLatencyByChatMutated?.(latencyByChat);
-      histories.set(Number(data.active_chat_id), data.history || []);
+
+      const nextActiveChatId = Number(data.active_chat_id || 0);
+      if (!nextActiveChatId || !data.active_chat) {
+        setNoActiveChatMeta();
+        renderPinnedChats();
+        return;
+      }
+
+      histories.set(nextActiveChatId, data.history || []);
       upsertChat(data.active_chat);
-      setActiveChatMeta(data.active_chat_id);
+      setActiveChatMeta(nextActiveChatId);
       renderPinnedChats();
-      renderMessages(data.active_chat_id);
+      renderMessages(nextActiveChatId);
     }
 
     async function openPinnedChat(chatId) {

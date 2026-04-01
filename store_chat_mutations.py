@@ -78,10 +78,17 @@ def remove_chat(
     chat_id: int,
     cancel_open_jobs_for_chat_fn: Callable[[Connection], None],
     get_or_create_main_chat_id_fn: Callable[[Connection, str], int],
-) -> int:
+    first_unarchived_chat_id_fn: Callable[[Connection, str], int | None] | None = None,
+    allow_empty: bool = False,
+) -> int | None:
     cancel_open_jobs_for_chat_fn(conn)
     conn.execute(
         "UPDATE chat_threads SET is_archived = 1, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND id = ?",
         (user_id, chat_id),
     )
+    if allow_empty and callable(first_unarchived_chat_id_fn):
+        next_chat_id = first_unarchived_chat_id_fn(conn, user_id)
+        if next_chat_id is None:
+            return None
+        return int(next_chat_id)
     return int(get_or_create_main_chat_id_fn(conn, user_id))

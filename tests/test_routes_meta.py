@@ -712,7 +712,7 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     # Pinned chats should remain visible in the pinned section after close.
     assert 'const ok = await confirmAction(`Close chat' not in script
     assert "async function removeActiveChat()" in chat_admin_script
-    assert 'const data = await apiPost(\'/api/chats/remove\', { chat_id: activeChatId });' in chat_admin_script
+    assert 'const data = await apiPost(\'/api/chats/remove\', { chat_id: activeChatId, allow_empty: true });' in chat_admin_script
     assert 'const removedChatSnapshot = chats.get(activeChatId) || pinnedChats.get(activeChatId) || null;' in chat_admin_script
     assert 'if (removedWasPinned && !pinnedChats.has(activeChatId) && removedChatSnapshot) {' in chat_admin_script
 

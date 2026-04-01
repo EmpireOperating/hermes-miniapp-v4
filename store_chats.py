@@ -64,6 +64,18 @@ class StoreChatsMixin:
                 (user_id, user_id, chat_id),
             )
 
+    def clear_active_chat(self, user_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_preferences (user_id, skin, active_chat_id, updated_at)
+                VALUES (?, COALESCE((SELECT skin FROM user_preferences WHERE user_id = ?), 'terminal'), NULL, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id)
+                DO UPDATE SET active_chat_id = NULL, updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, user_id),
+            )
+
     def _first_unarchived_chat_id(self, conn, *, user_id: str) -> int | None:
         return first_unarchived_chat_id(conn, user_id=user_id)
 
@@ -95,7 +107,6 @@ class StoreChatsMixin:
         )
 
     def list_chats(self, user_id: str) -> list[ChatThread]:
-        self.ensure_default_chat(user_id)
         with self._connect() as conn:
             rows = self._select_chat_rows(
                 conn,
@@ -283,10 +294,10 @@ class StoreChatsMixin:
                 ),
             )
 
-    def remove_chat(self, user_id: str, chat_id: int) -> int:
+    def remove_chat(self, user_id: str, chat_id: int, *, allow_empty: bool = False) -> int | None:
         with self._connect() as conn:
             self._ensure_chat_exists(conn, user_id, chat_id)
-            return remove_chat_row(
+            next_chat_id = remove_chat_row(
                 conn,
                 user_id=user_id,
                 chat_id=chat_id,
@@ -300,7 +311,23 @@ class StoreChatsMixin:
                     active_conn,
                     user_id=active_user_id,
                 ),
+                first_unarchived_chat_id_fn=lambda active_conn, active_user_id: self._first_unarchived_chat_id(
+                    active_conn,
+                    user_id=active_user_id,
+                ),
+                allow_empty=allow_empty,
             )
+            if next_chat_id is None:
+                conn.execute(
+                    """
+                    INSERT INTO user_preferences (user_id, skin, active_chat_id, updated_at)
+                    VALUES (?, COALESCE((SELECT skin FROM user_preferences WHERE user_id = ?), 'terminal'), NULL, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id)
+                    DO UPDATE SET active_chat_id = NULL, updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (user_id, user_id),
+                )
+            return next_chat_id
 
     def list_pinned_chats(self, user_id: str) -> list[ChatThread]:
         with self._connect() as conn:

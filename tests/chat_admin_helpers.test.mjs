@@ -109,6 +109,7 @@ function buildHarness(overrides = {}) {
   const clearedStreamState = [];
   const openChatCalls = [];
   const setActiveCalls = [];
+  const setNoActiveCalls = [];
   const syncPinCalls = [];
   const promptCalls = [];
   const latencyMutationCalls = [];
@@ -204,6 +205,10 @@ function buildHarness(overrides = {}) {
       activeChatId = Number(chatId);
       setActiveCalls.push(Number(chatId));
     },
+    setNoActiveChatMeta: () => {
+      activeChatId = null;
+      setNoActiveCalls.push('none');
+    },
     renderMessages: (chatId) => renderedMessages.push(Number(chatId)),
     renderTabs: () => renderedTabs.push('tabs'),
     renderPinnedChats: () => renderedPinnedChats.push('pinned'),
@@ -243,6 +248,7 @@ function buildHarness(overrides = {}) {
     clearedStreamState,
     openChatCalls,
     setActiveCalls,
+    setNoActiveCalls,
     syncPinCalls,
     promptCalls,
     latencyMutationCalls,
@@ -373,7 +379,7 @@ test('removeActiveChat keeps silent-close semantics and restores pinned snapshot
 
   assert.deepEqual(harness.apiCalls[0], {
     path: '/api/chats/remove',
-    payload: { chat_id: 7 },
+    payload: { chat_id: 7, allow_empty: true },
   });
   assert.equal(harness.histories.has(7), false);
   assert.deepEqual(harness.histories.get(9), [{ id: 99, body: 'fresh' }]);
@@ -385,6 +391,37 @@ test('removeActiveChat keeps silent-close semantics and restores pinned snapshot
   assert.deepEqual(harness.setActiveCalls, [9]);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
   assert.deepEqual(harness.renderedMessages, [9]);
+});
+
+test('removeActiveChat can transition to explicit no-active-chat state', async () => {
+  const customApiCalls = [];
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      customApiCalls.push({ path, payload });
+      if (path === '/api/chats/remove') {
+        return {
+          removed_chat_id: 7,
+          active_chat_id: null,
+          active_chat: null,
+          chats: [],
+          pinned_chats: [],
+          history: [],
+        };
+      }
+      throw new Error(`unexpected api path ${path}`);
+    },
+  });
+
+  await harness.controller.removeActiveChat();
+
+  assert.deepEqual(customApiCalls[0], {
+    path: '/api/chats/remove',
+    payload: { chat_id: 7, allow_empty: true },
+  });
+  assert.deepEqual(harness.setNoActiveCalls, ['none']);
+  assert.deepEqual(harness.setActiveCalls, []);
+  assert.deepEqual(harness.renderedMessages, []);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
 });
 
 test('openPinnedChat reopens missing pinned chats before delegating to openChat', async () => {
