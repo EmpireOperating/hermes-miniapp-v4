@@ -1373,7 +1373,31 @@ function setActiveChatMeta(chatId, { fullTabRender = true, deferNonCritical = fa
     setDraft(previousActiveChatId, promptEl.value || "");
   }
 
-  activeChatId = Number(chatId);
+  const nextActiveChatId = Number(chatId || 0);
+  if (!nextActiveChatId) {
+    activeChatId = null;
+    promptEl.value = "";
+    activeChatName.textContent = "None";
+    panelTitle.textContent = "Conversation";
+    messagesEl.innerHTML = "";
+    const node = template.content.firstElementChild.cloneNode(true);
+    node.classList.add("message--system");
+    node.querySelector(".message__role").textContent = "system";
+    node.querySelector(".message__time").textContent = nowStamp();
+    renderBody(node.querySelector(".message__body"), "No chats open. Start a new chat to continue.");
+    messagesEl.appendChild(node);
+    historyCount.textContent = "0";
+    renderedChatId = null;
+    updateComposerState();
+    syncPinChatButton();
+    renderTabs();
+    syncActivePendingStatus();
+    syncActiveLatencyChip();
+    updateJumpLatestVisibility();
+    return;
+  }
+
+  activeChatId = nextActiveChatId;
   promptEl.value = getDraft(activeChatId);
   const chat = chats.get(activeChatId);
   const title = chat?.title || "Chat";
@@ -1399,6 +1423,10 @@ function setActiveChatMeta(chatId, { fullTabRender = true, deferNonCritical = fa
   } else {
     finalizeMeta();
   }
+}
+
+function setNoActiveChatMeta() {
+  setActiveChatMeta(null);
 }
 
 function updateComposerState() {
@@ -1525,6 +1553,7 @@ const chatAdminController = chatAdminHelpers.createController({
   syncChats,
   syncPinnedChats,
   setActiveChatMeta,
+  setNoActiveChatMeta,
   renderMessages,
   renderTabs,
   renderPinnedChats,

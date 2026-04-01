@@ -94,21 +94,29 @@
 
       (data.chats || []).forEach(upsertChat);
       syncPinnedChats(data.pinned_chats || []);
-      histories.set(Number(data.active_chat_id), data.history || []);
-      setActiveChatMeta(data.active_chat_id);
+      const activeId = Number(data.active_chat_id || 0);
+      if (!activeId) {
+        setActiveChatMeta(null);
+        renderPinnedChats();
+        syncDevAuthUi();
+        return;
+      }
+
+      histories.set(activeId, data.history || []);
+      setActiveChatMeta(activeId);
       renderPinnedChats();
-      renderMessages(data.active_chat_id);
+      renderMessages(activeId);
       warmChatHistoryCache();
-      if (Boolean(chats.get(Number(data.active_chat_id))?.pending) && !pendingChats.has(Number(data.active_chat_id))) {
-        void resumePendingChatStream(Number(data.active_chat_id));
+      if (Boolean(chats.get(activeId)?.pending) && !pendingChats.has(activeId)) {
+        void resumePendingChatStream(activeId);
       }
       if (!(data.history || []).length) {
-        addLocalMessage(data.active_chat_id, {
+        addLocalMessage(activeId, {
           role: "system",
           body: "You're all set. This chat is empty.",
           created_at: new Date().toISOString(),
         });
-        renderMessages(data.active_chat_id);
+        renderMessages(activeId);
       }
       syncDevAuthUi();
     }

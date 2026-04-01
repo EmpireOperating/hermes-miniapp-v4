@@ -137,6 +137,19 @@ def test_remove_last_visible_chat_creates_fresh_default_chat(tmp_path) -> None:
     assert store.get_turn_count(user_id, chat_id) == 1
 
 
+def test_remove_last_visible_chat_can_leave_empty_when_requested(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u5-empty"
+    chat_id = store.ensure_default_chat(user_id)
+    store.set_active_chat(user_id, chat_id)
+
+    next_chat_id = store.remove_chat(user_id, chat_id, allow_empty=True)
+
+    assert next_chat_id is None
+    assert store.list_chats(user_id) == []
+    assert store.get_active_chat(user_id) is None
+
+
 def test_remove_chat_cancels_open_jobs(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u5b"
