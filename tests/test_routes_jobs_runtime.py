@@ -311,7 +311,7 @@ def test_job_event_buffers_follow_configured_cap(monkeypatch, tmp_path) -> None:
     assert replayed[-1]["event"] == "done"
 
 
-def test_run_chat_job_keeps_running_job_fresh_during_silent_upstream_wait(monkeypatch, tmp_path) -> None:
+def test_run_chat_job_does_not_keepalive_touch_during_silent_upstream_wait(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
 
     user_id = "123"
@@ -323,7 +323,6 @@ def test_run_chat_job_keeps_running_job_fresh_during_silent_upstream_wait(monkey
     assert job is not None
 
     monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: False)
-    server.runtime.job_keepalive_interval_seconds = 0.5
 
     touch_calls: list[float] = []
     original_touch_job = server.store.touch_job
@@ -342,7 +341,9 @@ def test_run_chat_job_keeps_running_job_fresh_during_silent_upstream_wait(monkey
 
     server._run_chat_job(job)
 
-    assert len(touch_calls) >= 2
+    # One non-terminal meta event is published at job start; silent waits should not
+    # continuously refresh updated_at via keepalive-only touches.
+    assert len(touch_calls) == 1
 
 
 def test_touch_job_best_effort_records_failure_and_logs_warning(monkeypatch, tmp_path, caplog) -> None:

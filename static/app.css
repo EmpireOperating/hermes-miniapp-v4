@@ -75,11 +75,12 @@ html[data-skin="obsidian"] body {
   padding-bottom: max(18px, env(safe-area-inset-bottom));
 }
 
-.panel {
-  background: linear-gradient(180deg, var(--panel), var(--panel-2));
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  box-shadow: var(--shadow);
+.tool-stream {
+  display: none !important;
+  margin: 14px 18px 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 90%, black 10%);
   overflow: hidden;
 }
 
@@ -409,6 +410,14 @@ textarea:focus-visible {
 .action-button {
   color: var(--ink);
 }
+.action-button--subtle {
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+.action-button[disabled],
+.action-button--subtle[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .danger-button {
   border-color: rgba(255, 124, 92, 0.4);
   color: #ffd0c6;
@@ -638,10 +647,11 @@ textarea:focus-visible {
   }
 }
 .tool-stream {
+  display: none !important;
   margin: 14px 18px 0;
   border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
-  border-radius: 14px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, transparent), rgba(9, 11, 15, 0.88));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 90%, black 10%);
   overflow: hidden;
 }
 .tool-stream__header {
@@ -838,6 +848,16 @@ textarea:focus-visible {
 }
 .file-preview-modal__status {
   color: #ffd0c6;
+}
+.file-preview-modal__controls {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.file-preview-modal__controls .action-button {
+  flex: 1 1 180px;
 }
 .file-preview-lines {
   border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);

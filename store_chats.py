@@ -76,6 +76,20 @@ class StoreChatsMixin:
                 (user_id, user_id),
             )
 
+    def has_explicit_empty_chat_state(self, user_id: str) -> bool:
+        with self._connect() as conn:
+            pref_row = conn.execute(
+                "SELECT 1 FROM user_preferences WHERE user_id = ? AND active_chat_id IS NULL LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if not pref_row:
+                return False
+            chat_row = conn.execute(
+                "SELECT 1 FROM chat_threads WHERE user_id = ? AND is_archived = 0 LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        return chat_row is None
+
     def _first_unarchived_chat_id(self, conn, *, user_id: str) -> int | None:
         return first_unarchived_chat_id(conn, user_id=user_id)
 
@@ -160,18 +174,9 @@ class StoreChatsMixin:
             for row in source_rows:
                 role = str(row["role"])
                 body = str(row["body"])
-                insert_cursor = conn.execute(
+                conn.execute(
                     "INSERT INTO chat_messages (user_id, chat_id, role, body) VALUES (?, ?, ?, ?)",
                     (user_id, fork_chat_id, role, body),
-                )
-                message_id = int(insert_cursor.lastrowid)
-                refs = extract_file_refs(body)
-                self._insert_message_file_refs(
-                    conn,
-                    user_id=user_id,
-                    chat_id=fork_chat_id,
-                    message_id=message_id,
-                    refs=refs,
                 )
 
             last_message_row = conn.execute(

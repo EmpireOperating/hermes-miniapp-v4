@@ -151,6 +151,87 @@ test('renderBody linkifies known file refs in plain text', () => {
 
   assert.match(container.innerHTML, /data-file-ref-id="fr_1"/);
   assert.match(container.innerHTML, /message-file-ref/);
+  assert.doesNotMatch(container.innerHTML, /data-file-path=/);
+});
+
+test('renderBody preserves file-ref clickability across fenced blocks', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceHelpers.renderBody(
+    container,
+    'See miniapp_config.py:1\n```js\nconst path = "miniapp_config.py:1";\n```',
+    {
+      cleanDisplayTextFn,
+      escapeHtmlFn,
+      fileRefs: [{ ref_id: 'fr_2', raw_text: 'miniapp_config.py:1' }],
+    },
+  );
+
+  assert.match(container.innerHTML, /data-file-ref-id="fr_2"/);
+  assert.match(container.innerHTML, /<pre class="code-block" data-lang="js"><code>/);
+});
+
+test('renderBody does not linkify plain text paths without metadata or allowed roots', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceHelpers.renderBody(
+    container,
+    'Try /home/hermes-agent/workspace/active/hermes_miniapp_v4/miniapp_config.py:1 now',
+    {
+      cleanDisplayTextFn,
+      escapeHtmlFn,
+      fileRefs: null,
+      allowedRoots: [],
+    },
+  );
+
+  assert.doesNotMatch(container.innerHTML, /message-file-ref/);
+  assert.match(container.innerHTML, /\/home\/hermes-agent\/workspace\/active\/hermes_miniapp_v4\/miniapp_config.py:1/);
+});
+
+test('renderBody does not linkify plain text paths without server metadata even when allowed roots are provided', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceHelpers.renderBody(
+    container,
+    'Open /home/hermes-agent/workspace/active/hermes_miniapp_v4/miniapp_config.py:1 and /tmp/outside.py:1',
+    {
+      cleanDisplayTextFn,
+      escapeHtmlFn,
+      fileRefs: null,
+      allowedRoots: ['/home/hermes-agent/workspace/active/hermes_miniapp_v4'],
+    },
+  );
+
+  assert.doesNotMatch(container.innerHTML, /message-file-ref/);
+  assert.match(container.innerHTML, /\/home\/hermes-agent\/workspace\/active\/hermes_miniapp_v4\/miniapp_config.py:1/);
+  assert.match(container.innerHTML, /\/tmp\/outside.py:1/);
+});
+
+test('renderBody does not linkify file-like text when metadata is absent', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceHelpers.renderBody(
+    container,
+    'Use src/routes/chat.py:22 and ./static/app.js#L90-L92 for this fix',
+    {
+      cleanDisplayTextFn,
+      escapeHtmlFn,
+      fileRefs: null,
+    },
+  );
+
+  assert.doesNotMatch(container.innerHTML, /message-file-ref/);
+  assert.match(container.innerHTML, /src\/routes\/chat.py:22/);
+  assert.match(container.innerHTML, /\.\/static\/app.js#L90-L92/);
 });
 
 test('renderBody consumes refs once and preserves correct ref ids for repeated raw text', () => {
@@ -198,36 +279,77 @@ test('renderBody favors longest same-position match for overlapping refs like :9
   assert.doesNotMatch(container.innerHTML, /data-file-ref-id="fr_line9"[^\s\S]*\/tmp\/demo\.py:90/);
 });
 
-test('renderToolTraceBody builds expandable trace and syncs collapsed state on toggle', () => {
-  function createNode(tagName) {
-    return {
-      tagName,
-      className: '',
-      textContent: '',
-      innerHTML: '',
-      open: false,
-      children: [],
-      listeners: {},
-      appendChild(child) {
-        this.children.push(child);
-      },
-      addEventListener(name, cb) {
-        this.listeners[name] = cb;
-      },
-    };
-  }
+function createToolTraceNode(tagName) {
+  return {
+    tagName,
+    className: '',
+    textContent: '',
+    innerHTML: '',
+    open: false,
+    children: [],
+    listeners: {},
+    parentNode: null,
+    scrollTop: undefined,
+    scrollHeight: undefined,
+    clientHeight: undefined,
+    appendChild(child) {
+      child.parentNode = this;
+      this.children.push(child);
+      if (String(this.className || '') === 'tool-trace__lines') {
+        const nextScrollHeight = Number(this.scrollHeight) || 0;
+        this.scrollHeight = nextScrollHeight + 100;
+        if (!Number.isFinite(Number(this.clientHeight))) {
+          this.clientHeight = 200;
+        }
+      }
+    },
+    addEventListener(name, cb) {
+      this.listeners[name] = cb;
+    },
+    querySelector(selector) {
+      if (!String(selector || '').startsWith('.')) return null;
+      const className = String(selector).slice(1);
+      const stack = [...this.children];
+      while (stack.length) {
+        const current = stack.shift();
+        if (String(current?.className || '') === className) {
+          return current;
+        }
+        if (Array.isArray(current?.children) && current.children.length) {
+          stack.unshift(...current.children);
+        }
+      }
+      return null;
+    },
+  };
+}
 
+test('renderToolTraceBody builds expandable trace, syncs collapsed state on toggle, and restores scroll position', () => {
   const documentObject = {
     createElement(tagName) {
-      return createNode(tagName);
+      return createToolTraceNode(tagName);
+    },
+  };
+  const windowScrollCalls = [];
+  const windowObject = {
+    scrollY: 180,
+    scrollTo(x, y) {
+      windowScrollCalls.push([x, y]);
+    },
+    requestAnimationFrame(cb) {
+      cb();
     },
   };
 
-  const container = createNode('div');
+  const scroller = createToolTraceNode('section');
+  scroller.scrollTop = 240;
+  const container = createToolTraceNode('div');
+  scroller.appendChild(container);
   const message = { body: 'step 1\nstep 2', pending: true, collapsed: false };
   renderTraceHelpers.renderToolTraceBody(container, message, {
     cleanDisplayTextFn: (value) => String(value || ''),
     documentObject,
+    windowObject,
   });
 
   assert.equal(container.children.length, 1);
@@ -235,9 +357,93 @@ test('renderToolTraceBody builds expandable trace and syncs collapsed state on t
   assert.equal(details.className, 'tool-trace');
   assert.equal(details.children[0].textContent, 'Tool activity (2) · live');
 
+  details.children[0].listeners.click();
+  scroller.scrollTop = 999;
   details.open = false;
   details.listeners.toggle();
   assert.equal(message.collapsed, true);
+  assert.equal(scroller.scrollTop, 240);
+  assert.deepEqual(windowScrollCalls, [[0, 180]]);
+});
+
+test('renderToolTraceBody preserves inner tool list scroll position across rerenders when reading older entries', () => {
+  const documentObject = {
+    createElement(tagName) {
+      return createToolTraceNode(tagName);
+    },
+  };
+  const windowObject = {
+    scrollY: 0,
+    scrollTo() {},
+    requestAnimationFrame(cb) {
+      cb();
+    },
+  };
+  const container = createToolTraceNode('div');
+
+  const message = { body: 'step 1\nstep 2\nstep 3', pending: true, collapsed: false };
+  renderTraceHelpers.renderToolTraceBody(container, message, {
+    cleanDisplayTextFn: (value) => String(value || ''),
+    documentObject,
+    windowObject,
+  });
+
+  const firstDetails = container.children[0];
+  const firstList = firstDetails.children[1];
+  firstList.scrollTop = 140;
+  firstList.scrollHeight = 600;
+  firstList.clientHeight = 200;
+
+  message.body = 'step 1\nstep 2\nstep 3\nstep 4';
+  renderTraceHelpers.renderToolTraceBody(container, message, {
+    cleanDisplayTextFn: (value) => String(value || ''),
+    documentObject,
+    windowObject,
+  });
+
+  const rerenderedDetails = container.children[container.children.length - 1];
+  const rerenderedList = rerenderedDetails.children[1];
+  assert.equal(rerenderedDetails.open, true);
+  assert.equal(rerenderedList.scrollTop, 140);
+});
+
+test('renderToolTraceBody keeps following the bottom across rerenders when already at latest tool entry', () => {
+  const documentObject = {
+    createElement(tagName) {
+      return createToolTraceNode(tagName);
+    },
+  };
+  const windowObject = {
+    scrollY: 0,
+    scrollTo() {},
+    requestAnimationFrame(cb) {
+      cb();
+    },
+  };
+  const container = createToolTraceNode('div');
+
+  const message = { body: 'step 1\nstep 2\nstep 3', pending: true, collapsed: false };
+  renderTraceHelpers.renderToolTraceBody(container, message, {
+    cleanDisplayTextFn: (value) => String(value || ''),
+    documentObject,
+    windowObject,
+  });
+
+  const firstDetails = container.children[0];
+  const firstList = firstDetails.children[1];
+  firstList.scrollTop = 360;
+  firstList.scrollHeight = 600;
+  firstList.clientHeight = 200;
+
+  message.body = 'step 1\nstep 2\nstep 3\nstep 4';
+  renderTraceHelpers.renderToolTraceBody(container, message, {
+    cleanDisplayTextFn: (value) => String(value || ''),
+    documentObject,
+    windowObject,
+  });
+
+  const rerenderedList = container.children[container.children.length - 1].children[1];
+  assert.equal(rerenderedList.scrollTop, 400);
 });
 
 test('roleLabelForMessage maps role variants and honors operator display name', () => {

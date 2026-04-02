@@ -76,7 +76,7 @@ function buildHarness(overrides = {}) {
     upsertChat: (chat) => upsertedChats.push(chat),
     syncPinnedChats: (list) => pinnedSyncs.push(list),
     histories,
-    setActiveChatMeta: (chatId) => { activeChatId = Number(chatId); },
+    setActiveChatMeta: (chatId) => { activeChatId = chatId == null ? null : Number(chatId); },
     renderPinnedChats: () => {},
     renderMessages: (chatId) => renderedMessages.push(Number(chatId)),
     warmChatHistoryCache: () => { warmCalls += 1; },
@@ -163,4 +163,23 @@ test('applyAuthBootstrap updates auth-facing UI and history state', () => {
   assert.equal(harness.getRoleLabelsRefreshed(), 1);
   assert.equal(harness.getWarmCalls(), 1);
   assert.deepEqual(harness.getResumeCalls(), []);
+});
+
+test('applyAuthBootstrap supports explicit no-active-chat state', () => {
+  const harness = buildHarness();
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    skin: 'terminal',
+    active_chat_id: null,
+    chats: [],
+    pinned_chats: [{ id: 11 }],
+    history: [],
+  }, { preferredUsername: 'Desktop' });
+
+  assert.equal(harness.getActiveChatId(), null);
+  assert.deepEqual(harness.renderedMessages, []);
+  assert.deepEqual(harness.localMessages, []);
+  assert.equal(harness.getWarmCalls(), 0);
+  assert.deepEqual(harness.pinnedSyncs, [[{ id: 11 }]]);
 });

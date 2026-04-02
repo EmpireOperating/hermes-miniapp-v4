@@ -73,13 +73,17 @@ class JobEventBroker:
             if not delivered:
                 LOGGER.warning("job_event_terminal_drop job_id=%s event=%s", job_id, event_name)
 
-    def subscribe(self, job_id: int) -> queue.Queue[dict[str, object]]:
+    def subscribe(self, job_id: int, *, after_event_id: int = 0) -> queue.Queue[dict[str, object]]:
         subscriber: queue.Queue[dict[str, object]] = queue.Queue(maxsize=self.event_buffer_cap)
+        safe_after_event_id = max(0, int(after_event_id or 0))
         with self._event_lock:
             history = list(self._event_history.get(job_id, []))
             self._event_queues.setdefault(job_id, []).append(subscriber)
 
         for event in history:
+            event_id = int(event.get("event_id") or 0)
+            if safe_after_event_id > 0 and event_id <= safe_after_event_id:
+                continue
             try:
                 subscriber.put_nowait(event)
             except queue.Full:

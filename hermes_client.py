@@ -151,6 +151,10 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
 
         In persistent-session mode, only the first turn for a runtime should inject
         historical context. Subsequent turns rely on the live in-memory runtime.
+       
+        Defensive rule: if a runtime is marked bootstrapped but has no in-memory
+        checkpoint history, force DB history injection for this turn so context
+        cannot silently drop.
         """
         if not (self.direct_agent_enabled and self.persistent_sessions_enabled):
             return True
@@ -158,7 +162,13 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         runtime = self._session_manager.get_runtime(session_id or "") if session_id else None
         if runtime is None:
             return True
-        return not runtime.bootstrapped
+        if not runtime.bootstrapped:
+            return True
+
+        checkpoint_history = list(runtime.checkpoint_history or [])
+        if not checkpoint_history:
+            return True
+        return False
 
     def evict_session(self, session_id: str) -> bool:
         if not session_id:
@@ -173,6 +183,46 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             "bootstrapped": int(stats.get("bootstrapped", 0)),
             "unbootstrapped": int(stats.get("unbootstrapped", 0)),
         }
+
+    def _recover_fallback_history(
+        self,
+        *,
+        session_id: str | None,
+        conversation_history: list[dict[str, Any]] | None,
+    ) -> list[dict[str, str]]:
+        explicit_history = self._normalize_conversation_history(conversation_history)
+        if explicit_history:
+            return explicit_history
+
+        if not session_id:
+            return []
+
+        runtime = self._session_manager.get_runtime(session_id)
+        if runtime is None:
+            return []
+
+        checkpoint_history = list(runtime.checkpoint_history or [])
+        return [item for item in checkpoint_history if isinstance(item, dict)]
+
+    def _build_fallback_runtime_checkpoint(
+        self,
+        *,
+        recovered_history: list[dict[str, str]],
+        user_message: str,
+        assistant_reply: str,
+    ) -> list[dict[str, str]]:
+        checkpoint = [
+            {"role": str(item.get("role") or ""), "content": str(item.get("content") or "")}
+            for item in recovered_history
+            if isinstance(item, dict) and str(item.get("role") or "").strip() and str(item.get("content") or "").strip()
+        ]
+        if user_message.strip():
+            checkpoint.append({"role": "user", "content": user_message.strip()})
+        if assistant_reply.strip():
+            checkpoint.append({"role": "assistant", "content": assistant_reply.strip()})
+        if len(checkpoint) > 160:
+            checkpoint = checkpoint[-160:]
+        return checkpoint
 
     def _recall_health(self) -> dict[str, bool]:
         session_db_available = self._session_db is not None
@@ -316,6 +366,8 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             except HermesClientError:
                 pass
 
+        recovered_fallback_history: list[dict[str, str]] = []
+
         if self.direct_agent_enabled and self.persistent_sessions_enabled:
             try:
                 yield from self._stream_via_persistent_agent(
@@ -326,6 +378,12 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 )
                 return
             except Exception as exc:  # broad-except-policy: persistent runtime failures must fall back to non-persistent transport
+                recovered_fallback_history = self._recover_fallback_history(
+                    session_id=session_id,
+                    conversation_history=conversation_history,
+                )
+                if session_id:
+                    self.evict_session(session_id)
                 # Fall back to existing subprocess/CLI path when persistent runtime fails.
                 logger.warning(
                     "Persistent miniapp runtime failed; falling back to non-persistent path",
@@ -334,18 +392,36 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                         "user_id": user_id,
                         "error": str(exc),
                         "fallback_to": "agent" if self.direct_agent_enabled else "cli",
+                        "recovered_history_len": len(recovered_fallback_history),
                     },
                     exc_info=True,
                 )
 
         if self.direct_agent_enabled:
             try:
-                yield from self._stream_via_agent(
+                agent_history = recovered_fallback_history or conversation_history
+                for event in self._stream_via_agent(
                     user_id=user_id,
                     message=cleaned,
-                    conversation_history=conversation_history,
+                    conversation_history=agent_history,
                     session_id=session_id,
-                )
+                ):
+                    if str(event.get("type") or "") != "done":
+                        yield event
+                        continue
+
+                    done_event = dict(event)
+                    checkpoint_payload = done_event.get("runtime_checkpoint")
+                    has_checkpoint = isinstance(checkpoint_payload, list) and len(checkpoint_payload) > 0
+                    if not has_checkpoint:
+                        synthesized = self._build_fallback_runtime_checkpoint(
+                            recovered_history=self._normalize_conversation_history(agent_history),
+                            user_message=cleaned,
+                            assistant_reply=str(done_event.get("reply") or ""),
+                        )
+                        if synthesized:
+                            done_event["runtime_checkpoint"] = synthesized
+                    yield done_event
                 return
             except HermesClientError:
                 pass

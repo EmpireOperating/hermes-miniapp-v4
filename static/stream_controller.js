@@ -4,6 +4,7 @@
     toolStreamLinesEl,
     histories,
     cleanDisplayText,
+    documentObject = (typeof document !== "undefined" ? document : null),
   }) {
     function resetToolStream() {
       if (!toolStreamEl || !toolStreamLinesEl) return;
@@ -78,6 +79,46 @@
       return `${messageId}::${toolCallId}::${phase}`;
     }
 
+    function isNearElementBottom(element, threshold = 40) {
+      if (!element) return true;
+      const scrollHeight = Number(element.scrollHeight);
+      const clientHeight = Number(element.clientHeight);
+      const scrollTop = Number(element.scrollTop);
+      if (!Number.isFinite(scrollHeight) || !Number.isFinite(clientHeight) || !Number.isFinite(scrollTop)) {
+        return true;
+      }
+      return (scrollHeight - clientHeight - scrollTop) <= threshold;
+    }
+
+    function renderToolStreamLines(lines) {
+      if (!toolStreamEl || !toolStreamLinesEl) return;
+      const safeLines = Array.isArray(lines) ? lines.filter((line) => String(line || "").trim()) : [];
+      const shouldStickBottom = isNearElementBottom(toolStreamLinesEl, 40);
+      toolStreamLinesEl.innerHTML = "";
+      if (!safeLines.length) {
+        toolStreamEl.hidden = true;
+        return;
+      }
+      if (!documentObject || typeof toolStreamLinesEl.appendChild !== "function") {
+        toolStreamLinesEl.innerHTML = safeLines.join("\n");
+        toolStreamEl.hidden = false;
+        if (shouldStickBottom) {
+          toolStreamLinesEl.scrollTop = toolStreamLinesEl.scrollHeight;
+        }
+        return;
+      }
+      for (const line of safeLines) {
+        const row = documentObject.createElement("div");
+        row.className = "tool-stream__line";
+        row.textContent = String(line || "").trim();
+        toolStreamLinesEl.appendChild(row);
+      }
+      toolStreamEl.hidden = false;
+      if (shouldStickBottom) {
+        toolStreamLinesEl.scrollTop = toolStreamLinesEl.scrollHeight;
+      }
+    }
+
     function rebuildToolTraceBodyFromEntries(trace) {
       if (!trace || typeof trace !== "object") return;
       const order = Array.isArray(trace._toolTraceOrder) ? trace._toolTraceOrder : [];
@@ -92,6 +133,7 @@
         }
       }
       trace.body = lines.join("\n");
+      renderToolStreamLines(lines);
     }
 
     function appendInlineToolTrace(chatId, textOrPayload, explicitPayload = null) {
@@ -104,6 +146,7 @@
 
       if (!dedupeKey) {
         trace.body = trace.body ? `${trace.body}\n${line}` : line;
+        renderToolStreamLines(String(trace.body || "").split("\n"));
         return;
       }
 
@@ -146,6 +189,7 @@
       if (changed) {
         histories.set(key, history);
       }
+      resetToolStream();
     }
 
     return {
@@ -203,10 +247,20 @@
       histories,
       mergeHydratedHistory,
       renderMessages,
+      persistStreamCursor,
+      clearStreamCursor,
+      clearPendingStreamSnapshot,
     } = deps;
 
     const streamAbortControllers = new Map();
     const lastStreamEventIdByChat = new Map();
+    const focusRestoreEligibleByChat = new Map();
+
+    function setFocusRestoreEligibility(chatId, eligible) {
+      const key = Number(chatId);
+      if (!key) return;
+      focusRestoreEligibleByChat.set(key, Boolean(eligible));
+    }
 
     function parseStreamEventId(payload) {
       if (!payload || typeof payload !== "object") return null;
@@ -224,6 +278,9 @@
         return true;
       }
       lastStreamEventIdByChat.set(key, eventId);
+      if (typeof persistStreamCursor === "function") {
+        persistStreamCursor(key, eventId);
+      }
       return false;
     }
 
@@ -246,6 +303,7 @@
       if (!existing) return;
       if (controller && existing !== controller) return;
       streamAbortControllers.delete(key);
+      focusRestoreEligibleByChat.delete(key);
     }
 
     function hasLiveStreamController(chatId) {
@@ -264,6 +322,7 @@
       } catch {
         // best effort
       }
+      focusRestoreEligibleByChat.delete(key);
       return true;
     }
 
@@ -274,7 +333,9 @@
     function applyDonePayload(chatId, payload, builtReplyRef, { updateUnread = true } = {}) {
       builtReplyRef.value = payload.reply || builtReplyRef.value;
       finalizeInlineToolTrace(chatId);
+      clearStreamCursor?.(chatId);
       updatePendingAssistant(chatId, builtReplyRef.value, false);
+      clearPendingStreamSnapshot?.(chatId);
       const doneTurnCount = Number(payload?.turn_count || 0);
       const doneMessageKey = doneTurnCount > 0 ? `chat:${Number(chatId)}:turn:${doneTurnCount}` : "";
       triggerIncomingMessageHaptic(chatId, { messageKey: doneMessageKey });
@@ -388,6 +449,7 @@
       if (eventName === "error") {
         setStreamPhase(chatId, STREAM_PHASES.ERROR);
         finalizeInlineToolTrace(chatId);
+        clearStreamCursor?.(chatId);
         updatePendingAssistant(chatId, payload.error || "Hermes stream failed.", false);
         markStreamUpdate(chatId);
         syncActiveMessageView(chatId, { preserveViewport: true });
@@ -534,6 +596,8 @@
     async function hydrateChatAfterGracefulResumeCompletion(chatId) {
       const key = Number(chatId);
       if (!key || typeof loadChatHistory !== "function") return;
+      clearStreamCursor?.(key);
+      clearPendingStreamSnapshot?.(key);
       try {
         const hydrated = await loadChatHistory(key, { activate: Number(getActiveChatId()) === key });
         if (typeof upsertChat === "function") {
@@ -593,6 +657,14 @@
         return;
       }
 
+      const isReadingOlderMessages = Boolean(
+        messagesEl
+        && (Number(messagesEl.scrollHeight || 0) - Number(messagesEl.clientHeight || 0) - Number(messagesEl.scrollTop || 0)) > 40,
+      );
+      if (isReadingOlderMessages) {
+        return;
+      }
+
       if (!isMobileQuoteMode() && isDesktopViewport()) {
         focusMessagesPaneIfActiveChat(chatId);
         return;
@@ -606,17 +678,31 @@
     }
 
     async function finalizeStreamLifecycle(chatId, streamController, { wasAborted }) {
-      clearStreamAbortController(chatId, streamController);
-      finalizeStreamPendingState(chatId, wasAborted);
-      if (wasAborted) {
+      const key = Number(chatId);
+      const ownsActiveStream = streamAbortControllers.get(key) === streamController;
+      if (!ownsActiveStream) {
+        renderTraceLog("stream-finalize-skipped-non-owner", {
+          chatId: key,
+          wasAborted: Boolean(wasAborted),
+        });
         return;
       }
+
+      const shouldRestoreFocus = Boolean(focusRestoreEligibleByChat.get(key));
+      clearStreamAbortController(key, streamController);
+      if (wasAborted) {
+        // Abort is commonly used for intentional stream handoff (send -> resume or
+        // resume -> resume rollover). Do not clear pending/phase here, or we can
+        // transiently mark an active chat idle while the replacement stream is live.
+        return;
+      }
+      finalizeStreamPendingState(key, wasAborted);
 
       syncClosingConfirmation();
 
       try {
-        if (Number(getActiveChatId()) === Number(chatId)) {
-          maybeMarkRead(Number(chatId));
+        if (Number(getActiveChatId()) === key) {
+          maybeMarkRead(key);
         } else {
           await refreshChats();
         }
@@ -626,12 +712,15 @@
 
       renderTabs();
       updateComposerState();
-      focusPrimaryChatControlIfActiveChat(chatId);
+      if (shouldRestoreFocus) {
+        focusPrimaryChatControlIfActiveChat(key);
+      }
     }
 
     return {
       setStreamAbortController,
       clearStreamAbortController,
+      setFocusRestoreEligibility,
       hasLiveStreamController,
       abortStreamController,
       getAbortControllers,

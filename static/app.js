@@ -9,6 +9,12 @@ const devConfig = window.__HERMES_DEV__ || {
 };
 const streamDebugEnabled = Boolean(devConfig.requestDebug);
 const desktopTestingEnabled = Boolean(devConfig.devAuthEnabled);
+const filePreviewConfig = window.__HERMES_FILE_PREVIEW__ || { allowedRoots: [] };
+const filePreviewAllowedRoots = Array.isArray(filePreviewConfig.allowedRoots)
+  ? filePreviewConfig.allowedRoots
+      .map((value) => String(value || "").trim())
+      .filter((value) => value.startsWith("/"))
+  : [];
 const sharedUtils = window.HermesMiniappSharedUtils;
 if (!sharedUtils) {
   throw new Error("HermesMiniappSharedUtils is required before app.js");
@@ -149,6 +155,9 @@ const filePreviewModal = document.getElementById("file-preview-modal");
 const filePreviewPath = document.getElementById("file-preview-path");
 const filePreviewStatus = document.getElementById("file-preview-status");
 const filePreviewLines = document.getElementById("file-preview-lines");
+const filePreviewExpandUp = document.getElementById("file-preview-expand-up");
+const filePreviewLoadFull = document.getElementById("file-preview-load-full");
+const filePreviewExpandDown = document.getElementById("file-preview-expand-down");
 const filePreviewClose = document.getElementById("file-preview-close");
 const chatTabContextMenu = document.getElementById("chat-tab-context-menu");
 const chatTabContextFork = document.getElementById("chat-tab-context-fork");
@@ -158,12 +167,15 @@ let isAuthenticated = false;
 let currentSkin = bootSkin;
 let activeChatId = null;
 let operatorDisplayName = "Operator";
+let currentFilePreviewRequest = null;
+let currentFilePreview = null;
 const chats = new Map();
 const pinnedChats = new Map();
 const histories = new Map();
 let pinnedChatsCollapsed = false;
 let hasPinnedChatsCollapsePreference = false;
 const pendingChats = new Set();
+const reconnectResumeBlockedChats = new Set();
 const latencyByChat = new Map();
 const runtimeHelpers = window.HermesMiniappRuntime;
 if (!runtimeHelpers) {
@@ -294,6 +306,9 @@ const mobileQuoteMode = isCoarsePointer();
 const draftByChat = new Map();
 const DRAFT_STORAGE_KEY = "hermes_miniapp_chat_drafts_v1";
 const RENDER_TRACE_STORAGE_KEY = "hermes_render_trace_debug";
+const STREAM_RESUME_CURSOR_STORAGE_KEY = "hermes_miniapp_stream_resume_cursor_v1";
+const PENDING_STREAM_SNAPSHOT_STORAGE_KEY = "hermes_miniapp_pending_stream_snapshot_v1";
+const PENDING_STREAM_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
 const LATENCY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 let renderTraceDebugEnabled = false;
 loadLatencyByChatFromStorage();
@@ -419,6 +434,204 @@ function persistLatencyByChatToStorage() {
   });
 }
 
+function readStreamResumeCursorMap() {
+  try {
+    const raw = localStorage.getItem(STREAM_RESUME_CURSOR_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStreamResumeCursorMap(nextMap) {
+  try {
+    localStorage.setItem(STREAM_RESUME_CURSOR_STORAGE_KEY, JSON.stringify(nextMap || {}));
+  } catch {
+    // best effort only
+  }
+}
+
+function getStoredStreamCursor(chatId) {
+  const key = Number(chatId);
+  if (!key) return 0;
+  const value = Number(readStreamResumeCursorMap()[String(key)] || 0);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function setStoredStreamCursor(chatId, eventId) {
+  const key = Number(chatId);
+  const safeEventId = Number(eventId);
+  if (!key || !Number.isFinite(safeEventId) || safeEventId <= 0) return 0;
+  const nextMap = readStreamResumeCursorMap();
+  const existing = Number(nextMap[String(key)] || 0);
+  const nextValue = Math.max(existing, Math.floor(safeEventId));
+  nextMap[String(key)] = nextValue;
+  writeStreamResumeCursorMap(nextMap);
+  return nextValue;
+}
+
+function clearStoredStreamCursor(chatId) {
+  const key = Number(chatId);
+  if (!key) return false;
+  const nextMap = readStreamResumeCursorMap();
+  if (!(String(key) in nextMap)) return false;
+  delete nextMap[String(key)];
+  writeStreamResumeCursorMap(nextMap);
+  return true;
+}
+
+function readPendingStreamSnapshotMap() {
+  try {
+    const raw = localStorage.getItem(PENDING_STREAM_SNAPSHOT_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePendingStreamSnapshotMap(nextMap) {
+  try {
+    localStorage.setItem(PENDING_STREAM_SNAPSHOT_STORAGE_KEY, JSON.stringify(nextMap || {}));
+  } catch {
+    // best effort only
+  }
+}
+
+function clearPendingStreamSnapshot(chatId) {
+  const key = Number(chatId);
+  if (!key) return false;
+  const nextMap = readPendingStreamSnapshotMap();
+  if (!(String(key) in nextMap)) return false;
+  delete nextMap[String(key)];
+  writePendingStreamSnapshotMap(nextMap);
+  return true;
+}
+
+function normalizeSnapshotLines(value) {
+  return Array.isArray(value)
+    ? value.map((line) => String(line || '').trim()).filter(Boolean)
+    : [];
+}
+
+function mergeSnapshotToolJournalLines(existingLines, currentBody) {
+  const merged = [];
+  const seen = new Set();
+  const addLine = (line) => {
+    const normalized = String(line || '').trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    merged.push(normalized);
+  };
+  for (const line of normalizeSnapshotLines(existingLines)) {
+    addLine(line);
+  }
+  const bodyLines = String(currentBody || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  for (const line of bodyLines) {
+    addLine(line);
+  }
+  return merged;
+}
+
+function persistPendingStreamSnapshot(chatId) {
+  const key = Number(chatId);
+  if (!key) return null;
+  const history = histories.get(key) || [];
+  let pendingAssistant = null;
+  let pendingTool = null;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const item = history[index];
+    if (!pendingAssistant && item?.pending && ["hermes", "assistant"].includes(String(item?.role || "").toLowerCase())) {
+      pendingAssistant = item;
+    }
+    if (!pendingTool && item?.pending && String(item?.role || "").toLowerCase() === "tool") {
+      pendingTool = item;
+    }
+    if (pendingAssistant && pendingTool) break;
+  }
+  const chatPending = Boolean(chats.get(key)?.pending) || Boolean(pendingAssistant) || Boolean(pendingTool);
+  if (!chatPending) {
+    clearPendingStreamSnapshot(key);
+    return null;
+  }
+  const nextMap = readPendingStreamSnapshotMap();
+  const existingSnapshot = nextMap[String(key)] && typeof nextMap[String(key)] === 'object'
+    ? nextMap[String(key)]
+    : {};
+  const toolJournalLines = mergeSnapshotToolJournalLines(existingSnapshot.tool_journal_lines, pendingTool?.body || '');
+  const snapshot = {
+    ts: Date.now(),
+    tool_journal_lines: toolJournalLines,
+    tool: (pendingTool || toolJournalLines.length) ? {
+      role: "tool",
+      body: String((pendingTool?.body || toolJournalLines.join('\n')) || ""),
+      created_at: String(pendingTool?.created_at || existingSnapshot?.tool?.created_at || new Date().toISOString()),
+      pending: true,
+      collapsed: false,
+    } : null,
+    assistant: pendingAssistant ? {
+      role: String(pendingAssistant.role || "hermes").toLowerCase() === "assistant" ? "assistant" : "hermes",
+      body: String(pendingAssistant.body || ""),
+      created_at: String(pendingAssistant.created_at || new Date().toISOString()),
+      pending: true,
+    } : null,
+  };
+  nextMap[String(key)] = snapshot;
+  writePendingStreamSnapshotMap(nextMap);
+  return snapshot;
+}
+
+function restorePendingStreamSnapshot(chatId) {
+  const key = Number(chatId);
+  if (!key) return false;
+  const nextMap = readPendingStreamSnapshotMap();
+  const snapshot = nextMap[String(key)];
+  if (!snapshot || typeof snapshot !== "object") return false;
+  const snapshotTs = Number(snapshot.ts || 0);
+  if (!Number.isFinite(snapshotTs) || snapshotTs <= 0 || (Date.now() - snapshotTs) > PENDING_STREAM_SNAPSHOT_MAX_AGE_MS) {
+    delete nextMap[String(key)];
+    writePendingStreamSnapshotMap(nextMap);
+    return false;
+  }
+
+  const history = Array.isArray(histories.get(key)) ? [...histories.get(key)] : [];
+  const journalLines = normalizeSnapshotLines(snapshot.tool_journal_lines);
+  const journalBody = journalLines.join('\n');
+  const pendingToolIndex = history.findIndex((item) => item?.pending && String(item?.role || "").toLowerCase() === "tool");
+  const pendingAssistantIndex = history.findIndex((item) => item?.pending && ["hermes", "assistant"].includes(String(item?.role || "").toLowerCase()));
+  let changed = false;
+  if (journalBody) {
+    if (pendingToolIndex >= 0) {
+      const currentBody = String(history[pendingToolIndex]?.body || '');
+      if (currentBody !== journalBody && !currentBody.includes(journalBody)) {
+        history[pendingToolIndex] = {
+          ...history[pendingToolIndex],
+          body: journalBody,
+          pending: true,
+          collapsed: false,
+        };
+        changed = true;
+      }
+    } else if (snapshot.tool) {
+      history.push({
+        ...snapshot.tool,
+        body: journalBody,
+        pending: true,
+        collapsed: false,
+      });
+      changed = true;
+    }
+  }
+  if (pendingAssistantIndex < 0 && snapshot.assistant && (String(snapshot.assistant.body || "").trim() || snapshot.assistant.pending)) {
+    history.push({ ...snapshot.assistant });
+    changed = true;
+  }
+  if (!changed) return false;
+  histories.set(key, history);
+  return true;
+}
+
 function authPayload(extra = {}) {
   return { init_data: initData, ...extra };
 }
@@ -431,7 +644,71 @@ async function safeReadJson(response) {
   }
 }
 
+function summarizeUiFailure(rawBody, { status = 0, fallback = "Request failed." } = {}) {
+  const raw = String(rawBody || "");
+  const trimmed = raw.trim();
+  const normalizedStatus = Number(status) || 0;
+  const looksLikeHtml = /<!doctype html|<html\b|<head\b|<body\b|<style\b|<script\b/i.test(trimmed);
+  const looksLikeCss = !looksLikeHtml && /(^|\n)\s*[.#@a-zA-Z0-9_-]+\s*\{|--[a-z0-9_-]+\s*:/m.test(trimmed);
+  const tooLong = trimmed.length > 500;
+  if (normalizedStatus === 502 || normalizedStatus === 503 || normalizedStatus === 504) {
+    return "Mini app backend temporarily unavailable. Please wait a moment and reopen if needed.";
+  }
+  if (looksLikeHtml || looksLikeCss || tooLong) {
+    return fallback;
+  }
+  return trimmed || fallback;
+}
+
+function parseStreamErrorPayload(rawBody) {
+  const parsed = parseSseEvent(String(rawBody || ""));
+  const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : null;
+  const error = String(payload?.error || "").trim();
+  const chatId = Number(payload?.chat_id || 0);
+  return {
+    eventName: parsed?.eventName || "",
+    error,
+    chatId: Number.isFinite(chatId) && chatId > 0 ? chatId : 0,
+  };
+}
+
+function cloneFilePreviewRequest(previewRequest = {}) {
+  const payload = {};
+  const refId = String(previewRequest?.ref_id || "").trim();
+  const path = String(previewRequest?.path || "").trim();
+  const lineStart = Number(previewRequest?.line_start || 0);
+  const lineEnd = Number(previewRequest?.line_end || 0);
+  const windowStart = Number(previewRequest?.window_start || 0);
+  const windowEnd = Number(previewRequest?.window_end || 0);
+  if (refId) payload.ref_id = refId;
+  if (path) payload.path = path;
+  if (Number.isFinite(lineStart) && lineStart > 0) payload.line_start = Math.floor(lineStart);
+  if (Number.isFinite(lineEnd) && lineEnd > 0) payload.line_end = Math.floor(lineEnd);
+  if (Number.isFinite(windowStart) && windowStart > 0) payload.window_start = Math.floor(windowStart);
+  if (Number.isFinite(windowEnd) && windowEnd > 0) payload.window_end = Math.floor(windowEnd);
+  if (previewRequest?.full_file === true) payload.full_file = true;
+  return payload;
+}
+
+function syncFilePreviewExpandControls(preview = null, { isLoading = false } = {}) {
+  const canExpandUp = Boolean(preview?.can_expand_up);
+  const canExpandDown = Boolean(preview?.can_expand_down);
+  const canLoadFullFile = Boolean(preview?.can_load_full_file);
+  const fullFileLoaded = Boolean(preview?.full_file_loaded);
+  if (filePreviewExpandUp) {
+    filePreviewExpandUp.disabled = isLoading || !canExpandUp;
+  }
+  if (filePreviewLoadFull) {
+    filePreviewLoadFull.disabled = isLoading || fullFileLoaded || !canLoadFullFile;
+    filePreviewLoadFull.textContent = fullFileLoaded ? "Full file loaded" : "Load full file";
+  }
+  if (filePreviewExpandDown) {
+    filePreviewExpandDown.disabled = isLoading || !canExpandDown;
+  }
+}
+
 function resetFilePreviewState() {
+  currentFilePreview = null;
   if (filePreviewPath) filePreviewPath.textContent = "";
   if (filePreviewStatus) {
     filePreviewStatus.textContent = "";
@@ -441,53 +718,186 @@ function resetFilePreviewState() {
     filePreviewLines.innerHTML = "";
     filePreviewLines.scrollTop = 0;
   }
+  syncFilePreviewExpandControls(null);
 }
 
 function closeFilePreviewModal() {
   if (!filePreviewModal) return;
+  currentFilePreviewRequest = null;
   if (filePreviewModal.open) {
     filePreviewModal.close();
   }
   resetFilePreviewState();
 }
 
-function renderFilePreview(preview) {
+function createFilePreviewLineNode(row, { focusStart = 0, focusEnd = 0 } = {}) {
+  const lineNumber = Number(row?.line || 0);
+  const wrap = document.createElement("div");
+  wrap.className = "file-preview-line";
+  if (lineNumber > 0) {
+    wrap.dataset.lineNumber = String(lineNumber);
+  }
+  if (focusStart > 0 && lineNumber >= focusStart && lineNumber <= Math.max(focusStart, focusEnd)) {
+    wrap.classList.add("is-focus");
+  }
+
+  const numberEl = document.createElement("span");
+  numberEl.className = "file-preview-line__number";
+  numberEl.textContent = String(lineNumber || "");
+
+  const textEl = document.createElement("span");
+  textEl.className = "file-preview-line__text";
+  textEl.textContent = String(row?.text || "");
+
+  wrap.appendChild(numberEl);
+  wrap.appendChild(textEl);
+  return wrap;
+}
+
+function captureFilePreviewViewportAnchor() {
+  if (!filePreviewLines) return null;
+  const lineNodes = Array.from(filePreviewLines.querySelectorAll(".file-preview-line[data-line-number]"));
+  if (!lineNodes.length) return null;
+  const scrollTop = filePreviewLines.scrollTop;
+  const anchorNode = lineNodes.find((node) => (node.offsetTop + node.offsetHeight) >= scrollTop) || lineNodes[0];
+  const lineNumber = Number(anchorNode?.dataset?.lineNumber || 0);
+  if (!Number.isFinite(lineNumber) || lineNumber <= 0) return null;
+  return {
+    lineNumber,
+    offsetTopDelta: anchorNode.offsetTop - scrollTop,
+  };
+}
+
+function restoreFilePreviewViewportAnchor(anchor) {
+  if (!filePreviewLines || !anchor) return false;
+  const lineNumber = Number(anchor?.lineNumber || 0);
+  if (!Number.isFinite(lineNumber) || lineNumber <= 0) return false;
+  const anchorNode = filePreviewLines.querySelector(`.file-preview-line[data-line-number="${lineNumber}"]`);
+  if (!anchorNode) return false;
+  const offsetTopDelta = Number(anchor?.offsetTopDelta || 0);
+  filePreviewLines.scrollTop = Math.max(0, anchorNode.offsetTop - offsetTopDelta);
+  return true;
+}
+
+function canIncrementallyExpandFilePreview(previousPreview, nextPreview) {
+  if (!previousPreview || !nextPreview) return false;
+  if (String(previousPreview?.path || "") !== String(nextPreview?.path || "")) return false;
+  if (Number(previousPreview?.line_start || 0) !== Number(nextPreview?.line_start || 0)) return false;
+  if (Number(previousPreview?.line_end || 0) !== Number(nextPreview?.line_end || 0)) return false;
+  const previousRows = Array.isArray(previousPreview?.lines) ? previousPreview.lines : [];
+  const nextRows = Array.isArray(nextPreview?.lines) ? nextPreview.lines : [];
+  if (!previousRows.length || !nextRows.length) return false;
+  const previousWindowStart = Number(previousPreview?.window_start || previousRows[0]?.line || 0);
+  const previousWindowEnd = Number(previousPreview?.window_end || previousRows[previousRows.length - 1]?.line || 0);
+  const nextWindowStart = Number(nextPreview?.window_start || nextRows[0]?.line || 0);
+  const nextWindowEnd = Number(nextPreview?.window_end || nextRows[nextRows.length - 1]?.line || 0);
+  return nextWindowStart <= previousWindowStart && nextWindowEnd >= previousWindowEnd;
+}
+
+function expandFilePreviewInPlace(previousPreview, nextPreview) {
+  if (!filePreviewLines) return false;
+  if (!canIncrementallyExpandFilePreview(previousPreview, nextPreview)) return false;
+  const focusStart = Number(nextPreview?.line_start || 0);
+  const focusEnd = Number(nextPreview?.line_end || 0);
+  const previousRows = Array.isArray(previousPreview?.lines) ? previousPreview.lines : [];
+  const nextRows = Array.isArray(nextPreview?.lines) ? nextPreview.lines : [];
+  if (!previousRows.length || !nextRows.length) return false;
+
+  const previousWindowStart = Number(previousPreview?.window_start || previousRows[0]?.line || 0);
+  const previousWindowEnd = Number(previousPreview?.window_end || previousRows[previousRows.length - 1]?.line || 0);
+  const linesByNumber = new Map(nextRows.map((row) => [Number(row?.line || 0), row]));
+  const firstExistingNode = filePreviewLines.querySelector(`.file-preview-line[data-line-number="${previousWindowStart}"]`);
+
+  let prepended = false;
+  let prependedHeight = 0;
+  if (firstExistingNode) {
+    const prependFragment = document.createDocumentFragment();
+    for (let lineNumber = previousWindowStart - 1; lineNumber >= 1; lineNumber -= 1) {
+      if (lineNumber < Number(nextPreview?.window_start || 0)) break;
+      const row = linesByNumber.get(lineNumber);
+      if (!row) continue;
+      prependFragment.insertBefore(createFilePreviewLineNode(row, { focusStart, focusEnd }), prependFragment.firstChild);
+      prepended = true;
+    }
+    if (prepended) {
+      const previousScrollTop = filePreviewLines.scrollTop;
+      const previousScrollHeight = filePreviewLines.scrollHeight;
+      filePreviewLines.insertBefore(prependFragment, firstExistingNode);
+      prependedHeight = filePreviewLines.scrollHeight - previousScrollHeight;
+      filePreviewLines.scrollTop = previousScrollTop + prependedHeight;
+    }
+  }
+
+  const appendFragment = document.createDocumentFragment();
+  let appended = false;
+  for (let lineNumber = previousWindowEnd + 1; lineNumber <= Number(nextPreview?.window_end || 0); lineNumber += 1) {
+    const row = linesByNumber.get(lineNumber);
+    if (!row) continue;
+    appendFragment.appendChild(createFilePreviewLineNode(row, { focusStart, focusEnd }));
+    appended = true;
+  }
+  if (appended) {
+    filePreviewLines.appendChild(appendFragment);
+  }
+
+  return prepended || appended;
+}
+
+function renderFilePreview(preview, { viewportAnchor = null, centerFocus = true, mergeInPlace = false } = {}) {
   if (!filePreviewLines) return;
+  const previousPreview = currentFilePreview;
+  currentFilePreview = preview || null;
   const rows = Array.isArray(preview?.lines) ? preview.lines : [];
   const focusStart = Number(preview?.line_start || 0);
   const focusEnd = Number(preview?.line_end || 0);
+  const windowStart = Number(preview?.window_start || (rows[0]?.line || 0));
+  const windowEnd = Number(preview?.window_end || (rows[rows.length - 1]?.line || 0));
+  const totalLines = Number(preview?.total_lines || rows.length || 0);
+  const isTruncated = Boolean(preview?.is_truncated);
+  const fullFileLoaded = Boolean(preview?.full_file_loaded);
   if (filePreviewPath) {
     filePreviewPath.textContent = String(preview?.path || "Preview");
   }
-  filePreviewLines.innerHTML = "";
-  const fragment = document.createDocumentFragment();
-  let firstFocusLine = null;
-  rows.forEach((row) => {
-    const lineNumber = Number(row?.line || 0);
-    const wrap = document.createElement("div");
-    wrap.className = "file-preview-line";
-    if (focusStart > 0 && lineNumber >= focusStart && lineNumber <= Math.max(focusStart, focusEnd)) {
-      wrap.classList.add("is-focus");
-      if (!firstFocusLine) {
-        firstFocusLine = wrap;
-      }
+  if (filePreviewStatus) {
+    if (rows.length) {
+      const summary = totalLines > 0
+        ? `Showing lines ${windowStart || 1}–${windowEnd || windowStart || 1} of ${totalLines}${fullFileLoaded ? ' (full file)' : isTruncated ? ' (focused excerpt)' : ''}`
+        : 'Showing preview';
+      filePreviewStatus.hidden = false;
+      filePreviewStatus.textContent = summary;
+    } else {
+      filePreviewStatus.hidden = false;
+      filePreviewStatus.textContent = 'No preview lines available for this file.';
     }
+  }
 
-    const numberEl = document.createElement("span");
-    numberEl.className = "file-preview-line__number";
-    numberEl.textContent = String(lineNumber || "");
+  const mergedInPlace = mergeInPlace && expandFilePreviewInPlace(previousPreview, preview);
+  let firstFocusLine = null;
+  if (!mergedInPlace) {
+    filePreviewLines.innerHTML = "";
+    const fragment = document.createDocumentFragment();
+    rows.forEach((row) => {
+      const node = createFilePreviewLineNode(row, { focusStart, focusEnd });
+      if (!firstFocusLine && node.classList.contains("is-focus")) {
+        firstFocusLine = node;
+      }
+      fragment.appendChild(node);
+    });
+    filePreviewLines.appendChild(fragment);
+  }
 
-    const textEl = document.createElement("span");
-    textEl.className = "file-preview-line__text";
-    textEl.textContent = String(row?.text || "");
+  syncFilePreviewExpandControls(preview);
 
-    wrap.appendChild(numberEl);
-    wrap.appendChild(textEl);
-    fragment.appendChild(wrap);
-  });
-  filePreviewLines.appendChild(fragment);
-
-  if (firstFocusLine) {
+  if (mergedInPlace) {
+    return;
+  }
+  if (restoreFilePreviewViewportAnchor(viewportAnchor)) {
+    return;
+  }
+  if (centerFocus && !firstFocusLine) {
+    firstFocusLine = filePreviewLines.querySelector(".file-preview-line.is-focus");
+  }
+  if (centerFocus && firstFocusLine) {
     requestAnimationFrame(() => {
       const targetTop = Math.max(
         0,
@@ -504,10 +914,15 @@ function showFilePreviewStatus(message) {
   filePreviewStatus.textContent = String(message || "Preview unavailable");
 }
 
-async function openFilePreviewByRef(refId) {
-  if (!filePreviewModal || !refId) return;
-  resetFilePreviewState();
-  showFilePreviewStatus("Loading preview…");
+async function openFilePreview(previewRequest = {}, { preserveViewport = false, loadingMessage = "Loading preview…" } = {}) {
+  if (!filePreviewModal) return;
+  const nextPreviewRequest = cloneFilePreviewRequest(previewRequest);
+  const viewportAnchor = preserveViewport ? captureFilePreviewViewportAnchor() : null;
+  if (!preserveViewport) {
+    resetFilePreviewState();
+  }
+  syncFilePreviewExpandControls(currentFilePreview, { isLoading: true });
+  showFilePreviewStatus(loadingMessage);
   if (!filePreviewModal.open) {
     filePreviewModal.showModal();
   }
@@ -515,29 +930,102 @@ async function openFilePreviewByRef(refId) {
   try {
     const data = await apiPost("/api/chats/file-preview", {
       chat_id: activeChatId,
-      ref_id: refId,
+      ...nextPreviewRequest,
     });
     const preview = data?.preview || null;
     if (!preview) {
       throw new Error("Preview unavailable");
     }
-    if (filePreviewStatus) {
-      filePreviewStatus.hidden = true;
-      filePreviewStatus.textContent = "";
-    }
-    renderFilePreview(preview);
+    currentFilePreviewRequest = nextPreviewRequest;
+    renderFilePreview(preview, {
+      viewportAnchor,
+      centerFocus: !preserveViewport,
+      mergeInPlace: preserveViewport,
+    });
   } catch (error) {
+    syncFilePreviewExpandControls(currentFilePreview);
     showFilePreviewStatus(error?.message || "Preview unavailable");
   }
 }
 
+function openFilePreviewByRef(refId) {
+  const cleanedRefId = String(refId || "").trim();
+  if (!cleanedRefId || !activeChatId) return;
+  void openFilePreview({ ref_id: cleanedRefId });
+}
+
+function openFilePreviewByPath(pathText, { lineStart = 0, lineEnd = 0 } = {}) {
+  const cleanedPath = String(pathText || "").trim();
+  if (!cleanedPath || !activeChatId) return;
+  const payload = { path: cleanedPath };
+  const start = Number(lineStart || 0);
+  const end = Number(lineEnd || 0);
+  if (Number.isFinite(start) && start > 0) {
+    payload.line_start = Math.floor(start);
+  }
+  if (Number.isFinite(end) && end > 0) {
+    payload.line_end = Math.floor(end);
+  }
+  void openFilePreview(payload);
+}
+
+function requestFilePreviewExpansion(direction) {
+  const preview = currentFilePreview;
+  const baseRequest = currentFilePreviewRequest;
+  if (!preview || !baseRequest) return;
+  const step = 40;
+  const currentWindowStart = Number(preview?.window_start || 0);
+  const currentWindowEnd = Number(preview?.window_end || 0);
+  const totalLines = Number(preview?.total_lines || 0);
+  let nextWindowStart = currentWindowStart;
+  let nextWindowEnd = currentWindowEnd;
+
+  if (direction === "up") {
+    if (!preview?.can_expand_up) return;
+    nextWindowStart = Math.max(1, currentWindowStart - step);
+  } else if (direction === "down") {
+    if (!preview?.can_expand_down) return;
+    nextWindowEnd = totalLines > 0 ? Math.min(totalLines, currentWindowEnd + step) : currentWindowEnd + step;
+  } else {
+    return;
+  }
+
+  void openFilePreview({
+    ...baseRequest,
+    window_start: nextWindowStart,
+    window_end: nextWindowEnd,
+  }, {
+    preserveViewport: true,
+    loadingMessage: direction === "up" ? "Loading more above…" : "Loading more below…",
+  });
+}
+
+function requestFullFilePreview() {
+  const preview = currentFilePreview;
+  const baseRequest = currentFilePreviewRequest;
+  if (!preview || !baseRequest || !preview?.can_load_full_file || preview?.full_file_loaded) return;
+  void openFilePreview({
+    ...baseRequest,
+    full_file: true,
+  }, {
+    preserveViewport: true,
+    loadingMessage: "Loading full file…",
+  });
+}
+
 function handleMessageFileRefClick(event) {
-  const trigger = event?.target?.closest?.(".message-file-ref[data-file-ref-id]");
+  const trigger = event?.target?.closest?.(".message-file-ref");
   if (!trigger) return;
-  event.preventDefault();
+
+  // Telegram mobile webviews can occasionally miss delegated click for inline
+  // buttons while still delivering touchend. Bind both and handle here.
+  if (typeof event?.preventDefault === "function") {
+    event.preventDefault();
+  }
+
   const refId = String(trigger.dataset.fileRefId || "").trim();
-  if (!refId || !activeChatId) return;
-  void openFilePreviewByRef(refId);
+  if (!refId) return;
+  openFilePreviewByRef(refId);
 }
 
 const bootstrapAuthController = bootstrapAuthHelpers.createController({
@@ -570,7 +1058,7 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   operatorName,
   refreshOperatorRoleLabels,
   setSkin,
-  upsertChat,
+  syncChats,
   syncPinnedChats,
   histories,
   setActiveChatMeta,
@@ -666,6 +1154,11 @@ function resetToolStream() {
   return toolTraceController.resetToolStream();
 }
 
+function syncLiveToolStreamForChat(_chatId) {
+  resetToolStream();
+  return false;
+}
+
 function findPendingToolTraceMessage(chatId) {
   return toolTraceController.findPendingToolTraceMessage(chatId);
 }
@@ -675,11 +1168,15 @@ function ensurePendingToolTraceMessage(chatId) {
 }
 
 function appendInlineToolTrace(chatId, textOrPayload, payload = null) {
-  return toolTraceController.appendInlineToolTrace(chatId, textOrPayload, payload);
+  const result = toolTraceController.appendInlineToolTrace(chatId, textOrPayload, payload);
+  persistPendingStreamSnapshot(chatId);
+  return result;
 }
 
 function finalizeInlineToolTrace(chatId) {
-  return toolTraceController.finalizeInlineToolTrace(chatId);
+  const result = toolTraceController.finalizeInlineToolTrace(chatId);
+  persistPendingStreamSnapshot(chatId);
+  return result;
 }
 
 async function confirmAction(message) {
@@ -847,6 +1344,7 @@ function renderBody(container, rawText, { fileRefs = null } = {}) {
     cleanDisplayTextFn: cleanDisplayText,
     escapeHtmlFn: escapeHtml,
     fileRefs,
+    allowedRoots: filePreviewAllowedRoots,
   });
 }
 
@@ -1191,6 +1689,9 @@ function renderMessages(chatId, { preserveViewport = false, forceBottom = false 
     wasNearBottom,
   })) {
     finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom });
+    if (Number(activeChatId) === targetChatId) {
+      syncLiveToolStreamForChat(targetChatId);
+    }
     return;
   }
 
@@ -1227,14 +1728,42 @@ function renderMessages(chatId, { preserveViewport = false, forceBottom = false 
   });
 
   finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom });
+  if (Number(activeChatId) === targetChatId) {
+    syncLiveToolStreamForChat(targetChatId);
+  }
 }
 
 function normalizeChat(chat, { forcePinned = null } = {}) {
   return chatTabsController.normalizeChat(chat, { forcePinned });
 }
 
+function suppressBlockedChatPending(chatId) {
+  const key = Number(chatId);
+  if (!key || !reconnectResumeBlockedChats.has(key)) return;
+  pendingChats.delete(key);
+  const chat = chats.get(key);
+  if (chat) {
+    chat.pending = false;
+  }
+}
+
+function clearReconnectResumeBlock(chatId) {
+  const key = Number(chatId);
+  if (!key) return;
+  reconnectResumeBlockedChats.delete(key);
+}
+
+function blockReconnectResume(chatId) {
+  const key = Number(chatId);
+  if (!key) return;
+  reconnectResumeBlockedChats.add(key);
+  suppressBlockedChatPending(key);
+}
+
 function upsertChat(chat) {
-  return chatTabsController.upsertChat(chat);
+  const next = chatTabsController.upsertChat(chat);
+  suppressBlockedChatPending(next?.id ?? chat?.id);
+  return next;
 }
 
 function syncPinnedChats(chatList) {
@@ -1242,7 +1771,11 @@ function syncPinnedChats(chatList) {
 }
 
 function syncChats(chatList) {
-  return chatTabsController.syncChats(chatList);
+  const next = chatTabsController.syncChats(chatList);
+  for (const blockedChatId of reconnectResumeBlockedChats) {
+    suppressBlockedChatPending(blockedChatId);
+  }
+  return next;
 }
 
 function getOrCreateTabNode(chatId) {
@@ -1391,6 +1924,7 @@ function setActiveChatMeta(chatId, { fullTabRender = true, deferNonCritical = fa
     updateComposerState();
     syncPinChatButton();
     renderTabs();
+    resetToolStream();
     syncActivePendingStatus();
     syncActiveLatencyChip();
     updateJumpLatestVisibility();
@@ -1413,6 +1947,7 @@ function setActiveChatMeta(chatId, { fullTabRender = true, deferNonCritical = fa
   }
 
   const finalizeMeta = () => {
+    syncLiveToolStreamForChat(activeChatId);
     syncActivePendingStatus();
     syncActiveLatencyChip();
     updateJumpLatestVisibility();
@@ -1453,6 +1988,10 @@ function clearStreamAbortController(chatId, controller) {
   streamController.clearStreamAbortController(chatId, controller);
 }
 
+function setStreamFocusRestoreEligibility(chatId, eligible) {
+  streamController.setFocusRestoreEligibility(chatId, eligible);
+}
+
 function hasLiveStreamController(chatId) {
   return streamController.hasLiveStreamController(chatId);
 }
@@ -1473,7 +2012,14 @@ async function apiPost(url, payload) {
   });
   const data = await safeReadJson(response);
   if (!response.ok || !data?.ok) {
-    const message = data?.error || `Request failed: ${response.status}`;
+    const fallbackText = data?.error || summarizeUiFailure("", {
+      status: response.status,
+      fallback: `Request failed: ${response.status}`,
+    });
+    const message = summarizeUiFailure(data?.error || "", {
+      status: response.status,
+      fallback: fallbackText,
+    });
     if (/Telegram init data is too old/i.test(message)) {
       isAuthenticated = false;
       authStatus.textContent = "Session expired";
@@ -1524,7 +2070,13 @@ const chatHistoryController = chatHistoryHelpers.createController({
   syncActivePendingStatus,
   updateComposerState,
   pendingChats,
-  shouldResumeOnVisibilityChange: runtimeHelpers.shouldResumeOnVisibilityChange,
+  restorePendingStreamSnapshot,
+  shouldResumeOnVisibilityChange: (args = {}) => {
+    if (reconnectResumeBlockedChats.has(Number(args?.activeChatId))) {
+      return false;
+    }
+    return runtimeHelpers.shouldResumeOnVisibilityChange(args);
+  },
 });
 
 const chatAdminController = chatAdminHelpers.createController({
@@ -1601,6 +2153,7 @@ const latencyViewController = runtimeHelpers.createLatencyController({
 const streamActivityController = runtimeHelpers.createStreamActivityController({
   chats,
   getActiveChatId: () => Number(activeChatId),
+  hasLiveStreamController,
   chatLabel,
   compactChatLabel,
   setStreamStatus,
@@ -1828,7 +2381,12 @@ function addLocalMessage(chatId, message) {
 }
 
 function updatePendingAssistant(chatId, nextBody, pendingState = true) {
-  return chatHistoryController.updatePendingAssistant(chatId, nextBody, pendingState);
+  const result = chatHistoryController.updatePendingAssistant(chatId, nextBody, pendingState);
+  persistPendingStreamSnapshot(chatId);
+  if (!pendingState) {
+    clearPendingStreamSnapshot(chatId);
+  }
+  return result;
 }
 
 function appendSystemMessage(text) {
@@ -1897,7 +2455,7 @@ async function bootstrap() {
     const response = await fetch("/api/auth", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ init_data: initData }),
+      body: JSON.stringify({ init_data: initData, allow_empty: true }),
     });
     const data = await safeReadJson(response);
 
@@ -1917,6 +2475,12 @@ async function bootstrap() {
     }
 
     applyAuthBootstrap(data, { preferredUsername: tg?.initDataUnsafe?.user?.username || "" });
+    const restoredPendingSnapshot = Number(data?.active_chat_id || 0) > 0 && Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === Number(data.active_chat_id))?.pending)
+      ? restorePendingStreamSnapshot(Number(data.active_chat_id))
+      : false;
+    if (restoredPendingSnapshot && Number(data?.active_chat_id || 0) > 0) {
+      renderMessages(Number(data.active_chat_id), { preserveViewport: true });
+    }
   } catch (error) {
     authStatus.textContent = "Sign-in error";
     appendSystemMessage(`Could not start the app: ${error.message}`);
@@ -1978,6 +2542,9 @@ const streamController = streamControllerHelpers.createController({
   histories,
   mergeHydratedHistory: runtimeHelpers.mergeHydratedHistory,
   renderMessages,
+  persistStreamCursor: setStoredStreamCursor,
+  clearStreamCursor: clearStoredStreamCursor,
+  clearPendingStreamSnapshot,
 });
 
 function finalizeStreamPendingState(chatId, wasAborted) {
@@ -2041,6 +2608,10 @@ async function sendPrompt(message) {
   if (!cleaned) return;
 
   const chatId = Number(activeChatId);
+  if (reconnectResumeBlockedChats.has(chatId)) {
+    clearReconnectResumeBlock(chatId);
+    suppressBlockedChatPending(chatId);
+  }
   const serverPending = Boolean(chats.get(chatId)?.pending);
   if (pendingChats.has(chatId) || serverPending) {
     appendSystemMessage(`Still replying in '${chatLabel(chatId)}'.`);
@@ -2065,12 +2636,20 @@ async function sendPrompt(message) {
   syncActiveMessageView(chatId, { preserveViewport: true });
   focusMessagesPaneIfActiveChat(chatId);
 
+  clearStoredStreamCursor(chatId);
+  clearPendingStreamSnapshot(chatId);
   resetToolStream();
   streamActivityController.markStreamActive(chatId);
 
   const builtReplyRef = { value: "" };
   let wasAborted = false;
   const streamController = new AbortController();
+  const shouldRestoreFocusOnComplete = Boolean(
+    Number(activeChatId) === chatId
+    && document.activeElement === promptEl
+    && isNearBottom(messagesEl, 40),
+  );
+  setStreamFocusRestoreEligibility(chatId, shouldRestoreFocusOnComplete);
   setStreamAbortController(chatId, streamController);
 
   try {
@@ -2082,15 +2661,27 @@ async function sendPrompt(message) {
     });
 
     if (!response.ok || !response.body) {
-      setStreamPhase(chatId, STREAM_PHASES.ERROR);
       const fallback = await response.text();
-      if (/Telegram init data is too old/i.test(fallback || "")) {
+      const parsedError = parseStreamErrorPayload(fallback);
+      const normalizedError = parsedError.error.toLowerCase();
+      const alreadyWorking = response.status === 409 && normalizedError.includes("already working on this chat");
+      const sanitizedFallbackMessage = summarizeUiFailure(parsedError.error || fallback, {
+        status: response.status,
+        fallback: "Hermes call failed.",
+      });
+      if (alreadyWorking) {
+        await resumePendingChatStream(chatId, { force: true });
+        return;
+      }
+
+      setStreamPhase(chatId, STREAM_PHASES.ERROR);
+      if (/Telegram init data is too old/i.test(parsedError.error || fallback || "")) {
         isAuthenticated = false;
         authStatus.textContent = "Session expired";
         updatePendingAssistant(chatId, "Telegram session expired. Close and reopen the mini app to refresh auth.", false);
         updateComposerState();
       } else {
-        updatePendingAssistant(chatId, fallback || "Hermes call failed.", false);
+        updatePendingAssistant(chatId, sanitizedFallbackMessage, false);
       }
       syncActiveMessageView(chatId, { preserveViewport: true });
       streamActivityController.markStreamError();
@@ -2101,7 +2692,6 @@ async function sendPrompt(message) {
       fallbackTraceEvent: "stream-fallback-patch",
       resetReplayCursor: true,
       onEarlyClose: async () => {
-        wasAborted = true;
         await resumePendingChatStream(chatId, { force: true });
       },
     });
@@ -2125,9 +2715,17 @@ async function sendPrompt(message) {
 async function resumePendingChatStream(chatId, { force = false } = {}) {
   const key = Number(chatId);
   if (!key || !isAuthenticated) return;
+  if (reconnectResumeBlockedChats.has(key)) {
+    suppressBlockedChatPending(key);
+    renderTabs();
+    updateComposerState();
+    syncActivePendingStatus();
+    return;
+  }
   const hasLiveController = hasLiveStreamController(key);
   if (hasLiveController && !force) return;
-  if (!Boolean(chats.get(key)?.pending)) return;
+  const chatPending = Boolean(chats.get(key)?.pending);
+  if (!chatPending && !force) return;
 
   if (force && hasLiveController) {
     abortStreamController(key);
@@ -2152,19 +2750,24 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
   const builtReplyRef = { value: "" };
   let wasAborted = false;
   const streamController = new AbortController();
+  setStreamFocusRestoreEligibility(key, false);
   setStreamAbortController(key, streamController);
 
   try {
     const response = await fetch("/api/chat/stream/resume", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(authPayload({ chat_id: key })),
+      body: JSON.stringify(authPayload({ chat_id: key, after_event_id: getStoredStreamCursor(key) })),
       signal: streamController.signal,
     });
 
     if (!response.ok || !response.body) {
       const fallback = await response.text();
       const normalizedFallback = String(fallback || "").toLowerCase();
+      const sanitizedResumeFailure = summarizeUiFailure(fallback, {
+        status: response.status,
+        fallback: `Resume failed: ${response.status}`,
+      });
       const noActiveJob = response.status === 409 && normalizedFallback.includes("no active hermes job");
       if (noActiveJob) {
         setStreamPhase(key, STREAM_PHASES.FINALIZED);
@@ -2173,14 +2776,15 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
         streamActivityController.markResumeAlreadyComplete(key);
         return;
       }
-      throw new Error(fallback || `Resume failed: ${response.status}`);
+      throw new Error(sanitizedResumeFailure);
     }
 
     const resumed = await consumeStreamWithReconnect(key, response, builtReplyRef, {
       fallbackTraceEvent: "stream-resume-fallback-patch",
       onEarlyClose: async () => {
-        wasAborted = true;
-        await resumePendingChatStream(key, { force: true });
+        // Resume stream segments can early-close without terminal state on mobile/WebView.
+        // Reconnect instead of finalizing local pending state.
+        await resumePendingChatStream(Number(key), { force: true });
       },
     });
     if (resumed) return;
@@ -2189,9 +2793,15 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
       wasAborted = true;
       return;
     }
+    blockReconnectResume(key);
     setStreamPhase(key, STREAM_PHASES.ERROR);
     finalizeInlineToolTrace(key);
-    appendSystemMessage(`Stream reconnect failed for '${chatLabel(key)}': ${error.message}`);
+    console.warn(`[E_STREAM_RECONNECT_FAILED] chat=${key}`, error);
+    appendSystemMessage(`Could not reconnect '${chatLabel(key)}': ${error.message}`);
+    appendSystemMessage(`Auto-resume is paused for '${chatLabel(key)}'. Send a new message to try again.`);
+    renderTabs();
+    updateComposerState();
+    syncActivePendingStatus();
     if (Number(activeChatId) === key) {
       streamActivityController.markReconnectFailed(key);
     }
@@ -2271,6 +2881,10 @@ messageActionsHelpers.bindMessageCopyHandler({
   copyTextToClipboard,
 });
 messagesEl?.addEventListener("click", handleMessageFileRefClick);
+messagesEl?.addEventListener("touchend", handleMessageFileRefClick, { passive: false });
+filePreviewExpandUp?.addEventListener("click", () => requestFilePreviewExpansion("up"));
+filePreviewLoadFull?.addEventListener("click", requestFullFilePreview);
+filePreviewExpandDown?.addEventListener("click", () => requestFilePreviewExpansion("down"));
 filePreviewClose?.addEventListener("click", closeFilePreviewModal);
 filePreviewModal?.addEventListener?.("cancel", (event) => {
   event.preventDefault();

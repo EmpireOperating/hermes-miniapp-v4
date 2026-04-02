@@ -43,7 +43,189 @@
     return bestMatch;
   }
 
-  function renderPlainTextWithFileRefs(text, fileRefs, escapeHtmlFn) {
+  function buildFileRefButtonHtml(label, escapeHtmlFn, attrs = {}) {
+    const safeLabel = escapeHtmlFn(label);
+    const attrText = Object.entries(attrs)
+      .filter(([, value]) => value != null && String(value).trim())
+      .map(([key, value]) => ` ${key}="${escapeHtmlFn(String(value))}"`)
+      .join("");
+    return `<button type="button" class="message-file-ref"${attrText} aria-label="Open file preview for ${safeLabel}">${safeLabel}</button>`;
+  }
+
+  function splitTrailingPunctuation(rawText) {
+    const value = String(rawText || "");
+    const match = value.match(/^(.*?)([\]),.;!?"'`>]+)?$/);
+    if (!match) {
+      return { core: value, trailing: "" };
+    }
+    return {
+      core: String(match[1] || ""),
+      trailing: String(match[2] || ""),
+    };
+  }
+
+  const SPECIAL_BARE_FILENAMES = new Set([
+    'dockerfile',
+    'makefile',
+    'procfile',
+    'containerfile',
+    'jenkinsfile',
+    'vagrantfile',
+    'brewfile',
+    'gemfile',
+    'rakefile',
+    'justfile',
+    'tiltfile',
+    'readme',
+    'license',
+  ]);
+
+  function isSupportedBareFilename(value) {
+    const candidate = String(value || '').trim();
+    if (!candidate) return false;
+    if (/^(?:[A-Za-z0-9][A-Za-z0-9._-]*\.(?:py|js|mjs|cjs|ts|tsx|jsx|json|md|yaml|yml|toml|txt|sh|go|rs|java|c|cc|cpp|h|hpp|css|scss|html|htm|sql|ini|cfg|conf|env|lock|csv|tsv|log)|\.[A-Za-z0-9][A-Za-z0-9._-]*)$/i.test(candidate)) {
+      return true;
+    }
+    const lowered = candidate.toLowerCase();
+    if (SPECIAL_BARE_FILENAMES.has(lowered)) return true;
+    const dotIndex = lowered.indexOf('.');
+    return dotIndex > 0 && SPECIAL_BARE_FILENAMES.has(lowered.slice(0, dotIndex));
+  }
+
+  function isSupportedInlinePath(pathText, { hasLineHint = false } = {}) {
+    const candidate = String(pathText || "").trim();
+    if (!candidate) return false;
+    if (candidate.includes("://")) return false;
+    if (candidate.startsWith("//")) return false;
+    const basenameSupported = (value) => isSupportedBareFilename(String(value || '').split('/').pop());
+    if (candidate.startsWith("/")) return Boolean(hasLineHint || basenameSupported(candidate));
+    if (candidate.startsWith("~/")) return candidate.length > 2 && Boolean(hasLineHint || basenameSupported(candidate));
+    if (candidate.startsWith("./")) return candidate.length > 2 && Boolean(hasLineHint || basenameSupported(candidate));
+    if (candidate.startsWith("../")) return candidate.length > 3 && Boolean(hasLineHint || basenameSupported(candidate));
+    if (/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+$/.test(candidate)) return Boolean(hasLineHint || basenameSupported(candidate));
+    return isSupportedBareFilename(candidate);
+  }
+
+  function parseInlinePathRef(rawText) {
+    const trimmed = String(rawText || "").trim();
+    if (!trimmed) return null;
+
+    const { core, trailing } = splitTrailingPunctuation(trimmed);
+    let pathPart = core;
+    let lineStart = 0;
+    let lineEnd = 0;
+
+    const hashMatch = pathPart.match(/^(.*)#L?(\d+)(?:-L?(\d+))?$/i);
+    if (hashMatch) {
+      pathPart = String(hashMatch[1] || "");
+      lineStart = Number(hashMatch[2] || 0);
+      lineEnd = Number(hashMatch[3] || 0);
+    } else {
+      const lineSpecMatch = pathPart.match(/^(.+?):L?(\d+)(?::\d+)?(?:-(?:L)?(\d+)(?::\d+)?)?$/i);
+      if (lineSpecMatch) {
+        pathPart = String(lineSpecMatch[1] || "");
+        lineStart = Number(lineSpecMatch[2] || 0);
+        lineEnd = Number(lineSpecMatch[3] || 0);
+      }
+    }
+
+    let path = String(pathPart || "").trim();
+    if (path.toLowerCase().startsWith("file://")) {
+      path = path.slice(7);
+    }
+    const hasLineHint = lineStart > 0 || lineEnd > 0;
+    if (!isSupportedInlinePath(path, { hasLineHint })) return null;
+
+    const normalizedLineStart = Number.isFinite(lineStart) && lineStart > 0 ? Math.floor(lineStart) : 0;
+    const normalizedLineEnd = Number.isFinite(lineEnd) && lineEnd > 0 ? Math.floor(lineEnd) : 0;
+    return {
+      path,
+      lineStart: normalizedLineStart,
+      lineEnd: normalizedLineEnd,
+      trailing,
+    };
+  }
+
+  function isLikelyUrlPathMatch(text, startIndex) {
+    const index = Number(startIndex || 0);
+    if (!Number.isFinite(index) || index <= 0) return false;
+    let tokenStart = index;
+    while (tokenStart > 0 && !/\s/.test(text[tokenStart - 1])) {
+      tokenStart -= 1;
+    }
+    const tokenPrefix = text.slice(tokenStart, index);
+    if (tokenPrefix.includes("://")) return true;
+
+    // Handle scheme split where match begins at "//..." and prefix is only "https:".
+    if (index > 0 && text[index - 1] === ":" && text[index] === "/" && text[index + 1] === "/") {
+      return /^[a-z][a-z0-9+.-]*$/i.test(tokenPrefix);
+    }
+    return false;
+  }
+
+  function normalizeAllowedRoots(allowedRoots) {
+    if (!Array.isArray(allowedRoots)) return [];
+    const roots = [];
+    for (const root of allowedRoots) {
+      const value = String(root || "").trim();
+      if (!value || !value.startsWith("/")) continue;
+      roots.push(value.endsWith("/") && value.length > 1 ? value.slice(0, -1) : value);
+    }
+    return roots;
+  }
+
+  function isPathAllowedByRoots(pathText, allowedRoots) {
+    const candidate = String(pathText || "").trim();
+    if (!candidate || !candidate.startsWith("/")) return false;
+    const normalizedRoots = normalizeAllowedRoots(allowedRoots);
+    if (!normalizedRoots.length) return false;
+    return normalizedRoots.some((root) => candidate === root || candidate.startsWith(`${root}/`));
+  }
+
+  function renderPlainTextWithInlinePathFallback(text, escapeHtmlFn, { allowedRoots = [] } = {}) {
+    const pattern = /(?:(?:file:\/\/)?\/(?:[^\s`<>"'(){}\[\],;]+)|(?:~\/|\.{1,2}\/|[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+))(?::L?\d+(?::\d+)?(?:-(?:L)?\d+(?::\d+)?)?)?(?:#L?\d+(?:-L?\d+)?)?[\]),.;!?"'`>]*/gi;
+    let cursor = 0;
+    let html = "";
+    let match = pattern.exec(text);
+    while (match) {
+      const raw = String(match[0] || "");
+      const start = Number(match.index || 0);
+      if (start > cursor) {
+        html += escapeHtmlFn(text.slice(cursor, start));
+      }
+      if (isLikelyUrlPathMatch(text, start)) {
+        html += escapeHtmlFn(raw);
+        cursor = start + raw.length;
+        match = pattern.exec(text);
+        continue;
+      }
+      const parsed = parseInlinePathRef(raw);
+      const canPreview = parsed && isPathAllowedByRoots(parsed.path, allowedRoots);
+      if (!parsed || !canPreview || (!parsed.path.includes(".") && parsed.lineStart <= 0 && parsed.lineEnd <= 0)) {
+        html += escapeHtmlFn(raw);
+      } else {
+        const label = raw.endsWith(parsed.trailing || "")
+          ? raw.slice(0, raw.length - String(parsed.trailing || "").length)
+          : raw;
+        html += buildFileRefButtonHtml(label, escapeHtmlFn, {
+          "data-file-path": parsed.path,
+          "data-file-line-start": parsed.lineStart > 0 ? String(parsed.lineStart) : "",
+          "data-file-line-end": parsed.lineEnd > 0 ? String(parsed.lineEnd) : "",
+        });
+        if (parsed.trailing) {
+          html += escapeHtmlFn(parsed.trailing);
+        }
+      }
+      cursor = start + raw.length;
+      match = pattern.exec(text);
+    }
+    if (cursor < text.length) {
+      html += escapeHtmlFn(text.slice(cursor));
+    }
+    return html.replace(/\n/g, "<br>");
+  }
+
+  function renderPlainTextWithFileRefs(text, fileRefs, escapeHtmlFn, { allowedRoots = [] } = {}) {
     const refs = normalizeFileRefs(fileRefs);
     if (!refs.length) {
       return escapeHtmlFn(text).replace(/\n/g, "<br>");
@@ -63,9 +245,17 @@
         html += escapeHtmlFn(text.slice(cursor, match.index));
       }
 
-      const safeRefId = escapeHtmlFn(match.refId);
-      const safeLabel = escapeHtmlFn(match.rawText);
-      html += `<button type="button" class="message-file-ref" data-file-ref-id="${safeRefId}" aria-label="Open file preview for ${safeLabel}">${safeLabel}</button>`;
+      const parsed = parseInlinePathRef(match.rawText);
+      const trailing = String(parsed?.trailing || "");
+      const label = trailing && match.rawText.endsWith(trailing)
+        ? match.rawText.slice(0, match.rawText.length - trailing.length)
+        : match.rawText;
+      html += buildFileRefButtonHtml(label, escapeHtmlFn, {
+        "data-file-ref-id": match.refId,
+      });
+      if (trailing) {
+        html += escapeHtmlFn(trailing);
+      }
       cursor = match.index + match.rawText.length;
       remainingRefs.splice(match.fileRefIndex, 1);
     }
@@ -77,12 +267,13 @@
     cleanDisplayTextFn,
     escapeHtmlFn,
     fileRefs = null,
+    allowedRoots = [],
   } = {}) {
     if (!container || typeof cleanDisplayTextFn !== "function" || typeof escapeHtmlFn !== "function") return;
     const text = cleanDisplayTextFn(rawText);
     const fenced = text.includes("```");
     if (!fenced) {
-      container.innerHTML = renderPlainTextWithFileRefs(text, fileRefs, escapeHtmlFn);
+      container.innerHTML = renderPlainTextWithFileRefs(text, fileRefs, escapeHtmlFn, { allowedRoots });
       return;
     }
 
@@ -90,15 +281,16 @@
     const parts = [];
     fragments.forEach((fragment, index) => {
       if (index % 2 === 0) {
-        const safe = escapeHtmlFn(fragment).replace(/\n/g, "<br>");
-        if (safe) parts.push(`<div>${safe}</div>`);
+        const rendered = renderPlainTextWithFileRefs(fragment, fileRefs, escapeHtmlFn, { allowedRoots });
+        if (rendered) parts.push(`<div>${rendered}</div>`);
         return;
       }
       const trimmed = fragment.replace(/^\n/, "");
       const lines = trimmed.split("\n");
       const maybeLang = lines[0].trim();
       const code = lines.slice(1).join("\n").trimEnd() || trimmed;
-      parts.push(`<pre class="code-block" data-lang="${escapeHtmlFn(maybeLang)}"><code>${escapeHtmlFn(code)}</code></pre>`);
+      const renderedCode = renderPlainTextWithFileRefs(code, fileRefs, escapeHtmlFn, { allowedRoots });
+      parts.push(`<pre class="code-block" data-lang="${escapeHtmlFn(maybeLang)}"><code>${renderedCode}</code></pre>`);
     });
     container.innerHTML = parts.join("");
   }
@@ -106,13 +298,83 @@
   function renderToolTraceBody(container, message, {
     cleanDisplayTextFn,
     documentObject = (typeof document !== "undefined" ? document : null),
+    windowObject = (typeof window !== "undefined" ? window : null),
   } = {}) {
     if (!container || typeof cleanDisplayTextFn !== "function" || !documentObject) return;
+
+    function findChildByClassName(node, className) {
+      if (!node) return null;
+      if (typeof node.querySelector === "function") {
+        const match = node.querySelector(`.${className}`);
+        if (match) return match;
+      }
+      const children = Array.isArray(node.children) ? node.children : [];
+      for (const child of children) {
+        if (String(child?.className || "") === className) {
+          return child;
+        }
+      }
+      return null;
+    }
+
+    function isNearElementBottom(element, threshold = 40) {
+      if (!element) return true;
+      const scrollHeight = Number(element.scrollHeight);
+      const clientHeight = Number(element.clientHeight);
+      const scrollTop = Number(element.scrollTop);
+      if (!Number.isFinite(scrollHeight) || !Number.isFinite(clientHeight) || !Number.isFinite(scrollTop)) {
+        return true;
+      }
+      return (scrollHeight - clientHeight - scrollTop) <= threshold;
+    }
+
+    const previousDetails = findChildByClassName(container, "tool-trace");
+    const previousList = findChildByClassName(previousDetails, "tool-trace__lines");
+    const previousDetailsOpen = Boolean(previousDetails?.open);
+    const previousListScrollTop = Number(previousList?.scrollTop);
+    const previousListShouldStickBottom = isNearElementBottom(previousList, 40);
+
     container.innerHTML = "";
     const text = cleanDisplayTextFn(message?.body || "");
     const lines = text ? text.split("\n").map((line) => line.trim()).filter(Boolean) : [];
     if (!lines.length && !message?.pending) {
       return;
+    }
+
+    function findNearestScrollContainer(node) {
+      let current = node && typeof node.parentNode !== "undefined" ? node.parentNode : null;
+      while (current) {
+        if (typeof current.scrollTop === "number") {
+          return current;
+        }
+        current = current.parentNode || null;
+      }
+      return null;
+    }
+
+    function captureViewportSnapshot() {
+      return {
+        scroller: findNearestScrollContainer(container),
+        scrollTop: Number(findNearestScrollContainer(container)?.scrollTop || 0),
+        windowScrollY: Number(windowObject?.scrollY || 0),
+      };
+    }
+
+    function restoreViewportSnapshot(snapshot) {
+      if (!snapshot) return;
+      const apply = () => {
+        if (snapshot.scroller && typeof snapshot.scroller.scrollTop === "number") {
+          snapshot.scroller.scrollTop = snapshot.scrollTop;
+        }
+        if (windowObject && typeof windowObject.scrollTo === "function") {
+          windowObject.scrollTo(0, snapshot.windowScrollY);
+        }
+      };
+      if (windowObject && typeof windowObject.requestAnimationFrame === "function") {
+        windowObject.requestAnimationFrame(apply);
+        return;
+      }
+      apply();
     }
 
     const details = documentObject.createElement("details");
@@ -143,11 +405,33 @@
     }
     details.appendChild(list);
 
+    let pendingViewportSnapshot = null;
+    const capturePendingViewportSnapshot = () => {
+      pendingViewportSnapshot = captureViewportSnapshot();
+    };
+    summary.addEventListener("click", capturePendingViewportSnapshot);
+    summary.addEventListener("keydown", (event) => {
+      const key = String(event?.key || "");
+      if (key === "Enter" || key === " ") {
+        capturePendingViewportSnapshot();
+      }
+    });
+
     details.addEventListener("toggle", () => {
       message.collapsed = !details.open;
+      restoreViewportSnapshot(pendingViewportSnapshot);
+      pendingViewportSnapshot = null;
     });
 
     container.appendChild(details);
+
+    if (details.open && previousDetailsOpen && Number.isFinite(previousListScrollTop)) {
+      if (previousListShouldStickBottom) {
+        list.scrollTop = Number(list.scrollHeight) || previousListScrollTop;
+      } else {
+        list.scrollTop = Math.max(0, previousListScrollTop);
+      }
+    }
   }
 
   function roleLabelForMessage(message, {

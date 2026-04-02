@@ -70,6 +70,84 @@ def retry_or_dead_letter_job(
     return False
 
 
+def dead_letter_stale_open_job_for_chat(
+    conn: Connection,
+    *,
+    user_id: str,
+    chat_id: int,
+    timeout_seconds: int,
+    error: str,
+    insert_dead_letter_if_missing: Callable[..., None],
+) -> dict[str, Any] | None:
+    timeout = max(30, int(timeout_seconds or 0))
+    error_text = str(error or "Stale open job")[:1000]
+    row = conn.execute(
+        f"""
+        SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts
+        FROM chat_jobs
+        WHERE user_id = ?
+          AND chat_id = ?
+          AND status IN {SQL_JOB_STATUS_OPEN}
+          AND (
+            (
+              status = ?
+              AND COALESCE(updated_at, created_at) <= datetime('now', ?)
+            )
+            OR
+            (
+              status = ?
+              AND COALESCE(updated_at, started_at, created_at) <= datetime('now', ?)
+            )
+          )
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            str(user_id),
+            int(chat_id),
+            JOB_STATUS_QUEUED,
+            f"-{timeout} seconds",
+            JOB_STATUS_RUNNING,
+            f"-{timeout} seconds",
+        ),
+    ).fetchone()
+    if not row:
+        return None
+
+    job_id = int(row["id"])
+    updated = conn.execute(
+        f"""
+        UPDATE chat_jobs
+        SET status = ?, error = ?, finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status IN {SQL_JOB_STATUS_OPEN}
+        """,
+        (JOB_STATUS_DEAD, error_text, job_id),
+    )
+    if updated.rowcount == 0:
+        return None
+
+    attempts = int(row["attempts"] or 0)
+    max_attempts = int(row["max_attempts"] or 0)
+    insert_dead_letter_if_missing(
+        conn,
+        job_id=job_id,
+        user_id=str(row["user_id"]),
+        chat_id=int(row["chat_id"]),
+        operator_message_id=int(row["operator_message_id"]),
+        attempts=attempts,
+        max_attempts=max_attempts,
+        error=error_text,
+    )
+    return {
+        "id": job_id,
+        "user_id": str(row["user_id"]),
+        "chat_id": int(row["chat_id"]),
+        "attempts": attempts,
+        "max_attempts": max_attempts,
+        "error": error_text,
+    }
+
+
 def dead_letter_stale_running_jobs(
     conn: Connection,
     *,
@@ -84,7 +162,7 @@ def dead_letter_stale_running_jobs(
         SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts
         FROM chat_jobs
         WHERE status = ?
-          AND updated_at <= datetime('now', ?)
+          AND COALESCE(updated_at, started_at, created_at) <= datetime('now', ?)
         """,
         (JOB_STATUS_RUNNING, f"-{timeout} seconds"),
     ).fetchall()

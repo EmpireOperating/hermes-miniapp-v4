@@ -12,7 +12,7 @@ from job_status import (
 )
 from store_jobs_claim import claim_next_job, dead_letter_exhausted_queued_jobs
 from store_jobs_queries import cleanup_stale_jobs, get_job_state, get_open_job, has_open_job, list_dead_letters, list_jobs
-from store_jobs_retry import dead_letter_stale_running_jobs, retry_or_dead_letter_job
+from store_jobs_retry import dead_letter_stale_open_job_for_chat, dead_letter_stale_running_jobs, retry_or_dead_letter_job
 
 
 class StoreJobsMixin:
@@ -152,6 +152,24 @@ class StoreJobsMixin:
         with self._connect() as conn:
             return dead_letter_stale_running_jobs(
                 conn,
+                timeout_seconds=timeout_seconds,
+                error=error,
+                insert_dead_letter_if_missing=self._insert_dead_letter_if_missing,
+            )
+
+    def dead_letter_stale_open_job_for_chat(
+        self,
+        *,
+        user_id: str,
+        chat_id: int,
+        timeout_seconds: int,
+        error: str,
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            return dead_letter_stale_open_job_for_chat(
+                conn,
+                user_id=user_id,
+                chat_id=chat_id,
                 timeout_seconds=timeout_seconds,
                 error=error,
                 insert_dead_letter_if_missing=self._insert_dead_letter_if_missing,

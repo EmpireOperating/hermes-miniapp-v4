@@ -23,6 +23,8 @@ def create_auth_session_token(
     bot_token: str,
     auth_session_max_age_seconds: int,
     upsert_auth_session_fn: Callable[..., None],
+    display_name: str | None = None,
+    username: str | None = None,
 ) -> str:
     expires_at = int(time.time()) + max(60, auth_session_max_age_seconds)
     session_id = os.urandom(8).hex()
@@ -33,6 +35,8 @@ def create_auth_session_token(
         session_id=session_id,
         user_id=user_id,
         nonce_hash=nonce_hash(nonce),
+        display_name=display_name,
+        username=username,
         expires_at=expires_at,
     )
     return f"{payload}:{signature}"
@@ -85,6 +89,7 @@ def verified_from_session_cookie(
     *,
     token: str,
     verify_auth_session_token_fn: Callable[[str], str | None],
+    auth_session_profile_fn: Callable[[str], dict[str, str | None]] | None = None,
 ) -> VerifiedTelegramInitData | None:
     user_id = verify_auth_session_token_fn(token)
     if not user_id:
@@ -96,14 +101,17 @@ def verified_from_session_cookie(
         return None
 
     now = int(time.time())
+    profile = auth_session_profile_fn(user_id) if callable(auth_session_profile_fn) else {"display_name": None, "username": None}
+    display_name = str((profile or {}).get("display_name") or "").strip() or None
+    username = str((profile or {}).get("username") or "").strip() or None
     return VerifiedTelegramInitData(
         auth_date=now,
         query_id=None,
         user=TelegramUser(
             id=numeric_user_id,
-            first_name=None,
+            first_name=display_name,
             last_name=None,
-            username=None,
+            username=username,
             language_code=None,
             is_premium=None,
         ),

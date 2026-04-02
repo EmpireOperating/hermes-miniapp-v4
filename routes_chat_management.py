@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import os
+from pathlib import Path
 from typing import Any
 
+from file_refs import extract_file_refs
 from routes_chat_context import ChatRouteContext
 from routes_chat_resolution import (
     guard_json_payload_user_chat_route,
@@ -28,8 +31,15 @@ def register_chat_management_routes(
     serialize_chat_fn = context.serialize_chat_fn
     session_id_builder_fn = context.session_id_builder_fn
 
+    def _serialize_turn(turn) -> dict[str, object]:
+        payload = asdict(turn)
+        refs = extract_file_refs(payload.get("body") or "", message_id=int(payload.get("id") or 0))
+        if refs:
+            payload["file_refs"] = refs
+        return payload
+
     def _chat_history(user_id: str, chat_id: int, *, limit: int = 120) -> list[dict[str, object]]:
-        return [asdict(turn) for turn in store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
+        return [_serialize_turn(turn) for turn in store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
 
     def _serialize_chats(user_id: str) -> list[dict[str, object]]:
         return [serialize_chat_fn(chat) for chat in store_getter().list_chats(user_id=user_id)]
@@ -65,7 +75,7 @@ def register_chat_management_routes(
         if activate:
             store.mark_chat_read(user_id=user_id, chat_id=chat_id)
             store.set_active_chat(user_id=user_id, chat_id=chat_id)
-        history = [asdict(turn) for turn in store.get_history(user_id=user_id, chat_id=chat_id, limit=120)]
+        history = [_serialize_turn(turn) for turn in store.get_history(user_id=user_id, chat_id=chat_id, limit=120)]
         chat = store.get_chat(user_id=user_id, chat_id=chat_id)
         return {"ok": True, "chat": serialize_chat_fn(chat), "history": history}
 
@@ -91,6 +101,170 @@ def register_chat_management_routes(
         if raw_allow_empty is None:
             return False, None
         return None, json_error_fn("Invalid allow_empty flag. Expected boolean.", 400)
+
+    def _parse_bool_flag(
+        payload: dict[str, object],
+        key: str,
+        *,
+        default: bool = False,
+        error_message: str,
+    ) -> tuple[bool | None, tuple[dict[str, object], int] | None]:
+        raw_value = payload.get(key, default)
+        if isinstance(raw_value, bool):
+            return raw_value, None
+        if raw_value is None:
+            return default, None
+        return None, json_error_fn(error_message, 400)
+
+    def _file_preview_allowed_roots() -> list[Path]:
+        raw = str(os.environ.get("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", "")).strip()
+        if not raw:
+            return []
+        roots: list[Path] = []
+        for candidate in raw.split(":"):
+            cleaned = candidate.strip()
+            if not cleaned:
+                continue
+            try:
+                root = Path(cleaned).expanduser().resolve(strict=False)
+            except OSError:
+                continue
+            roots.append(root)
+        return roots
+
+    def _resolve_preview_path(path_text: str, *, allowed_roots: list[Path]) -> Path:
+        cleaned = str(path_text or "").strip()
+        if not cleaned:
+            raise ValueError("Missing file path")
+
+        if cleaned.lower().startswith("file://"):
+            cleaned = cleaned[7:]
+
+        try:
+            candidate = Path(cleaned).expanduser()
+        except OSError as exc:
+            raise ValueError("Invalid file path") from exc
+
+        if candidate.is_absolute():
+            try:
+                return candidate.resolve(strict=False)
+            except OSError as exc:
+                raise ValueError("Invalid file path") from exc
+
+        for root in allowed_roots:
+            try:
+                resolved = (root / candidate).resolve(strict=False)
+            except OSError:
+                continue
+            try:
+                resolved.relative_to(root)
+                return resolved
+            except ValueError:
+                continue
+
+        raise ValueError("Path must be absolute or relative to an allowed root")
+
+    def _path_under_allowed_roots(target: Path, roots: list[Path]) -> bool:
+        for root in roots:
+            try:
+                target.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _build_file_preview(
+        path_value: Path,
+        *,
+        line_start: int,
+        line_end: int,
+        window_start_override: int = 0,
+        window_end_override: int = 0,
+        full_file: bool = False,
+    ) -> dict[str, object]:
+        if not path_value.exists():
+            raise FileNotFoundError("File not found")
+        if not path_value.is_file():
+            raise ValueError("Path is not a regular file")
+
+        max_bytes = 1_000_000
+        max_lines = 400
+        context = 40
+        full_file_max_bytes = 250_000
+        full_file_max_lines = 2_000
+        file_size = path_value.stat().st_size
+        if file_size > max_bytes:
+            raise ValueError("File too large for preview")
+
+        raw_bytes = path_value.read_bytes()
+        if b"\x00" in raw_bytes:
+            raise ValueError("Binary file preview is not supported")
+
+        text = raw_bytes.decode("utf-8", errors="replace")
+        all_lines = text.splitlines()
+        total_lines = max(len(all_lines), 1)
+        can_load_full_file = file_size <= full_file_max_bytes and total_lines <= full_file_max_lines
+
+        focus_start = line_start if line_start > 0 else 1
+        focus_end = line_end if line_end >= focus_start else focus_start
+
+        if full_file:
+            if not can_load_full_file:
+                raise ValueError("File too large to load fully; use excerpt mode")
+            window_start = 1
+            window_end = total_lines
+        else:
+            requested_start = window_start_override if window_start_override > 0 else focus_start - context
+            requested_end = window_end_override if window_end_override > 0 else focus_end + context
+            window_start = max(1, min(focus_start, requested_start))
+            window_end = min(total_lines, max(focus_end, requested_end, focus_start))
+
+            if window_end - window_start + 1 > max_lines:
+                if window_start <= focus_start <= window_start + max_lines - 1:
+                    window_end = min(total_lines, window_start + max_lines - 1)
+                else:
+                    window_end = min(total_lines, max(focus_end, requested_end))
+                    window_start = max(1, window_end - max_lines + 1)
+                    if focus_start < window_start:
+                        window_start = max(1, focus_start)
+                        window_end = min(total_lines, window_start + max_lines - 1)
+
+        preview_lines = []
+        for line_no in range(window_start, window_end + 1):
+            text_value = all_lines[line_no - 1] if line_no - 1 < len(all_lines) else ""
+            preview_lines.append({"line": line_no, "text": text_value})
+
+        return {
+            "path": str(path_value),
+            "line_start": focus_start,
+            "line_end": focus_end,
+            "window_start": window_start,
+            "window_end": window_end,
+            "total_lines": total_lines,
+            "is_truncated": window_start > 1 or window_end < total_lines,
+            "can_expand_up": window_start > 1,
+            "can_expand_down": window_end < total_lines,
+            "can_load_full_file": can_load_full_file and not full_file,
+            "full_file_loaded": bool(full_file),
+            "lines": preview_lines,
+        }
+
+    def _resolve_ref_preview_request(
+        *, user_id: str, chat_id: int, ref_id: str
+    ) -> tuple[str, int, int]:
+        history = store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=400)
+        for turn in history:
+            refs = extract_file_refs(turn.body, message_id=int(turn.id))
+            for ref in refs:
+                if str(ref.get("ref_id") or "") != ref_id:
+                    continue
+                path = str(ref.get("path") or "").strip()
+                if not path:
+                    break
+                line_start = int(ref.get("line_start") or 0)
+                line_end = int(ref.get("line_end") or 0)
+                return path, line_start, line_end
+        raise KeyError("File reference not found")
 
     @api_bp.post("/chats")
     def create_chat() -> tuple[dict[str, object], int]:
@@ -154,6 +328,84 @@ def register_chat_management_routes(
         if activate_error:
             return activate_error
         return _chat_history_payload(user_id=user_id, chat_id=chat_id, activate=bool(activate)), 200
+
+    @api_bp.post("/chats/file-preview")
+    @guard_json_payload_user_chat_route(
+        request_payload_fn=request_payload_fn,
+        user_and_chat_id_from_payload_or_error_fn=_require_json_user_and_chat_id,
+    )
+    @guard_key_error_as_route_error(
+        not_found_error_fn=_json_not_found,
+        should_map_fn=_is_chat_not_found_key_error,
+    )
+    def chat_file_preview(payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+        # Validate chat access first via store lookup.
+        store_getter().get_chat(user_id=user_id, chat_id=chat_id)
+
+        allowed_roots = _file_preview_allowed_roots()
+        if not allowed_roots:
+            return json_error_fn("File preview is disabled: no allowed roots configured", 403)
+
+        ref_id = str(payload.get("ref_id") or "").strip()
+
+        path_text = str(payload.get("path") or "").strip()
+        try:
+            line_start = int(payload.get("line_start") or 0)
+            line_end = int(payload.get("line_end") or 0)
+            window_start = int(payload.get("window_start") or 0)
+            window_end = int(payload.get("window_end") or 0)
+        except (TypeError, ValueError):
+            return json_error_fn("Invalid file preview range values.", 400)
+
+        full_file, full_file_error = _parse_bool_flag(
+            payload,
+            "full_file",
+            default=False,
+            error_message="Invalid full_file flag. Expected boolean.",
+        )
+        if full_file_error:
+            return full_file_error
+
+        if ref_id:
+            try:
+                ref_path, ref_line_start, ref_line_end = _resolve_ref_preview_request(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    ref_id=ref_id,
+                )
+            except KeyError as exc:
+                return json_error_fn(str(exc), 404)
+            path_text = ref_path
+            if line_start <= 0:
+                line_start = ref_line_start
+            if line_end <= 0:
+                line_end = ref_line_end
+
+        try:
+            target_path = _resolve_preview_path(path_text, allowed_roots=allowed_roots)
+        except ValueError as exc:
+            return json_error_fn(str(exc), 400)
+
+        if not _path_under_allowed_roots(target_path, allowed_roots):
+            return json_error_fn("File is outside allowed roots.", 403)
+
+        try:
+            preview = _build_file_preview(
+                target_path,
+                line_start=line_start,
+                line_end=line_end,
+                window_start_override=window_start,
+                window_end_override=window_end,
+                full_file=bool(full_file),
+            )
+        except FileNotFoundError as exc:
+            return json_error_fn(str(exc), 404)
+        except ValueError as exc:
+            return json_error_fn(str(exc), 400)
+        except OSError:
+            return json_error_fn("Unable to read file preview", 500)
+
+        return {"ok": True, "preview": preview}, 200
 
     @api_bp.post("/chats/mark-read")
     @guard_json_payload_user_chat_route(

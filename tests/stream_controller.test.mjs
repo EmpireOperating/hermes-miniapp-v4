@@ -17,6 +17,9 @@ function buildControllerHarness() {
   const renderedMessages = [];
   const toolTraceLines = [];
   const streamDebugEvents = [];
+  const finalizeCalls = [];
+  const persistedCursors = [];
+  const clearedCursors = [];
   const histories = new Map();
 
   const deps = {
@@ -66,7 +69,9 @@ function buildControllerHarness() {
     streamDebugLog: (eventName, details = null) => {
       streamDebugEvents.push({ eventName: String(eventName || ''), details });
     },
-    finalizeStreamPendingState: () => {},
+    finalizeStreamPendingState: (chatId, wasAborted) => {
+      finalizeCalls.push({ chatId: Number(chatId), wasAborted: Boolean(wasAborted) });
+    },
     appendInlineToolTrace: (chatId, text) => {
       toolTraceLines.push({ chatId: Number(chatId), text: String(text || '') });
     },
@@ -79,6 +84,8 @@ function buildControllerHarness() {
     histories,
     mergeHydratedHistory: ({ nextHistory }) => nextHistory,
     renderMessages: (chatId, options = {}) => renderedMessages.push({ chatId: Number(chatId), options }),
+    persistStreamCursor: (chatId, eventId) => persistedCursors.push({ chatId: Number(chatId), eventId: Number(eventId) }),
+    clearStreamCursor: (chatId) => clearedCursors.push(Number(chatId)),
   };
 
   const controller = streamController.createController(deps);
@@ -93,6 +100,9 @@ function buildControllerHarness() {
     renderedMessages,
     toolTraceLines,
     streamDebugEvents,
+    finalizeCalls,
+    persistedCursors,
+    clearedCursors,
     histories,
   };
 }
@@ -184,6 +194,30 @@ test('consumeStreamResponse can suppress early-close fallback and report non-ter
   assert.equal(harness.pendingAssistantUpdates.length, 0);
   assert.equal(harness.streamStatuses.includes('Stream closed early'), false);
   assert.equal(harness.streamChipUpdates.includes('stream: closed early'), false);
+});
+
+test('consumeStreamResponse persists replay cursor and clears it on terminal done', async () => {
+  const harness = buildControllerHarness();
+  const { response } = makeSseResponse([
+    'event: tool\n',
+    'data: {"display":"read_file","_event_id":3}\n',
+    '\n',
+    'event: done\n',
+    'data: {"reply":"ok","latency_ms":5,"turn_count":1,"_event_id":4}\n',
+    '\n',
+  ].join(''));
+
+  const result = await harness.controller.consumeStreamResponse(9, response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+    resetReplayCursor: true,
+  });
+
+  assert.equal(result.terminalReceived, true);
+  assert.deepEqual(harness.persistedCursors, [
+    { chatId: 9, eventId: 3 },
+    { chatId: 9, eventId: 4 },
+  ]);
+  assert.deepEqual(harness.clearedCursors, [9, 9]);
 });
 
 test('consumeStreamResponse parses CRLF-framed SSE events incrementally', async () => {
@@ -287,6 +321,42 @@ test('consumeStreamResponse skips replayed events using monotonic _event_id acro
 
 });
 
+test('finalizeStreamLifecycle skips stale controller handoff cleanup when stream ownership changed', async () => {
+  const harness = buildControllerHarness();
+  const previousController = new AbortController();
+  const replacementController = new AbortController();
+
+  harness.controller.setStreamAbortController(9, previousController);
+  harness.controller.setStreamAbortController(9, replacementController);
+
+  await harness.controller.finalizeStreamLifecycle(9, previousController, { wasAborted: false });
+
+  assert.equal(harness.finalizeCalls.length, 0);
+  assert.equal(harness.controller.hasLiveStreamController(9), true);
+});
+
+test('finalizeStreamLifecycle does not clear pending state for owning aborted controller handoff', async () => {
+  const harness = buildControllerHarness();
+  const owningController = new AbortController();
+
+  harness.controller.setStreamAbortController(9, owningController);
+  await harness.controller.finalizeStreamLifecycle(9, owningController, { wasAborted: true });
+
+  assert.deepEqual(harness.finalizeCalls, []);
+  assert.equal(harness.controller.hasLiveStreamController(9), false);
+});
+
+test('finalizeStreamLifecycle finalizes pending state for owning non-aborted stream controller', async () => {
+  const harness = buildControllerHarness();
+  const owningController = new AbortController();
+
+  harness.controller.setStreamAbortController(9, owningController);
+  await harness.controller.finalizeStreamLifecycle(9, owningController, { wasAborted: false });
+
+  assert.deepEqual(harness.finalizeCalls, [{ chatId: 9, wasAborted: false }]);
+  assert.equal(harness.controller.hasLiveStreamController(9), false);
+});
+
 test('createToolTraceController upserts tool deltas by message_id + tool_call_id + phase', () => {
   const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
   const toolTrace = streamController.createToolTraceController({
@@ -341,6 +411,8 @@ test('createToolTraceController appends pending tool traces and finalizes collap
   const pending = toolTrace.findPendingToolTraceMessage(7);
   assert.equal(Boolean(pending), true);
   assert.equal(pending.body, 'read_file\nsearch_files');
+  assert.equal(toolStreamEl.hidden, false);
+  assert.equal(toolStreamLinesEl.innerHTML, 'read_file\nsearch_files');
 
   toolTrace.finalizeInlineToolTrace(7);
   const finalized = histories.get(7)[0];
@@ -348,6 +420,73 @@ test('createToolTraceController appends pending tool traces and finalizes collap
   assert.equal(finalized.pending, false);
   assert.equal(finalized.collapsed, true);
   assert.equal(finalized.body, 'read_file\nsearch_files');
+  assert.equal(toolStreamEl.hidden, true);
+});
+
+test('createToolTraceController keeps live tool stream position when user is reading older tool entries', () => {
+  const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
+  const toolStreamEl = { hidden: true };
+  const toolStreamLinesEl = {
+    innerHTML: '',
+    scrollTop: 120,
+    scrollHeight: 600,
+    clientHeight: 200,
+    children: [],
+    appendChild(node) {
+      this.children.push(node);
+      this.scrollHeight = 800;
+    },
+  };
+  const documentObject = {
+    createElement: () => ({ className: '', textContent: '' }),
+  };
+
+  const toolTrace = streamController.createToolTraceController({
+    toolStreamEl,
+    toolStreamLinesEl,
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+    documentObject,
+  });
+
+  toolTrace.appendInlineToolTrace(7, 'read_file');
+  toolTrace.appendInlineToolTrace(7, 'search_files');
+
+  assert.equal(toolStreamEl.hidden, false);
+  assert.equal(toolStreamLinesEl.scrollTop, 120);
+});
+
+test('createToolTraceController keeps following live tool stream when already near the bottom', () => {
+  const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
+  const toolStreamEl = { hidden: true };
+  const toolStreamLinesEl = {
+    innerHTML: '',
+    scrollTop: 365,
+    scrollHeight: 600,
+    clientHeight: 200,
+    children: [],
+    appendChild(node) {
+      this.children.push(node);
+      this.scrollHeight = 800;
+    },
+  };
+  const documentObject = {
+    createElement: () => ({ className: '', textContent: '' }),
+  };
+
+  const toolTrace = streamController.createToolTraceController({
+    toolStreamEl,
+    toolStreamLinesEl,
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+    documentObject,
+  });
+
+  toolTrace.appendInlineToolTrace(7, 'read_file');
+  toolTrace.appendInlineToolTrace(7, 'search_files');
+
+  assert.equal(toolStreamEl.hidden, false);
+  assert.equal(toolStreamLinesEl.scrollTop, 800);
 });
 
 test('createToolTraceController drops empty finalized traces and resets tool stream UI', () => {

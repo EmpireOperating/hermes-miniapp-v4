@@ -22,7 +22,6 @@
       latencyByChat,
       streamPhaseByChat,
       unseenStreamChats,
-      normalizeChat,
       clearChatStreamState,
       upsertChat,
       syncChats,
@@ -81,18 +80,15 @@
         const cleaned = String(fallback).trim();
         if (!cleaned) return null;
 
-        if (mode !== 'rename') {
-          return cleaned;
-        }
-
         const fallbackTagInput = promptFn?.('Tag (none/feat/bug)', parsedCurrent.tag || 'none');
         if (fallbackTagInput == null) return null;
         const requestedTag = String(fallbackTagInput || 'none').trim().toLowerCase();
         const normalizedTag = CHAT_TITLE_ALLOWED_TAGS.has(requestedTag) ? requestedTag : 'none';
+        setChatTitleSelectedTag(normalizedTag);
         return formatTaggedChatTitle(cleaned, normalizedTag);
       }
 
-      const showTagToggles = mode === 'rename' && Boolean(chatTitleTagRow) && Array.isArray(chatTitleTagButtons) && chatTitleTagButtons.length > 0;
+      const showTagToggles = Boolean(chatTitleTagRow) && Array.isArray(chatTitleTagButtons) && chatTitleTagButtons.length > 0;
       if (chatTitleTagLabel) {
         chatTitleTagLabel.hidden = !showTagToggles;
       }
@@ -240,16 +236,17 @@
       syncChats(data.chats || []);
       syncPinnedChats(data.pinned_chats || []);
       if (removedWasPinned && !pinnedChats.has(activeChatId) && removedChatSnapshot) {
-        pinnedChats.set(activeChatId, normalizeChat(removedChatSnapshot, { forcePinned: true }));
+        pinnedChats.set(activeChatId, { ...removedChatSnapshot, is_pinned: true });
       }
-      histories.delete(Number(data.removed_chat_id));
+      const removedChatId = Number(data.removed_chat_id || 0);
+      histories.delete(removedChatId);
       clearChatStreamState({
-        chatId: Number(data.removed_chat_id),
+        chatId: removedChatId,
         pendingChats,
         streamPhaseByChat,
         unseenStreamChats,
       });
-      latencyByChat.delete(Number(data.removed_chat_id));
+      latencyByChat.delete(removedChatId);
       onLatencyByChatMutated?.(latencyByChat);
 
       const nextActiveChatId = Number(data.active_chat_id || 0);

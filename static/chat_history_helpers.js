@@ -32,6 +32,7 @@
       updateComposerState,
       pendingChats,
       shouldResumeOnVisibilityChange,
+      restorePendingStreamSnapshot,
     } = deps;
 
     const activeRenderState = {
@@ -55,6 +56,19 @@
       const key = normalizeChatId(chatId);
       if (!chats.has(key)) return;
       chats.get(key).unread_count = 0;
+    }
+
+    function hasLocalPendingWithoutLiveStream(chatId, history) {
+      const key = normalizeChatId(chatId);
+      if (!key || hasLiveStreamController(key)) {
+        return false;
+      }
+      const previous = Array.isArray(history) ? history : [];
+      return previous.some((item) => {
+        if (!item?.pending) return false;
+        const role = String(item?.role || '').toLowerCase();
+        return role === 'tool' || role === 'hermes' || role === 'assistant';
+      });
     }
 
     function historiesDiffer(currentHistory, incomingHistory) {
@@ -92,14 +106,19 @@
 
       const previousHistory = histories.get(targetChatId) || [];
       const chatPending = Boolean(data.chat?.pending);
-      const shouldResumePending = chatPending && !hasLiveStreamController(targetChatId);
+      const localPendingWithoutLiveStream = hasLocalPendingWithoutLiveStream(targetChatId, previousHistory);
+      const preservePendingState = chatPending || localPendingWithoutLiveStream;
+      const shouldResumePending = preservePendingState && !hasLiveStreamController(targetChatId);
       const nextHistory = mergeHydratedHistory({
         previousHistory,
         nextHistory: data.history || [],
-        chatPending,
+        chatPending: preservePendingState,
       });
       const historyChanged = historiesDiffer(previousHistory, nextHistory);
       histories.set(targetChatId, nextHistory);
+      if (preservePendingState && typeof restorePendingStreamSnapshot === 'function') {
+        restorePendingStreamSnapshot(targetChatId);
+      }
 
       clearUnreadCount(targetChatId);
       refreshTabNode(targetChatId);
@@ -329,13 +348,19 @@
       const latestActiveId = normalizeChatId(getActiveChatId());
       if (latestActiveId !== activeId) return;
       const previousHistory = histories.get(activeId) || [];
+      const localPendingWithoutLiveStream = hasLocalPendingWithoutLiveStream(activeId, previousHistory);
+
       const chatPending = Boolean(data.chat?.pending);
+      const preservePendingState = chatPending || localPendingWithoutLiveStream;
       const nextHistory = mergeHydratedHistory({
         previousHistory,
         nextHistory: data.history || [],
-        chatPending,
+        chatPending: preservePendingState,
       });
       histories.set(activeId, nextHistory);
+      if (preservePendingState && typeof restorePendingStreamSnapshot === 'function') {
+        restorePendingStreamSnapshot(activeId);
+      }
       upsertChat(data.chat);
       renderMessages(activeId, { preserveViewport: true });
 
@@ -346,8 +371,8 @@
         streamAbortControllers,
       });
       const serverPendingWithoutLiveStream = chatPending && !hasLiveStreamController(activeId);
-      if (needsVisibilityResume || serverPendingWithoutLiveStream) {
-        void resumePendingChatStream(activeId);
+      if (needsVisibilityResume || serverPendingWithoutLiveStream || localPendingWithoutLiveStream) {
+        void resumePendingChatStream(activeId, { force: localPendingWithoutLiveStream });
       }
     }
 

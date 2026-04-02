@@ -8,6 +8,8 @@ from typing import Any, Callable
 
 from flask import Response, g, jsonify, request
 
+from file_refs import extract_file_refs
+
 
 def register_auth_routes(
     api_bp,
@@ -18,7 +20,7 @@ def register_auth_routes(
     verify_for_json_fn: Callable[[dict[str, object]], tuple[Any | None, tuple[dict[str, object], int] | None]],
     serialize_chat_fn: Callable[[Any], dict[str, object]],
     cookie_secure_fn: Callable[[], bool],
-    create_auth_session_token_fn: Callable[[str], str],
+    create_auth_session_token_fn: Callable[..., str],
     allowed_skins: set[str],
     skin_cookie_name: str,
     auth_cookie_name: str,
@@ -28,24 +30,51 @@ def register_auth_routes(
     dev_auth_enabled: bool = False,
     dev_auth_secret: str = "",
 ) -> None:
-    def build_auth_success_response(verified_user, *, auth_mode: str) -> Response:
+    def _serialize_turn(turn) -> dict[str, object]:
+        payload = asdict(turn)
+        refs = extract_file_refs(payload.get("body") or "", message_id=int(payload.get("id") or 0))
+        if refs:
+            payload["file_refs"] = refs
+        return payload
+
+    def _parse_allow_empty_flag(payload: dict[str, object]) -> tuple[bool | None, tuple[dict[str, object], int] | None]:
+        raw_allow_empty = payload.get("allow_empty", False)
+        if isinstance(raw_allow_empty, bool):
+            return raw_allow_empty, None
+        if raw_allow_empty is None:
+            return False, None
+        return None, ({"ok": False, "error": "Invalid allow_empty flag. Expected boolean."}, 400)
+
+    def build_auth_success_response(verified_user, *, auth_mode: str, allow_empty: bool = False) -> Response:
         store = store_getter()
         runtime = runtime_getter()
         user_id = str(verified_user.id)
         store.prune_expired_auth_sessions(int(time.time()))
         runtime.ensure_pending_jobs(user_id)
         display_name = verified_user.first_name or verified_user.username or "Operator"
-        default_chat_id = store.ensure_default_chat(user_id)
-        active_chat_id = store.get_active_chat(user_id) or default_chat_id
-        try:
-            store.get_chat(user_id=user_id, chat_id=active_chat_id)
-        except KeyError:
-            active_chat_id = default_chat_id
 
-        history = [asdict(turn) for turn in store.get_history(user_id=user_id, chat_id=active_chat_id, limit=120)]
-        store.mark_chat_read(user_id=user_id, chat_id=active_chat_id)
-        store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
         chats = [serialize_chat_fn(chat) for chat in store.list_chats(user_id=user_id)]
+        visible_chat_ids = {int(chat["id"]) for chat in chats}
+
+        active_chat_id = store.get_active_chat(user_id)
+        if active_chat_id and int(active_chat_id) not in visible_chat_ids:
+            active_chat_id = None
+
+        explicit_empty_chat_state = store.has_explicit_empty_chat_state(user_id)
+        if not active_chat_id and not allow_empty and not explicit_empty_chat_state:
+            active_chat_id = store.ensure_default_chat(user_id)
+            chats = [serialize_chat_fn(chat) for chat in store.list_chats(user_id=user_id)]
+            visible_chat_ids = {int(chat["id"]) for chat in chats}
+
+        if active_chat_id and int(active_chat_id) in visible_chat_ids:
+            history = [_serialize_turn(turn) for turn in store.get_history(user_id=user_id, chat_id=active_chat_id, limit=120)]
+            store.mark_chat_read(user_id=user_id, chat_id=active_chat_id)
+            store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
+        else:
+            active_chat_id = None
+            history = []
+            store.clear_active_chat(user_id=user_id)
+
         pinned_chats = [serialize_chat_fn(chat) for chat in store.list_pinned_chats(user_id=user_id)]
         skin = store.get_skin(user_id=user_id)
         response = jsonify(
@@ -74,7 +103,7 @@ def register_auth_routes(
         )
         response.set_cookie(
             auth_cookie_name,
-            create_auth_session_token_fn(user_id),
+            create_auth_session_token_fn(user_id, display_name=display_name, username=verified_user.username),
             max_age=max(60, auth_session_max_age_seconds),
             httponly=True,
             samesite="Lax",
@@ -85,10 +114,13 @@ def register_auth_routes(
     @api_bp.post("/auth")
     def auth() -> Response | tuple[dict[str, object], int]:
         payload = request_payload_fn()
+        allow_empty, allow_empty_error = _parse_allow_empty_flag(payload)
+        if allow_empty_error:
+            return allow_empty_error
         verified, auth_error = verify_for_json_fn(payload)
         if auth_error:
             return auth_error
-        return build_auth_success_response(verified.user, auth_mode="telegram")
+        return build_auth_success_response(verified.user, auth_mode="telegram", allow_empty=bool(allow_empty))
 
     @api_bp.post("/dev/auth")
     def dev_auth() -> Response | tuple[dict[str, object], int]:
@@ -96,6 +128,9 @@ def register_auth_routes(
             return {"ok": False, "error": "Not found."}, 404
 
         payload = request_payload_fn()
+        allow_empty, allow_empty_error = _parse_allow_empty_flag(payload)
+        if allow_empty_error:
+            return allow_empty_error
         provided_secret = str(request.headers.get("X-Dev-Auth") or payload.get("secret") or "").strip()
         if not hmac.compare_digest(provided_secret, dev_auth_secret):
             return {"ok": False, "error": "Invalid dev auth secret."}, 401
@@ -125,7 +160,7 @@ def register_auth_routes(
                 extra={"user_id": str(user_id), "username": username},
             )
         )
-        return build_auth_success_response(verified.user, auth_mode="dev")
+        return build_auth_success_response(verified.user, auth_mode="dev", allow_empty=bool(allow_empty))
 
     @api_bp.post("/auth/logout-all")
     def logout_all_sessions() -> Response | tuple[dict[str, object], int]:

@@ -91,6 +91,26 @@ def register_stream_routes(
             )
         )
 
+    def _recover_stale_open_job_if_needed(*, user_id: str, chat_id: int) -> dict[str, object] | None:
+        timeout_seconds = int(getattr(runtime_getter(), "job_stall_timeout_seconds", 0) or 0)
+        stale = store_getter().dead_letter_stale_open_job_for_chat(
+            user_id=user_id,
+            chat_id=chat_id,
+            timeout_seconds=max(30, timeout_seconds),
+            error="E_STALE_OPEN_JOB_AFTER_RESTART: stale open job dead-lettered before new stream",
+        )
+        if not stale:
+            return None
+        stale_job_id = int(stale.get("id") or 0)
+        if stale_job_id:
+            _log_stream_job_event(
+                event="stream_stale_open_job_dead_lettered",
+                user_id=user_id,
+                chat_id=chat_id,
+                job_id=stale_job_id,
+            )
+        return stale
+
     def _stream_segment_seconds_for_request() -> float:
         def _parse_env_float(name: str, default: float) -> float:
             raw = str(os.environ.get(name, "") or "").strip()
@@ -108,7 +128,17 @@ def register_stream_routes(
         is_mobile_webview = "iphone" in user_agent or "android" in user_agent or "mobile" in user_agent
         return mobile_segment if is_mobile_webview else default_segment
 
-    def _stream_job_response(*, user_id: str, chat_id: int, job_id: int, segment_seconds: float = 0.0) -> Response:
+    def _after_event_id_from_payload(payload: dict[str, object]) -> int:
+        raw_value = payload.get("after_event_id")
+        try:
+            parsed = int(raw_value or 0)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, parsed)
+
+    def _stream_job_response(
+        *, user_id: str, chat_id: int, job_id: int, segment_seconds: float = 0.0, after_event_id: int = 0
+    ) -> Response:
         stream_timing_debug = os.environ.get("MINI_APP_STREAM_TIMING_DEBUG", "0") == "1"
         heartbeat_seconds = 1.5
         request_id = str(getattr(g, "request_id", "")) or None
@@ -128,7 +158,7 @@ def register_stream_routes(
 
         def generate() -> Iterator[str]:
             runtime = runtime_getter()
-            subscriber = runtime.subscribe_job_events(job_id)
+            subscriber = runtime.subscribe_job_events(job_id, after_event_id=max(0, int(after_event_id or 0)))
             terminal = False
             last_queue_heartbeat = 0.0
             segment_deadline = (time.monotonic() + segment_seconds) if segment_seconds > 0 else 0.0
@@ -261,7 +291,9 @@ def register_stream_routes(
 
         store = store_getter()
         if store.has_open_job(user_id=user_id, chat_id=chat_id):
-            return sse_error_fn("Hermes is already working on this chat.", 409, chat_id=chat_id)
+            _recover_stale_open_job_if_needed(user_id=user_id, chat_id=chat_id)
+            if store.has_open_job(user_id=user_id, chat_id=chat_id):
+                return sse_error_fn("Hermes is already working on this chat.", 409, chat_id=chat_id)
 
         operator_message_id, not_found_error = _sse_try_not_found(
             lambda: _add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
@@ -287,6 +319,7 @@ def register_stream_routes(
             chat_id=chat_id,
             job_id=job_id,
             segment_seconds=_stream_segment_seconds_for_request(),
+            after_event_id=_after_event_id_from_payload(payload),
         )
 
     @api_bp.post("/chat/stream/resume")
@@ -296,6 +329,7 @@ def register_stream_routes(
         if payload_error:
             return payload_error
 
+        _recover_stale_open_job_if_needed(user_id=user_id, chat_id=chat_id)
         open_job = store_getter().get_open_job(user_id=user_id, chat_id=chat_id)
         if not open_job:
             return sse_error_fn("No active Hermes job for this chat.", 409, chat_id=chat_id)
@@ -308,4 +342,5 @@ def register_stream_routes(
             chat_id=chat_id,
             job_id=resumed_job_id,
             segment_seconds=_stream_segment_seconds_for_request(),
+            after_event_id=_after_event_id_from_payload(payload),
         )

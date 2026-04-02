@@ -191,6 +191,11 @@
         <p id="file-preview-path" class="modal__hint file-preview-modal__path"></p>
         <p id="file-preview-status" class="modal__hint file-preview-modal__status" hidden></p>
         <div id="file-preview-lines" class="file-preview-lines" role="region" aria-live="polite" aria-label="File preview"></div>
+        <div class="file-preview-modal__controls" aria-label="Expand preview context">
+          <button type="button" id="file-preview-expand-up" class="action-button action-button--subtle">More above</button>
+          <button type="button" id="file-preview-load-full" class="action-button action-button--subtle">Load full file</button>
+          <button type="button" id="file-preview-expand-down" class="action-button action-button--subtle">More below</button>
+        </div>
         <div class="modal__actions">
           <button type="button" id="file-preview-close" class="action-button">Close</button>
         </div>
@@ -244,6 +249,9 @@
         version: "{{ dev_reload_version }}",
         requestDebug: {{ 'true' if request_debug else 'false' }},
         devAuthEnabled: {{ 'true' if dev_auth_enabled else 'false' }}
+      };
+      window.__HERMES_FILE_PREVIEW__ = {
+        allowedRoots: {{ file_preview_allowed_roots_json|safe }}
       };
     </script>
     <script src="/static/runtime_helpers.js?v={{ helpers_version }}"></script>

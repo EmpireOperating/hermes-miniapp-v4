@@ -285,6 +285,7 @@
   function createStreamActivityController({
     chats,
     getActiveChatId,
+    hasLiveStreamController,
     chatLabel,
     compactChatLabel,
     setStreamStatus,
@@ -302,7 +303,15 @@
         setActivityChip?.(streamChip, `stream: pending · ${compactChatLabel?.(activeKey) || "Chat"}`);
         return;
       }
-      if ((streamChip?.textContent || "").startsWith("stream: pending")) {
+      if (activeKey && hasLiveStreamController?.(activeKey)) {
+        setStreamStatus?.(`Hermes responding in ${chatLabel?.(activeKey) || "Chat"}`);
+        setActivityChip?.(streamChip, `stream: active · ${compactChatLabel?.(activeKey) || "Chat"}`);
+        syncActiveLatencyChip?.();
+        return;
+      }
+      if ((streamChip?.textContent || "").startsWith("stream: pending")
+        || (streamChip?.textContent || "").startsWith("stream: active")
+        || (streamChip?.textContent || "").startsWith("stream: reconnecting")) {
         setActivityChip?.(streamChip, "stream: idle");
       }
     }

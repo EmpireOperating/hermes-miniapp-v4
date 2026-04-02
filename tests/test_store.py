@@ -150,6 +150,21 @@ def test_remove_last_visible_chat_can_leave_empty_when_requested(tmp_path) -> No
     assert store.get_active_chat(user_id) is None
 
 
+def test_has_explicit_empty_chat_state_only_after_user_enters_zero_tab_state(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u5-empty-pref"
+
+    assert store.has_explicit_empty_chat_state(user_id) is False
+
+    chat_id = store.ensure_default_chat(user_id)
+    store.set_active_chat(user_id, chat_id)
+    assert store.has_explicit_empty_chat_state(user_id) is False
+
+    store.remove_chat(user_id, chat_id, allow_empty=True)
+
+    assert store.has_explicit_empty_chat_state(user_id) is True
+
+
 def test_remove_chat_cancels_open_jobs(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u5b"
@@ -675,12 +690,106 @@ def test_dead_letter_stale_running_jobs_marks_old_running(tmp_path) -> None:
     import sqlite3
 
     conn = sqlite3.connect(store.db_path)
-    conn.execute("UPDATE chat_jobs SET updated_at = datetime('now', '-600 seconds') WHERE id = ?", (job_id,))
+    conn.execute(
+        "UPDATE chat_jobs SET started_at = datetime('now', '-600 seconds'), updated_at = datetime('now', '-600 seconds') WHERE id = ?",
+        (job_id,),
+    )
     conn.commit()
     conn.close()
 
     stale = store.dead_letter_stale_running_jobs(240, "timeout")
     assert any(item["id"] == job_id for item in stale)
+
+    state = store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+
+
+def test_dead_letter_stale_running_jobs_skips_recently_touched_running(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u12-fresh"
+    chat_id = store.ensure_default_chat(user_id)
+    op_id = store.add_message(user_id, chat_id, "operator", "run")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, op_id)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    conn.execute(
+        "UPDATE chat_jobs SET started_at = datetime('now', '-600 seconds'), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (job_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    stale = store.dead_letter_stale_running_jobs(240, "timeout")
+    assert all(item["id"] != job_id for item in stale)
+
+    state = store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "running"
+
+
+def test_dead_letter_stale_open_job_for_chat_marks_old_queued(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u12-open"
+    chat_id = store.ensure_default_chat(user_id)
+    op_id = store.add_message(user_id, chat_id, "operator", "queued")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, op_id)
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    conn.execute("UPDATE chat_jobs SET updated_at = datetime('now', '-600 seconds') WHERE id = ?", (job_id,))
+    conn.commit()
+    conn.close()
+
+    stale = store.dead_letter_stale_open_job_for_chat(
+        user_id=user_id,
+        chat_id=chat_id,
+        timeout_seconds=240,
+        error="E_STALE_OPEN_JOB_AFTER_RESTART",
+    )
+    assert stale is not None
+    assert stale["id"] == job_id
+
+    state = store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+
+
+def test_dead_letter_stale_open_job_for_chat_marks_old_running_by_updated_at(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u12-open-running"
+    chat_id = store.ensure_default_chat(user_id)
+    op_id = store.add_message(user_id, chat_id, "operator", "running")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, op_id)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    conn.execute(
+        "UPDATE chat_jobs SET started_at = CURRENT_TIMESTAMP, updated_at = datetime('now', '-600 seconds') WHERE id = ?",
+        (job_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    stale = store.dead_letter_stale_open_job_for_chat(
+        user_id=user_id,
+        chat_id=chat_id,
+        timeout_seconds=240,
+        error="E_STALE_OPEN_JOB_AFTER_RESTART",
+    )
+    assert stale is not None
+    assert stale["id"] == job_id
 
     state = store.get_job_state(job_id)
     assert state is not None

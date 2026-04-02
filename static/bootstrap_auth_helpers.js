@@ -26,7 +26,7 @@
       operatorName,
       refreshOperatorRoleLabels,
       setSkin,
-      upsertChat,
+      syncChats,
       syncPinnedChats,
       histories,
       setActiveChatMeta,
@@ -92,7 +92,7 @@
       refreshOperatorRoleLabels();
       setSkin(data.skin || "terminal");
 
-      (data.chats || []).forEach(upsertChat);
+      syncChats(data.chats || []);
       syncPinnedChats(data.pinned_chats || []);
       const activeId = Number(data.active_chat_id || 0);
       if (!activeId) {
@@ -211,6 +211,7 @@
           user_id: Number(userId),
           display_name: String(displayName || "").trim(),
           username: String(username || "").trim(),
+          allow_empty: true,
         }),
       });
       const data = await safeReadJson(response);

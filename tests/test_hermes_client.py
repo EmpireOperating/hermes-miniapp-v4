@@ -478,7 +478,26 @@ def test_should_include_conversation_history_only_on_first_persistent_turn(monke
     assert client.should_include_conversation_history(session_id=session_id) is True
 
     runtime.bootstrapped = True
+    runtime.checkpoint_history = [{"role": "user", "content": "prior"}, {"role": "assistant", "content": "ok"}]
     assert client.should_include_conversation_history(session_id=session_id) is False
+
+
+def test_should_include_conversation_history_when_bootstrapped_runtime_has_empty_checkpoint(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+    session_id = "miniapp-42-empty-checkpoint"
+    runtime = client._session_manager.get_or_create(
+        session_id=session_id,
+        model=client.model,
+        max_iterations=client.max_iterations,
+        create_agent=lambda: object(),
+    )
+    runtime.bootstrapped = True
+    runtime.checkpoint_history = []
+
+    assert client.should_include_conversation_history(session_id=session_id) is True
 
 
 def test_restart_like_new_client_requires_bootstrap_again(monkeypatch) -> None:
@@ -494,6 +513,7 @@ def test_restart_like_new_client_requires_bootstrap_again(monkeypatch) -> None:
         create_agent=lambda: object(),
     )
     runtime.bootstrapped = True
+    runtime.checkpoint_history = [{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}]
     assert client1.should_include_conversation_history(session_id=session_id) is False
 
     # New client instance simulates process restart: no in-memory runtimes survive.
@@ -525,6 +545,55 @@ def test_stream_events_falls_back_when_persistent_path_raises_non_hermes_error(m
 
     events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-fallback"))
     assert any(event.get("type") == "done" and event.get("reply") == "fallback-ok" for event in events)
+
+
+def test_stream_events_persistent_fallback_recovers_checkpoint_and_evicts_runtime(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+    session_id = "miniapp-123-fallback-checkpoint"
+    runtime = client._session_manager.get_or_create(
+        session_id=session_id,
+        model=client.model,
+        max_iterations=client.max_iterations,
+        create_agent=lambda: object(),
+    )
+    runtime.bootstrapped = True
+    runtime.checkpoint_history = [
+        {"role": "user", "content": "earlier user"},
+        {"role": "assistant", "content": "earlier assistant"},
+    ]
+
+    captured_agent_history = {"value": None}
+
+    def blow_up(**kwargs):
+        raise ModuleNotFoundError("No module named 'run_agent'")
+
+    def fallback_agent(**kwargs):
+        captured_agent_history["value"] = kwargs.get("conversation_history")
+        return iter(
+            [
+                {"type": "meta", "source": "agent"},
+                {"type": "chunk", "text": "fallback-ok"},
+                {"type": "done", "reply": "fallback-ok", "source": "agent", "latency_ms": 1},
+            ]
+        )
+
+    monkeypatch.setattr(client, "_stream_via_persistent_agent", blow_up)
+    monkeypatch.setattr(client, "_stream_via_agent", fallback_agent)
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id=session_id))
+
+    done = next(event for event in events if event.get("type") == "done")
+    assert captured_agent_history["value"] == runtime.checkpoint_history
+    assert done.get("runtime_checkpoint") == [
+        {"role": "user", "content": "earlier user"},
+        {"role": "assistant", "content": "earlier assistant"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "fallback-ok"},
+    ]
+    assert client._session_manager.get_runtime(session_id) is None
 
 
 def test_stream_events_logs_when_persistent_path_falls_back(monkeypatch) -> None:
