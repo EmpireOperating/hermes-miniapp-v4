@@ -63,7 +63,9 @@ RATE_LIMIT_WINDOW_SECONDS = CONFIG.rate_limit_window_seconds
 RATE_LIMIT_API_REQUESTS = CONFIG.rate_limit_api_requests
 RATE_LIMIT_STREAM_REQUESTS = CONFIG.rate_limit_stream_requests
 ENABLE_HSTS = CONFIG.enable_hsts
+OPERATOR_DEBUG = CONFIG.operator_debug
 REQUEST_DEBUG = CONFIG.request_debug
+STREAM_TIMING_DEBUG = CONFIG.stream_timing_debug
 DEV_AUTH_ENABLED = CONFIG.dev_auth_enabled
 DEV_AUTH_SECRET = CONFIG.dev_auth_secret
 JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
@@ -90,8 +92,23 @@ STATIC_NO_STORE_FILENAMES = {
     "visibility_skin_helpers.js",
     "startup_bindings_helpers.js",
     "render_trace_helpers.js",
+    "file_preview_helpers.js",
 }
 STATIC_NO_STORE_PATHS = {f"/static/{name}" for name in STATIC_NO_STORE_FILENAMES}
+
+
+def _file_preview_allowed_roots() -> tuple[str, ...]:
+    raw = str(os.environ.get("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", "")).strip()
+    if not raw:
+        return ()
+    roots: list[str] = []
+    for chunk in raw.split(os.pathsep):
+        candidate = str(chunk or "").strip()
+        if not candidate:
+            continue
+        roots.append(candidate)
+    return tuple(roots)
+
 
 app: Flask = create_flask_app(
     base_dir=BASE_DIR,
@@ -312,7 +329,9 @@ def _startup_diagnostics_payload() -> dict[str, object]:
         bot_token_configured=bool(BOT_TOKEN),
         debug=DEBUG,
         dev_reload=DEV_RELOAD,
+        operator_debug=OPERATOR_DEBUG,
         request_debug=REQUEST_DEBUG,
+        stream_timing_debug=STREAM_TIMING_DEBUG,
         force_secure_cookies=FORCE_SECURE_COOKIES,
         trust_proxy_headers=TRUST_PROXY_HEADERS,
         enforce_origin_check=ENFORCE_ORIGIN_CHECK,
@@ -385,6 +404,7 @@ register_public_routes(
     dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
     request_debug=REQUEST_DEBUG,
     dev_auth_enabled=DEV_AUTH_ENABLED,
+    file_preview_allowed_roots=_file_preview_allowed_roots(),
     static_no_store_filenames=STATIC_NO_STORE_FILENAMES,
     asset_version_fn=lambda filename: _asset_version(filename),
     dev_reload_version_fn=lambda: _dev_reload_version(),
@@ -433,6 +453,7 @@ register_chat_routes(
         serialize_chat_fn=_serialize_chat,
         session_id_builder_fn=_session_id_for,
         job_max_attempts=JOB_MAX_ATTEMPTS,
+        stream_timing_debug=STREAM_TIMING_DEBUG,
         build_job_log_fn=build_job_log,
         logger=app.logger,
     ),
@@ -453,6 +474,7 @@ register_jobs_runtime_routes(
 register_meta_routes(
     api_bp,
     allowed_skins=ALLOWED_SKINS,
+    bootstrap_version_fn=lambda: _dev_reload_version(),
 )
 
 

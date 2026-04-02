@@ -81,6 +81,7 @@ def test_mini_app_route_falls_back_invalid_skin_and_sets_no_store(monkeypatch, t
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store, max-age=0"
     assert captured["boot_skin"] == "terminal"
+    assert captured["bootstrap_version"] == "r1"
 
 
 def test_dev_reload_state_and_static_cache_headers(tmp_path) -> None:
@@ -148,3 +149,4 @@ def test_mini_app_route_exposes_dev_auth_flag(monkeypatch, tmp_path) -> None:
 
     assert response.status_code == 200
     assert captured["dev_auth_enabled"] is True
+    assert captured["bootstrap_version"] == "r1"

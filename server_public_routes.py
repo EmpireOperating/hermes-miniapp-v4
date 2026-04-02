@@ -1,23 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Callable
 
 from flask import Blueprint, Flask, Response, jsonify, make_response, render_template, request, send_from_directory
-
-
-def _file_preview_allowed_roots() -> list[str]:
-    raw = str(os.environ.get("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", "")).strip()
-    if not raw:
-        return []
-    roots: list[str] = []
-    for chunk in raw.split(os.pathsep):
-        candidate = str(chunk or "").strip()
-        if not candidate:
-            continue
-        roots.append(candidate)
-    return roots
 
 
 def register_public_routes(
@@ -31,6 +17,7 @@ def register_public_routes(
     dev_reload_interval_ms: int,
     request_debug: bool,
     dev_auth_enabled: bool = False,
+    file_preview_allowed_roots: tuple[str, ...] = (),
     static_no_store_filenames: set[str] | frozenset[str] = frozenset(),
     asset_version_fn: Callable[[str], str],
     dev_reload_version_fn: Callable[[], str],
@@ -68,13 +55,15 @@ def register_public_routes(
                 visibility_skin_helpers_version=asset_version_fn("visibility_skin_helpers.js"),
                 startup_bindings_helpers_version=asset_version_fn("startup_bindings_helpers.js"),
                 render_trace_helpers_version=asset_version_fn("render_trace_helpers.js"),
+                file_preview_helpers_version=asset_version_fn("file_preview_helpers.js"),
                 app_js_version=asset_version_fn("app.js"),
+                bootstrap_version=dev_reload_version_fn(),
                 dev_reload=dev_reload,
                 dev_reload_interval_ms=dev_reload_interval_ms,
                 dev_reload_version=dev_reload_version_fn(),
                 request_debug=request_debug,
                 dev_auth_enabled=dev_auth_enabled,
-                file_preview_allowed_roots_json=json.dumps(_file_preview_allowed_roots()),
+                file_preview_allowed_roots_json=json.dumps(list(file_preview_allowed_roots)),
                 boot_skin=boot_skin,
                 csp_nonce=ensure_csp_nonce_fn(),
                 max_message_len=max_message_len,

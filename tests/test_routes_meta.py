@@ -208,6 +208,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
             "visibility_skin_helpers.js": "visibility-skin-v",
             "startup_bindings_helpers.js": "startup-bindings-v",
             "render_trace_helpers.js": "render-trace-v",
+            "file_preview_helpers.js": "file-preview-v",
             "app.js": "app-v",
         }[filename]
 
@@ -234,6 +235,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     visibility_skin_src = '/static/visibility_skin_helpers.js?v=visibility-skin-v'
     startup_bindings_src = '/static/startup_bindings_helpers.js?v=startup-bindings-v'
     render_trace_src = '/static/render_trace_helpers.js?v=render-trace-v'
+    file_preview_src = '/static/file_preview_helpers.js?v=file-preview-v'
     app_src = '/static/app.js?v=app-v'
     assert runtime_src in page
     assert shared_src in page
@@ -253,8 +255,9 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert visibility_skin_src in page
     assert startup_bindings_src in page
     assert render_trace_src in page
+    assert file_preview_src in page
     assert app_src in page
-    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(chat_tabs_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(keyboard_src) < page.index(interaction_src) < page.index(bootstrap_auth_src) < page.index(chat_history_src) < page.index(chat_admin_src) < page.index(shell_ui_src) < page.index(composer_viewport_src) < page.index(visibility_skin_src) < page.index(startup_bindings_src) < page.index(render_trace_src) < page.index(app_src)
+    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(chat_tabs_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(keyboard_src) < page.index(interaction_src) < page.index(bootstrap_auth_src) < page.index(chat_history_src) < page.index(chat_admin_src) < page.index(shell_ui_src) < page.index(composer_viewport_src) < page.index(visibility_skin_src) < page.index(startup_bindings_src) < page.index(render_trace_src) < page.index(file_preview_src) < page.index(app_src)
 
 
 def test_runtime_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
@@ -419,7 +422,18 @@ def test_render_trace_helpers_static_asset_is_no_store(monkeypatch, tmp_path) ->
     assert response.headers.get("Cache-Control") == "no-store, max-age=0"
 
 
+def test_file_preview_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/static/file_preview_helpers.js")
+
+    assert response.status_code == 200
+    assert response.headers.get("Cache-Control") == "no-store, max-age=0"
+
+
 def test_request_debug_logging_disabled_by_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("MINI_APP_OPERATOR_DEBUG", raising=False)
+    monkeypatch.delenv("MINIAPP_OPERATOR_DEBUG", raising=False)
     monkeypatch.delenv("MINI_APP_REQUEST_DEBUG", raising=False)
     monkeypatch.delenv("MINIAPP_REQUEST_DEBUG", raising=False)
     server = load_server(monkeypatch, tmp_path)
@@ -433,6 +447,7 @@ def test_request_debug_logging_disabled_by_default(monkeypatch, tmp_path) -> Non
 
 
 def test_request_debug_logging_enabled_via_canonical_env(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_DEBUG", "1")
     monkeypatch.setenv("MINI_APP_REQUEST_DEBUG", "1")
     monkeypatch.delenv("MINIAPP_REQUEST_DEBUG", raising=False)
     server = load_server(monkeypatch, tmp_path)
@@ -448,6 +463,7 @@ def test_request_debug_logging_enabled_via_canonical_env(monkeypatch, tmp_path) 
 
 def test_request_debug_logging_enabled_via_legacy_env(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("MINI_APP_REQUEST_DEBUG", raising=False)
+    monkeypatch.setenv("MINIAPP_OPERATOR_DEBUG", "1")
     monkeypatch.setenv("MINIAPP_REQUEST_DEBUG", "1")
     server = load_server(monkeypatch, tmp_path)
 
@@ -461,6 +477,7 @@ def test_request_debug_logging_enabled_via_legacy_env(monkeypatch, tmp_path) -> 
 
 
 def test_request_debug_redacts_sensitive_query_params(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_DEBUG", "1")
     monkeypatch.setenv("MINI_APP_REQUEST_DEBUG", "1")
     server = load_server(monkeypatch, tmp_path)
 
@@ -474,6 +491,7 @@ def test_request_debug_redacts_sensitive_query_params(monkeypatch, tmp_path) -> 
 
 
 def test_app_dev_config_exposes_request_debug_flag(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_DEBUG", "1")
     monkeypatch.setenv("MINI_APP_REQUEST_DEBUG", "1")
     monkeypatch.delenv("MINIAPP_REQUEST_DEBUG", raising=False)
     _, client = _client(monkeypatch, tmp_path)
@@ -491,6 +509,26 @@ def test_app_dev_config_exposes_dev_auth_flag(monkeypatch, tmp_path) -> None:
     page = _app_page(client)
 
     assert "devAuthEnabled: true" in page
+
+
+def test_app_dev_config_exposes_bootstrap_version(monkeypatch, tmp_path) -> None:
+    _, client = _client(monkeypatch, tmp_path)
+
+    page = _app_page(client)
+
+    assert "window.__HERMES_BOOTSTRAP_VERSION__ = \"" in page
+
+
+def test_api_state_exposes_bootstrap_version(monkeypatch, tmp_path) -> None:
+    _, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/api/state")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert isinstance(payload.get("bootstrap_version"), str)
+    assert payload["bootstrap_version"]
 
 
 def test_startup_auth_allows_empty_chat_state() -> None:
@@ -512,12 +550,24 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     visibility_skin_script = _read_repo_file("static", "visibility_skin_helpers.js")
     startup_bindings_script = _read_repo_file("static", "startup_bindings_helpers.js")
     render_trace_script = _read_repo_file("static", "render_trace_helpers.js")
+    file_preview_script = _read_repo_file("static", "file_preview_helpers.js")
 
     assert "HermesMiniappBootstrapAuth" in bootstrap_auth_script
     assert "function createController(deps)" in bootstrap_auth_script
+    assert "function authPayload(extra = {})" in bootstrap_auth_script
+    assert "async function safeReadJson(response)" in bootstrap_auth_script
+    assert "function summarizeUiFailure(rawBody" in bootstrap_auth_script
+    assert "function parseStreamErrorPayload(rawBody)" in bootstrap_auth_script
     assert "async function askForDevAuth" in bootstrap_auth_script
     assert 'fetchImpl("/api/dev/auth"' in bootstrap_auth_script
     assert "bootstrapAuthHelpers.createController({" in app_script
+    assert "bootstrapAuthController.authPayload(extra)" in app_script
+    assert "bootstrapAuthController.safeReadJson(response)" in app_script
+    assert "bootstrapAuthController.summarizeUiFailure(rawBody, { status, fallback })" in app_script
+    assert "bootstrapAuthController.parseStreamErrorPayload(rawBody)" in app_script
+    assert "function getMissingBootstrapBindings()" in app_script
+    assert "function fetchAuthBootstrapWithRetry()" in app_script
+    assert "function maybeRefreshForBootstrapVersionMismatch()" in app_script
     assert 'throw new Error("HermesMiniappBootstrapAuth is required before app.js")' in app_script
     assert "HermesMiniappChatTabs" in chat_tabs_script
     assert "function createController(deps)" in chat_tabs_script
@@ -525,12 +575,16 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert 'throw new Error("HermesMiniappChatTabs is required before app.js")' in app_script
     assert "HermesMiniappChatHistory" in chat_history_script
     assert "function createController(deps)" in chat_history_script
+    assert "function createMetaController(deps)" in chat_history_script
     assert "function addLocalMessage(chatId, message)" in chat_history_script
     assert "function updatePendingAssistant(chatId, nextBody, pendingState = true)" in chat_history_script
     assert "function syncActiveMessageView(chatId, options = {})" in chat_history_script
     assert "function scheduleActiveMessageView(chatId)" in chat_history_script
     assert "function maybeMarkRead(chatId, { force = false } = {})" in chat_history_script
     assert "chatHistoryHelpers.createController({" in app_script
+    assert "chatHistoryHelpers.createMetaController({" in app_script
+    assert "activeChatMetaController.setActiveChatMeta(chatId, options)" in app_script
+    assert "activeChatMetaController.setNoActiveChatMeta()" in app_script
     assert "chatHistoryController.addLocalMessage(chatId, message)" in app_script
     assert "chatHistoryController.updatePendingAssistant(chatId, nextBody, pendingState)" in app_script
     assert "chatHistoryController.syncActiveMessageView(chatId, options)" in app_script
@@ -540,7 +594,17 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "HermesMiniappChatAdmin" in chat_admin_script
     assert "function createController(deps)" in chat_admin_script
     assert "async function askForChatTitle" in chat_admin_script
+    assert "function closeChatTabContextMenu()" in chat_admin_script
+    assert "function openChatTabContextMenu(chatId, clientX, clientY)" in chat_admin_script
+    assert "function handleTabOverflowTriggerClick(event)" in chat_admin_script
+    assert "function handleGlobalChatContextMenuDismiss(event)" in chat_admin_script
+    assert "async function handleTabContextForkClick(event)" in chat_admin_script
     assert "chatAdminHelpers.createController({" in app_script
+    assert "chatAdminController.closeChatTabContextMenu()" in app_script
+    assert "chatAdminController.openChatTabContextMenu(chatId, clientX, clientY)" in app_script
+    assert "chatAdminController.handleTabOverflowTriggerClick(event)" in app_script
+    assert "chatAdminController.handleGlobalChatContextMenuDismiss(event)" in app_script
+    assert "chatAdminController.handleTabContextForkClick(event)" in app_script
     assert 'throw new Error("HermesMiniappChatAdmin is required before app.js")' in app_script
     assert "HermesMiniappShellUI" in shell_ui_script
     assert "function createController(deps)" in shell_ui_script
@@ -600,6 +664,12 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "renderTraceHelpers.patchVisiblePendingAssistant({" in app_script
     assert "renderTraceHelpers.patchVisibleToolTrace({" in app_script
     assert 'throw new Error("HermesMiniappRenderTrace is required before app.js")' in app_script
+    assert "HermesMiniappFilePreview" in file_preview_script
+    assert "function createController(deps)" in file_preview_script
+    assert "async function openFilePreview" in file_preview_script
+    assert "function handleMessageFileRefClick(event)" in file_preview_script
+    assert "filePreviewHelpers.createController({" in app_script
+    assert 'throw new Error("HermesMiniappFilePreview is required before app.js")' in app_script
     assert "dev-auth-modal" in template
     assert "chat-title-modal" in template
     assert "dev-auth-secret" in template
@@ -737,12 +807,15 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert "bindMessageCopyHandler({" in script
     assert "messageActionsHelpers.createMessageCopyState()" in script
     assert "HermesMiniappKeyboardShortcuts" in keyboard_script
+    assert "function createController(deps)" in keyboard_script
     assert "function handleGlobalTabCycle" in keyboard_script
-    assert "keyboardShortcutsHelpers.handleGlobalTabCycle" in script
+    assert "keyboardShortcutsHelpers.createController({" in script
+    assert "keyboardShortcutsController.handleGlobalTabCycle(event)" in script
     assert "HermesMiniappInteraction" in interaction_script
     assert "function createSelectionQuoteController" in interaction_script
     assert "interactionHelpers.createSelectionQuoteController" in script
     assert "interactionHelpers.handleComposerSubmitShortcut" in script
+    assert 'window.__HERMES_BOOTSTRAP_VERSION__ = "{{ bootstrap_version }}";' in template
     assert '/static/chat_tabs_helpers.js?v={{ chat_tabs_helpers_version }}' in template
     assert '/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}' in template
     assert '/static/stream_controller.js?v={{ stream_controller_version }}' in template
@@ -754,6 +827,7 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert '/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}' in template
     assert '/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}' in template
     assert '/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}' in template
+    assert '/static/file_preview_helpers.js?v={{ file_preview_helpers_version }}' in template
     assert 'id="file-preview-modal"' in template
     assert 'id="file-preview-lines"' in template
     assert 'id="file-preview-expand-up"' in template
@@ -764,14 +838,19 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert 'allowedRoots: {{ file_preview_allowed_roots_json|safe }}' in template
     assert 'const filePreviewAllowedRoots = Array.isArray(filePreviewConfig.allowedRoots)' in script
     assert 'messagesEl?.addEventListener("click", handleMessageFileRefClick);' in script
-    assert 'apiPost("/api/chats/file-preview", {' in script
-    assert 'function requestFilePreviewExpansion(direction)' in script
-    assert 'function requestFullFilePreview()' in script
-    assert 'captureFilePreviewViewportAnchor()' in script
-    assert 'restoreFilePreviewViewportAnchor(viewportAnchor)' in script
-    assert 'full_file: true,' in script
-    assert 'window_start: nextWindowStart,' in script
-    assert 'window_end: nextWindowEnd,' in script
-    assert 'filePreviewLines.scrollTop = 0;' in script
-    assert 'filePreviewLines.scrollTop = Math.max(0, anchorNode.offsetTop - offsetTopDelta);' in script
+    assert 'filePreviewController.handleMessageFileRefClick(event)' in script
+    assert 'filePreviewController.openFilePreview(previewRequest, options)' in script
+    assert 'filePreviewController.requestFilePreviewExpansion(direction)' in script
+    assert 'filePreviewController.requestFullFilePreview()' in script
+    assert 'filePreviewHelpers.createController({' in script
+    assert 'async function openFilePreview(previewRequest = {}, options = {})' in script
     assert 'filePreviewLoadFull?.addEventListener("click", requestFullFilePreview);' in script
+    assert 'async function openFilePreview' in _read_repo_file("static", "file_preview_helpers.js")
+    assert 'captureFilePreviewViewportAnchor()' in _read_repo_file("static", "file_preview_helpers.js")
+    assert 'restoreFilePreviewViewportAnchor(viewportAnchor)' in _read_repo_file("static", "file_preview_helpers.js")
+    assert 'apiPost(\'/api/chats/file-preview\', {' in _read_repo_file("static", "file_preview_helpers.js")
+    assert 'full_file: true,' in _read_repo_file("static", "file_preview_helpers.js")
+    assert 'window_start: nextWindowStart,' in _read_repo_file("static", "file_preview_helpers.js")
+    assert 'window_end: nextWindowEnd,' in _read_repo_file("static", "file_preview_helpers.js")
+    assert 'filePreviewLines.scrollTop = 0;' in _read_repo_file("static", "file_preview_helpers.js")
+    assert 'filePreviewLines.scrollTop = Math.max(0, anchorNode.offsetTop - offsetTopDelta);' in _read_repo_file("static", "file_preview_helpers.js")
