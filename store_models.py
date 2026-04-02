@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -37,3 +38,4 @@ class ChatTurn:
     role: str
     body: str
     created_at: str
+    file_refs: list[dict[str, Any]] = field(default_factory=list)

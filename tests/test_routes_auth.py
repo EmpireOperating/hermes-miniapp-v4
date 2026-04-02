@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import store as store_mod
+
 from server_test_utils import load_server, patch_verified_user
 
 
@@ -52,6 +54,21 @@ def test_verify_from_payload_uses_cookie_when_init_data_missing(monkeypatch, tmp
 
     assert resolved is cookie_verified
 
+
+def test_auth_session_adapters_use_current_server_store(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    token = server._create_auth_session_token("123", display_name="Reloaded User", username="reload")
+
+    assert server.store.get_latest_auth_session_profile("123")["display_name"] == "Reloaded User"
+
+    server.store = store_mod.SessionStore(tmp_path / "replacement.db")
+    assert server.store.get_latest_auth_session_profile("123") == {"display_name": None, "username": None}
+
+    with server.app.test_request_context(headers={"Cookie": f"{server.AUTH_COOKIE_NAME}={token}"}):
+        assert server._verified_from_session_cookie() is None
+
+
 def test_auth_reopens_last_active_chat(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -73,6 +90,76 @@ def test_auth_reopens_last_active_chat(monkeypatch, tmp_path) -> None:
     assert [chat["id"] for chat in data["pinned_chats"]] == [alt_chat.id]
     assert any(chat["id"] == main_chat_id for chat in data["chats"])
     assert "hermes_skin=terminal" in response.headers.get("Set-Cookie", "")
+
+def test_auth_allow_empty_preserves_zero_tab_state(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    only_chat_id = server.store.ensure_default_chat("123")
+    server.store.set_active_chat("123", only_chat_id)
+    server.store.remove_chat("123", only_chat_id, allow_empty=True)
+
+    response = client.post("/api/auth", json={"init_data": "ok", "allow_empty": True})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["active_chat_id"] is None
+    assert data["history"] == []
+    assert data["chats"] == []
+
+
+def test_auth_without_allow_empty_preserves_explicit_zero_tab_state(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    only_chat_id = server.store.ensure_default_chat("123")
+    server.store.set_active_chat("123", only_chat_id)
+    server.store.remove_chat("123", only_chat_id, allow_empty=True)
+
+    response = client.post("/api/auth", json={"init_data": "ok"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["active_chat_id"] is None
+    assert data["history"] == []
+    assert data["chats"] == []
+
+
+def test_auth_ignores_stale_archived_active_chat_and_keeps_zero_tab_state(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    only_chat_id = server.store.ensure_default_chat("123")
+    server.store.set_active_chat("123", only_chat_id)
+    server.store.remove_chat("123", only_chat_id, allow_empty=True)
+    server.store.set_active_chat("123", only_chat_id)
+
+    response = client.post("/api/auth", json={"init_data": "ok", "allow_empty": True})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["active_chat_id"] is None
+    assert data["history"] == []
+    assert data["chats"] == []
+
+
+def test_auth_without_allow_empty_keeps_legacy_default_chat_behavior_for_brand_new_user(monkeypatch, tmp_path) -> None:
+    _server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = client.post("/api/auth", json={"init_data": "ok"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["active_chat_id"] is not None
+    assert len(data["chats"]) == 1
+    assert data["chats"][0]["title"] == "Main"
+
+
+def test_auth_rejects_invalid_allow_empty_flag(monkeypatch, tmp_path) -> None:
+    _server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = client.post("/api/auth", json={"init_data": "ok", "allow_empty": "yes"})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Invalid allow_empty flag. Expected boolean."
+
 
 def test_logout_all_revokes_cookie_session(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
@@ -156,3 +243,9 @@ def test_dev_auth_sets_cookie_and_reuses_authenticated_endpoints(monkeypatch, tm
 
     assert create_chat.status_code == 201
     assert create_chat.get_json()["chat"]["title"] == "desk"
+
+    reopen = client.post("/api/auth", json={})
+    assert reopen.status_code == 200
+    reopen_data = reopen.get_json()
+    assert reopen_data["user"]["display_name"] == "Desktop Tester"
+    assert reopen_data["user"]["username"] == "desktop"

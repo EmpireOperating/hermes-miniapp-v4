@@ -64,12 +64,17 @@ class _FakeStore:
 class _FakeClient:
     def __init__(self, events: list[dict[str, object]]) -> None:
         self._events = events
+        self.evicted_sessions: list[str] = []
 
     def should_include_conversation_history(self, *, session_id: str) -> bool:
         return False
 
     def persistent_stats(self) -> dict[str, object]:
         return {"enabled": True, "total": 1}
+
+    def evict_session(self, session_id: str) -> bool:
+        self.evicted_sessions.append(str(session_id))
+        return True
 
     def stream_events(self, **_kwargs):
         yield from self._events
@@ -149,6 +154,7 @@ def test_execute_chat_job_completes_and_publishes_done_event() -> None:
     )
 
     assert runtime.touch_cleared == [3]
+    assert runtime.client.evicted_sessions == ["miniapp-u-9"]
     assert runtime.store.completed == [3]
     assert any(role == "hermes" and body == "hello world" for _, _, role, body in runtime.store.messages)
     assert any(name == "done" and payload.get("reply") == "hello world" for _, name, payload in runtime.published)

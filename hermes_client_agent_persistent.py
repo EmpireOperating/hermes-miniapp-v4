@@ -128,7 +128,14 @@ class HermesClientPersistentAgentMixin:
                     if include_history:
                         normalized_history = self._normalize_conversation_history(conversation_history)
                     else:
-                        normalized_history = list(runtime.checkpoint_history or []) or None
+                        live_checkpoint = list(runtime.checkpoint_history or [])
+                        if live_checkpoint:
+                            normalized_history = live_checkpoint
+                        else:
+                            # Defensive fallback: if runtime was marked bootstrapped but
+                            # no in-memory checkpoint survived, rehydrate from caller-provided
+                            # history instead of running context-free.
+                            normalized_history = self._normalize_conversation_history(conversation_history)
 
                     result = runtime.agent.run_conversation(
                         message,
@@ -150,14 +157,16 @@ class HermesClientPersistentAgentMixin:
                             continue
                         checkpoint_history.append({"role": role, "content": content})
 
-                    # Some run_agent paths return only the latest turn when called without
-                    # explicit conversation_history. Keep our own running checkpoint so the
-                    # next turn always has continuity.
-                    if normalized_history:
-                        if not checkpoint_history or len(checkpoint_history) <= 2:
-                            checkpoint_history = list(normalized_history)
-                            checkpoint_history.append({"role": "user", "content": message})
-                            checkpoint_history.append({"role": "assistant", "content": reply})
+                    # Some run_agent paths return only the latest turn (or no message trace).
+                    # Keep our own running checkpoint so the next turn always has continuity.
+                    if not checkpoint_history:
+                        checkpoint_history = list(normalized_history or [])
+                        checkpoint_history.append({"role": "user", "content": message})
+                        checkpoint_history.append({"role": "assistant", "content": reply})
+                    elif normalized_history and len(checkpoint_history) <= 2:
+                        checkpoint_history = list(normalized_history)
+                        checkpoint_history.append({"role": "user", "content": message})
+                        checkpoint_history.append({"role": "assistant", "content": reply})
 
                     if len(checkpoint_history) > 160:
                         checkpoint_history = checkpoint_history[-160:]

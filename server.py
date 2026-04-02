@@ -216,7 +216,23 @@ def _serialize_chat(chat: ChatThread) -> dict[str, object]:
 
 
 def _chat_id_from_payload(payload: dict[str, object], user_id: str) -> int:
-    return parse_chat_id(payload, default_chat_id=store.ensure_default_chat(user_id))
+    raw_chat_id = payload.get("chat_id")
+    if raw_chat_id not in (None, "", 0, "0"):
+        return parse_chat_id(payload, default_chat_id=0)
+
+    active_chat_id = store.get_active_chat(user_id)
+    if active_chat_id is not None:
+        try:
+            store.get_chat(user_id=user_id, chat_id=active_chat_id)
+        except KeyError:
+            active_chat_id = None
+    if active_chat_id is not None:
+        return active_chat_id
+
+    if store.has_explicit_empty_chat_state(user_id):
+        raise KeyError("Chat not found.")
+
+    return store.ensure_default_chat(user_id)
 
 
 _REQUEST_ADAPTERS = build_server_request_adapters(
@@ -226,6 +242,7 @@ _REQUEST_ADAPTERS = build_server_request_adapters(
     telegram_init_data_max_age_seconds=TELEGRAM_INIT_DATA_MAX_AGE_SECONDS,
     upsert_auth_session_fn=lambda **kwargs: store.upsert_auth_session(**kwargs),
     is_auth_session_active_fn=lambda **kwargs: store.is_auth_session_active(**kwargs),
+    auth_session_profile_fn=lambda user_id: store.get_latest_auth_session_profile(user_id),
     verify_telegram_init_data_fn=lambda **kwargs: verify_telegram_init_data(**kwargs),
     chat_id_from_payload_fn=lambda payload, user_id: _chat_id_from_payload(payload, user_id=user_id),
 )

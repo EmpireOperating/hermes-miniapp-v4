@@ -126,8 +126,8 @@ class JobRuntime:
 
         self._event_broker.publish(int(job_id), event_name, safe_payload)
 
-    def subscribe_job_events(self, job_id: int) -> queue.Queue[dict[str, object]]:
-        return self._event_broker.subscribe(int(job_id))
+    def subscribe_job_events(self, job_id: int, *, after_event_id: int = 0) -> queue.Queue[dict[str, object]]:
+        return self._event_broker.subscribe(int(job_id), after_event_id=max(0, int(after_event_id or 0)))
 
     def unsubscribe_job_events(self, job_id: int, subscriber: queue.Queue[dict[str, object]]) -> None:
         self._event_broker.unsubscribe(int(job_id), subscriber)

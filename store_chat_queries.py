@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlite3 import Connection
 
+from file_refs import extract_file_refs
 from store_models import ChatThread, ChatTurn
 
 
@@ -105,15 +106,20 @@ def select_chat_rows(
 
 def hydrate_chat_turns(rows) -> list[ChatTurn]:
     ordered = reversed(rows)
-    return [
-        ChatTurn(
-            id=int(row["id"]),
-            role=str(row["role"]),
-            body=str(row["body"]),
-            created_at=str(row["created_at"]),
+    hydrated: list[ChatTurn] = []
+    for row in ordered:
+        message_id = int(row["id"])
+        body = str(row["body"])
+        hydrated.append(
+            ChatTurn(
+                id=message_id,
+                role=str(row["role"]),
+                body=body,
+                created_at=str(row["created_at"]),
+                file_refs=extract_file_refs(body, message_id=message_id),
+            )
         )
-        for row in ordered
-    ]
+    return hydrated
 
 
 def list_recoverable_pending_turns(conn: Connection, *, user_id: str) -> list[tuple[int, int]]:

@@ -4,21 +4,32 @@ import time
 
 
 class StoreAuthMixin:
-    def upsert_auth_session(self, *, session_id: str, user_id: str, nonce_hash: str, expires_at: int) -> None:
+    def upsert_auth_session(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        nonce_hash: str,
+        expires_at: int,
+        display_name: str | None = None,
+        username: str | None = None,
+    ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO auth_sessions (session_id, user_id, nonce_hash, expires_at, revoked_at, updated_at)
-                VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
+                INSERT INTO auth_sessions (session_id, user_id, nonce_hash, display_name, username, expires_at, revoked_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP)
                 ON CONFLICT(session_id)
                 DO UPDATE SET
                     user_id = excluded.user_id,
                     nonce_hash = excluded.nonce_hash,
+                    display_name = excluded.display_name,
+                    username = excluded.username,
                     expires_at = excluded.expires_at,
                     revoked_at = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (session_id, user_id, nonce_hash, int(expires_at)),
+                (session_id, user_id, nonce_hash, display_name, username, int(expires_at)),
             )
 
     def is_auth_session_active(self, *, session_id: str, user_id: str, nonce_hash: str, now_epoch: int) -> bool:
@@ -69,3 +80,25 @@ class StoreAuthMixin:
                 (int(now_epoch),),
             )
             return int(cursor.rowcount or 0)
+
+    def get_latest_auth_session_profile(self, user_id: str, *, now_epoch: int | None = None) -> dict[str, str | None]:
+        safe_now_epoch = int(time.time()) if now_epoch is None else int(now_epoch)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT display_name, username
+                FROM auth_sessions
+                WHERE user_id = ?
+                  AND revoked_at IS NULL
+                  AND expires_at >= ?
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                (user_id, safe_now_epoch),
+            ).fetchone()
+        if not row:
+            return {"display_name": None, "username": None}
+        return {
+            "display_name": str(row["display_name"] or "").strip() or None,
+            "username": str(row["username"] or "").strip() or None,
+        }

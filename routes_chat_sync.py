@@ -6,6 +6,7 @@ from typing import Any, Callable, TypeVar
 
 from flask import jsonify
 
+from file_refs import extract_file_refs
 from hermes_client import HermesClientError
 from routes_chat_context import ChatRouteContext
 from routes_chat_error_mapping import map_chat_id_payload_error_to_json
@@ -28,8 +29,15 @@ def register_sync_chat_routes(
     validated_message_fn = context.validated_message_fn
     json_error_fn = context.json_error_fn
 
+    def _serialize_turn(turn) -> dict[str, object]:
+        payload = asdict(turn)
+        refs = extract_file_refs(payload.get("body") or "", message_id=int(payload.get("id") or 0))
+        if refs:
+            payload["file_refs"] = refs
+        return payload
+
     def _chat_history(user_id: str, chat_id: int, *, limit: int = 120) -> list[dict[str, object]]:
-        return [asdict(turn) for turn in store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
+        return [_serialize_turn(turn) for turn in store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
 
     def _json_not_found(exc: Exception) -> tuple[dict[str, object], int]:
         return json_error_fn(str(exc), 404)

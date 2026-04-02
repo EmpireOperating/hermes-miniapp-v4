@@ -62,6 +62,9 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
 
     assert "const noActiveJob = response.status === 409" in app_js
     assert "normalizedFallback.includes(\"no active hermes job\")" in app_js
+    assert "function parseStreamErrorPayload(rawBody)" in app_js
+    assert "const alreadyWorking = response.status === 409" in app_js
+    assert "await resumePendingChatStream(chatId, { force: true });" in app_js
     assert "await hydrateChatAfterGracefulResumeCompletion(key);" in app_js
     assert "triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });" in app_js
     assert "streamActivityController.markResumeAlreadyComplete(key);" in app_js
@@ -70,7 +73,40 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "setChatLatency?.(key, \"--\");" in runtime_helpers_js
     assert "function createHapticUnreadController({" in runtime_helpers_js
     assert "consumeStreamWithReconnect(key, response, builtReplyRef" in app_js
-    assert "await resumePendingChatStream(key, { force: true });" in app_js
+    assert "await resumePendingChatStream(key, { force: true });" not in app_js
+    assert "const reconnectResumeBlockedChats = new Set();" in app_js
+    assert "if (reconnectResumeBlockedChats.has(key)) {" in app_js
+    assert "blockReconnectResume(key);" in app_js
+    assert "clearReconnectResumeBlock(chatId);" in app_js
+    assert "console.warn(`[E_STREAM_RECONNECT_FAILED] chat=${key}`, error);" in app_js
+
+
+def test_app_persists_pending_stream_snapshot_for_pre_resume_rehydrate():
+    app_js = _read_static("app.js")
+    controller_js = _read_static("stream_controller.js")
+
+    assert "const PENDING_STREAM_SNAPSHOT_STORAGE_KEY = \"hermes_miniapp_pending_stream_snapshot_v1\";" in app_js
+    assert "function persistPendingStreamSnapshot(chatId)" in app_js
+    assert "function restorePendingStreamSnapshot(chatId)" in app_js
+    assert "tool_journal_lines" in app_js
+    assert "function mergeSnapshotToolJournalLines(existingLines, currentBody)" in app_js
+    assert "persistPendingStreamSnapshot(chatId);" in app_js
+    assert "clearPendingStreamSnapshot(chatId);" in app_js
+    assert "restorePendingStreamSnapshot(Number(data.active_chat_id))" in app_js
+    assert "clearPendingStreamSnapshot?.(chatId);" in controller_js
+    assert "clearPendingStreamSnapshot?.(key);" in controller_js
+
+
+def test_app_sanitizes_upstream_error_pages_before_rendering_ui_errors():
+    app_js = _read_static("app.js")
+
+    assert "function summarizeUiFailure(rawBody" in app_js
+    assert "normalizedStatus === 502 || normalizedStatus === 503 || normalizedStatus === 504" in app_js
+    assert "looksLikeHtml" in app_js
+    assert "looksLikeCss" in app_js
+    assert "Mini app backend temporarily unavailable. Please wait a moment and reopen if needed." in app_js
+    assert "sanitizedFallbackMessage" in app_js
+    assert "sanitizedResumeFailure" in app_js
 
 
 def test_routes_chat_stream_supports_mobile_segment_rollover_controls():

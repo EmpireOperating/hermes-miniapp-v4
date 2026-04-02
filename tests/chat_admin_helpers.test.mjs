@@ -150,7 +150,7 @@ function buildHarness(overrides = {}) {
           active_chat_id: 9,
           active_chat: { id: 9, title: 'Next chat' },
           chats: [{ id: 9, title: 'Next chat' }],
-          pinned_chats: [],
+          pinned_chats: [{ id: 7, title: '[bug]Current', is_pinned: true }],
           history: [{ id: 99, body: 'fresh' }],
         };
       }
@@ -346,7 +346,25 @@ test('touchstart tag toggle still applies selection when click is suppressed by 
   assert.equal(result, '[feat]Zero Tab');
 });
 
-test('createChat uses modal title and hydrates the new active chat', async () => {
+test('createChat modal applies selected tag and hydrates the new active chat', async () => {
+  const harness = buildHarness();
+
+  const createPromise = harness.controller.createChat();
+  harness.chatTitleInput.value = 'Launch plan';
+  harness.chatTitleTagButtons[2].dispatch('touchstart', { currentTarget: harness.chatTitleTagButtons[2] });
+  harness.chatTitleForm.dispatch('submit');
+  await createPromise;
+
+  assert.deepEqual(harness.apiCalls[0], {
+    path: '/api/chats',
+    payload: { title: '[bug]Launch plan' },
+  });
+  assert.deepEqual(harness.histories.get(13), [{ id: 5, body: 'new history' }]);
+  assert.deepEqual(harness.setActiveCalls, [13]);
+  assert.deepEqual(harness.renderedMessages, [13]);
+});
+
+test('createChat fallback prompt applies selected tag and hydrates the new active chat', async () => {
   const harness = buildHarness({
     chatTitleModal: null,
     chatTitleForm: null,
@@ -356,7 +374,9 @@ test('createChat uses modal title and hydrates the new active chat', async () =>
     chatTitleCancel: null,
     windowObject: {
       prompt(message) {
-        return message.includes('New chat') ? 'Launch plan' : null;
+        if (message.includes('New chat')) return 'Launch plan';
+        if (message.includes('Tag')) return 'feat';
+        return null;
       },
     },
   });
@@ -365,14 +385,14 @@ test('createChat uses modal title and hydrates the new active chat', async () =>
 
   assert.deepEqual(harness.apiCalls[0], {
     path: '/api/chats',
-    payload: { title: 'Launch plan' },
+    payload: { title: '[feat]Launch plan' },
   });
   assert.deepEqual(harness.histories.get(13), [{ id: 5, body: 'new history' }]);
   assert.deepEqual(harness.setActiveCalls, [13]);
   assert.deepEqual(harness.renderedMessages, [13]);
 });
 
-test('removeActiveChat keeps silent-close semantics and restores pinned snapshot state', async () => {
+test('removeActiveChat keeps silent-close semantics and preserves removed pinned chats for reopen', async () => {
   const harness = buildHarness();
 
   await harness.controller.removeActiveChat();
@@ -383,11 +403,42 @@ test('removeActiveChat keeps silent-close semantics and restores pinned snapshot
   });
   assert.equal(harness.histories.has(7), false);
   assert.deepEqual(harness.histories.get(9), [{ id: 99, body: 'fresh' }]);
-  assert.equal(harness.pinnedChats.get(7)?.is_pinned, true);
+  assert.equal(harness.pinnedChats.has(7), true);
   assert.deepEqual(harness.clearedStreamState.map((entry) => entry.chatId), [7]);
   assert.equal(harness.latencyByChat.has(7), false);
   assert.equal(harness.latencyMutationCalls.length, 1);
   assert.equal(harness.latencyMutationCalls[0].has(7), false);
+  assert.deepEqual(harness.setActiveCalls, [9]);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
+  assert.deepEqual(harness.renderedMessages, [9]);
+});
+
+test('removeActiveChat restores removed pinned snapshot when backend payload omits pinned list entry', async () => {
+  const customApiCalls = [];
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      customApiCalls.push({ path, payload });
+      if (path === '/api/chats/remove') {
+        return {
+          removed_chat_id: 7,
+          active_chat_id: 9,
+          active_chat: { id: 9, title: 'Next chat' },
+          chats: [{ id: 9, title: 'Next chat' }],
+          pinned_chats: [],
+          history: [{ id: 99, body: 'fresh' }],
+        };
+      }
+      throw new Error(`unexpected api path ${path}`);
+    },
+  });
+
+  await harness.controller.removeActiveChat();
+
+  assert.deepEqual(customApiCalls[0], {
+    path: '/api/chats/remove',
+    payload: { chat_id: 7, allow_empty: true },
+  });
+  assert.equal(harness.pinnedChats.has(7), true);
   assert.deepEqual(harness.setActiveCalls, [9]);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
   assert.deepEqual(harness.renderedMessages, [9]);

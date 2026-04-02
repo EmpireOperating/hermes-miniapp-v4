@@ -223,6 +223,8 @@ class StoreSchemaMixin:
                     session_id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
                     nonce_hash TEXT NOT NULL,
+                    display_name TEXT,
+                    username TEXT,
                     expires_at INTEGER NOT NULL,
                     revoked_at INTEGER,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -233,6 +235,14 @@ class StoreSchemaMixin:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id, expires_at)"
             )
+            auth_session_columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(auth_sessions)").fetchall()
+            }
+            if "display_name" not in auth_session_columns:
+                conn.execute("ALTER TABLE auth_sessions ADD COLUMN display_name TEXT")
+            if "username" not in auth_session_columns:
+                conn.execute("ALTER TABLE auth_sessions ADD COLUMN username TEXT")
 
             self._migrate_legacy_history(conn)
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 import time
 from dataclasses import asdict
 from typing import TYPE_CHECKING
@@ -83,21 +82,6 @@ def execute_chat_job(
         },
     )
 
-    keepalive_stop = threading.Event()
-
-    def _keepalive_loop() -> None:
-        interval = max(0.5, float(runtime.job_keepalive_interval_seconds))
-        while not keepalive_stop.wait(interval):
-            # Keepalive should not be suppressed by event throttle state.
-            runtime._touch_job_best_effort(job_id, force=True)
-
-    keepalive_thread = threading.Thread(
-        target=_keepalive_loop,
-        name=f"miniapp-job-keepalive-{job_id}",
-        daemon=True,
-    )
-    keepalive_thread.start()
-
     try:
         for event in runtime.client.stream_events(
             user_id=user_id,
@@ -130,8 +114,6 @@ def execute_chat_job(
                 raise client_error_cls(str(event.get("error") or "Hermes stream failed."))
     except client_error_cls as exc:
         raise retryable_error_cls(str(exc)) from exc
-    finally:
-        keepalive_stop.set()
 
     state = runtime.store.get_job_state(job_id)
     if not state or state.get("status") != "running":
@@ -179,6 +161,7 @@ def execute_chat_job(
             history=runtime_checkpoint,
         )
 
+    runtime.client.evict_session(session_id)
     runtime.store.complete_job(job_id)
     runtime.publish_job_event(
         job_id,

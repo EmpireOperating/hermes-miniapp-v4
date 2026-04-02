@@ -37,6 +37,23 @@ def test_subscribe_replays_buffered_history() -> None:
     assert replayed[-1]["payload"]["_event_id"] == 5
 
 
+def test_subscribe_can_resume_after_last_seen_event_id() -> None:
+    broker = JobEventBroker(event_buffer_cap=6, history_max_jobs=10, history_ttl_seconds=300)
+    for idx in range(4):
+        broker.publish(12, "chunk", {"index": idx})
+
+    subscriber = broker.subscribe(12, after_event_id=2)
+    replayed: list[dict[str, object]] = []
+    while True:
+        try:
+            replayed.append(subscriber.get_nowait())
+        except queue.Empty:
+            break
+
+    assert [item["payload"]["index"] for item in replayed] == [2, 3]
+    assert [item["payload"]["_event_id"] for item in replayed] == [3, 4]
+
+
 def test_publish_assigns_monotonic_event_ids_and_preserves_custom_ids() -> None:
     broker = JobEventBroker(event_buffer_cap=6, history_max_jobs=10, history_ttl_seconds=300)
     broker.publish(11, "tool", {"display": "read_file"})

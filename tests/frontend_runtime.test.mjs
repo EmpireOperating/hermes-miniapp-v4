@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const runtime = require('../static/runtime_helpers.js');
+const bootstrapAuth = require('../static/bootstrap_auth_helpers.js');
 
 test('visibility resume only when pending chat has no active stream controller', () => {
   assert.equal(
@@ -332,6 +333,95 @@ test('latency storage helpers preserve timestamp for unchanged entries', () => {
   });
 });
 
+test('applyAuthBootstrap clears stale tabs when auth bootstrap returns zero open chats', () => {
+  const chats = new Map([[1, { id: 1, title: 'main', unread_count: 0, pending: false, is_pinned: false }]]);
+  const pinnedChats = new Map([[1, { id: 1, title: 'main', unread_count: 0, pending: false, is_pinned: false }]]);
+  const histories = new Map([[1, [{ role: 'user', body: 'stale' }]]]);
+  const pendingChats = new Set([1]);
+  const syncCalls = [];
+  const activeChatMetaCalls = [];
+  const operatorName = { textContent: '' };
+  const authStatus = { textContent: '' };
+
+  const controller = bootstrapAuth.createController({
+    desktopTestingEnabled: false,
+    devAuthSessionStorageKey: 'dev-auth',
+    devAuthControls: null,
+    devModeBadge: null,
+    devSignInButton: null,
+    getIsAuthenticated: () => false,
+    setIsAuthenticated: () => {},
+    sessionStorageRef: {
+      getItem: () => null,
+      setItem: () => {},
+    },
+    devAuthModal: null,
+    devAuthForm: null,
+    devAuthSecretInput: null,
+    devAuthUserIdInput: null,
+    devAuthDisplayNameInput: null,
+    devAuthUsernameInput: null,
+    devAuthCancelButton: null,
+    authStatus,
+    appendSystemMessage: () => {},
+    safeReadJson: async () => ({}),
+    fetchImpl: async () => ({ ok: false, status: 500 }),
+    normalizeHandle: (value) => String(value || '').trim(),
+    fallbackHandleFromDisplayName: (value) => String(value || '').trim(),
+    setOperatorDisplayName: () => {},
+    operatorName,
+    refreshOperatorRoleLabels: () => {},
+    setSkin: () => {},
+    syncChats: (chatList) => {
+      syncCalls.push(chatList.map((chat) => Number(chat.id)));
+      const nextIds = new Set(chatList.map((chat) => Number(chat.id)));
+      for (const chatId of [...chats.keys()]) {
+        if (!nextIds.has(chatId)) {
+          chats.delete(chatId);
+          histories.delete(chatId);
+          pendingChats.delete(chatId);
+        }
+      }
+      chatList.forEach((chat) => {
+        chats.set(Number(chat.id), chat);
+      });
+    },
+    syncPinnedChats: (chatList) => {
+      pinnedChats.clear();
+      chatList.forEach((chat) => pinnedChats.set(Number(chat.id), chat));
+    },
+    histories,
+    setActiveChatMeta: (chatId) => {
+      activeChatMetaCalls.push(chatId);
+    },
+    renderPinnedChats: () => {},
+    renderMessages: () => {},
+    warmChatHistoryCache: () => {},
+    chats,
+    pendingChats,
+    resumePendingChatStream: () => Promise.resolve(),
+    addLocalMessage: () => {},
+  });
+
+  controller.applyAuthBootstrap({
+    ok: true,
+    user: { display_name: 'Operator', username: 'operator' },
+    skin: 'terminal',
+    chats: [],
+    pinned_chats: [],
+    active_chat_id: null,
+  });
+
+  assert.deepEqual(syncCalls, [[]]);
+  assert.deepEqual(activeChatMetaCalls, [null]);
+  assert.equal(chats.size, 0);
+  assert.equal(pinnedChats.size, 0);
+  assert.equal(histories.size, 0);
+  assert.equal(pendingChats.size, 0);
+  assert.equal(authStatus.textContent, 'Signed in as operator');
+  assert.equal(operatorName.textContent, 'operator');
+});
+
 test('createStreamActivityController syncActivePendingStatus and stream active markers preserve chip contract', () => {
   const chats = new Map([[7, { pending: true, title: 'Project Helios' }]]);
   const streamChip = { textContent: '', title: '' };
@@ -350,9 +440,12 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
   const setChatLatencyCalls = [];
 
   let activeChatId = 7;
+  let hasLive = false;
+  let syncActiveLatencyChipCalls = 0;
   const controller = runtime.createStreamActivityController({
     chats,
     getActiveChatId: () => activeChatId,
+    hasLiveStreamController: () => hasLive,
     chatLabel,
     compactChatLabel,
     setStreamStatus,
@@ -362,7 +455,9 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
     setChatLatency: (chatId, text) => {
       setChatLatencyCalls.push({ chatId, text });
     },
-    syncActiveLatencyChip: () => {},
+    syncActiveLatencyChip: () => {
+      syncActiveLatencyChipCalls += 1;
+    },
   });
 
   controller.syncActivePendingStatus();
@@ -372,6 +467,12 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
   chats.set(7, { pending: false, title: 'Project Helios' });
   controller.syncActivePendingStatus();
   assert.equal(streamChip.textContent, 'stream: idle');
+
+  hasLive = true;
+  controller.syncActivePendingStatus();
+  assert.equal(streamStatus.textContent, 'Hermes responding in Project Helios');
+  assert.equal(streamChip.textContent, 'stream: active · Project Helios');
+  assert.equal(syncActiveLatencyChipCalls, 1);
 
   controller.markStreamActive(7);
   assert.equal(streamStatus.textContent, 'Hermes responding in Project Helios');

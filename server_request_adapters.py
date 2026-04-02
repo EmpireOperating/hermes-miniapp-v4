@@ -27,7 +27,7 @@ from request_context import (
 
 @dataclass(frozen=True)
 class ServerRequestAdapters:
-    create_auth_session_token_fn: Callable[[str], str]
+    create_auth_session_token_fn: Callable[..., str]
     verify_auth_session_token_fn: Callable[[str], str | None]
     verified_from_session_cookie_fn: Callable[[], VerifiedTelegramInitData | None]
     verify_from_payload_fn: Callable[[dict[str, object]], VerifiedTelegramInitData]
@@ -48,17 +48,20 @@ def build_server_request_adapters(
     auth_cookie_name: str,
     auth_session_max_age_seconds: int,
     telegram_init_data_max_age_seconds: int,
-    upsert_auth_session_fn: Callable[[str, str], None],
+    upsert_auth_session_fn: Callable[..., None],
     is_auth_session_active_fn: Callable[[str], bool],
+    auth_session_profile_fn: Callable[[str], dict[str, str | None]],
     verify_telegram_init_data_fn: Callable[..., VerifiedTelegramInitData],
     chat_id_from_payload_fn: Callable[[dict[str, object], str], int],
 ) -> ServerRequestAdapters:
-    def _create_auth_session_token(user_id: str) -> str:
+    def _create_auth_session_token(user_id: str, display_name: str | None = None, username: str | None = None) -> str:
         return create_auth_session_token(
             user_id,
             bot_token=bot_token,
             auth_session_max_age_seconds=auth_session_max_age_seconds,
             upsert_auth_session_fn=upsert_auth_session_fn,
+            display_name=display_name,
+            username=username,
         )
 
     def _verify_auth_session_token(token: str) -> str | None:
@@ -73,6 +76,7 @@ def build_server_request_adapters(
         return verified_from_session_cookie(
             token=token,
             verify_auth_session_token_fn=_verify_auth_session_token,
+            auth_session_profile_fn=auth_session_profile_fn,
         )
 
     def _verify_from_payload(payload: dict[str, object]) -> VerifiedTelegramInitData:

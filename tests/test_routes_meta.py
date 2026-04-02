@@ -493,6 +493,13 @@ def test_app_dev_config_exposes_dev_auth_flag(monkeypatch, tmp_path) -> None:
     assert "devAuthEnabled: true" in page
 
 
+def test_startup_auth_allows_empty_chat_state() -> None:
+    app_script = _read_repo_file("static", "app.js")
+
+    assert 'body: JSON.stringify({ init_data: initData, allow_empty: true })' in app_script
+
+
+
 def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     app_script = _read_repo_file("static", "app.js")
     template = _read_repo_file("templates", "app.html")
@@ -749,8 +756,22 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert '/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}' in template
     assert 'id="file-preview-modal"' in template
     assert 'id="file-preview-lines"' in template
+    assert 'id="file-preview-expand-up"' in template
+    assert 'id="file-preview-load-full"' in template
+    assert 'id="file-preview-expand-down"' in template
     assert 'id="file-preview-close"' in template
+    assert 'window.__HERMES_FILE_PREVIEW__ = {' in template
+    assert 'allowedRoots: {{ file_preview_allowed_roots_json|safe }}' in template
+    assert 'const filePreviewAllowedRoots = Array.isArray(filePreviewConfig.allowedRoots)' in script
     assert 'messagesEl?.addEventListener("click", handleMessageFileRefClick);' in script
     assert 'apiPost("/api/chats/file-preview", {' in script
+    assert 'function requestFilePreviewExpansion(direction)' in script
+    assert 'function requestFullFilePreview()' in script
+    assert 'captureFilePreviewViewportAnchor()' in script
+    assert 'restoreFilePreviewViewportAnchor(viewportAnchor)' in script
+    assert 'full_file: true,' in script
+    assert 'window_start: nextWindowStart,' in script
+    assert 'window_end: nextWindowEnd,' in script
     assert 'filePreviewLines.scrollTop = 0;' in script
-    assert 'filePreviewLines.scrollTop = targetTop;' in script
+    assert 'filePreviewLines.scrollTop = Math.max(0, anchorNode.offsetTop - offsetTopDelta);' in script
+    assert 'filePreviewLoadFull?.addEventListener("click", requestFullFilePreview);' in script
