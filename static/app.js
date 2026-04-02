@@ -75,6 +75,10 @@ const renderTraceHelpers = window.HermesMiniappRenderTrace;
 if (!renderTraceHelpers) {
   throw new Error("HermesMiniappRenderTrace is required before app.js");
 }
+const filePreviewHelpers = window.HermesMiniappFilePreview;
+if (!filePreviewHelpers) {
+  throw new Error("HermesMiniappFilePreview is required before app.js");
+}
 const { parseSseEvent, formatMessageTime, nowStamp, formatLatency, escapeHtml, cleanDisplayText, copyTextToClipboard } = sharedUtils;
 const authStatus = document.getElementById("auth-status");
 const streamStatus = document.getElementById("stream-status");
@@ -95,7 +99,12 @@ const PINNED_CHATS_COLLAPSED_STORAGE_KEY = "hermes_pinned_chats_collapsed";
 const DEV_AUTH_SESSION_STORAGE_KEY = "hermes_dev_auth_defaults";
 const PINNED_CHATS_AUTO_COLLAPSE_THRESHOLD = 8;
 const ALLOWED_SKINS = new Set(["terminal", "oracle", "obsidian"]);
+const AUTH_BOOTSTRAP_MAX_ATTEMPTS = 3;
+const AUTH_BOOTSTRAP_BASE_DELAY_MS = 220;
+const AUTH_BOOTSTRAP_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY = "hermes_bootstrap_version_reload_once";
 const bootSkin = document.documentElement?.getAttribute("data-skin") || window.__HERMES_SKIN_BOOT__ || "terminal";
+const bootBootstrapVersion = String(window.__HERMES_BOOTSTRAP_VERSION__ || "").trim();
 const skinSyncChannel = (() => {
   try {
     if (typeof BroadcastChannel !== "function") return null;
@@ -313,6 +322,15 @@ const LATENCY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 let renderTraceDebugEnabled = false;
 loadLatencyByChatFromStorage();
 
+const streamPersistenceController = streamStateHelpers.createPersistenceController({
+  localStorageRef: localStorage,
+  streamResumeCursorStorageKey: STREAM_RESUME_CURSOR_STORAGE_KEY,
+  pendingStreamSnapshotStorageKey: PENDING_STREAM_SNAPSHOT_STORAGE_KEY,
+  pendingStreamSnapshotMaxAgeMs: PENDING_STREAM_SNAPSHOT_MAX_AGE_MS,
+  histories,
+  chats,
+});
+
 const draftController = composerStateHelpers.createDraftController({
   localStorageRef: localStorage,
   draftStorageKey: DRAFT_STORAGE_KEY,
@@ -336,6 +354,59 @@ const renderTraceController = renderTraceHelpers.createController({
     renderTraceDebugEnabled = Boolean(value);
   },
   consoleRef: console,
+});
+
+const historyRenderController = renderTraceHelpers.createHistoryRenderController({
+  messagesEl,
+  jumpLatestButton,
+  jumpLastStartButton,
+  histories,
+  virtualizationRanges,
+  virtualMetrics,
+  renderedHistoryLength,
+  renderedHistoryVirtualized,
+  unseenStreamChats,
+  chatScrollTop,
+  chatStickToBottom,
+  historyCountEl: historyCount,
+  virtualizeThreshold: VIRTUALIZE_THRESHOLD,
+  estimatedMessageHeight: ESTIMATED_MESSAGE_HEIGHT,
+  virtualOverscan: VIRTUAL_OVERSCAN,
+  getActiveChatId: () => Number(activeChatId),
+  getRenderedChatId: () => Number(renderedChatId),
+  setRenderedChatId: (value) => {
+    renderedChatId = value;
+  },
+  refreshTabNode,
+  clearSelectionQuoteStateFn: clearSelectionQuoteState,
+  syncLiveToolStreamForChatFn: syncLiveToolStreamForChat,
+  appendMessagesFn: appendMessages,
+  shouldUseAppendOnlyRenderFn: runtimeHelpers.shouldUseAppendOnlyRender,
+  renderTraceLogFn: renderTraceLog,
+  createSpacerElementFn: () => document.createElement("div"),
+  createFragmentFn: () => document.createDocumentFragment(),
+});
+
+const filePreviewController = filePreviewHelpers.createController({
+  documentObject: document,
+  requestAnimationFrameFn: (callback) => requestAnimationFrame(callback),
+  filePreviewModal,
+  filePreviewPath,
+  filePreviewStatus,
+  filePreviewLines,
+  filePreviewExpandUp,
+  filePreviewLoadFull,
+  filePreviewExpandDown,
+  apiPost,
+  getActiveChatId: () => activeChatId,
+  getCurrentFilePreviewRequest: () => currentFilePreviewRequest,
+  setCurrentFilePreviewRequest: (value) => {
+    currentFilePreviewRequest = value || null;
+  },
+  getCurrentFilePreview: () => currentFilePreview,
+  setCurrentFilePreview: (value) => {
+    currentFilePreview = value || null;
+  },
 });
 
 renderTraceDebugEnabled = renderTraceController.resolveRenderTraceDebugEnabled();
@@ -435,597 +506,135 @@ function persistLatencyByChatToStorage() {
 }
 
 function readStreamResumeCursorMap() {
-  try {
-    const raw = localStorage.getItem(STREAM_RESUME_CURSOR_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
+  return streamPersistenceController.readStreamResumeCursorMap();
 }
 
 function writeStreamResumeCursorMap(nextMap) {
-  try {
-    localStorage.setItem(STREAM_RESUME_CURSOR_STORAGE_KEY, JSON.stringify(nextMap || {}));
-  } catch {
-    // best effort only
-  }
+  return streamPersistenceController.writeStreamResumeCursorMap(nextMap);
 }
 
 function getStoredStreamCursor(chatId) {
-  const key = Number(chatId);
-  if (!key) return 0;
-  const value = Number(readStreamResumeCursorMap()[String(key)] || 0);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  return streamPersistenceController.getStoredStreamCursor(chatId);
 }
 
 function setStoredStreamCursor(chatId, eventId) {
-  const key = Number(chatId);
-  const safeEventId = Number(eventId);
-  if (!key || !Number.isFinite(safeEventId) || safeEventId <= 0) return 0;
-  const nextMap = readStreamResumeCursorMap();
-  const existing = Number(nextMap[String(key)] || 0);
-  const nextValue = Math.max(existing, Math.floor(safeEventId));
-  nextMap[String(key)] = nextValue;
-  writeStreamResumeCursorMap(nextMap);
-  return nextValue;
+  return streamPersistenceController.setStoredStreamCursor(chatId, eventId);
 }
 
 function clearStoredStreamCursor(chatId) {
-  const key = Number(chatId);
-  if (!key) return false;
-  const nextMap = readStreamResumeCursorMap();
-  if (!(String(key) in nextMap)) return false;
-  delete nextMap[String(key)];
-  writeStreamResumeCursorMap(nextMap);
-  return true;
+  return streamPersistenceController.clearStoredStreamCursor(chatId);
 }
 
 function readPendingStreamSnapshotMap() {
-  try {
-    const raw = localStorage.getItem(PENDING_STREAM_SNAPSHOT_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
+  return streamPersistenceController.readPendingStreamSnapshotMap();
 }
 
 function writePendingStreamSnapshotMap(nextMap) {
-  try {
-    localStorage.setItem(PENDING_STREAM_SNAPSHOT_STORAGE_KEY, JSON.stringify(nextMap || {}));
-  } catch {
-    // best effort only
-  }
+  return streamPersistenceController.writePendingStreamSnapshotMap(nextMap);
 }
 
 function clearPendingStreamSnapshot(chatId) {
-  const key = Number(chatId);
-  if (!key) return false;
-  const nextMap = readPendingStreamSnapshotMap();
-  if (!(String(key) in nextMap)) return false;
-  delete nextMap[String(key)];
-  writePendingStreamSnapshotMap(nextMap);
-  return true;
+  return streamPersistenceController.clearPendingStreamSnapshot(chatId);
 }
 
 function normalizeSnapshotLines(value) {
-  return Array.isArray(value)
-    ? value.map((line) => String(line || '').trim()).filter(Boolean)
-    : [];
+  return streamPersistenceController.normalizeSnapshotLines(value);
 }
 
 function mergeSnapshotToolJournalLines(existingLines, currentBody) {
-  const merged = [];
-  const seen = new Set();
-  const addLine = (line) => {
-    const normalized = String(line || '').trim();
-    if (!normalized || seen.has(normalized)) return;
-    seen.add(normalized);
-    merged.push(normalized);
-  };
-  for (const line of normalizeSnapshotLines(existingLines)) {
-    addLine(line);
-  }
-  const bodyLines = String(currentBody || '').split('\n').map((line) => line.trim()).filter(Boolean);
-  for (const line of bodyLines) {
-    addLine(line);
-  }
-  return merged;
+  return streamPersistenceController.mergeSnapshotToolJournalLines(existingLines, currentBody);
 }
 
 function persistPendingStreamSnapshot(chatId) {
-  const key = Number(chatId);
-  if (!key) return null;
-  const history = histories.get(key) || [];
-  let pendingAssistant = null;
-  let pendingTool = null;
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const item = history[index];
-    if (!pendingAssistant && item?.pending && ["hermes", "assistant"].includes(String(item?.role || "").toLowerCase())) {
-      pendingAssistant = item;
-    }
-    if (!pendingTool && item?.pending && String(item?.role || "").toLowerCase() === "tool") {
-      pendingTool = item;
-    }
-    if (pendingAssistant && pendingTool) break;
-  }
-  const chatPending = Boolean(chats.get(key)?.pending) || Boolean(pendingAssistant) || Boolean(pendingTool);
-  if (!chatPending) {
-    clearPendingStreamSnapshot(key);
-    return null;
-  }
-  const nextMap = readPendingStreamSnapshotMap();
-  const existingSnapshot = nextMap[String(key)] && typeof nextMap[String(key)] === 'object'
-    ? nextMap[String(key)]
-    : {};
-  const toolJournalLines = mergeSnapshotToolJournalLines(existingSnapshot.tool_journal_lines, pendingTool?.body || '');
-  const snapshot = {
-    ts: Date.now(),
-    tool_journal_lines: toolJournalLines,
-    tool: (pendingTool || toolJournalLines.length) ? {
-      role: "tool",
-      body: String((pendingTool?.body || toolJournalLines.join('\n')) || ""),
-      created_at: String(pendingTool?.created_at || existingSnapshot?.tool?.created_at || new Date().toISOString()),
-      pending: true,
-      collapsed: false,
-    } : null,
-    assistant: pendingAssistant ? {
-      role: String(pendingAssistant.role || "hermes").toLowerCase() === "assistant" ? "assistant" : "hermes",
-      body: String(pendingAssistant.body || ""),
-      created_at: String(pendingAssistant.created_at || new Date().toISOString()),
-      pending: true,
-    } : null,
-  };
-  nextMap[String(key)] = snapshot;
-  writePendingStreamSnapshotMap(nextMap);
-  return snapshot;
+  return streamPersistenceController.persistPendingStreamSnapshot(chatId);
 }
 
 function restorePendingStreamSnapshot(chatId) {
-  const key = Number(chatId);
-  if (!key) return false;
-  const nextMap = readPendingStreamSnapshotMap();
-  const snapshot = nextMap[String(key)];
-  if (!snapshot || typeof snapshot !== "object") return false;
-  const snapshotTs = Number(snapshot.ts || 0);
-  if (!Number.isFinite(snapshotTs) || snapshotTs <= 0 || (Date.now() - snapshotTs) > PENDING_STREAM_SNAPSHOT_MAX_AGE_MS) {
-    delete nextMap[String(key)];
-    writePendingStreamSnapshotMap(nextMap);
-    return false;
-  }
-
-  const history = Array.isArray(histories.get(key)) ? [...histories.get(key)] : [];
-  const journalLines = normalizeSnapshotLines(snapshot.tool_journal_lines);
-  const journalBody = journalLines.join('\n');
-  const pendingToolIndex = history.findIndex((item) => item?.pending && String(item?.role || "").toLowerCase() === "tool");
-  const pendingAssistantIndex = history.findIndex((item) => item?.pending && ["hermes", "assistant"].includes(String(item?.role || "").toLowerCase()));
-  let changed = false;
-  if (journalBody) {
-    if (pendingToolIndex >= 0) {
-      const currentBody = String(history[pendingToolIndex]?.body || '');
-      if (currentBody !== journalBody && !currentBody.includes(journalBody)) {
-        history[pendingToolIndex] = {
-          ...history[pendingToolIndex],
-          body: journalBody,
-          pending: true,
-          collapsed: false,
-        };
-        changed = true;
-      }
-    } else if (snapshot.tool) {
-      history.push({
-        ...snapshot.tool,
-        body: journalBody,
-        pending: true,
-        collapsed: false,
-      });
-      changed = true;
-    }
-  }
-  if (pendingAssistantIndex < 0 && snapshot.assistant && (String(snapshot.assistant.body || "").trim() || snapshot.assistant.pending)) {
-    history.push({ ...snapshot.assistant });
-    changed = true;
-  }
-  if (!changed) return false;
-  histories.set(key, history);
-  return true;
+  return streamPersistenceController.restorePendingStreamSnapshot(chatId);
 }
 
 function authPayload(extra = {}) {
-  return { init_data: initData, ...extra };
+  return bootstrapAuthController.authPayload(extra);
 }
 
 async function safeReadJson(response) {
-  try {
-    return await response.json();
-  } catch {
-    return null;
-  }
+  return bootstrapAuthController.safeReadJson(response);
 }
 
 function summarizeUiFailure(rawBody, { status = 0, fallback = "Request failed." } = {}) {
-  const raw = String(rawBody || "");
-  const trimmed = raw.trim();
-  const normalizedStatus = Number(status) || 0;
-  const looksLikeHtml = /<!doctype html|<html\b|<head\b|<body\b|<style\b|<script\b/i.test(trimmed);
-  const looksLikeCss = !looksLikeHtml && /(^|\n)\s*[.#@a-zA-Z0-9_-]+\s*\{|--[a-z0-9_-]+\s*:/m.test(trimmed);
-  const tooLong = trimmed.length > 500;
-  if (normalizedStatus === 502 || normalizedStatus === 503 || normalizedStatus === 504) {
-    return "Mini app backend temporarily unavailable. Please wait a moment and reopen if needed.";
-  }
-  if (looksLikeHtml || looksLikeCss || tooLong) {
-    return fallback;
-  }
-  return trimmed || fallback;
+  return bootstrapAuthController.summarizeUiFailure(rawBody, { status, fallback });
 }
 
 function parseStreamErrorPayload(rawBody) {
-  const parsed = parseSseEvent(String(rawBody || ""));
-  const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : null;
-  const error = String(payload?.error || "").trim();
-  const chatId = Number(payload?.chat_id || 0);
-  return {
-    eventName: parsed?.eventName || "",
-    error,
-    chatId: Number.isFinite(chatId) && chatId > 0 ? chatId : 0,
-  };
+  return bootstrapAuthController.parseStreamErrorPayload(rawBody);
 }
 
 function cloneFilePreviewRequest(previewRequest = {}) {
-  const payload = {};
-  const refId = String(previewRequest?.ref_id || "").trim();
-  const path = String(previewRequest?.path || "").trim();
-  const lineStart = Number(previewRequest?.line_start || 0);
-  const lineEnd = Number(previewRequest?.line_end || 0);
-  const windowStart = Number(previewRequest?.window_start || 0);
-  const windowEnd = Number(previewRequest?.window_end || 0);
-  if (refId) payload.ref_id = refId;
-  if (path) payload.path = path;
-  if (Number.isFinite(lineStart) && lineStart > 0) payload.line_start = Math.floor(lineStart);
-  if (Number.isFinite(lineEnd) && lineEnd > 0) payload.line_end = Math.floor(lineEnd);
-  if (Number.isFinite(windowStart) && windowStart > 0) payload.window_start = Math.floor(windowStart);
-  if (Number.isFinite(windowEnd) && windowEnd > 0) payload.window_end = Math.floor(windowEnd);
-  if (previewRequest?.full_file === true) payload.full_file = true;
-  return payload;
+  return filePreviewController.cloneFilePreviewRequest(previewRequest);
 }
 
-function syncFilePreviewExpandControls(preview = null, { isLoading = false } = {}) {
-  const canExpandUp = Boolean(preview?.can_expand_up);
-  const canExpandDown = Boolean(preview?.can_expand_down);
-  const canLoadFullFile = Boolean(preview?.can_load_full_file);
-  const fullFileLoaded = Boolean(preview?.full_file_loaded);
-  if (filePreviewExpandUp) {
-    filePreviewExpandUp.disabled = isLoading || !canExpandUp;
-  }
-  if (filePreviewLoadFull) {
-    filePreviewLoadFull.disabled = isLoading || fullFileLoaded || !canLoadFullFile;
-    filePreviewLoadFull.textContent = fullFileLoaded ? "Full file loaded" : "Load full file";
-  }
-  if (filePreviewExpandDown) {
-    filePreviewExpandDown.disabled = isLoading || !canExpandDown;
-  }
+function syncFilePreviewExpandControls(preview = null, options = {}) {
+  return filePreviewController.syncFilePreviewExpandControls(preview, options);
 }
 
 function resetFilePreviewState() {
-  currentFilePreview = null;
-  if (filePreviewPath) filePreviewPath.textContent = "";
-  if (filePreviewStatus) {
-    filePreviewStatus.textContent = "";
-    filePreviewStatus.hidden = true;
-  }
-  if (filePreviewLines) {
-    filePreviewLines.innerHTML = "";
-    filePreviewLines.scrollTop = 0;
-  }
-  syncFilePreviewExpandControls(null);
+  return filePreviewController.resetFilePreviewState();
 }
 
 function closeFilePreviewModal() {
-  if (!filePreviewModal) return;
-  currentFilePreviewRequest = null;
-  if (filePreviewModal.open) {
-    filePreviewModal.close();
-  }
-  resetFilePreviewState();
+  return filePreviewController.closeFilePreviewModal();
 }
 
-function createFilePreviewLineNode(row, { focusStart = 0, focusEnd = 0 } = {}) {
-  const lineNumber = Number(row?.line || 0);
-  const wrap = document.createElement("div");
-  wrap.className = "file-preview-line";
-  if (lineNumber > 0) {
-    wrap.dataset.lineNumber = String(lineNumber);
-  }
-  if (focusStart > 0 && lineNumber >= focusStart && lineNumber <= Math.max(focusStart, focusEnd)) {
-    wrap.classList.add("is-focus");
-  }
-
-  const numberEl = document.createElement("span");
-  numberEl.className = "file-preview-line__number";
-  numberEl.textContent = String(lineNumber || "");
-
-  const textEl = document.createElement("span");
-  textEl.className = "file-preview-line__text";
-  textEl.textContent = String(row?.text || "");
-
-  wrap.appendChild(numberEl);
-  wrap.appendChild(textEl);
-  return wrap;
+function createFilePreviewLineNode(row, options = {}) {
+  return filePreviewController.createFilePreviewLineNode(row, options);
 }
 
 function captureFilePreviewViewportAnchor() {
-  if (!filePreviewLines) return null;
-  const lineNodes = Array.from(filePreviewLines.querySelectorAll(".file-preview-line[data-line-number]"));
-  if (!lineNodes.length) return null;
-  const scrollTop = filePreviewLines.scrollTop;
-  const anchorNode = lineNodes.find((node) => (node.offsetTop + node.offsetHeight) >= scrollTop) || lineNodes[0];
-  const lineNumber = Number(anchorNode?.dataset?.lineNumber || 0);
-  if (!Number.isFinite(lineNumber) || lineNumber <= 0) return null;
-  return {
-    lineNumber,
-    offsetTopDelta: anchorNode.offsetTop - scrollTop,
-  };
+  return filePreviewController.captureFilePreviewViewportAnchor();
 }
 
 function restoreFilePreviewViewportAnchor(anchor) {
-  if (!filePreviewLines || !anchor) return false;
-  const lineNumber = Number(anchor?.lineNumber || 0);
-  if (!Number.isFinite(lineNumber) || lineNumber <= 0) return false;
-  const anchorNode = filePreviewLines.querySelector(`.file-preview-line[data-line-number="${lineNumber}"]`);
-  if (!anchorNode) return false;
-  const offsetTopDelta = Number(anchor?.offsetTopDelta || 0);
-  filePreviewLines.scrollTop = Math.max(0, anchorNode.offsetTop - offsetTopDelta);
-  return true;
+  return filePreviewController.restoreFilePreviewViewportAnchor(anchor);
 }
 
 function canIncrementallyExpandFilePreview(previousPreview, nextPreview) {
-  if (!previousPreview || !nextPreview) return false;
-  if (String(previousPreview?.path || "") !== String(nextPreview?.path || "")) return false;
-  if (Number(previousPreview?.line_start || 0) !== Number(nextPreview?.line_start || 0)) return false;
-  if (Number(previousPreview?.line_end || 0) !== Number(nextPreview?.line_end || 0)) return false;
-  const previousRows = Array.isArray(previousPreview?.lines) ? previousPreview.lines : [];
-  const nextRows = Array.isArray(nextPreview?.lines) ? nextPreview.lines : [];
-  if (!previousRows.length || !nextRows.length) return false;
-  const previousWindowStart = Number(previousPreview?.window_start || previousRows[0]?.line || 0);
-  const previousWindowEnd = Number(previousPreview?.window_end || previousRows[previousRows.length - 1]?.line || 0);
-  const nextWindowStart = Number(nextPreview?.window_start || nextRows[0]?.line || 0);
-  const nextWindowEnd = Number(nextPreview?.window_end || nextRows[nextRows.length - 1]?.line || 0);
-  return nextWindowStart <= previousWindowStart && nextWindowEnd >= previousWindowEnd;
+  return filePreviewController.canIncrementallyExpandFilePreview(previousPreview, nextPreview);
 }
 
 function expandFilePreviewInPlace(previousPreview, nextPreview) {
-  if (!filePreviewLines) return false;
-  if (!canIncrementallyExpandFilePreview(previousPreview, nextPreview)) return false;
-  const focusStart = Number(nextPreview?.line_start || 0);
-  const focusEnd = Number(nextPreview?.line_end || 0);
-  const previousRows = Array.isArray(previousPreview?.lines) ? previousPreview.lines : [];
-  const nextRows = Array.isArray(nextPreview?.lines) ? nextPreview.lines : [];
-  if (!previousRows.length || !nextRows.length) return false;
-
-  const previousWindowStart = Number(previousPreview?.window_start || previousRows[0]?.line || 0);
-  const previousWindowEnd = Number(previousPreview?.window_end || previousRows[previousRows.length - 1]?.line || 0);
-  const linesByNumber = new Map(nextRows.map((row) => [Number(row?.line || 0), row]));
-  const firstExistingNode = filePreviewLines.querySelector(`.file-preview-line[data-line-number="${previousWindowStart}"]`);
-
-  let prepended = false;
-  let prependedHeight = 0;
-  if (firstExistingNode) {
-    const prependFragment = document.createDocumentFragment();
-    for (let lineNumber = previousWindowStart - 1; lineNumber >= 1; lineNumber -= 1) {
-      if (lineNumber < Number(nextPreview?.window_start || 0)) break;
-      const row = linesByNumber.get(lineNumber);
-      if (!row) continue;
-      prependFragment.insertBefore(createFilePreviewLineNode(row, { focusStart, focusEnd }), prependFragment.firstChild);
-      prepended = true;
-    }
-    if (prepended) {
-      const previousScrollTop = filePreviewLines.scrollTop;
-      const previousScrollHeight = filePreviewLines.scrollHeight;
-      filePreviewLines.insertBefore(prependFragment, firstExistingNode);
-      prependedHeight = filePreviewLines.scrollHeight - previousScrollHeight;
-      filePreviewLines.scrollTop = previousScrollTop + prependedHeight;
-    }
-  }
-
-  const appendFragment = document.createDocumentFragment();
-  let appended = false;
-  for (let lineNumber = previousWindowEnd + 1; lineNumber <= Number(nextPreview?.window_end || 0); lineNumber += 1) {
-    const row = linesByNumber.get(lineNumber);
-    if (!row) continue;
-    appendFragment.appendChild(createFilePreviewLineNode(row, { focusStart, focusEnd }));
-    appended = true;
-  }
-  if (appended) {
-    filePreviewLines.appendChild(appendFragment);
-  }
-
-  return prepended || appended;
+  return filePreviewController.expandFilePreviewInPlace(previousPreview, nextPreview);
 }
 
-function renderFilePreview(preview, { viewportAnchor = null, centerFocus = true, mergeInPlace = false } = {}) {
-  if (!filePreviewLines) return;
-  const previousPreview = currentFilePreview;
-  currentFilePreview = preview || null;
-  const rows = Array.isArray(preview?.lines) ? preview.lines : [];
-  const focusStart = Number(preview?.line_start || 0);
-  const focusEnd = Number(preview?.line_end || 0);
-  const windowStart = Number(preview?.window_start || (rows[0]?.line || 0));
-  const windowEnd = Number(preview?.window_end || (rows[rows.length - 1]?.line || 0));
-  const totalLines = Number(preview?.total_lines || rows.length || 0);
-  const isTruncated = Boolean(preview?.is_truncated);
-  const fullFileLoaded = Boolean(preview?.full_file_loaded);
-  if (filePreviewPath) {
-    filePreviewPath.textContent = String(preview?.path || "Preview");
-  }
-  if (filePreviewStatus) {
-    if (rows.length) {
-      const summary = totalLines > 0
-        ? `Showing lines ${windowStart || 1}–${windowEnd || windowStart || 1} of ${totalLines}${fullFileLoaded ? ' (full file)' : isTruncated ? ' (focused excerpt)' : ''}`
-        : 'Showing preview';
-      filePreviewStatus.hidden = false;
-      filePreviewStatus.textContent = summary;
-    } else {
-      filePreviewStatus.hidden = false;
-      filePreviewStatus.textContent = 'No preview lines available for this file.';
-    }
-  }
-
-  const mergedInPlace = mergeInPlace && expandFilePreviewInPlace(previousPreview, preview);
-  let firstFocusLine = null;
-  if (!mergedInPlace) {
-    filePreviewLines.innerHTML = "";
-    const fragment = document.createDocumentFragment();
-    rows.forEach((row) => {
-      const node = createFilePreviewLineNode(row, { focusStart, focusEnd });
-      if (!firstFocusLine && node.classList.contains("is-focus")) {
-        firstFocusLine = node;
-      }
-      fragment.appendChild(node);
-    });
-    filePreviewLines.appendChild(fragment);
-  }
-
-  syncFilePreviewExpandControls(preview);
-
-  if (mergedInPlace) {
-    return;
-  }
-  if (restoreFilePreviewViewportAnchor(viewportAnchor)) {
-    return;
-  }
-  if (centerFocus && !firstFocusLine) {
-    firstFocusLine = filePreviewLines.querySelector(".file-preview-line.is-focus");
-  }
-  if (centerFocus && firstFocusLine) {
-    requestAnimationFrame(() => {
-      const targetTop = Math.max(
-        0,
-        firstFocusLine.offsetTop - Math.floor(filePreviewLines.clientHeight / 2) + Math.floor(firstFocusLine.offsetHeight / 2),
-      );
-      filePreviewLines.scrollTop = targetTop;
-    });
-  }
+function renderFilePreview(preview, options = {}) {
+  return filePreviewController.renderFilePreview(preview, options);
 }
 
 function showFilePreviewStatus(message) {
-  if (!filePreviewStatus) return;
-  filePreviewStatus.hidden = false;
-  filePreviewStatus.textContent = String(message || "Preview unavailable");
+  return filePreviewController.showFilePreviewStatus(message);
 }
 
-async function openFilePreview(previewRequest = {}, { preserveViewport = false, loadingMessage = "Loading preview…" } = {}) {
-  if (!filePreviewModal) return;
-  const nextPreviewRequest = cloneFilePreviewRequest(previewRequest);
-  const viewportAnchor = preserveViewport ? captureFilePreviewViewportAnchor() : null;
-  if (!preserveViewport) {
-    resetFilePreviewState();
-  }
-  syncFilePreviewExpandControls(currentFilePreview, { isLoading: true });
-  showFilePreviewStatus(loadingMessage);
-  if (!filePreviewModal.open) {
-    filePreviewModal.showModal();
-  }
-
-  try {
-    const data = await apiPost("/api/chats/file-preview", {
-      chat_id: activeChatId,
-      ...nextPreviewRequest,
-    });
-    const preview = data?.preview || null;
-    if (!preview) {
-      throw new Error("Preview unavailable");
-    }
-    currentFilePreviewRequest = nextPreviewRequest;
-    renderFilePreview(preview, {
-      viewportAnchor,
-      centerFocus: !preserveViewport,
-      mergeInPlace: preserveViewport,
-    });
-  } catch (error) {
-    syncFilePreviewExpandControls(currentFilePreview);
-    showFilePreviewStatus(error?.message || "Preview unavailable");
-  }
+async function openFilePreview(previewRequest = {}, options = {}) {
+  return filePreviewController.openFilePreview(previewRequest, options);
 }
 
 function openFilePreviewByRef(refId) {
-  const cleanedRefId = String(refId || "").trim();
-  if (!cleanedRefId || !activeChatId) return;
-  void openFilePreview({ ref_id: cleanedRefId });
+  return filePreviewController.openFilePreviewByRef(refId);
 }
 
-function openFilePreviewByPath(pathText, { lineStart = 0, lineEnd = 0 } = {}) {
-  const cleanedPath = String(pathText || "").trim();
-  if (!cleanedPath || !activeChatId) return;
-  const payload = { path: cleanedPath };
-  const start = Number(lineStart || 0);
-  const end = Number(lineEnd || 0);
-  if (Number.isFinite(start) && start > 0) {
-    payload.line_start = Math.floor(start);
-  }
-  if (Number.isFinite(end) && end > 0) {
-    payload.line_end = Math.floor(end);
-  }
-  void openFilePreview(payload);
+function openFilePreviewByPath(pathText, options = {}) {
+  return filePreviewController.openFilePreviewByPath(pathText, options);
 }
 
 function requestFilePreviewExpansion(direction) {
-  const preview = currentFilePreview;
-  const baseRequest = currentFilePreviewRequest;
-  if (!preview || !baseRequest) return;
-  const step = 40;
-  const currentWindowStart = Number(preview?.window_start || 0);
-  const currentWindowEnd = Number(preview?.window_end || 0);
-  const totalLines = Number(preview?.total_lines || 0);
-  let nextWindowStart = currentWindowStart;
-  let nextWindowEnd = currentWindowEnd;
-
-  if (direction === "up") {
-    if (!preview?.can_expand_up) return;
-    nextWindowStart = Math.max(1, currentWindowStart - step);
-  } else if (direction === "down") {
-    if (!preview?.can_expand_down) return;
-    nextWindowEnd = totalLines > 0 ? Math.min(totalLines, currentWindowEnd + step) : currentWindowEnd + step;
-  } else {
-    return;
-  }
-
-  void openFilePreview({
-    ...baseRequest,
-    window_start: nextWindowStart,
-    window_end: nextWindowEnd,
-  }, {
-    preserveViewport: true,
-    loadingMessage: direction === "up" ? "Loading more above…" : "Loading more below…",
-  });
+  return filePreviewController.requestFilePreviewExpansion(direction);
 }
 
 function requestFullFilePreview() {
-  const preview = currentFilePreview;
-  const baseRequest = currentFilePreviewRequest;
-  if (!preview || !baseRequest || !preview?.can_load_full_file || preview?.full_file_loaded) return;
-  void openFilePreview({
-    ...baseRequest,
-    full_file: true,
-  }, {
-    preserveViewport: true,
-    loadingMessage: "Loading full file…",
-  });
+  return filePreviewController.requestFullFilePreview();
 }
 
 function handleMessageFileRefClick(event) {
-  const trigger = event?.target?.closest?.(".message-file-ref");
-  if (!trigger) return;
-
-  // Telegram mobile webviews can occasionally miss delegated click for inline
-  // buttons while still delivering touchend. Bind both and handle here.
-  if (typeof event?.preventDefault === "function") {
-    event.preventDefault();
-  }
-
-  const refId = String(trigger.dataset.fileRefId || "").trim();
-  if (!refId) return;
-  openFilePreviewByRef(refId);
+  return filePreviewController.handleMessageFileRefClick(event);
 }
 
 const bootstrapAuthController = bootstrapAuthHelpers.createController({
@@ -1048,9 +657,10 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   devAuthCancelButton,
   authStatus,
   appendSystemMessage,
-  safeReadJson,
   fetchImpl: (...args) => fetch(...args),
   normalizeHandle,
+  initData,
+  parseSseEvent,
   fallbackHandleFromDisplayName,
   setOperatorDisplayName: (value) => {
     operatorDisplayName = String(value || "");
@@ -1435,81 +1045,37 @@ function appendMessages(fragment, messages, startIndex = 0) {
 }
 
 function isNearBottom(element, threshold = 24) {
-  return (element.scrollHeight - element.clientHeight - element.scrollTop) <= threshold;
+  return historyRenderController.isNearBottom(element, threshold);
 }
 
 function shouldVirtualizeHistory(historyLength) {
-  return historyLength > VIRTUALIZE_THRESHOLD;
+  return historyRenderController.shouldVirtualizeHistory(historyLength);
 }
 
 function getEstimatedMessageHeight(chatId) {
-  const metric = virtualMetrics.get(Number(chatId));
-  return Math.max(56, Number(metric?.avgHeight) || ESTIMATED_MESSAGE_HEIGHT);
+  return historyRenderController.getEstimatedMessageHeight(chatId);
 }
 
 function updateVirtualMetrics(chatId) {
-  const nodes = messagesEl.querySelectorAll(".message");
-  if (!nodes.length) return;
-
-  let totalHeight = 0;
-  nodes.forEach((node) => {
-    totalHeight += node.offsetHeight;
-  });
-  if (totalHeight <= 0) return;
-
-  const sampleAvg = totalHeight / nodes.length;
-  const prior = getEstimatedMessageHeight(chatId);
-  const blended = Math.round((prior * 0.68) + (sampleAvg * 0.32));
-  virtualMetrics.set(Number(chatId), { avgHeight: blended });
+  return historyRenderController.updateVirtualMetrics(chatId);
 }
 
 function updateJumpLatestVisibility() {
-  const key = Number(activeChatId);
-  const hasActiveChat = key > 0;
-
-  const showJumpLatest = hasActiveChat && !isNearBottom(messagesEl, 64);
-  if (jumpLatestButton) {
-    jumpLatestButton.hidden = !showJumpLatest;
-  }
-
-  // Show an "up" helper when the beginning of the final message is above
-  // the current viewport (common for long assistant outputs).
-  if (jumpLastStartButton) {
-    const renderedMessages = messagesEl.querySelectorAll(".message");
-    const lastRenderedMessage = renderedMessages[renderedMessages.length - 1];
-    const showJumpLastStart = Boolean(
-      hasActiveChat
-      && lastRenderedMessage
-      && Number(lastRenderedMessage.offsetTop) < (messagesEl.scrollTop - 6)
-    );
-    jumpLastStartButton.hidden = !showJumpLastStart;
-  }
+  return historyRenderController.updateJumpLatestVisibility();
 }
 
 function markStreamUpdate(chatId) {
-  const key = Number(chatId);
-  if (!key || key !== Number(activeChatId)) return;
-  if (isNearBottom(messagesEl, 40)) return;
-  unseenStreamChats.add(key);
-  refreshTabNode(key);
-  updateJumpLatestVisibility();
+  return historyRenderController.markStreamUpdate(chatId);
 }
 
 function computeVirtualRange({ total, scrollTop, viewportHeight, forceBottom, estimatedHeight }) {
-  const rowHeight = Math.max(56, estimatedHeight || ESTIMATED_MESSAGE_HEIGHT);
-  const estimatedVisible = Math.max(1, Math.ceil(viewportHeight / rowHeight));
-  const windowSize = estimatedVisible + (VIRTUAL_OVERSCAN * 2);
-
-  if (forceBottom) {
-    const end = total;
-    const start = Math.max(0, end - windowSize);
-    return { start, end };
-  }
-
-  const approxStart = Math.max(0, Math.floor(scrollTop / rowHeight) - VIRTUAL_OVERSCAN);
-  const start = Math.min(approxStart, Math.max(0, total - windowSize));
-  const end = Math.min(total, start + windowSize);
-  return { start, end };
+  return historyRenderController.computeVirtualRange({
+    total,
+    scrollTop,
+    viewportHeight,
+    forceBottom,
+    estimatedHeight,
+  });
 }
 
 function renderVirtualizedHistory(targetChatId, history, {
@@ -1519,45 +1085,17 @@ function renderVirtualizedHistory(targetChatId, history, {
   shouldStick,
   estimatedHeight,
 }) {
-  const viewportHeight = Math.max(messagesEl.clientHeight || 0, 320);
-  const range = computeVirtualRange({
-    total: history.length,
-    scrollTop: forceBottom ? Number.MAX_SAFE_INTEGER : prevScrollTop,
-    viewportHeight,
-    forceBottom: forceBottom || (!preserveViewport && shouldStick),
-    estimatedHeight,
-  });
-
-  const renderStart = range.start;
-  const renderEnd = range.end;
-
-  const topSpacer = document.createElement("div");
-  topSpacer.className = "messages__spacer";
-  topSpacer.style.height = `${renderStart * estimatedHeight}px`;
-
-  const bottomSpacer = document.createElement("div");
-  bottomSpacer.className = "messages__spacer";
-  bottomSpacer.style.height = `${Math.max(0, history.length - renderEnd) * estimatedHeight}px`;
-
-  messagesEl.appendChild(topSpacer);
-  const fragment = document.createDocumentFragment();
-  appendMessages(fragment, history.slice(renderStart, renderEnd));
-  messagesEl.appendChild(fragment);
-  messagesEl.appendChild(bottomSpacer);
-
-  virtualizationRanges.set(targetChatId, {
-    start: renderStart,
-    end: renderEnd,
-    total: history.length,
+  return historyRenderController.renderVirtualizedHistory(targetChatId, history, {
+    prevScrollTop,
+    preserveViewport,
+    forceBottom,
+    shouldStick,
     estimatedHeight,
   });
 }
 
 function renderFullHistory(targetChatId, history) {
-  const fragment = document.createDocumentFragment();
-  appendMessages(fragment, history);
-  messagesEl.appendChild(fragment);
-  virtualizationRanges.delete(targetChatId);
+  return historyRenderController.renderFullHistory(targetChatId, history);
 }
 
 function tryAppendOnlyRender(targetChatId, history, {
@@ -1568,65 +1106,14 @@ function tryAppendOnlyRender(targetChatId, history, {
   prevScrollTop,
   wasNearBottom,
 }) {
-  if (forceBottom || !preserveViewport || !isSameRenderedChat || shouldVirtualize) {
-    return false;
-  }
-
-  if (renderedHistoryVirtualized.get(targetChatId)) {
-    return false;
-  }
-
-  const previouslyRenderedLength = Number(renderedHistoryLength.get(targetChatId));
-  if (!Number.isFinite(previouslyRenderedLength) || previouslyRenderedLength < 0) {
-    return false;
-  }
-
-  if (history.length <= previouslyRenderedLength) {
-    return false;
-  }
-
-  const renderedMessageKeys = Array.from(messagesEl.querySelectorAll(".message"))
-    .map((node) => String(node?.dataset?.messageKey || ""));
-  if (!runtimeHelpers.shouldUseAppendOnlyRender({
-    history,
-    previouslyRenderedLength,
-    renderedMessageKeys,
-  })) {
-    renderTraceLog("append-only-skip-history-misaligned", {
-      chatId: Number(targetChatId),
-      previouslyRenderedLength,
-      renderedMessageNodes: renderedMessageKeys.length,
-      historyLength: history.length,
-    });
-    return false;
-  }
-
-  const appendedSlice = history.slice(previouslyRenderedLength);
-  if (!appendedSlice.length) {
-    return false;
-  }
-
-  const fragment = document.createDocumentFragment();
-  appendMessages(fragment, appendedSlice);
-  messagesEl.appendChild(fragment);
-
-  const shouldStickBottom = Boolean(chatStickToBottom.get(targetChatId) || wasNearBottom);
-  if (shouldStickBottom) {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  } else {
-    // Appending new messages at the bottom should not move the viewport when
-    // the operator is reading older content.
-    messagesEl.scrollTop = Math.max(0, prevScrollTop);
-  }
-
-  renderTraceLog("append-only-render", {
-    chatId: Number(targetChatId),
-    appendedCount: appendedSlice.length,
-    shouldStickBottom,
-    preservedScrollTop: Math.max(0, prevScrollTop),
+  return historyRenderController.tryAppendOnlyRender(targetChatId, history, {
+    preserveViewport,
+    forceBottom,
+    isSameRenderedChat,
+    shouldVirtualize,
+    prevScrollTop,
+    wasNearBottom,
   });
-
-  return true;
 }
 
 function restoreMessageViewport(targetChatId, {
@@ -1636,101 +1123,21 @@ function restoreMessageViewport(targetChatId, {
   shouldStick,
   prevScrollTop,
 }) {
-  if (forceBottom) {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  } else if (preserveViewport && isSameRenderedChat && !shouldStick) {
-    // Keep the user's viewport anchored to the same absolute scroll offset.
-    messagesEl.scrollTop = Math.max(0, prevScrollTop);
-  } else if (chatScrollTop.has(targetChatId) && !shouldStick) {
-    messagesEl.scrollTop = Math.max(0, chatScrollTop.get(targetChatId));
-  } else {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
-}
-
-function finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom }) {
-  renderedChatId = targetChatId;
-  renderedHistoryLength.set(targetChatId, history.length);
-  renderedHistoryVirtualized.set(targetChatId, Boolean(shouldVirtualize));
-  if (shouldVirtualize) {
-    updateVirtualMetrics(targetChatId);
-  }
-
-  const atBottom = isNearBottom(messagesEl, 40);
-  if (forceBottom || atBottom) {
-    unseenStreamChats.delete(targetChatId);
-    refreshTabNode(targetChatId);
-  }
-  chatScrollTop.set(targetChatId, messagesEl.scrollTop);
-  chatStickToBottom.set(targetChatId, atBottom);
-  updateJumpLatestVisibility();
-  historyCount.textContent = String(history.filter((item) => item.role !== "system").length);
-}
-
-function renderMessages(chatId, { preserveViewport = false, forceBottom = false } = {}) {
-  const targetChatId = Number(chatId);
-  const isSameRenderedChat = Number(renderedChatId) === targetChatId;
-  const prevScrollTop = messagesEl.scrollTop;
-  const wasNearBottom = isNearBottom(messagesEl, 40);
-  // Keep viewport stable when reading older messages, but anchor to bottom
-  // when the operator is already near latest and new content arrives.
-  const shouldStick = Boolean(forceBottom || (preserveViewport && isSameRenderedChat && wasNearBottom));
-
-  const history = histories.get(targetChatId) || [];
-  const shouldVirtualize = shouldVirtualizeHistory(history.length);
-  const estimatedHeight = getEstimatedMessageHeight(targetChatId);
-
-  if (tryAppendOnlyRender(targetChatId, history, {
-    preserveViewport,
-    forceBottom,
-    isSameRenderedChat,
-    shouldVirtualize,
-    prevScrollTop,
-    wasNearBottom,
-  })) {
-    finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom });
-    if (Number(activeChatId) === targetChatId) {
-      syncLiveToolStreamForChat(targetChatId);
-    }
-    return;
-  }
-
-  renderTraceLog("full-render", {
-    chatId: Number(targetChatId),
-    reason: "append-only-unavailable",
-    preserveViewport: Boolean(preserveViewport),
-    forceBottom: Boolean(forceBottom),
-    shouldVirtualize,
-    historyLength: history.length,
-  });
-
-  messagesEl.innerHTML = "";
-  clearSelectionQuoteState();
-
-  if (shouldVirtualize) {
-    renderVirtualizedHistory(targetChatId, history, {
-      prevScrollTop,
-      preserveViewport,
-      forceBottom,
-      shouldStick,
-      estimatedHeight,
-    });
-  } else {
-    renderFullHistory(targetChatId, history);
-  }
-
-  restoreMessageViewport(targetChatId, {
+  return historyRenderController.restoreMessageViewport(targetChatId, {
     forceBottom,
     preserveViewport,
     isSameRenderedChat,
     shouldStick,
     prevScrollTop,
   });
+}
 
-  finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom });
-  if (Number(activeChatId) === targetChatId) {
-    syncLiveToolStreamForChat(targetChatId);
-  }
+function finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom }) {
+  return historyRenderController.finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom });
+}
+
+function renderMessages(chatId, { preserveViewport = false, forceBottom = false } = {}) {
+  return historyRenderController.renderMessages(chatId, { preserveViewport, forceBottom });
 }
 
 function normalizeChat(chat, { forcePinned = null } = {}) {
@@ -1895,73 +1302,46 @@ function syncActivePendingStatus() {
   return streamActivityController.syncActivePendingStatus();
 }
 
-function setActiveChatMeta(chatId, { fullTabRender = true, deferNonCritical = false } = {}) {
-  const hadPreviousActive = activeChatId != null;
-  const previousActiveChatId = Number(activeChatId);
-  if (hadPreviousActive && Number(renderedChatId) === previousActiveChatId) {
-    chatScrollTop.set(previousActiveChatId, messagesEl.scrollTop);
-    chatStickToBottom.set(previousActiveChatId, isNearBottom(messagesEl));
-  }
-  if (hadPreviousActive && previousActiveChatId) {
-    setDraft(previousActiveChatId, promptEl.value || "");
-  }
+const activeChatMetaController = chatHistoryHelpers.createMetaController({
+  getActiveChatId: () => activeChatId,
+  setActiveChatId: (value) => {
+    activeChatId = value == null ? null : Number(value);
+  },
+  getRenderedChatId: () => renderedChatId,
+  setRenderedChatId: (value) => {
+    renderedChatId = value == null ? null : Number(value);
+  },
+  chatScrollTop,
+  chatStickToBottom,
+  messagesEl,
+  isNearBottomFn: isNearBottom,
+  setDraft,
+  promptEl,
+  activeChatName,
+  panelTitle,
+  template,
+  nowStamp,
+  renderBody,
+  historyCount,
+  updateComposerState,
+  syncPinChatButton,
+  renderTabs,
+  syncActiveTabSelection,
+  syncLiveToolStreamForChat,
+  syncActivePendingStatus,
+  syncActiveLatencyChip,
+  updateJumpLatestVisibility,
+  getDraft,
+  chats,
+  scheduleTimeout: (...args) => setTimeout(...args),
+});
 
-  const nextActiveChatId = Number(chatId || 0);
-  if (!nextActiveChatId) {
-    activeChatId = null;
-    promptEl.value = "";
-    activeChatName.textContent = "None";
-    panelTitle.textContent = "Conversation";
-    messagesEl.innerHTML = "";
-    const node = template.content.firstElementChild.cloneNode(true);
-    node.classList.add("message--system");
-    node.querySelector(".message__role").textContent = "system";
-    node.querySelector(".message__time").textContent = nowStamp();
-    renderBody(node.querySelector(".message__body"), "No chats open. Start a new chat to continue.");
-    messagesEl.appendChild(node);
-    historyCount.textContent = "0";
-    renderedChatId = null;
-    updateComposerState();
-    syncPinChatButton();
-    renderTabs();
-    resetToolStream();
-    syncActivePendingStatus();
-    syncActiveLatencyChip();
-    updateJumpLatestVisibility();
-    return;
-  }
-
-  activeChatId = nextActiveChatId;
-  promptEl.value = getDraft(activeChatId);
-  const chat = chats.get(activeChatId);
-  const title = chat?.title || "Chat";
-  activeChatName.textContent = title;
-  panelTitle.textContent = `Conversation · ${title}`;
-  updateComposerState();
-  syncPinChatButton();
-
-  if (fullTabRender) {
-    renderTabs();
-  } else {
-    syncActiveTabSelection(previousActiveChatId, activeChatId);
-  }
-
-  const finalizeMeta = () => {
-    syncLiveToolStreamForChat(activeChatId);
-    syncActivePendingStatus();
-    syncActiveLatencyChip();
-    updateJumpLatestVisibility();
-  };
-
-  if (deferNonCritical) {
-    setTimeout(finalizeMeta, 0);
-  } else {
-    finalizeMeta();
-  }
+function setActiveChatMeta(chatId, options = {}) {
+  return activeChatMetaController.setActiveChatMeta(chatId, options);
 }
 
 function setNoActiveChatMeta() {
-  setActiveChatMeta(null);
+  return activeChatMetaController.setNoActiveChatMeta();
 }
 
 function updateComposerState() {
@@ -2091,6 +1471,7 @@ const chatAdminController = chatAdminHelpers.createController({
   chatTitleTagLabel,
   chatTitleTagRow,
   chatTitleTagButtons,
+  chatTabContextMenu,
   apiPost,
   chats,
   pinnedChats,
@@ -2424,6 +1805,130 @@ function warmChatHistoryCache() {
   return chatHistoryController.warmChatHistoryCache();
 }
 
+function getMissingBootstrapBindings() {
+  const requiredBindings = [
+    ["status chip", authStatus, "#auth-status"],
+    ["operator name", operatorName, "#operator-name"],
+    ["chat tabs", tabsEl, "#chat-tabs"],
+    ["message log", messagesEl, "#messages"],
+    ["composer form", form, "#chat-form"],
+    ["composer input", promptEl, "#prompt"],
+    ["send button", sendButton, "#send-button"],
+    ["message template", template, "#message-template"],
+  ];
+  return requiredBindings
+    .filter(([, node]) => !node)
+    .map(([label, , selector]) => `${label} (${selector})`);
+}
+
+function reportBootstrapMismatch(reason, details = []) {
+  const suffix = Array.isArray(details) && details.length ? ` Missing: ${details.join(", ")}.` : "";
+  const message = `${reason}.${suffix} Reload the mini app to refresh assets.`;
+  if (authStatus) {
+    authStatus.textContent = "Client bootstrap mismatch";
+    authStatus.title = message;
+  }
+  if (messagesEl && template) {
+    appendSystemMessage(message);
+    return;
+  }
+  console.error("[miniapp/bootstrap]", message);
+}
+
+function delayMs(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function isRetryableAuthBootstrapFailure(response, data) {
+  const status = Number(response?.status || 0);
+  if (!status) return true;
+  if (AUTH_BOOTSTRAP_RETRYABLE_STATUS.has(status)) return true;
+  const text = String(data?.error || "");
+  return /temporarily unavailable|try again|timeout/i.test(text);
+}
+
+async function fetchAuthBootstrapWithRetry() {
+  let lastResponse = null;
+  let lastData = null;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= AUTH_BOOTSTRAP_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ init_data: initData, allow_empty: true }),
+      });
+      const data = await safeReadJson(response);
+      if (response.ok && data?.ok) {
+        return { response, data };
+      }
+      lastResponse = response;
+      lastData = data;
+      if (!isRetryableAuthBootstrapFailure(response, data) || attempt >= AUTH_BOOTSTRAP_MAX_ATTEMPTS) {
+        return { response, data };
+      }
+    } catch (error) {
+      lastError = error;
+      if (attempt >= AUTH_BOOTSTRAP_MAX_ATTEMPTS) {
+        break;
+      }
+    }
+
+    const jitterMs = Math.floor(Math.random() * 120);
+    const backoffMs = AUTH_BOOTSTRAP_BASE_DELAY_MS * attempt + jitterMs;
+    await delayMs(backoffMs);
+  }
+
+  if (lastResponse) {
+    return { response: lastResponse, data: lastData };
+  }
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error("Session bootstrap failed before response.");
+}
+
+async function maybeRefreshForBootstrapVersionMismatch() {
+  if (!bootBootstrapVersion) return false;
+
+  try {
+    const response = await fetch("/api/state", {
+      method: "GET",
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" },
+    });
+    const data = await safeReadJson(response);
+    if (!response.ok || !data?.ok) {
+      return false;
+    }
+    const serverVersion = String(data?.bootstrap_version || "").trim();
+    if (!serverVersion || serverVersion === bootBootstrapVersion) {
+      if (window.sessionStorage) {
+        window.sessionStorage.removeItem(BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY);
+      }
+      return false;
+    }
+
+    const reloadMarker = `${bootBootstrapVersion}->${serverVersion}`;
+    const priorMarker = window.sessionStorage?.getItem(BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY) || "";
+    if (priorMarker === reloadMarker) {
+      return false;
+    }
+    window.sessionStorage?.setItem(BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY, reloadMarker);
+
+    if (authStatus) {
+      authStatus.textContent = "Refreshing app…";
+      authStatus.title = "Detected a newer app build. Reloading once to sync assets.";
+    }
+    const target = `${window.location.pathname}?v=${encodeURIComponent(serverVersion)}`;
+    window.location.replace(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function bootstrap() {
   if (tg) {
     try {
@@ -2451,13 +1956,22 @@ async function bootstrap() {
     toggleHint: "Open Settings and tap Render Trace to toggle logging",
   });
 
+  const missingBindings = getMissingBootstrapBindings();
+  if (missingBindings.length) {
+    reportBootstrapMismatch("Required startup bindings are missing", missingBindings);
+    syncDevAuthUi();
+    updateComposerState();
+    revealShell();
+    return;
+  }
+
+  if (await maybeRefreshForBootstrapVersionMismatch()) {
+    revealShell();
+    return;
+  }
+
   try {
-    const response = await fetch("/api/auth", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ init_data: initData, allow_empty: true }),
-    });
-    const data = await safeReadJson(response);
+    const { response, data } = await fetchAuthBootstrapWithRetry();
 
     if (!response.ok || !data?.ok) {
       if (desktopTestingEnabled) {
@@ -2892,192 +2406,99 @@ filePreviewModal?.addEventListener?.("cancel", (event) => {
 });
 selectionQuoteController.bind();
 
-let tabContextTargetChatId = null;
+const keyboardShortcutsController = keyboardShortcutsHelpers.createController({
+  windowObject: window,
+  documentObject: document,
+  messagesEl,
+  promptEl,
+  settingsModal,
+  jumpLatestButton,
+  jumpLastStartButton,
+  chats,
+  getActiveChatId: () => Number(activeChatId),
+  getMobileQuoteMode: () => mobileQuoteMode,
+  openChat,
+  openPinnedChat,
+  getNextChatTabId: runtimeHelpers.getNextChatTabId,
+  handleJumpLatest,
+  handleJumpLastStart,
+  focusMessagesPaneIfActiveChat,
+});
 
 function closeChatTabContextMenu() {
-  tabContextTargetChatId = null;
-  if (!chatTabContextMenu) return;
-  chatTabContextMenu.hidden = true;
+  return chatAdminController.closeChatTabContextMenu();
 }
 
 function openChatTabContextMenu(chatId, clientX, clientY) {
-  if (!chatTabContextMenu) return;
-  tabContextTargetChatId = Number(chatId) || null;
-  if (!tabContextTargetChatId) {
-    closeChatTabContextMenu();
-    return;
-  }
-
-  const viewportWidth = Number(window.innerWidth || 0);
-  const viewportHeight = Number(window.innerHeight || 0);
-  const menuWidth = 172;
-  const menuHeight = 44;
-  const left = Math.max(8, Math.min(Number(clientX || 0), Math.max(8, viewportWidth - menuWidth - 8)));
-  const top = Math.max(8, Math.min(Number(clientY || 0), Math.max(8, viewportHeight - menuHeight - 8)));
-
-  chatTabContextMenu.style.left = `${left}px`;
-  chatTabContextMenu.style.top = `${top}px`;
-  chatTabContextMenu.hidden = false;
+  return chatAdminController.openChatTabContextMenu(chatId, clientX, clientY);
 }
 
 function handleTabOverflowTriggerClick(event) {
-  const trigger = event?.target?.closest?.('[data-chat-tab-menu-trigger]');
-  if (!trigger) return;
-
-  const tab = trigger.closest('.chat-tab');
-  const chatId = Number(tab?.dataset?.chatId || 0);
-  if (!chatId || chatId !== Number(activeChatId)) {
-    closeChatTabContextMenu();
-    return;
-  }
-
-  event.preventDefault();
-  event.stopPropagation();
-
-  const existingTargetId = Number(tabContextTargetChatId || 0);
-  const isAlreadyOpenForSameChat = !chatTabContextMenu?.hidden && existingTargetId === chatId;
-  if (isAlreadyOpenForSameChat) {
-    closeChatTabContextMenu();
-    return;
-  }
-
-  const rect = trigger.getBoundingClientRect();
-  openChatTabContextMenu(chatId, rect.right - 6, rect.bottom + 6);
+  return chatAdminController.handleTabOverflowTriggerClick(event);
 }
 
 async function handleTabContextForkClick(event) {
-  event.preventDefault();
-  const chatId = Number(tabContextTargetChatId || 0);
-  closeChatTabContextMenu();
-  if (!chatId) return;
-  await chatAdminController.forkChatFrom(chatId);
+  return chatAdminController.handleTabContextForkClick(event);
 }
 
 function handleGlobalChatContextMenuDismiss(event) {
-  if (chatTabContextMenu?.hidden) return;
-  const target = event?.target || null;
-  if (target && chatTabContextMenu?.contains?.(target)) return;
-  closeChatTabContextMenu();
+  return chatAdminController.handleGlobalChatContextMenuDismiss(event);
 }
 
 function getOrderedChatIds() {
-  return keyboardShortcutsHelpers.getOrderedChatIds(chats);
+  return keyboardShortcutsController.getOrderedChatIds();
 }
 
 function isTextEntryElement(element) {
-  return keyboardShortcutsHelpers.isTextEntryElement(element);
+  return keyboardShortcutsController.isTextEntryElement(element);
 }
 
 function isDesktopViewport() {
-  return keyboardShortcutsHelpers.isDesktopViewport(window);
+  return keyboardShortcutsController.isDesktopViewport();
 }
 
 function handleTabClick(event) {
-  keyboardShortcutsHelpers.handleTabClick(event, {
-    activeChatId,
-    openChat,
-  });
+  return keyboardShortcutsController.handleTabClick(event);
 }
 
 function handlePinnedChatClick(event) {
-  keyboardShortcutsHelpers.handlePinnedChatClick(event, {
-    activeChatId,
-    chats,
-    openPinnedChat,
-  });
+  return keyboardShortcutsController.handlePinnedChatClick(event);
 }
 
 function handleGlobalTabCycle(event) {
-  keyboardShortcutsHelpers.handleGlobalTabCycle(event, {
-    mobileQuoteMode,
-    isDesktopViewportFn: isDesktopViewport,
-    settingsModal,
-    isTextEntryElementFn: isTextEntryElement,
-    activeChatId,
-    chats,
-    getNextChatTabId: runtimeHelpers.getNextChatTabId,
-    openChat,
-  });
+  return keyboardShortcutsController.handleGlobalTabCycle(event);
 }
 
 function scrollMessagesByArrow(direction) {
-  keyboardShortcutsHelpers.scrollMessagesByArrow(messagesEl, direction);
+  return keyboardShortcutsController.scrollMessagesByArrow(direction);
 }
 
 function handleGlobalArrowJump(event) {
-  keyboardShortcutsHelpers.handleGlobalArrowJump(event, {
-    mobileQuoteMode,
-    isDesktopViewportFn: isDesktopViewport,
-    settingsModal,
-    isTextEntryElementFn: isTextEntryElement,
-    jumpLatestButton,
-    jumpLastStartButton,
-    handleJumpLatest,
-    handleJumpLastStart,
-    scrollMessages: scrollMessagesByArrow,
-  });
+  return keyboardShortcutsController.handleGlobalArrowJump(event);
 }
 
 function handleGlobalComposerFocusShortcut(event) {
-  keyboardShortcutsHelpers.handleGlobalComposerFocusShortcut(event, {
-    mobileQuoteMode,
-    isDesktopViewportFn: isDesktopViewport,
-    settingsModal,
-    isTextEntryElementFn: isTextEntryElement,
-    activeChatId,
-    messagesEl,
-    promptEl,
-    documentObject: document,
-  });
+  return keyboardShortcutsController.handleGlobalComposerFocusShortcut(event);
 }
 
 function shouldReleaseControlFocusAfterClick(target) {
-  return keyboardShortcutsHelpers.shouldReleaseControlFocusAfterClick(target, {
-    isTextEntryElementFn: isTextEntryElement,
-    settingsModal,
-  });
+  return keyboardShortcutsController.shouldReleaseControlFocusAfterClick(target);
 }
 
 function releaseStickyControlFocus() {
-  keyboardShortcutsHelpers.releaseStickyControlFocus({
-    mobileQuoteMode,
-    isDesktopViewportFn: isDesktopViewport,
-    documentObject: document,
-    promptEl,
-    messagesEl,
-    activeChatId,
-    settingsModal,
-    focusMessagesPaneIfActiveChat,
-  });
+  return keyboardShortcutsController.releaseStickyControlFocus();
 }
 
 function handleGlobalControlClickFocusCleanup(event) {
-  keyboardShortcutsHelpers.handleGlobalControlClickFocusCleanup(event, {
-    shouldReleaseControlFocusAfterClickFn: shouldReleaseControlFocusAfterClick,
-    releaseStickyControlFocusFn: releaseStickyControlFocus,
-    windowObject: window,
-  });
+  return keyboardShortcutsController.handleGlobalControlClickFocusCleanup(event);
 }
 
 function handleGlobalControlMouseDownFocusGuard(event) {
-  keyboardShortcutsHelpers.handleGlobalControlMouseDownFocusGuard(event, {
-    mobileQuoteMode,
-    isDesktopViewportFn: isDesktopViewport,
-    shouldReleaseControlFocusAfterClickFn: shouldReleaseControlFocusAfterClick,
-  });
+  return keyboardShortcutsController.handleGlobalControlMouseDownFocusGuard(event);
 }
 
 function handleGlobalControlEnterDefuse(event) {
-  keyboardShortcutsHelpers.handleGlobalControlEnterDefuse(event, {
-    mobileQuoteMode,
-    isDesktopViewportFn: isDesktopViewport,
-    isTextEntryElementFn: isTextEntryElement,
-    settingsModal,
-    documentObject: document,
-    promptEl,
-    messagesEl,
-    releaseStickyControlFocusFn: releaseStickyControlFocus,
-  });
+  return keyboardShortcutsController.handleGlobalControlEnterDefuse(event);
 }
 
 function handleMessagesScroll() {
