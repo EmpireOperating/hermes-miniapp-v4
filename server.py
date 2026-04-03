@@ -53,6 +53,14 @@ DEV_RELOAD_INTERVAL_MS = CONFIG.dev_reload_interval_ms
 JOB_MAX_ATTEMPTS = CONFIG.job_max_attempts
 JOB_RETRY_BASE_SECONDS = CONFIG.job_retry_base_seconds
 JOB_WORKER_CONCURRENCY = CONFIG.job_worker_concurrency
+JOB_WORKER_LAUNCHER = CONFIG.job_worker_launcher
+JOB_WORKER_SUBPROCESS_TIMEOUT_SECONDS = CONFIG.job_worker_subprocess_timeout_seconds
+JOB_WORKER_SUBPROCESS_KILL_GRACE_SECONDS = CONFIG.job_worker_subprocess_kill_grace_seconds
+JOB_WORKER_SUBPROCESS_STDERR_EXCERPT_BYTES = CONFIG.job_worker_subprocess_stderr_excerpt_bytes
+JOB_WORKER_SUBPROCESS_MEMORY_LIMIT_MB = CONFIG.job_worker_subprocess_memory_limit_mb
+JOB_WORKER_SUBPROCESS_MAX_TASKS = CONFIG.job_worker_subprocess_max_tasks
+JOB_WORKER_SUBPROCESS_MAX_OPEN_FILES = CONFIG.job_worker_subprocess_max_open_files
+PERSISTENT_RUNTIME_OWNERSHIP = CONFIG.resolved_persistent_runtime_ownership()
 JOB_STALL_TIMEOUT_SECONDS = CONFIG.job_stall_timeout_seconds
 TELEGRAM_INIT_DATA_MAX_AGE_SECONDS = CONFIG.telegram_init_data_max_age_seconds
 TRUST_PROXY_HEADERS = CONFIG.trust_proxy_headers
@@ -110,6 +118,14 @@ def _file_preview_allowed_roots() -> tuple[str, ...]:
     return tuple(roots)
 
 
+def _file_preview_enabled(allowed_roots: tuple[str, ...]) -> bool:
+    raw = os.environ.get("MINI_APP_FILE_PREVIEW_ENABLED")
+    if raw is None:
+        # Backward-compatible default: keep preview enabled when allowed roots are configured.
+        return bool(allowed_roots)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 app: Flask = create_flask_app(
     base_dir=BASE_DIR,
     trust_proxy_headers=TRUST_PROXY_HEADERS,
@@ -138,6 +154,7 @@ def _log_request_debug() -> None:
 
 public_bp = create_public_blueprint()
 api_bp = create_api_blueprint()
+os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP"] = PERSISTENT_RUNTIME_OWNERSHIP
 client = HermesClient()
 store = SessionStore(BASE_DIR / "sessions.db")
 
@@ -153,6 +170,13 @@ _RUNTIME_DEPS = create_runtime_dependencies(
     job_max_attempts=JOB_MAX_ATTEMPTS,
     job_retry_base_seconds=JOB_RETRY_BASE_SECONDS,
     job_worker_concurrency=JOB_WORKER_CONCURRENCY,
+    job_worker_launcher_mode=JOB_WORKER_LAUNCHER,
+    job_worker_subprocess_timeout_seconds=JOB_WORKER_SUBPROCESS_TIMEOUT_SECONDS,
+    job_worker_subprocess_kill_grace_seconds=JOB_WORKER_SUBPROCESS_KILL_GRACE_SECONDS,
+    job_worker_subprocess_stderr_excerpt_bytes=JOB_WORKER_SUBPROCESS_STDERR_EXCERPT_BYTES,
+    job_worker_subprocess_memory_limit_mb=JOB_WORKER_SUBPROCESS_MEMORY_LIMIT_MB,
+    job_worker_subprocess_max_tasks=JOB_WORKER_SUBPROCESS_MAX_TASKS,
+    job_worker_subprocess_max_open_files=JOB_WORKER_SUBPROCESS_MAX_OPEN_FILES,
     job_stall_timeout_seconds=JOB_STALL_TIMEOUT_SECONDS,
     assistant_chunk_len=ASSISTANT_CHUNK_LEN,
     assistant_hard_limit=ASSISTANT_HARD_LIMIT,
@@ -394,6 +418,9 @@ def add_security_headers(response: Response) -> Response:
     return response
 
 
+_FILE_PREVIEW_ALLOWED_ROOTS = _file_preview_allowed_roots()
+_FILE_PREVIEW_ENABLED = _file_preview_enabled(_FILE_PREVIEW_ALLOWED_ROOTS)
+
 register_public_routes(
     public_bp,
     app=app,
@@ -404,7 +431,8 @@ register_public_routes(
     dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
     request_debug=REQUEST_DEBUG,
     dev_auth_enabled=DEV_AUTH_ENABLED,
-    file_preview_allowed_roots=_file_preview_allowed_roots(),
+    file_preview_enabled=_FILE_PREVIEW_ENABLED,
+    file_preview_allowed_roots=_FILE_PREVIEW_ALLOWED_ROOTS,
     static_no_store_filenames=STATIC_NO_STORE_FILENAMES,
     asset_version_fn=lambda filename: _asset_version(filename),
     dev_reload_version_fn=lambda: _dev_reload_version(),
@@ -454,6 +482,8 @@ register_chat_routes(
         session_id_builder_fn=_session_id_for,
         job_max_attempts=JOB_MAX_ATTEMPTS,
         stream_timing_debug=STREAM_TIMING_DEBUG,
+        stream_efficiency_mode=CONFIG.stream_efficiency_mode,
+        stream_metrics_refresh_seconds=CONFIG.stream_metrics_refresh_seconds,
         build_job_log_fn=build_job_log,
         logger=app.logger,
     ),
