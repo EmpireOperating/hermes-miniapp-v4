@@ -7,6 +7,7 @@ import sqlite3
 import time
 
 from job_runtime import JobDuplicateRunnerSuppressed, JobRetryableError
+from job_runtime_worker_launcher import SubprocessJobWorkerLauncher
 from server_test_utils import load_server, patch_verified_user
 
 
@@ -169,6 +170,71 @@ def test_runtime_can_be_configured_with_subprocess_worker_launcher(monkeypatch, 
     assert workers["isolation_boundary_enforced"] is (os.name == "posix")
     assert workers["isolation_boundary"]["active"] is True
     assert workers["isolation_boundary"]["enforced"] is (os.name == "posix")
+
+
+def test_subprocess_two_chat_session_mismatch_isolation_smoke(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    server, client = _authed_client(monkeypatch, tmp_path)
+    runtime = server._RUNTIME_DEPS.bind_runtime()
+
+    user_id = "123"
+    chat_a_id = server.store.ensure_default_chat(user_id)
+    chat_b = server.store.create_chat(user_id, "Chat B")
+    chat_b_id = int(chat_b.id)
+
+    operator_a = server.store.add_message(user_id, chat_a_id, "operator", "chat-a")
+    operator_b = server.store.add_message(user_id, chat_b_id, "operator", "chat-b")
+
+    job_a = server.store.enqueue_chat_job(user_id, chat_a_id, operator_a, max_attempts=1)
+    job_b = server.store.enqueue_chat_job(user_id, chat_b_id, operator_b, max_attempts=1)
+
+    session_a = f"miniapp-{user_id}-{chat_a_id}"
+    session_b = f"miniapp-{user_id}-{chat_b_id}"
+
+    def fake_subprocess_stream(self, *, runtime, user_id, message, conversation_history, session_id):
+        if session_id == session_a:
+            yield {
+                "type": "chunk",
+                "text": "cross-chat contamination",
+                "session_id": session_b,
+            }
+            return
+
+        assert session_id == session_b
+        yield {"type": "meta", "source": "agent", "session_id": session_b}
+        yield {"type": "chunk", "text": "safe-reply-b", "session_id": session_b}
+        yield {"type": "done", "reply": "safe-reply-b", "latency_ms": 5, "session_id": session_b}
+
+    monkeypatch.setattr(SubprocessJobWorkerLauncher, "_stream_events_via_subprocess", fake_subprocess_stream)
+
+    runtime._process_available_jobs_once()
+
+    state_a = server.store.get_job_state(job_a)
+    state_b = server.store.get_job_state(job_b)
+    assert state_a is not None
+    assert state_b is not None
+    assert state_a["status"] == "dead"
+    assert state_b["status"] == "done"
+    assert state_a["attempts"] == 1
+    assert state_b["attempts"] == 1
+
+    history_a = server.store.get_history(user_id=user_id, chat_id=chat_a_id, limit=10)
+    history_b = server.store.get_history(user_id=user_id, chat_id=chat_b_id, limit=10)
+
+    roles_a = [turn.role for turn in history_a]
+    assert "hermes" not in roles_a
+    assert set(roles_a).issubset({"operator", "system"})
+    assert any(turn.role == "hermes" and turn.body == "safe-reply-b" for turn in history_b)
+
+    status_response = client.post("/api/runtime/status", json={"init_data": "ok"})
+    assert status_response.status_code == 200
+    status_data = status_response.get_json()
+    assert status_data["ok"] is True
+
+    workers = status_data["runtime"]["incident_snapshot"]["workers"]
+    assert workers["launcher"]["name"] == "subprocess"
+    assert workers["isolation_boundary_active"] is True
+    assert workers["isolation_boundary_enforced"] is (os.name == "posix")
 
 
 def test_runtime_diagnostics_expose_last_worker_limit_breach(monkeypatch, tmp_path) -> None:
