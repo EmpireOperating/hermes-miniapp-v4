@@ -158,3 +158,45 @@ def test_execute_chat_job_completes_and_publishes_done_event() -> None:
     assert runtime.store.completed == [3]
     assert any(role == "hermes" and body == "hello world" for _, _, role, body in runtime.store.messages)
     assert any(name == "done" and payload.get("reply") == "hello world" for _, name, payload in runtime.published)
+
+
+def test_execute_chat_job_raises_retryable_on_session_mismatch_event() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "chunk", "text": "cross-chat contamination", "session_id": "miniapp-u-777"},
+        ]
+    )
+    job = {"id": 4, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    with pytest.raises(RetryableError, match="session mismatch"):
+        execute_chat_job(
+            runtime,
+            job,
+            retryable_error_cls=RetryableError,
+            non_retryable_error_cls=NonRetryableError,
+            client_error_cls=ClientError,
+        )
+
+    assert runtime.store.completed == []
+    assert not any(role == "hermes" for _, _, role, _ in runtime.store.messages)
+
+
+def test_execute_chat_job_raises_retryable_on_chat_id_mismatch_event() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "chunk", "text": "wrong chat", "chat_id": 99},
+        ]
+    )
+    job = {"id": 5, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    with pytest.raises(RetryableError, match="chat mismatch"):
+        execute_chat_job(
+            runtime,
+            job,
+            retryable_error_cls=RetryableError,
+            non_retryable_error_cls=NonRetryableError,
+            client_error_cls=ClientError,
+        )
+
+    assert runtime.store.completed == []
+    assert not any(role == "hermes" for _, _, role, _ in runtime.store.messages)

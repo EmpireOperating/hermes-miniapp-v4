@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Iterable
 
 if TYPE_CHECKING:
     from job_runtime import JobRuntime
@@ -15,6 +15,7 @@ def execute_chat_job(
     retryable_error_cls: type[Exception],
     non_retryable_error_cls: type[Exception],
     client_error_cls: type[Exception],
+    stream_events_fn: Callable[..., Iterable[dict[str, object]]] | None = None,
 ) -> None:
     job_id = int(job["id"])
     user_id = str(job["user_id"])
@@ -82,13 +83,42 @@ def execute_chat_job(
         },
     )
 
+    stream_events = stream_events_fn or runtime.client.stream_events
+
+    set_spawn_trace_context = getattr(runtime.client, "set_spawn_trace_context", None)
+    if callable(set_spawn_trace_context):
+        set_spawn_trace_context(
+            user_id=user_id,
+            chat_id=chat_id,
+            job_id=job_id,
+            session_id=session_id,
+        )
     try:
-        for event in runtime.client.stream_events(
+        for event in stream_events(
             user_id=user_id,
             message=message,
             conversation_history=history,
             session_id=session_id,
         ):
+            event_session_id = str(event.get("session_id") or "").strip()
+            if event_session_id and event_session_id != session_id:
+                raise client_error_cls(
+                    "Hermes stream session mismatch "
+                    f"(expected {session_id}, got {event_session_id})."
+                )
+
+            raw_event_chat_id = event.get("chat_id")
+            if raw_event_chat_id not in (None, ""):
+                try:
+                    event_chat_id = int(raw_event_chat_id)
+                except (TypeError, ValueError) as exc:
+                    raise client_error_cls(f"Hermes stream emitted invalid chat_id={raw_event_chat_id!r}.") from exc
+                if event_chat_id != chat_id:
+                    raise client_error_cls(
+                        "Hermes stream chat mismatch "
+                        f"(expected {chat_id}, got {event_chat_id})."
+                    )
+
             event_type = str(event.get("type") or "")
             if event_type == "meta":
                 payload = {"chat_id": chat_id, **{k: v for k, v in event.items() if k != "type"}}
@@ -114,6 +144,10 @@ def execute_chat_job(
                 raise client_error_cls(str(event.get("error") or "Hermes stream failed."))
     except client_error_cls as exc:
         raise retryable_error_cls(str(exc)) from exc
+    finally:
+        clear_spawn_trace_context = getattr(runtime.client, "clear_spawn_trace_context", None)
+        if callable(clear_spawn_trace_context):
+            clear_spawn_trace_context()
 
     state = runtime.store.get_job_state(job_id)
     if not state or state.get("status") != "running":

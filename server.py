@@ -154,8 +154,21 @@ def _log_request_debug() -> None:
 
 public_bp = create_public_blueprint()
 api_bp = create_api_blueprint()
-os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP"] = PERSISTENT_RUNTIME_OWNERSHIP
-client = HermesClient()
+
+
+def _create_client_with_resolved_ownership() -> HermesClient:
+    previous = os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP")
+    os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP"] = PERSISTENT_RUNTIME_OWNERSHIP
+    try:
+        return HermesClient()
+    finally:
+        if previous is None:
+            os.environ.pop("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", None)
+        else:
+            os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP"] = previous
+
+
+client = _create_client_with_resolved_ownership()
 store = SessionStore(BASE_DIR / "sessions.db")
 
 
