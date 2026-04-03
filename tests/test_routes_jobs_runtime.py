@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import sqlite3
 import time
 
-from job_runtime import JobRetryableError
+from job_runtime import JobDuplicateRunnerSuppressed, JobRetryableError
 from server_test_utils import load_server, patch_verified_user
 
 
@@ -103,6 +104,20 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
             },
         },
     )
+    monkeypatch.setattr(
+        server.runtime,
+        "runtime_diagnostics",
+        lambda: {
+            "children": {
+                "active_total": 3,
+                "caps": {"total": 16},
+                "high_water_total": 5,
+                "high_water_by_job": {"991": 3},
+                "high_water_by_chat": {"55": 4},
+                "recent_events": [{"event": "spawn", "job_id": 991, "chat_id": 55}],
+            }
+        },
+    )
 
     response = client.post("/api/runtime/status", json={"init_data": "ok"})
 
@@ -117,6 +132,140 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
     assert data["health"]["agent_kwargs_has_session_db"] is True
     assert data["health"]["agent_kwargs_session_db_available"] is True
     assert data["health"]["session_search_ready"] is True
+    assert data["runtime"]["children"]["active_total"] == 3
+    assert data["runtime"]["children"]["high_water_total"] == 5
+    assert data["runtime"]["children"]["high_water_by_job"] == {"991": 3}
+    assert data["runtime"]["children"]["high_water_by_chat"] == {"55": 4}
+    assert data["runtime"]["children"]["recent_events"][0]["event"] == "spawn"
+
+
+def test_runtime_duplicate_job_runner_guard(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    runtime = server.runtime
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is False
+    runtime._finish_job_runner(991)
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
+    runtime._finish_job_runner(991)
+
+
+def test_runtime_can_be_configured_with_subprocess_worker_launcher(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_SUBPROCESS_MEMORY_LIMIT_MB", "2048")
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_SUBPROCESS_MAX_TASKS", "120")
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_SUBPROCESS_MAX_OPEN_FILES", "900")
+    server = load_server(monkeypatch, tmp_path)
+
+    launcher_info = server.runtime.worker_launcher.describe()
+    assert launcher_info["name"] == "subprocess"
+    assert launcher_info["limits"] == {"memory_mb": 2048, "max_tasks": 120, "max_open_files": 900}
+
+    diagnostics = server.runtime.runtime_diagnostics()
+    workers = diagnostics["incident_snapshot"]["workers"]
+    assert workers["launcher"]["name"] == "subprocess"
+    assert workers["launcher"]["limits"] == {"memory_mb": 2048, "max_tasks": 120, "max_open_files": 900}
+    assert workers["isolation_boundary_active"] is True
+    assert workers["isolation_boundary_enforced"] is (os.name == "posix")
+    assert workers["isolation_boundary"]["active"] is True
+    assert workers["isolation_boundary"]["enforced"] is (os.name == "posix")
+
+
+def test_runtime_diagnostics_expose_last_worker_limit_breach(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    server = load_server(monkeypatch, tmp_path)
+
+    launcher = server.runtime.worker_launcher
+    setattr(launcher, "_last_limit_breach", "memory")
+    setattr(launcher, "_last_limit_breach_detail", "stderr_oom")
+
+    diagnostics = server.runtime.runtime_diagnostics()
+    launcher_info = diagnostics["incident_snapshot"]["workers"]["launcher"]
+    assert launcher_info["last_limit_breach"] == "memory"
+    assert launcher_info["last_limit_breach_detail"] == "stderr_oom"
+
+
+def test_runtime_diagnostics_include_child_high_water(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_JOB", "2")
+    server = load_server(monkeypatch, tmp_path)
+
+    server.client.set_spawn_trace_context(user_id="123", chat_id=55, job_id=991, session_id="miniapp-123-55")
+    server.client.register_child_spawn(
+        transport="agent-direct",
+        pid=44001,
+        command=["python", "-m", "hermes_cli.main"],
+        session_id="miniapp-123-55",
+    )
+    server.client.register_child_spawn(
+        transport="agent-direct",
+        pid=44002,
+        command=["python", "-m", "hermes_cli.main"],
+        session_id="miniapp-123-55",
+    )
+    server.client.deregister_child_spawn(pid=44001, outcome="completed", return_code=0)
+    server.client.deregister_child_spawn(pid=44002, outcome="completed", return_code=0)
+    server.client.clear_spawn_trace_context()
+
+    diagnostics = server.runtime.runtime_diagnostics()
+
+    children = diagnostics["children"]
+    assert children["active_total"] == 0
+    assert children["high_water_total"] == 2
+    assert children["high_water_by_job"] == {"991": 2}
+    assert children["high_water_by_chat"] == {"55": 2}
+    assert any(event.get("event") == "spawn" for event in children["recent_events"])
+    assert any(event.get("event") == "finish" for event in children["recent_events"])
+    assert isinstance(children.get("recent_transport_transitions"), list)
+
+
+def test_runtime_diagnostics_include_child_timeout_counters(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    server.client.set_spawn_trace_context(user_id="123", chat_id=55, job_id=991, session_id="miniapp-123-55")
+    server.client.register_child_spawn(
+        transport="chat-worker-subprocess",
+        pid=44101,
+        command=["python", "worker.py"],
+        session_id="miniapp-123-55",
+    )
+    server.client.deregister_child_spawn(
+        pid=44101,
+        outcome="chat-worker-subprocess:failed:timeout",
+        return_code=-9,
+    )
+    server.client.clear_spawn_trace_context()
+
+    diagnostics = server.runtime.runtime_diagnostics()
+    child_timeouts = diagnostics.get("child_timeouts") or {}
+    assert child_timeouts.get("total") == 1
+    assert child_timeouts.get("by_job") == {"991": 1}
+    assert child_timeouts.get("by_chat") == {"55": 1}
+
+    workers = diagnostics["incident_snapshot"]["workers"]
+    assert workers.get("child_timeout_total") == 1
+    assert workers.get("child_timeouts_by_job") == {"991": 1}
+    assert workers.get("child_timeouts_by_chat") == {"55": 1}
+
+
+def test_run_chat_job_duplicate_runner_is_suppressed_not_nonretryable(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    user_id = "123"
+    chat_id = server.store.ensure_default_chat(user_id)
+    operator_message_id = server.store.add_message(user_id, chat_id, "operator", "hello")
+    job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    job = server.store.claim_next_job()
+    assert job is not None
+    assert int(job.get("id") or 0) == job_id
+
+    monkeypatch.setattr(server.runtime, "_try_start_job_runner", lambda **kwargs: False)
+
+    try:
+        server.runtime.run_chat_job(job)
+        raise AssertionError("Expected duplicate-runner suppression signal")
+    except JobDuplicateRunnerSuppressed as exc:
+        assert f"job_id={job_id}" in str(exc)
+
 
 def test_run_chat_job_skips_db_history_when_runtime_already_bootstrapped(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
@@ -488,6 +637,10 @@ def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_pa
     assert incident["generated_at"] >= 1
     assert incident["workers"]["configured"] >= 1
     assert incident["workers"]["alive"] >= 0
+    assert runtime["isolation_boundary"]["active"] is False
+    assert incident["workers"]["isolation_boundary_active"] is False
+    assert incident["workers"]["isolation_boundary_enforced"] is False
+    assert incident["workers"]["isolation_boundary"]["reason"] == "in_process_launcher"
     terminal_events = incident["terminal_events"]
     assert terminal_events["terminal_counts"]["done"] >= 0
     assert terminal_events["terminal_counts"]["error"] >= 1

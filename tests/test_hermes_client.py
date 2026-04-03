@@ -114,6 +114,53 @@ def test_stream_events_prefers_persistent_runtime_when_enabled(monkeypatch) -> N
     assert any(event.get("type") == "done" for event in events)
 
 
+def test_stream_events_skips_persistent_runtime_when_ownership_is_checkpoint_only(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "checkpoint_only")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+
+    monkeypatch.setattr(client, "_stream_via_persistent_agent", lambda **kwargs: (_ for _ in ()).throw(AssertionError("persistent path should be disabled")))
+    monkeypatch.setattr(
+        client,
+        "_stream_via_agent",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "agent"},
+                {"type": "chunk", "text": "ok"},
+                {"type": "done", "reply": "ok", "source": "agent", "latency_ms": 1},
+            ]
+        ),
+    )
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-7"))
+    assert any(event.get("source") == "agent" for event in events)
+    assert client.persistent_sessions_requested is True
+    assert client.persistent_sessions_enabled is False
+    assert client.persistent_runtime_ownership == "checkpoint_only"
+
+
+def test_should_include_conversation_history_when_checkpoint_only_ownership(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "checkpoint_only")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+    session_id = "miniapp-42-checkpoint-only"
+
+    runtime = client._session_manager.get_or_create(
+        session_id=session_id,
+        model=client.model,
+        max_iterations=client.max_iterations,
+        create_agent=lambda: object(),
+    )
+    runtime.bootstrapped = True
+    runtime.checkpoint_history = [{"role": "user", "content": "prior"}, {"role": "assistant", "content": "ok"}]
+
+    assert client.should_include_conversation_history(session_id=session_id) is True
+
+
 def test_persistent_agent_runtime_reuses_agent_for_same_session(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
     monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
@@ -354,6 +401,198 @@ def test_runtime_status_reports_recall_health(monkeypatch) -> None:
     startup_routing = startup.get("routing") or {}
     assert startup_routing.get("selected_transport") == "agent-persistent"
     assert startup_routing.get("direct_agent_enabled") is True
+    assert startup_routing.get("persistent_sessions_requested") is True
+    assert startup_routing.get("persistent_runtime_ownership") == "shared"
+
+    children = status.get("children") or {}
+    assert "caps" in children
+    assert "active_total" in children
+
+
+def test_child_spawn_caps_default_enabled(monkeypatch) -> None:
+    monkeypatch.delenv("MINI_APP_CHILD_SPAWN_CAPS_ENABLED", raising=False)
+
+    client = hermes_client.HermesClient()
+
+    assert client.child_spawn_caps_enabled is True
+
+
+def test_child_spawn_caps_fail_fast_per_job(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAPS_ENABLED", "1")
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_TOTAL", "8")
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_CHAT", "4")
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_JOB", "1")
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_SESSION", "2")
+
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=77, job_id=9001, session_id="miniapp-123-77")
+
+    client.register_child_spawn(
+        transport="agent-direct",
+        pid=41001,
+        command=["python", "-c", "print('ok')"],
+        session_id="miniapp-123-77",
+    )
+
+    try:
+        client.assert_child_spawn_allowed(transport="agent-direct", session_id="miniapp-123-77")
+        raise AssertionError("Expected HermesClientError when per-job child spawn cap is reached")
+    except hermes_client.HermesClientError as exc:
+        assert "spawn cap reached" in str(exc).lower()
+        assert "job 9001" in str(exc)
+    finally:
+        client.deregister_child_spawn(pid=41001, outcome="test_cleanup")
+        client.clear_spawn_trace_context()
+
+
+def test_child_spawn_caps_disabled_allows_same_job_spawn(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAPS_ENABLED", "0")
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_JOB", "1")
+
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=77, job_id=9002, session_id="miniapp-123-77")
+
+    client.register_child_spawn(
+        transport="agent-direct",
+        pid=41011,
+        command=["python", "-c", "print('ok')"],
+        session_id="miniapp-123-77",
+    )
+
+    try:
+        client.assert_child_spawn_allowed(transport="agent-direct", session_id="miniapp-123-77")
+    finally:
+        client.deregister_child_spawn(pid=41011, outcome="test_cleanup")
+        client.clear_spawn_trace_context()
+
+
+def test_terminate_tracked_children_deregisters_processes(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_JOB", "3")
+
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
+    client.register_child_spawn(
+        transport="agent-direct",
+        pid=42001,
+        command=["python", "-c", "print('ok')"],
+        session_id="miniapp-123-88",
+    )
+    client.register_child_spawn(
+        transport="agent-direct",
+        pid=42002,
+        command=["python", "-c", "print('ok')"],
+        session_id="miniapp-123-88",
+    )
+
+    kills: list[tuple[int, int]] = []
+
+    def fake_kill(pid: int, sig: int) -> None:
+        kills.append((int(pid), int(sig)))
+
+    monkeypatch.setattr(hermes_client.os, "kill", fake_kill)
+
+    summary = client.terminate_tracked_children(job_id=9100, reason="test_cleanup")
+
+    assert summary["targeted"] == 2
+    assert summary["killed"] == 2
+    assert len(kills) == 2
+    diagnostics = client.child_spawn_diagnostics()
+    assert diagnostics.get("active_total") == 0
+    assert diagnostics.get("high_water_total") == 2
+    assert diagnostics.get("high_water_by_job") == {"9100": 2}
+    assert diagnostics.get("high_water_by_chat") == {"88": 2}
+    recent_events = diagnostics.get("recent_events") or []
+    assert any(event.get("event") == "spawn" and event.get("job_id") == 9100 for event in recent_events)
+    assert any(event.get("event") == "finish" and event.get("job_id") == 9100 for event in recent_events)
+    assert diagnostics.get("timeouts", {}).get("total") == 0
+    client.clear_spawn_trace_context()
+
+
+def test_child_spawn_timeout_counters_track_by_job_and_chat(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_JOB", "3")
+
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
+    client.register_child_spawn(
+        transport="chat-worker-subprocess",
+        pid=42101,
+        command=["python", "worker.py"],
+        session_id="miniapp-123-88",
+    )
+    client.deregister_child_spawn(pid=42101, outcome="chat-worker-subprocess:failed:timeout", return_code=-9)
+
+    client.set_spawn_trace_context(user_id="123", chat_id=89, job_id=9101, session_id="miniapp-123-89")
+    client.register_child_spawn(
+        transport="chat-worker-subprocess",
+        pid=42102,
+        command=["python", "worker.py"],
+        session_id="miniapp-123-89",
+    )
+    client.deregister_child_spawn(pid=42102, outcome="chat-worker-subprocess:failed:kill_timeout", return_code=-9)
+
+    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
+    client.register_child_spawn(
+        transport="chat-worker-subprocess",
+        pid=42103,
+        command=["python", "worker.py"],
+        session_id="miniapp-123-88",
+    )
+    client.deregister_child_spawn(pid=42103, outcome="chat-worker-subprocess:completed", return_code=0)
+
+    diagnostics = client.child_spawn_diagnostics()
+    timeout_info = diagnostics.get("timeouts") or {}
+    assert timeout_info.get("total") == 2
+    assert timeout_info.get("by_job") == {"9100": 1, "9101": 1}
+    assert timeout_info.get("by_chat") == {"88": 1, "89": 1}
+    assert timeout_info.get("by_transport") == {"chat-worker-subprocess": 2}
+    by_outcome = timeout_info.get("by_outcome") or {}
+    assert by_outcome.get("chat-worker-subprocess:failed:timeout") == 1
+    assert by_outcome.get("chat-worker-subprocess:failed:kill_timeout") == 1
+    recent = timeout_info.get("recent_events") or []
+    assert len(recent) == 2
+    assert all(item.get("event") == "timeout_finish" for item in recent)
+    client.clear_spawn_trace_context()
+
+
+def test_child_spawn_logs_include_lineage_fields(monkeypatch) -> None:
+    info_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _Logger:
+        @staticmethod
+        def info(*args, **kwargs):
+            info_calls.append((args, kwargs))
+
+        @staticmethod
+        def debug(*args, **kwargs):
+            return None
+
+    original_logger = hermes_client.logger
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_JOB", "2")
+
+    try:
+        hermes_client.logger = _Logger()
+        client = hermes_client.HermesClient()
+        client.set_spawn_trace_context(user_id="lineage-user", chat_id=77, job_id=9007, session_id="miniapp-lineage-77")
+        client.register_child_spawn(
+            transport="agent-direct",
+            pid=43001,
+            command=["python", "-m", "hermes_cli.main"],
+            session_id="miniapp-lineage-77",
+        )
+        client.deregister_child_spawn(pid=43001, outcome="completed", return_code=0)
+    finally:
+        hermes_client.logger = original_logger
+
+    rendered = "\n".join(str(args[0]) for args, _kwargs in info_calls if args)
+    assert "Miniapp Hermes child spawned" in rendered
+    assert "Miniapp Hermes child finished" in rendered
+    assert "spawn_id=" in rendered
+    assert "job_id=9007" in rendered
+    assert "chat_id=77" in rendered
+    assert "user_id=lineage-user" in rendered
+    assert "active_for_job=" in rendered
+    assert "active_for_chat=" in rendered
+    assert "command=python -m hermes_cli.main" in rendered
 
 
 def test_init_logs_startup_diagnostics_without_secret_values(monkeypatch) -> None:
@@ -637,6 +876,123 @@ def test_stream_events_logs_when_persistent_path_falls_back(monkeypatch) -> None
     _, kwargs = warning_calls[0]
     assert (kwargs.get("extra") or {}).get("session_id") == "miniapp-123-fallback-logs"
     assert "fallback_to" in (kwargs.get("extra") or {})
+
+
+def test_stream_events_records_persistent_to_direct_transition(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=77, job_id=9001, session_id="miniapp-123-77")
+
+    def blow_up(**kwargs):
+        raise ModuleNotFoundError("No module named 'run_agent'")
+
+    monkeypatch.setattr(client, "_stream_via_persistent_agent", blow_up)
+    monkeypatch.setattr(
+        client,
+        "_stream_via_agent",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "agent"},
+                {"type": "chunk", "text": "fallback-ok"},
+                {"type": "done", "reply": "fallback-ok", "source": "agent", "latency_ms": 1},
+            ]
+        ),
+    )
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-77"))
+    assert any(event.get("type") == "done" and event.get("reply") == "fallback-ok" for event in events)
+
+    transitions = client.child_spawn_diagnostics().get("recent_transport_transitions") or []
+    assert any(
+        str(item.get("previous_path")) == "agent-persistent"
+        and str(item.get("next_path")) == "agent"
+        and str(item.get("reason") or "").startswith("persistent_failure:")
+        and str(item.get("session_id")) == "miniapp-123-77"
+        and int(item.get("chat_id") or 0) == 77
+        and int(item.get("job_id") or 0) == 9001
+        for item in transitions
+    )
+
+
+def test_stream_events_records_direct_to_cli_transition(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+
+    def direct_fail(**kwargs):
+        raise hermes_client.HermesClientError("synthetic direct failure")
+
+    monkeypatch.setattr(client, "_stream_via_agent", direct_fail)
+    monkeypatch.setattr(
+        client,
+        "_stream_via_cli_progress",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "cli"},
+                {"type": "chunk", "text": "cli-ok"},
+                {"type": "done", "reply": "cli-ok", "source": "cli", "latency_ms": 1},
+            ]
+        ),
+    )
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-cli-hop"))
+    assert any(event.get("type") == "done" and event.get("reply") == "cli-ok" and event.get("source") == "cli" for event in events)
+
+    transitions = client.child_spawn_diagnostics().get("recent_transport_transitions") or []
+    assert any(
+        str(item.get("previous_path")) == "agent"
+        and str(item.get("next_path")) == "cli"
+        and str(item.get("reason") or "").startswith("direct_failure:")
+        and str(item.get("session_id")) == "miniapp-123-cli-hop"
+        for item in transitions
+    )
+
+
+def test_stream_events_logs_resume_relaunch_in_plain_text(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "0")
+
+    info_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _Logger:
+        @staticmethod
+        def info(*args, **kwargs):
+            info_calls.append((args, kwargs))
+
+        @staticmethod
+        def warning(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def debug(*args, **kwargs):
+            return None
+
+    monkeypatch.setattr(hermes_client, "logger", _Logger())
+
+    client = hermes_client.HermesClient()
+    monkeypatch.setattr(
+        client,
+        "_stream_via_cli_progress",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "cli"},
+                {"type": "chunk", "text": "cli-ok"},
+                {"type": "done", "reply": "cli-ok", "source": "cli", "latency_ms": 1},
+            ]
+        ),
+    )
+
+    list(client.stream_events(user_id="123", message="/resume", session_id="miniapp-123-resume"))
+
+    rendered = "\n".join(str((args[0] if args else "")) for args, _kwargs in info_calls)
+    assert "Miniapp Hermes transport transition" in rendered
+    assert "previous_path=cli" in rendered
+    assert "next_path=cli" in rendered
+    assert "reason=resume_relaunch:launch_count=1" in rendered
+    assert "session_id=miniapp-123-resume" in rendered
 
 
 def test_stream_url_takes_precedence_over_api_and_agent(monkeypatch) -> None:

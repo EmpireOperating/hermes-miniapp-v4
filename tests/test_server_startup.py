@@ -22,7 +22,9 @@ def test_startup_diagnostics_payload_maps_runtime_fields() -> None:
                     "stream_url_configured": True,
                     "api_url_configured": False,
                     "direct_agent_enabled": True,
+                    "persistent_sessions_requested": True,
                     "persistent_sessions_enabled": True,
+                    "persistent_runtime_ownership": "shared",
                 },
                 "agent_runtime": {
                     "session_db_available": True,
@@ -32,7 +34,9 @@ def test_startup_diagnostics_payload_maps_runtime_fields() -> None:
                 },
             },
             "persistent": {
+                "requested": True,
                 "enabled": True,
+                "ownership": "shared",
                 "total": 3,
                 "bootstrapped": 2,
                 "unbootstrapped": 1,
@@ -46,7 +50,9 @@ def test_startup_diagnostics_payload_maps_runtime_fields() -> None:
         bot_token_configured=True,
         debug=False,
         dev_reload=False,
+        operator_debug=False,
         request_debug=False,
+        stream_timing_debug=False,
         force_secure_cookies=True,
         trust_proxy_headers=True,
         enforce_origin_check=True,
@@ -60,8 +66,11 @@ def test_startup_diagnostics_payload_maps_runtime_fields() -> None:
 
     assert payload["dependencies"]["transport"] == "agent-persistent"
     assert payload["dependencies"]["telegram_bot_token_configured"] is True
+    assert payload["dependencies"]["persistent_runtime_ownership"] == "shared"
     assert payload["invariants"]["assistant_hard_limit_gte_chunk_len"] is True
     assert payload["invariants"]["origin_check_has_allowlist"] is True
+    assert payload["persistent"]["requested"] is True
+    assert payload["persistent"]["ownership"] == "shared"
     assert payload["persistent"]["total"] == 3
 
 

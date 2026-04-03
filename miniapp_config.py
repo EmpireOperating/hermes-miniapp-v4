@@ -28,6 +28,14 @@ class MiniAppConfig:
     job_max_attempts: int
     job_retry_base_seconds: int
     job_worker_concurrency: int
+    job_worker_launcher: str
+    job_worker_subprocess_timeout_seconds: int
+    job_worker_subprocess_kill_grace_seconds: int
+    job_worker_subprocess_stderr_excerpt_bytes: int
+    job_worker_subprocess_memory_limit_mb: int
+    job_worker_subprocess_max_tasks: int
+    job_worker_subprocess_max_open_files: int
+    persistent_runtime_ownership: str
     job_stall_timeout_seconds: int
     telegram_init_data_max_age_seconds: int
     auth_session_max_age_seconds: int
@@ -39,12 +47,22 @@ class MiniAppConfig:
     rate_limit_api_requests: int
     rate_limit_stream_requests: int
     enable_hsts: bool
+    operator_debug: bool
     request_debug: bool
+    stream_timing_debug: bool
+    stream_efficiency_mode: bool
+    stream_metrics_refresh_seconds: int
     dev_auth_enabled: bool
     dev_auth_secret: str
     job_event_history_max_jobs: int
     job_event_history_ttl_seconds: int
     dev_reload_watch_paths: tuple[Path, ...]
+
+    def resolved_persistent_runtime_ownership(self) -> str:
+        return _resolve_persistent_runtime_ownership(
+            ownership_mode=self.persistent_runtime_ownership,
+            job_worker_launcher=self.job_worker_launcher,
+        )
 
     @classmethod
     def from_env(cls) -> "MiniAppConfig":
@@ -52,6 +70,37 @@ class MiniAppConfig:
         max_content_length = _as_int("MAX_CONTENT_LENGTH", 1048576)
         if max_content_length <= 0:
             raise ValueError("MAX_CONTENT_LENGTH must be > 0")
+
+        operator_debug = _as_bool_any("MINI_APP_OPERATOR_DEBUG", "MINIAPP_OPERATOR_DEBUG", default=False)
+        request_debug = operator_debug and _as_bool_any("MINI_APP_REQUEST_DEBUG", "MINIAPP_REQUEST_DEBUG", default=False)
+        stream_timing_debug = operator_debug and _as_bool_any(
+            "MINI_APP_STREAM_TIMING_DEBUG",
+            "MINIAPP_STREAM_TIMING_DEBUG",
+            default=False,
+        )
+        stream_efficiency_mode = _as_bool_any(
+            "MINI_APP_STREAM_EFFICIENCY_MODE",
+            "MINIAPP_STREAM_EFFICIENCY_MODE",
+            default=False,
+        )
+        stream_metrics_refresh_seconds = _as_int_in_range(
+            "MINI_APP_STREAM_METRICS_REFRESH_SECONDS",
+            8,
+            min_value=1,
+            max_value=60,
+        )
+        job_worker_launcher = _as_choice("MINI_APP_JOB_WORKER_LAUNCHER", "inline", {"inline", "subprocess"})
+        persistent_runtime_ownership = _as_choice(
+            "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP",
+            "auto",
+            {"auto", "shared", "checkpoint_only"},
+        )
+        resolved_ownership = _resolve_persistent_runtime_ownership(
+            ownership_mode=persistent_runtime_ownership,
+            job_worker_launcher=job_worker_launcher,
+        )
+        if job_worker_launcher == "subprocess" and resolved_ownership == "shared":
+            persistent_runtime_ownership = "checkpoint_only"
 
         return cls(
             port=_as_int("PORT", 8080),
@@ -66,6 +115,44 @@ class MiniAppConfig:
             job_max_attempts=_as_int_in_range("MINI_APP_JOB_MAX_ATTEMPTS", 4, min_value=1, max_value=20),
             job_retry_base_seconds=_as_int_in_range("MINI_APP_JOB_RETRY_BASE_SECONDS", 2, min_value=1, max_value=120),
             job_worker_concurrency=_as_int_in_range("MINI_APP_JOB_WORKER_CONCURRENCY", 6, min_value=1, max_value=64),
+            job_worker_launcher=job_worker_launcher,
+            job_worker_subprocess_timeout_seconds=_as_int_in_range(
+                "MINI_APP_JOB_WORKER_SUBPROCESS_TIMEOUT_SECONDS",
+                120,
+                min_value=1,
+                max_value=7200,
+            ),
+            job_worker_subprocess_kill_grace_seconds=_as_int_in_range(
+                "MINI_APP_JOB_WORKER_SUBPROCESS_KILL_GRACE_SECONDS",
+                2,
+                min_value=1,
+                max_value=60,
+            ),
+            job_worker_subprocess_stderr_excerpt_bytes=_as_int_in_range(
+                "MINI_APP_JOB_WORKER_SUBPROCESS_STDERR_EXCERPT_BYTES",
+                4096,
+                min_value=256,
+                max_value=65536,
+            ),
+            job_worker_subprocess_memory_limit_mb=_as_int_in_range(
+                "MINI_APP_JOB_WORKER_SUBPROCESS_MEMORY_LIMIT_MB",
+                1024,
+                min_value=128,
+                max_value=32768,
+            ),
+            job_worker_subprocess_max_tasks=_as_int_in_range(
+                "MINI_APP_JOB_WORKER_SUBPROCESS_MAX_TASKS",
+                64,
+                min_value=8,
+                max_value=2048,
+            ),
+            job_worker_subprocess_max_open_files=_as_int_in_range(
+                "MINI_APP_JOB_WORKER_SUBPROCESS_MAX_OPEN_FILES",
+                256,
+                min_value=64,
+                max_value=16384,
+            ),
+            persistent_runtime_ownership=persistent_runtime_ownership,
             job_stall_timeout_seconds=_as_int_in_range(
                 "MINI_APP_JOB_STALL_TIMEOUT_SECONDS",
                 240,
@@ -82,7 +169,11 @@ class MiniAppConfig:
             rate_limit_api_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_API_REQUESTS", 180, min_value=1, max_value=10000),
             rate_limit_stream_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", 24, min_value=1, max_value=1000),
             enable_hsts=_as_bool("MINI_APP_ENABLE_HSTS", default=False),
-            request_debug=_as_bool_any("MINI_APP_REQUEST_DEBUG", "MINIAPP_REQUEST_DEBUG", default=False),
+            operator_debug=operator_debug,
+            request_debug=request_debug,
+            stream_timing_debug=stream_timing_debug,
+            stream_efficiency_mode=stream_efficiency_mode,
+            stream_metrics_refresh_seconds=stream_metrics_refresh_seconds,
             dev_auth_enabled=_as_bool_any("MINIAPP_DEV_BYPASS", "MINI_APP_DEV_BYPASS", default=False),
             dev_auth_secret=str(
                 os.environ.get("MINIAPP_DEV_SECRET")
@@ -155,3 +246,18 @@ def _as_bool_any(*names: str, default: bool) -> bool:
         if raw is not None:
             return raw == "1"
     return default
+
+
+def _as_choice(name: str, default: str, allowed: set[str]) -> str:
+    raw = str(os.environ.get(name, default)).strip().lower()
+    if raw not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise ValueError(f"{name} must be one of: {allowed_text}")
+    return raw
+
+
+def _resolve_persistent_runtime_ownership(*, ownership_mode: str, job_worker_launcher: str) -> str:
+    safe_mode = str(ownership_mode or "").strip().lower()
+    if safe_mode == "auto":
+        return "checkpoint_only" if str(job_worker_launcher or "").strip().lower() == "subprocess" else "shared"
+    return safe_mode
