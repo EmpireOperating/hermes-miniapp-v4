@@ -127,14 +127,15 @@ Evidence:
 ## Current Validation Snapshot
 
 Targeted tests run:
-- `tests/test_config.py`
+- `tests/test_job_runtime_chat_job.py`
+- `tests/test_job_runtime_worker_launcher.py`
+- `tests/test_routes_jobs_runtime.py`
 - `tests/test_hermes_client.py`
 - `tests/test_server_startup.py`
-- `tests/test_routes_jobs_runtime.py`
-- `tests/test_job_runtime_chat_job.py`
+- `tests/test_config.py`
 
 Result observed:
-- `91 passed`
+- `104 passed`
 
 ---
 
@@ -144,7 +145,7 @@ Result observed:
 Goal:
 - Complete A1/A2 boundary so subprocess worker owns one claimed attempt outcome contract, not only stream delegation.
 
-Implementation checkpoint (2026-04-03, in progress -> landed for outcome contract):
+Implementation checkpoint (2026-04-03, in progress -> landed for outcome contract + provenance guard):
 - Added explicit subprocess worker terminal outcomes:
   - `success`
   - `retryable_failure`
@@ -152,7 +153,12 @@ Implementation checkpoint (2026-04-03, in progress -> landed for outcome contrac
   - `timeout_killed` (inferred by parent on timeout/kill)
 - Child worker now emits `worker_terminal` envelope events.
 - Parent launcher captures terminal outcome/error, exposes in launcher diagnostics, and maps deterministically to retryable/non-retryable runtime errors.
+- Added stream provenance hardening in `execute_chat_job(...)`:
+  - reject stream events when `session_id` mismatches the claimed chat session,
+  - reject stream events when `chat_id` is present and mismatches the claimed chat.
+- Subprocess child now stamps `session_id` onto emitted stream events, enabling end-to-end provenance checks in parent runtime path.
 - Added tests for outcome parsing + mapping + remap behavior when runner raises retryable but terminal outcome is non-retryable.
+- Added regression tests ensuring mismatched session/chat stream events are rejected as retryable failures (no cross-chat assistant write).
 - Added `tests/test_chat_worker_runner.py` for explicit runner boundary coverage.
 
 Primary files:

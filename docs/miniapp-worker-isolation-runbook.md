@@ -18,7 +18,15 @@ And covers the subprocess worker envelope used by:
 
 ## Isolation controls
 
-Subprocess workers now run with a per-worker OS process boundary and rlimits on POSIX:
+Subprocess workers now run with a per-worker OS process boundary and rlimits on POSIX.
+
+Claimed-turn provenance guard:
+- Parent chat execution path rejects stream events that do not belong to the claimed chat/session:
+  - `session_id` mismatch => retryable failure
+  - `chat_id` mismatch (when present) => retryable failure
+- Subprocess child stamps `session_id` on emitted events so parent can validate provenance consistently.
+
+Subprocess controls:
 
 - Wall-time (launcher supervision):
   - `MINI_APP_JOB_WORKER_SUBPROCESS_TIMEOUT_SECONDS`
