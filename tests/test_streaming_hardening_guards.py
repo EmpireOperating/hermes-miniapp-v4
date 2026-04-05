@@ -17,6 +17,10 @@ def test_app_wires_stream_state_helper_before_stream_lifecycle_calls():
     assert "streamControllerHelpers.createController({" in app_js
     assert "markChatStreamPending({" in app_js
     assert "finalizeChatStreamState({" in app_js
+    assert 'renderTraceLog("tab-badge-state"' in app_js
+    assert 'renderTraceLog("tab-refresh-request"' in app_js
+    assert 'renderTraceLog("stream-pending-finalize-before"' in app_js
+    assert 'renderTraceLog("stream-pending-finalize-after"' in app_js
     assert "clearChatStreamState({" in app_js or "clearChatStreamState({" in chat_tabs_helper_js
 
 
@@ -41,11 +45,13 @@ def test_stream_controller_module_exports_core_api():
     assert "function createController(deps)" in controller_js
     assert "function setStreamAbortController(chatId, controller)" in controller_js
     assert "function consumeStreamResponse(chatId, response, builtReplyRef" in controller_js
-    assert "async function hydrateChatAfterGracefulResumeCompletion(chatId)" in controller_js
+    assert "async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {})" in controller_js
     assert "async function consumeStreamWithReconnect(chatId, response, builtReplyRef" in controller_js
     assert "function finalizeStreamLifecycle(chatId, streamController, { wasAborted })" in controller_js
+    assert 'renderTraceLog("stream-done-state"' in controller_js
     assert 'streamDebugLog("sse-read"' in controller_js
-    assert 'tailPreview: trimmedBuffer.slice(0, 220)' in controller_js
+    assert 'chunkPreview:' not in controller_js
+    assert 'tailPreview:' not in controller_js
 
 
 def test_composer_state_helper_exports_state_api():
@@ -59,11 +65,12 @@ def test_composer_state_helper_exports_state_api():
 def test_app_resume_handles_no_active_job_reconnect_gracefully():
     app_js = _read_static("app.js")
     runtime_helpers_js = _read_static("runtime_helpers.js")
+    bootstrap_auth_js = _read_static("bootstrap_auth_helpers.js")
 
-    assert "const noActiveJob = response.status === 409" in app_js
-    assert "normalizedFallback.includes(\"no active hermes job\")" in app_js
-    assert "function parseStreamErrorPayload(rawBody)" in app_js
-    assert "const alreadyWorking = response.status === 409" in app_js
+    assert "const noActiveJob = response.status === 409;" in app_js
+    assert "function parseStreamErrorPayload(rawBody)" in bootstrap_auth_js
+    assert "bootstrapAuthController.parseStreamErrorPayload(rawBody)" in app_js
+    assert "const alreadyWorking = response.status === 409;" in app_js
     assert "await resumePendingChatStream(chatId, { force: true });" in app_js
     assert "await hydrateChatAfterGracefulResumeCompletion(key);" in app_js
     assert "triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });" in app_js
@@ -84,12 +91,17 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
 def test_app_persists_pending_stream_snapshot_for_pre_resume_rehydrate():
     app_js = _read_static("app.js")
     controller_js = _read_static("stream_controller.js")
+    stream_state_js = _read_static("stream_state_helpers.js")
 
     assert "const PENDING_STREAM_SNAPSHOT_STORAGE_KEY = \"hermes_miniapp_pending_stream_snapshot_v1\";" in app_js
+    assert "const streamPersistenceController = streamStateHelpers.createPersistenceController({" in app_js
     assert "function persistPendingStreamSnapshot(chatId)" in app_js
     assert "function restorePendingStreamSnapshot(chatId)" in app_js
-    assert "tool_journal_lines" in app_js
-    assert "function mergeSnapshotToolJournalLines(existingLines, currentBody)" in app_js
+    assert "streamPersistenceController.persistPendingStreamSnapshot(chatId)" in app_js
+    assert "streamPersistenceController.restorePendingStreamSnapshot(chatId)" in app_js
+    assert "function createPersistenceController({" in stream_state_js
+    assert "tool_journal_lines" in stream_state_js
+    assert "function mergeSnapshotToolJournalLines(existingLines, currentBody)" in stream_state_js
     assert "persistPendingStreamSnapshot(chatId);" in app_js
     assert "clearPendingStreamSnapshot(chatId);" in app_js
     assert "restorePendingStreamSnapshot(Number(data.active_chat_id))" in app_js
@@ -99,12 +111,14 @@ def test_app_persists_pending_stream_snapshot_for_pre_resume_rehydrate():
 
 def test_app_sanitizes_upstream_error_pages_before_rendering_ui_errors():
     app_js = _read_static("app.js")
+    bootstrap_auth_js = _read_static("bootstrap_auth_helpers.js")
 
-    assert "function summarizeUiFailure(rawBody" in app_js
-    assert "normalizedStatus === 502 || normalizedStatus === 503 || normalizedStatus === 504" in app_js
-    assert "looksLikeHtml" in app_js
-    assert "looksLikeCss" in app_js
-    assert "Mini app backend temporarily unavailable. Please wait a moment and reopen if needed." in app_js
+    assert "function summarizeUiFailure(rawBody" in bootstrap_auth_js
+    assert "normalizedStatus === 502 || normalizedStatus === 503 || normalizedStatus === 504" in bootstrap_auth_js
+    assert "looksLikeHtml" in bootstrap_auth_js
+    assert "looksLikeCss" in bootstrap_auth_js
+    assert "Mini app backend temporarily unavailable. Please wait a moment and reopen if needed." in bootstrap_auth_js
+    assert "bootstrapAuthController.summarizeUiFailure(rawBody, { status, fallback })" in app_js
     assert "sanitizedFallbackMessage" in app_js
     assert "sanitizedResumeFailure" in app_js
 
@@ -114,6 +128,7 @@ def test_routes_chat_stream_supports_mobile_segment_rollover_controls():
 
     assert "MINI_APP_STREAM_SEGMENT_SECONDS" in stream_routes
     assert "MINI_APP_STREAM_SEGMENT_SECONDS_MOBILE" in stream_routes
+    assert "stream_timing_debug = bool(context.stream_timing_debug)" in stream_routes
     assert "event=\"stream_segment_rollover\"" in stream_routes
     assert "segment_seconds=_stream_segment_seconds_for_request()" in stream_routes
     assert "request_id = str(getattr(g, \"request_id\", \"\")) or None" in stream_routes

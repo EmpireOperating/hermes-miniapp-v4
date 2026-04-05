@@ -126,6 +126,7 @@ function buildHarness({ isAuthenticated = true } = {}) {
     handleGlobalTabCycle: () => {},
     handleGlobalArrowJump: () => {},
     handleGlobalComposerFocusShortcut: () => {},
+    handleGlobalChatActionShortcut: () => {},
     handleGlobalControlEnterDefuse: () => {},
     handleGlobalControlMouseDownFocusGuard: () => {},
     handleGlobalControlClickFocusCleanup: () => {},
@@ -226,7 +227,7 @@ test('installCoreEventBindings wires keyboard/mouse and scroll/click listeners',
   assert.equal(harness.tabsEl.listeners('click').length, 1);
   assert.equal(harness.pinnedChatsEl.listeners('click').length, 1);
   assert.equal(harness.pinnedChatsToggleButton.listeners('click').length, 1);
-  assert.equal(harness.documentObject.listeners('keydown').length, 4);
+  assert.equal(harness.documentObject.listeners('keydown').length, 5);
   assert.equal(harness.documentObject.listeners('mousedown').length, 1);
   assert.equal(harness.documentObject.listeners('click').length, 1);
   assert.equal(harness.messagesEl.listeners('scroll').length, 1);

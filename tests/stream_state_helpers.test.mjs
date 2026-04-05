@@ -97,3 +97,121 @@ test('clearChatStreamState drops pending/phase/unseen markers together', () => {
   assert.equal(phases.has(3), false);
   assert.equal(unseenStreamChats.has(3), false);
 });
+
+test('createPersistenceController stores monotonic resume cursors and clears them safely', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
+    histories: new Map(),
+    chats: new Map(),
+  });
+
+  assert.equal(controller.getStoredStreamCursor(4), 0);
+  assert.equal(controller.setStoredStreamCursor(4, 11), 11);
+  assert.equal(controller.setStoredStreamCursor(4, 7), 11);
+  assert.equal(controller.getStoredStreamCursor(4), 11);
+  assert.equal(controller.clearStoredStreamCursor(4), true);
+  assert.equal(controller.clearStoredStreamCursor(4), false);
+  assert.equal(controller.getStoredStreamCursor(4), 0);
+});
+
+test('createPersistenceController persists and restores pending stream snapshots', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const histories = new Map([[5, [
+    { role: 'tool', body: 'first line\nsecond line', pending: true, created_at: '2026-04-02T00:00:00Z' },
+    { role: 'hermes', body: 'partial answer', pending: true, created_at: '2026-04-02T00:00:01Z' },
+  ]]]);
+  const chats = new Map([[5, { id: 5, pending: true }]]);
+
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
+    histories,
+    chats,
+    nowFn: () => 1_000,
+    dateNowFn: () => 1_000,
+  });
+
+  const snapshot = controller.persistPendingStreamSnapshot(5);
+  assert.deepEqual(snapshot.tool_journal_lines, ['first line', 'second line']);
+
+  histories.set(5, []);
+  const restored = controller.restorePendingStreamSnapshot(5);
+  assert.equal(restored, true);
+  assert.deepEqual(histories.get(5), [
+    {
+      role: 'tool',
+      body: 'first line\nsecond line',
+      created_at: '2026-04-02T00:00:00Z',
+      pending: true,
+      collapsed: false,
+    },
+    {
+      role: 'hermes',
+      body: 'partial answer',
+      created_at: '2026-04-02T00:00:01Z',
+      pending: true,
+    },
+  ]);
+});
+
+test('createPersistenceController drops expired snapshots and clears storage when chat is no longer pending', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const histories = new Map([[9, []]]);
+  const chats = new Map([[9, { id: 9, pending: false }]]);
+
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 100,
+    histories,
+    chats,
+    nowFn: () => 5_000,
+    dateNowFn: () => 5_000,
+  });
+
+  storage.set('snapshot-key', JSON.stringify({
+    '9': {
+      ts: 1,
+      tool_journal_lines: ['stale line'],
+      tool: { role: 'tool', body: 'stale line', pending: true, collapsed: false, created_at: '2026-04-02T00:00:00Z' },
+      assistant: null,
+    },
+  }));
+
+  assert.equal(controller.restorePendingStreamSnapshot(9), false);
+  assert.equal(JSON.parse(storage.get('snapshot-key') || '{}')['9'], undefined);
+  assert.equal(controller.persistPendingStreamSnapshot(9), null);
+  assert.equal(JSON.parse(storage.get('snapshot-key') || '{}')['9'], undefined);
+});

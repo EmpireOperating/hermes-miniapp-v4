@@ -71,7 +71,7 @@ test('syncActiveTabSelection refreshes previous and next tabs when both exist', 
   assert.deepEqual(refreshed, [1, 2]);
 });
 
-test('applyTabNodeState shows overflow trigger only on active tab', () => {
+test('applyTabNodeState shows overflow trigger only on active non-pending tab', () => {
   const badge = {
     classList: { remove() {}, add() {} },
     removeAttribute() {},
@@ -106,6 +106,15 @@ test('applyTabNodeState shows overflow trigger only on active tab', () => {
     node,
     chat: { id: 12, title: 'Alpha', is_pinned: false },
     activeChatId: 7,
+    pendingChats: new Set(),
+    unseenStreamChats: new Set(),
+  });
+  assert.equal(overflow.hidden, true);
+
+  chatUi.applyTabNodeState({
+    node,
+    chat: { id: 12, title: 'Alpha', is_pinned: false, pending: true },
+    activeChatId: 12,
     pendingChats: new Set(),
     unseenStreamChats: new Set(),
   });

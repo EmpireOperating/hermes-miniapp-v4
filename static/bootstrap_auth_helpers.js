@@ -3,9 +3,10 @@
     const {
       desktopTestingEnabled,
       devAuthSessionStorageKey,
-      devAuthControls,
-      devModeBadge,
-      devSignInButton,
+      devAuthControls = null,
+      devModeBadge = null,
+      devSignInButton = null,
+      devAuthHashSecret = "",
       getIsAuthenticated,
       setIsAuthenticated,
       sessionStorageRef,
@@ -18,9 +19,11 @@
       devAuthCancelButton,
       authStatus,
       appendSystemMessage,
-      safeReadJson,
+      safeReadJson: safeReadJsonOverride,
       fetchImpl,
       normalizeHandle,
+      initData = "",
+      parseSseEvent = null,
       fallbackHandleFromDisplayName,
       setOperatorDisplayName,
       operatorName,
@@ -39,17 +42,66 @@
       addLocalMessage,
     } = deps;
 
+    async function safeReadJson(response) {
+      try {
+        if (typeof safeReadJsonOverride === "function") {
+          return await safeReadJsonOverride(response);
+        }
+        return await response.json();
+      } catch {
+        return null;
+      }
+    }
+
+    function authPayload(extra = {}) {
+      return { init_data: initData, ...extra };
+    }
+
+    function summarizeUiFailure(rawBody, { status = 0, fallback = "Request failed." } = {}) {
+      const raw = String(rawBody || "");
+      const trimmed = raw.trim();
+      const normalizedStatus = Number(status) || 0;
+      const looksLikeHtml = /<!doctype html|<html\b|<head\b|<body\b|<style\b|<script\b/i.test(trimmed);
+      const looksLikeCss = !looksLikeHtml && /(^|\n)\s*[.#@a-zA-Z0-9_-]+\s*\{|--[a-z0-9_-]+\s*:/m.test(trimmed);
+      const tooLong = trimmed.length > 500;
+      if (normalizedStatus === 502 || normalizedStatus === 503 || normalizedStatus === 504) {
+        return "Mini app backend temporarily unavailable. Please wait a moment and reopen if needed.";
+      }
+      if (looksLikeHtml || looksLikeCss || tooLong) {
+        return fallback;
+      }
+      return trimmed || fallback;
+    }
+
+    function parseStreamErrorPayload(rawBody) {
+      if (typeof parseSseEvent !== "function") {
+        return { eventName: "", error: "", chatId: 0 };
+      }
+      const parsed = parseSseEvent(String(rawBody || ""));
+      const payload = parsed?.payload && typeof parsed.payload === "object" ? parsed.payload : null;
+      const error = String(payload?.error || "").trim();
+      const chatId = Number(payload?.chat_id || 0);
+      return {
+        eventName: parsed?.eventName || "",
+        error,
+        chatId: Number.isFinite(chatId) && chatId > 0 ? chatId : 0,
+      };
+    }
+
     function syncDevAuthUi() {
+      const revealed = Boolean(desktopTestingEnabled);
+      const authenticated = Boolean(getIsAuthenticated?.());
       if (devAuthControls) {
-        devAuthControls.hidden = !desktopTestingEnabled;
+        devAuthControls.hidden = !revealed;
       }
       if (devModeBadge) {
-        devModeBadge.hidden = !desktopTestingEnabled;
+        devModeBadge.hidden = !revealed;
       }
       if (devSignInButton) {
-        devSignInButton.hidden = !desktopTestingEnabled || getIsAuthenticated();
-        devSignInButton.disabled = !desktopTestingEnabled;
+        devSignInButton.hidden = !revealed || authenticated;
+        devSignInButton.disabled = !revealed || authenticated;
       }
+      return revealed;
     }
 
     function readDevAuthDefaults() {
@@ -179,10 +231,11 @@
       return { secret, userId, displayName, username };
     }
 
-    async function signInWithDevAuth({ interactive = true } = {}) {
+    async function signInWithDevAuth({ interactive = true, secretOverride = "" } = {}) {
       if (!desktopTestingEnabled) return false;
       const defaults = readDevAuthDefaults();
-      let secret = defaults.secret || "";
+      const overrideSecret = String(secretOverride || devAuthHashSecret || "").trim();
+      let secret = overrideSecret || defaults.secret || "";
       let userId = defaults.userId || "9001";
       let displayName = defaults.displayName || "Desktop Tester";
       let username = defaults.username || "desktop";
@@ -227,6 +280,10 @@
     }
 
     return {
+      authPayload,
+      safeReadJson,
+      summarizeUiFailure,
+      parseStreamErrorPayload,
       syncDevAuthUi,
       readDevAuthDefaults,
       writeDevAuthDefaults,

@@ -8,6 +8,7 @@ from flask import Flask
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from job_runtime import JobRuntime
+from job_runtime_worker_launcher import build_job_worker_launcher
 from rate_limiter import SlidingWindowRateLimiter
 
 
@@ -40,6 +41,13 @@ def create_runtime_dependencies(
     job_max_attempts: int,
     job_retry_base_seconds: int,
     job_worker_concurrency: int,
+    job_worker_launcher_mode: str,
+    job_worker_subprocess_timeout_seconds: int,
+    job_worker_subprocess_kill_grace_seconds: int,
+    job_worker_subprocess_stderr_excerpt_bytes: int,
+    job_worker_subprocess_memory_limit_mb: int,
+    job_worker_subprocess_max_tasks: int,
+    job_worker_subprocess_max_open_files: int,
     job_stall_timeout_seconds: int,
     assistant_chunk_len: int,
     assistant_hard_limit: int,
@@ -47,6 +55,15 @@ def create_runtime_dependencies(
     job_event_history_ttl_seconds: int,
     session_id_builder: Callable[[str, int], str],
 ) -> AppRuntimeDependencies:
+    worker_launcher = build_job_worker_launcher(
+        mode=job_worker_launcher_mode,
+        subprocess_timeout_seconds=job_worker_subprocess_timeout_seconds,
+        subprocess_kill_grace_seconds=job_worker_subprocess_kill_grace_seconds,
+        subprocess_stderr_excerpt_bytes=job_worker_subprocess_stderr_excerpt_bytes,
+        subprocess_memory_limit_mb=job_worker_subprocess_memory_limit_mb,
+        subprocess_max_tasks=job_worker_subprocess_max_tasks,
+        subprocess_max_open_files=job_worker_subprocess_max_open_files,
+    )
     runtime = JobRuntime(
         store=store_getter(),
         client=client_getter(),
@@ -59,6 +76,7 @@ def create_runtime_dependencies(
         job_event_history_max_jobs=job_event_history_max_jobs,
         job_event_history_ttl_seconds=job_event_history_ttl_seconds,
         session_id_builder=session_id_builder,
+        worker_launcher=worker_launcher,
     )
     return AppRuntimeDependencies(
         store_getter=store_getter,

@@ -158,3 +158,182 @@ test('handleTabClick opens selected chat when clicking a non-active tab', () => 
 
   assert.deepEqual(opened, [8]);
 });
+
+test('handleGlobalChatActionShortcut closes active chat on desktop Escape', () => {
+  const calls = [];
+  let prevented = false;
+  keyboard.handleGlobalChatActionShortcut({
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    repeat: false,
+    key: 'Escape',
+    code: 'Escape',
+    target: {},
+    preventDefault() {
+      prevented = true;
+    },
+  }, {
+    mobileQuoteMode: false,
+    isDesktopViewportFn: () => true,
+    documentObject: { querySelector: () => null },
+    isTextEntryElementFn: () => false,
+    activeChatId: 7,
+    createChat: async () => calls.push('create'),
+    removeActiveChat: async () => calls.push('remove'),
+  });
+
+  assert.equal(prevented, true);
+  assert.deepEqual(calls, ['remove']);
+});
+
+test('handleGlobalChatActionShortcut opens new chat on desktop Backquote', () => {
+  const calls = [];
+  let prevented = false;
+  keyboard.handleGlobalChatActionShortcut({
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    repeat: false,
+    key: '`',
+    code: 'Backquote',
+    target: {},
+    preventDefault() {
+      prevented = true;
+    },
+  }, {
+    mobileQuoteMode: false,
+    isDesktopViewportFn: () => true,
+    documentObject: { querySelector: () => null },
+    isTextEntryElementFn: () => false,
+    activeChatId: 7,
+    createChat: async () => calls.push('create'),
+    removeActiveChat: async () => calls.push('remove'),
+  });
+
+  assert.equal(prevented, true);
+  assert.deepEqual(calls, ['create']);
+});
+
+test('handleGlobalChatActionShortcut ignores editable targets, repeats, and open dialogs', () => {
+  const calls = [];
+  const run = (overrides = {}, options = {}) => {
+    keyboard.handleGlobalChatActionShortcut({
+      defaultPrevented: false,
+      isComposing: false,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      repeat: false,
+      key: 'Escape',
+      code: 'Escape',
+      target: {},
+      preventDefault() {},
+      ...overrides,
+    }, {
+      mobileQuoteMode: false,
+      isDesktopViewportFn: () => true,
+      documentObject: { querySelector: () => null },
+      isTextEntryElementFn: () => false,
+      activeChatId: 7,
+      createChat: async () => calls.push('create'),
+      removeActiveChat: async () => calls.push('remove'),
+      ...options,
+    });
+  };
+
+  run({ target: { id: 'input' } }, { isTextEntryElementFn: () => true });
+  run({ repeat: true });
+  run({}, { documentObject: { querySelector: () => ({ open: true }) } });
+
+  assert.deepEqual(calls, []);
+});
+
+test('createController resolves active chat lazily for keyboard handlers', () => {
+  let activeChatId = 4;
+  const opened = [];
+  const actions = [];
+  const controller = keyboard.createController({
+    windowObject: { innerWidth: 1200, matchMedia: () => ({ matches: true }), setTimeout: (fn) => fn() },
+    documentObject: { activeElement: null, querySelector: () => null },
+    messagesEl: { clientHeight: 1000, scrollTop: 0, contains: () => false },
+    promptEl: { focus() {} },
+    settingsModal: null,
+    jumpLatestButton: { hidden: false },
+    jumpLastStartButton: { hidden: false },
+    chats: new Map([
+      [2, { id: 2 }],
+      [4, { id: 4 }],
+      [8, { id: 8 }],
+    ]),
+    getActiveChatId: () => activeChatId,
+    getMobileQuoteMode: () => false,
+    openChat: (chatId) => opened.push(chatId),
+    openPinnedChat: () => {},
+    getNextChatTabId: ({ activeChatId: current }) => (current === 4 ? 8 : 2),
+    handleJumpLatest: () => {},
+    handleJumpLastStart: () => {},
+    focusMessagesPaneIfActiveChat: () => {},
+    createChat: async () => actions.push(`create:${activeChatId}`),
+    removeActiveChat: async () => actions.push(`remove:${activeChatId}`),
+  });
+
+  controller.handleGlobalTabCycle({
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    key: 'ArrowRight',
+    target: {},
+    preventDefault() {},
+  });
+  activeChatId = 8;
+  controller.handleGlobalTabCycle({
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    key: 'ArrowRight',
+    target: {},
+    preventDefault() {},
+  });
+  controller.handleGlobalChatActionShortcut({
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    repeat: false,
+    key: 'Escape',
+    code: 'Escape',
+    target: {},
+    preventDefault() {},
+  });
+  activeChatId = 2;
+  controller.handleGlobalChatActionShortcut({
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    repeat: false,
+    key: '`',
+    code: 'Backquote',
+    target: {},
+    preventDefault() {},
+  });
+
+  assert.deepEqual(opened, [8, 2]);
+  assert.deepEqual(actions, ['remove:8', 'create:2']);
+});

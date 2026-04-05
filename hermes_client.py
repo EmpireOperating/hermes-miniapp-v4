@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import signal
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -16,7 +19,7 @@ from hermes_client_agent import HermesClientAgentMixin
 from hermes_client_bootstrap import HermesClientBootstrap
 from hermes_client_cli import HermesClientCLIMixin
 from hermes_client_http import HermesClientHTTPMixin
-from hermes_client_types import HermesClientError, HermesReply, PersistentSessionManager
+from hermes_client_types import HermesClientError, HermesReply, IsolatedWorkerWarmSessionRegistryScaffold, PersistentSessionManager, WarmSessionContract, WarmSessionRegistry, build_reuse_contract
 
 
 logger = logging.getLogger(__name__)
@@ -56,26 +59,47 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         self.model = env_model if env_model and env_model.lower() != "auto" else self._load_default_model_from_config()
         self.provider, self.base_url = self._resolve_agent_routing(env_provider=env_provider, env_base_url=env_base_url)
         self.persistent_sessions_requested = os.environ.get("MINI_APP_PERSISTENT_SESSIONS", "0") == "1"
+        self.persistent_runtime_ownership_requested = str(
+            os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED")
+            or os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP")
+            or "auto"
+        ).strip().lower() or "auto"
         self.persistent_runtime_ownership = self._resolve_persistent_runtime_ownership()
         self.persistent_sessions_enabled = self.persistent_sessions_requested and self.persistent_runtime_ownership == "shared"
         self.persistent_max_sessions = int(os.environ.get("MINI_APP_PERSISTENT_MAX_SESSIONS", "64"))
         self.persistent_idle_ttl_seconds = int(os.environ.get("MINI_APP_PERSISTENT_IDLE_TTL_SECONDS", "1800"))
+        self.warm_attach_handshake_timeout_ms = max(1, int(os.environ.get("MINI_APP_WARM_ATTACH_HANDSHAKE_TIMEOUT_MS", "250")))
+        self.warm_attach_resume_timeout_ms = max(1, int(os.environ.get("MINI_APP_WARM_ATTACH_RESUME_TIMEOUT_MS", "1000")))
         self.child_spawn_caps_enabled = os.environ.get("MINI_APP_CHILD_SPAWN_CAPS_ENABLED", "1") == "1"
         self.child_spawn_cap_total = max(1, int(os.environ.get("MINI_APP_CHILD_SPAWN_CAP_TOTAL", "16")))
         self.child_spawn_cap_per_chat = max(1, int(os.environ.get("MINI_APP_CHILD_SPAWN_CAP_PER_CHAT", "4")))
         self.child_spawn_cap_per_job = max(1, int(os.environ.get("MINI_APP_CHILD_SPAWN_CAP_PER_JOB", "1")))
         self.child_spawn_cap_per_session = max(1, int(os.environ.get("MINI_APP_CHILD_SPAWN_CAP_PER_SESSION", "2")))
-        self._session_manager = PersistentSessionManager(
+        self._session_manager: WarmSessionRegistry = PersistentSessionManager(
             max_sessions=self.persistent_max_sessions,
             idle_ttl_seconds=self.persistent_idle_ttl_seconds,
         )
+        if self.persistent_runtime_ownership == "shared":
+            self._warm_session_registry: WarmSessionRegistry = self._session_manager
+        else:
+            self._warm_session_registry = IsolatedWorkerWarmSessionRegistryScaffold()
         self._spawn_trace_local = threading.local()
+        self._warm_candidate_probe_events: deque[dict[str, Any]] = deque(maxlen=64)
+        self._warm_reuse_policy_events: deque[dict[str, Any]] = deque(maxlen=64)
+        self._warm_reuse_attempt_events: deque[dict[str, Any]] = deque(maxlen=64)
+        self._warm_reuse_decision_events: deque[dict[str, Any]] = deque(maxlen=64)
         self._spawn_tracker_lock = threading.Lock()
         self._active_child_spawns: dict[int, dict[str, Any]] = {}
         self._child_spawn_high_water_total = 0
         self._child_spawn_high_water_by_job: dict[str, int] = {}
         self._child_spawn_high_water_by_chat: dict[str, int] = {}
         self._child_spawn_events: deque[dict[str, Any]] = deque(maxlen=64)
+        self._observed_descendant_spawns: dict[int, dict[str, Any]] = {}
+        self._observed_descendant_high_water_total = 0
+        self._observed_descendant_high_water_by_transport: dict[str, int] = {}
+        self._observed_descendant_high_water_by_job: dict[str, int] = {}
+        self._observed_descendant_high_water_by_chat: dict[str, int] = {}
+        self._observed_descendant_events: deque[dict[str, Any]] = deque(maxlen=96)
         self._transport_transition_events: deque[dict[str, Any]] = deque(maxlen=96)
         self._child_spawn_timeout_total = 0
         self._child_spawn_timeouts_by_job: dict[str, int] = {}
@@ -101,7 +125,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         return exc.__class__.__name__
 
     def _resolve_persistent_runtime_ownership(self) -> str:
-        raw = str(os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "shared") or "").strip().lower()
+        raw = str(os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto") or "").strip().lower()
         launcher = str(os.environ.get("MINI_APP_JOB_WORKER_LAUNCHER", "inline") or "").strip().lower()
 
         if raw in {"shared", "checkpoint_only"}:
@@ -109,14 +133,17 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         if raw == "auto":
             return "checkpoint_only" if launcher == "subprocess" else "shared"
 
+        fallback = "checkpoint_only" if launcher == "subprocess" else "shared"
+
         logger.warning(
-            "Invalid MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP; defaulting to shared",
+            "Invalid MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP; defaulting to auto-resolved ownership",
             extra={
                 "raw": raw,
                 "launcher": launcher,
+                "resolved": fallback,
             },
         )
-        return "shared"
+        return fallback
 
     @staticmethod
     def _is_child_spawn_cap_error(exc: Exception) -> bool:
@@ -264,8 +291,8 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         safe_job_id = int(job_id)
         safe_reason = str(reason or "runtime_cleanup")
         with self._spawn_tracker_lock:
-            target_pids = [
-                int(pid)
+            target_records = [
+                (int(pid), dict(record))
                 for pid, record in self._active_child_spawns.items()
                 if int(record.get("job_id") or 0) == safe_job_id
             ]
@@ -274,9 +301,23 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         already_exited = 0
         failed = 0
         already_exited_pids: list[int] = []
-        for pid in target_pids:
+        current_pgid = None
+        if os.name == "posix":
             try:
-                os.kill(int(pid), signal.SIGKILL)
+                current_pgid = os.getpgid(os.getpid())
+            except Exception:
+                current_pgid = None
+
+        for pid, record in target_records:
+            try:
+                if str(record.get("transport") or "") == "chat-worker-subprocess" and os.name == "posix":
+                    pgid = os.getpgid(int(pid))
+                    if current_pgid is not None and pgid == current_pgid:
+                        os.kill(int(pid), signal.SIGKILL)
+                    else:
+                        os.killpg(int(pgid), signal.SIGKILL)
+                else:
+                    os.kill(int(pid), signal.SIGKILL)
             except ProcessLookupError:
                 already_exited += 1
                 already_exited_pids.append(int(pid))
@@ -299,7 +340,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             self.deregister_child_spawn(pid=pid, outcome=f"cleanup_already_exited:{safe_reason}")
 
         summary = {
-            "targeted": len(target_pids),
+            "targeted": len(target_records),
             "killed": killed,
             "already_exited": already_exited,
             "failed": failed,
@@ -336,9 +377,31 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                     chat_key = str(int(chat_id))
                     active_by_chat[chat_key] = int(active_by_chat.get(chat_key, 0)) + 1
 
+            descendant_active_total = len(self._observed_descendant_spawns)
+            descendant_active_by_transport: dict[str, int] = {}
+            descendant_active_by_job: dict[str, int] = {}
+            descendant_active_by_chat: dict[str, int] = {}
+            for record in self._observed_descendant_spawns.values():
+                transport = str(record.get("transport") or "unknown")
+                descendant_active_by_transport[transport] = int(descendant_active_by_transport.get(transport, 0)) + 1
+
+                job_id = record.get("job_id")
+                if job_id not in {None, ""}:
+                    key = str(int(job_id))
+                    descendant_active_by_job[key] = int(descendant_active_by_job.get(key, 0)) + 1
+
+                chat_id = record.get("chat_id")
+                if chat_id not in {None, ""}:
+                    chat_key = str(int(chat_id))
+                    descendant_active_by_chat[chat_key] = int(descendant_active_by_chat.get(chat_key, 0)) + 1
+
             high_water_total = int(self._child_spawn_high_water_total)
             high_water_by_job = dict(self._child_spawn_high_water_by_job)
             high_water_by_chat = dict(self._child_spawn_high_water_by_chat)
+            descendant_high_water_total = int(self._observed_descendant_high_water_total)
+            descendant_high_water_by_transport = dict(self._observed_descendant_high_water_by_transport)
+            descendant_high_water_by_job = dict(self._observed_descendant_high_water_by_job)
+            descendant_high_water_by_chat = dict(self._observed_descendant_high_water_by_chat)
             timeout_total = int(self._child_spawn_timeout_total)
             timeout_by_job = dict(self._child_spawn_timeouts_by_job)
             timeout_by_chat = dict(self._child_spawn_timeouts_by_chat)
@@ -346,6 +409,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             timeout_by_outcome = dict(self._child_spawn_timeouts_by_outcome)
             recent_timeout_events = [dict(item) for item in list(self._child_spawn_timeout_events)[-16:]]
             recent_events = [dict(item) for item in list(self._child_spawn_events)[-12:]]
+            recent_descendant_events = [dict(item) for item in list(self._observed_descendant_events)[-24:]]
             recent_transport_transitions = [dict(item) for item in list(self._transport_transition_events)[-24:]]
 
         return {
@@ -360,9 +424,17 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             "active_by_transport": active_by_transport,
             "active_by_job": active_by_job,
             "active_by_chat": active_by_chat,
+            "descendant_active_total": int(descendant_active_total),
+            "descendant_active_by_transport": descendant_active_by_transport,
+            "descendant_active_by_job": descendant_active_by_job,
+            "descendant_active_by_chat": descendant_active_by_chat,
             "high_water_total": high_water_total,
             "high_water_by_job": high_water_by_job,
             "high_water_by_chat": high_water_by_chat,
+            "descendant_high_water_total": descendant_high_water_total,
+            "descendant_high_water_by_transport": descendant_high_water_by_transport,
+            "descendant_high_water_by_job": descendant_high_water_by_job,
+            "descendant_high_water_by_chat": descendant_high_water_by_chat,
             "timeouts": {
                 "total": timeout_total,
                 "by_job": timeout_by_job,
@@ -372,8 +444,113 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "recent_events": recent_timeout_events,
             },
             "recent_events": recent_events,
+            "recent_descendant_events": recent_descendant_events,
             "recent_transport_transitions": recent_transport_transitions,
         }
+
+    def observe_descendant_spawn(
+        self,
+        *,
+        transport: str,
+        pid: int,
+        command: list[str] | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        chat_id: int | None = None,
+        job_id: int | None = None,
+        parent_transport: str | None = None,
+        parent_pid: int | None = None,
+    ) -> None:
+        context = self._get_spawn_trace_context()
+        record = {
+            "transport": str(transport or "unknown"),
+            "pid": int(pid),
+            "command": [str(part) for part in list(command or [])],
+            "session_id": str(session_id or context.get("session_id") or ""),
+            "user_id": str(user_id or context.get("user_id") or ""),
+            "chat_id": int(chat_id) if chat_id not in {None, ""} else context.get("chat_id"),
+            "job_id": int(job_id) if job_id not in {None, ""} else context.get("job_id"),
+            "parent_transport": str(parent_transport or "chat-worker-subprocess"),
+            "parent_pid": int(parent_pid) if parent_pid not in {None, ""} else None,
+            "started_monotonic": time.monotonic(),
+        }
+        with self._spawn_tracker_lock:
+            self._observed_descendant_spawns[int(pid)] = record
+            active_total = len(self._observed_descendant_spawns)
+            transport_key = str(record.get("transport") or "unknown")
+            active_for_transport = sum(
+                1 for item in self._observed_descendant_spawns.values() if str(item.get("transport") or "unknown") == transport_key
+            )
+            self._observed_descendant_high_water_total = max(int(self._observed_descendant_high_water_total), int(active_total))
+            self._observed_descendant_high_water_by_transport[transport_key] = max(
+                int(self._observed_descendant_high_water_by_transport.get(transport_key, 0)),
+                int(active_for_transport),
+            )
+            job_value = record.get("job_id")
+            if job_value not in {None, ""}:
+                job_key = str(int(job_value))
+                active_for_job = sum(1 for item in self._observed_descendant_spawns.values() if item.get("job_id") == job_value)
+                self._observed_descendant_high_water_by_job[job_key] = max(
+                    int(self._observed_descendant_high_water_by_job.get(job_key, 0)),
+                    int(active_for_job),
+                )
+            chat_value = record.get("chat_id")
+            if chat_value not in {None, ""}:
+                chat_key = str(int(chat_value))
+                active_for_chat = sum(1 for item in self._observed_descendant_spawns.values() if item.get("chat_id") == chat_value)
+                self._observed_descendant_high_water_by_chat[chat_key] = max(
+                    int(self._observed_descendant_high_water_by_chat.get(chat_key, 0)),
+                    int(active_for_chat),
+                )
+            self._observed_descendant_events.append(
+                {
+                    "event": "descendant_spawn",
+                    "pid": int(pid),
+                    "transport": transport_key,
+                    "job_id": record.get("job_id"),
+                    "chat_id": record.get("chat_id"),
+                    "session_id": record.get("session_id"),
+                    "user_id": record.get("user_id"),
+                    "parent_transport": record.get("parent_transport"),
+                    "parent_pid": record.get("parent_pid"),
+                    "active_total": int(active_total),
+                    "monotonic_ms": int(time.monotonic() * 1000),
+                }
+            )
+
+    def observe_descendant_finish(
+        self,
+        *,
+        pid: int,
+        outcome: str,
+        return_code: int | None = None,
+        signal: int | None = None,
+        transport: str | None = None,
+        parent_transport: str | None = None,
+        parent_pid: int | None = None,
+    ) -> None:
+        with self._spawn_tracker_lock:
+            record = self._observed_descendant_spawns.pop(int(pid), None)
+            active_total = len(self._observed_descendant_spawns)
+
+            payload = {
+                "pid": int(pid),
+                "outcome": str(outcome or "unknown"),
+                "return_code": return_code,
+                "signal": signal,
+                "transport": str(transport or (record or {}).get("transport") or "unknown"),
+                "parent_transport": str(parent_transport or (record or {}).get("parent_transport") or "chat-worker-subprocess"),
+                "parent_pid": int(parent_pid) if parent_pid not in {None, ""} else (record or {}).get("parent_pid"),
+                "job_id": (record or {}).get("job_id"),
+                "chat_id": (record or {}).get("chat_id"),
+                "session_id": (record or {}).get("session_id"),
+                "user_id": (record or {}).get("user_id"),
+                "active_total": int(active_total),
+                "monotonic_ms": int(time.monotonic() * 1000),
+            }
+            if record:
+                payload["lifetime_ms"] = int((time.monotonic() - float(record.get("started_monotonic") or time.monotonic())) * 1000)
+            self._observed_descendant_events.append({"event": "descendant_finish", **payload})
 
     def register_child_spawn(self, *, transport: str, pid: int, command: list[str], session_id: str | None = None) -> str:
         self.assert_child_spawn_allowed(transport=transport, session_id=session_id)
@@ -545,16 +722,1179 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             extra={"spawn": payload},
         )
 
+    def _shared_backend_persistent_enabled(self) -> bool:
+        return bool(
+            self.direct_agent_enabled
+            and self.persistent_sessions_requested
+            and self.persistent_runtime_ownership == "shared"
+        )
+
+    def _worker_owned_warm_continuity_enabled(self) -> bool:
+        return bool(
+            self.direct_agent_enabled
+            and self.persistent_sessions_requested
+            and self.persistent_runtime_ownership == "checkpoint_only"
+        )
+
+    def _effective_warm_continuity_enabled(self) -> bool:
+        return self._shared_backend_persistent_enabled() or self._worker_owned_warm_continuity_enabled()
+
+    def _persistent_sessions_enablement_reason(self) -> str:
+        if not self.direct_agent_enabled:
+            return "direct_agent_disabled"
+        if not self.persistent_sessions_requested:
+            return "persistent_sessions_not_requested"
+        if self.persistent_runtime_ownership == "shared":
+            return "shared_backend_runtime_enabled"
+        if self.persistent_runtime_ownership == "checkpoint_only":
+            return "worker_owned_warm_continuity_enabled"
+        return f"ownership_resolved_to_{self.persistent_runtime_ownership}"
+
     def _selected_transport(self) -> str:
         if self.stream_url:
             return "http-stream"
         if self.api_url:
             return "http"
-        if self.direct_agent_enabled and self.persistent_sessions_enabled:
+        if self._shared_backend_persistent_enabled():
             return "agent-persistent"
+        if self._worker_owned_warm_continuity_enabled():
+            return "agent-worker-isolated"
         if self.direct_agent_enabled:
             return "agent"
         return "cli"
+
+    def warm_session_contract(self) -> WarmSessionContract:
+        launcher = str(os.environ.get("MINI_APP_JOB_WORKER_LAUNCHER", "inline") or "").strip().lower()
+        ownership = str(self.persistent_runtime_ownership or "").strip().lower() or "checkpoint_only"
+        requested = bool(self.persistent_sessions_requested)
+        enabled = bool(self._effective_warm_continuity_enabled())
+        registry = getattr(self, "_warm_session_registry", None)
+
+        if ownership == "shared":
+            current_mode = "shared_backend_warm_runtime"
+            owner = "shared_backend_process"
+            owner_class = type(registry).__name__ if registry is not None else "backend_local_runtime"
+            lifecycle_state = "active_when_session_manager_entry_exists"
+            lifecycle_scope = "process_local_shared_backend"
+            eviction_policy = "session_manager_idle_ttl_or_capacity"
+            target_status = "legacy_mode_only"
+            safety_reason = "shared backend warm ownership is only valid for non-isolated inline mode"
+        elif requested and self.direct_agent_enabled:
+            current_mode = "isolated_worker_owned_warm_continuity"
+            owner = "isolated_worker_processes"
+            owner_class = type(registry).__name__ if registry is not None else "isolated_worker_registry"
+            lifecycle_state = "worker_owned_live_attach_or_checkpoint_continuity"
+            lifecycle_scope = "per_chat_isolated_worker"
+            eviction_policy = "worker_owner_lifecycle_attach_deadline_or_explicit_invalidation"
+            target_status = "enabled_in_subprocess_mode"
+            safety_reason = "subprocess isolation preserves per-chat continuity by keeping warm ownership inside isolated workers"
+        else:
+            current_mode = "checkpoint_only_continuity"
+            owner = "none_checkpoint_only"
+            owner_class = "no_live_warm_owner"
+            lifecycle_state = "cold_start_each_turn"
+            lifecycle_scope = "per_turn_worker_attempt"
+            eviction_policy = "none_checkpoint_only"
+            target_status = "not_requested"
+            safety_reason = "subprocess isolation forbids shared backend warm ownership unless warm continuity is explicitly requested"
+
+        return WarmSessionContract(
+            current_mode=current_mode,
+            owner=owner,
+            owner_class=owner_class,
+            lifecycle_state=lifecycle_state,
+            lifecycle_scope=lifecycle_scope,
+            eviction_policy=eviction_policy,
+            requested=requested,
+            enabled=enabled,
+            ownership=ownership,
+            launcher=launcher,
+            target_mode="isolated_worker_owned_warm_continuity",
+            target_status=target_status,
+            safety_reason=safety_reason,
+        )
+
+    def note_warm_session_worker_started(
+        self,
+        *,
+        session_id: str,
+        chat_id: int | None = None,
+        job_id: int | None = None,
+        owner_pid: int | None = None,
+    ) -> None:
+        registry = getattr(self, "_warm_session_registry", None)
+        callback = getattr(registry, "note_worker_started", None)
+        if callable(callback):
+            callback(session_id=session_id, chat_id=chat_id, job_id=job_id, owner_pid=owner_pid)
+
+    def note_warm_session_worker_finished(
+        self,
+        *,
+        session_id: str,
+        outcome: str,
+        chat_id: int | None = None,
+        job_id: int | None = None,
+        owner_pid: int | None = None,
+    ) -> None:
+        registry = getattr(self, "_warm_session_registry", None)
+        callback = getattr(registry, "note_worker_finished", None)
+        if callable(callback):
+            callback(session_id=session_id, outcome=outcome, chat_id=chat_id, job_id=job_id, owner_pid=owner_pid)
+
+    def note_warm_session_worker_attach_ready(
+        self,
+        *,
+        session_id: str,
+        owner_pid: int | None = None,
+        transport_kind: str | None = None,
+        worker_endpoint: str | None = None,
+        resume_token: str | None = None,
+        resume_deadline_ms: int | None = None,
+    ) -> None:
+        registry = getattr(self, "_warm_session_registry", None)
+        callback = getattr(registry, "note_worker_attach_ready", None)
+        if callable(callback):
+            callback(
+                session_id=session_id,
+                owner_pid=owner_pid,
+                transport_kind=transport_kind,
+                worker_endpoint=worker_endpoint,
+                resume_token=resume_token,
+                resume_deadline_ms=resume_deadline_ms,
+            )
+
+    def warm_session_owner_state(self) -> dict[str, Any]:
+        registry = getattr(self, "_warm_session_registry", None)
+        if registry is None:
+            return {"owner_class": "none", "active_owner_count": 0, "active_session_ids": [], "recent_events": []}
+        owner_state = getattr(registry, "owner_state", None)
+        if callable(owner_state):
+            payload = dict(owner_state() or {})
+        else:
+            payload = {"owner_class": type(registry).__name__, "active_owner_count": 0, "active_session_ids": [], "recent_events": []}
+        records = list((payload.get("owner_records") if isinstance(payload, dict) else None) or [])
+        payload["live_attach_ready_count"] = sum(
+            1
+            for record in records
+            if str((record or {}).get("state") or "") == "attachable_running"
+            and bool((record or {}).get("attach_worker_endpoint"))
+            and bool((record or {}).get("attach_resume_token"))
+        )
+        payload["live_attach_ready_session_ids"] = [
+            str((record or {}).get("session_id") or "")
+            for record in records
+            if str((record or {}).get("state") or "") == "attachable_running"
+            and bool((record or {}).get("attach_worker_endpoint"))
+            and bool((record or {}).get("attach_resume_token"))
+        ]
+        return payload
+
+    def _normalize_warm_reuse_candidate(self, candidate: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(candidate, dict):
+            return None
+        payload = dict(candidate)
+        existing_contract = payload.get("reuse_contract")
+        base_contract = build_reuse_contract(payload) or {}
+        if isinstance(existing_contract, dict):
+            merged_contract = dict(base_contract)
+            merged_contract.update(existing_contract)
+            payload["reuse_contract"] = merged_contract
+        else:
+            payload["reuse_contract"] = base_contract or None
+        return payload
+
+    def select_warm_session_candidate(self, session_id: str) -> dict[str, Any] | None:
+        registry = getattr(self, "_warm_session_registry", None)
+        selector = getattr(registry, "select_reusable_candidate", None)
+        if callable(selector):
+            result = selector(session_id)
+            return self._normalize_warm_reuse_candidate(dict(result) if isinstance(result, dict) else None)
+        return None
+
+    def _warm_session_unavailable_reason(self, session_id: str) -> str:
+        owner_state = self.warm_session_owner_state()
+        records = list((owner_state.get("owner_records") if isinstance(owner_state, dict) else None) or [])
+        target = next((record for record in records if str((record or {}).get("session_id") or "") == str(session_id or "")), None)
+        if not isinstance(target, dict):
+            return "no_owner_record"
+        state = str(target.get("state") or "unknown")
+        if state == "expired":
+            return str(target.get("reusability_reason") or "candidate_ttl_expired")
+        if state == "evicted":
+            return str(target.get("reusability_reason") or "evicted")
+        if state == "running":
+            return str(target.get("reusability_reason") or "worker_attempt_in_progress")
+        if state == "attachable_running":
+            deadline = target.get("attach_resume_deadline_ms")
+            if deadline not in {None, ""} and int(deadline) <= int(time.monotonic() * 1000):
+                return "attach_resume_deadline_expired"
+            return str(target.get("reusability_reason") or "worker_attach_live_available")
+        return str(target.get("reusability_reason") or f"state:{state}")
+
+    def probe_warm_session_candidate(self, session_id: str, *, reason: str) -> dict[str, Any]:
+        candidate = self.select_warm_session_candidate(session_id)
+        available = isinstance(candidate, dict)
+        payload = {
+            "event": "warm_candidate_probe",
+            "session_id": str(session_id or ""),
+            "reason": str(reason or "unknown"),
+            "available": bool(available),
+            "candidate": candidate if available else None,
+            "unavailable_reason": None if available else self._warm_session_unavailable_reason(session_id),
+            "monotonic_ms": int(time.monotonic() * 1000),
+        }
+        self._warm_candidate_probe_events.append(dict(payload))
+        return payload
+
+    def evaluate_warm_reuse_policy(
+        self,
+        session_id: str,
+        *,
+        reason: str,
+        requested_path: str,
+        candidate: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        available = isinstance(candidate, dict)
+        contract = self.warm_session_contract()
+        payload = {
+            "event": "warm_reuse_policy_check",
+            "session_id": str(session_id or ""),
+            "reason": str(reason or "unknown"),
+            "requested_path": str(requested_path or "unknown"),
+            "policy": "disabled_by_policy",
+            "allowed": False,
+            "detail": "warm reuse remains telemetry-only until an explicit policy change enables attempts",
+            "candidate_available": bool(available),
+            "candidate": candidate if available else None,
+            "current_mode": contract.current_mode,
+            "ownership": contract.ownership,
+            "launcher": contract.launcher,
+            "monotonic_ms": int(time.monotonic() * 1000),
+        }
+        self._warm_reuse_policy_events.append(dict(payload))
+        return payload
+
+    def validate_warm_reuse_contract(self, *, session_id: str, reuse_contract: dict[str, Any] | None) -> dict[str, Any]:
+        contract_payload = dict(reuse_contract) if isinstance(reuse_contract, dict) else {}
+        required_now = list(contract_payload.get("required_now") or [])
+        reserved_for_future = list(contract_payload.get("reserved_for_future") or [])
+        resume_capability = str(contract_payload.get("resume_capability") or "unknown")
+        missing_required_fields = [
+            field
+            for field in required_now
+            if contract_payload.get(field) in {None, ""}
+        ]
+        if missing_required_fields:
+            return {
+                "valid": False,
+                "status": "missing_required_fields",
+                "missing_required_fields": missing_required_fields,
+                "reserved_future_fields": reserved_for_future,
+                "resume_capability": resume_capability,
+                "reuse_contract": contract_payload or None,
+            }
+        contract_version = str(contract_payload.get("contract_version") or "")
+        if contract_version != "warm-reuse-v1":
+            return {
+                "valid": False,
+                "status": "unsupported_contract_version",
+                "missing_required_fields": [],
+                "reserved_future_fields": reserved_for_future,
+                "resume_capability": resume_capability,
+                "reuse_contract": contract_payload or None,
+            }
+        contract_session_id = str(contract_payload.get("session_id") or "")
+        if contract_session_id != str(session_id or ""):
+            return {
+                "valid": False,
+                "status": "invalid_session_binding",
+                "missing_required_fields": [],
+                "reserved_future_fields": reserved_for_future,
+                "resume_capability": resume_capability,
+                "reuse_contract": contract_payload or None,
+            }
+        return {
+            "valid": True,
+            "status": "valid",
+            "missing_required_fields": [],
+            "reserved_future_fields": reserved_for_future,
+            "resume_capability": resume_capability,
+            "reuse_contract": contract_payload or None,
+        }
+
+    def plan_worker_attach_handshake(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        candidate: dict[str, Any] | None,
+        reuse_contract: dict[str, Any] | None,
+        validation: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        candidate_payload = dict(candidate) if isinstance(candidate, dict) else {}
+        contract_payload = dict(reuse_contract) if isinstance(reuse_contract, dict) else {}
+        validation_payload = dict(validation) if isinstance(validation, dict) else {}
+        owner_pid = contract_payload.get("owner_pid")
+        attach_mechanism = str(contract_payload.get("attach_mechanism") or "unknown")
+        required_transport = str(contract_payload.get("required_transport") or "unknown")
+        supported_resume_modes = list(contract_payload.get("supported_resume_modes") or [])
+        missing_prerequisites: list[str] = []
+        if not owner_pid:
+            missing_prerequisites.append("owner_pid")
+        if required_transport != "subprocess":
+            missing_prerequisites.append("required_transport")
+        if attach_mechanism != "pid_only":
+            missing_prerequisites.append("attach_mechanism")
+        if "worker_attach" not in supported_resume_modes:
+            missing_prerequisites.append("supported_resume_modes")
+        return {
+            "mode": "worker_attach",
+            "planned": bool(validation_payload.get("valid")),
+            "deferred": True,
+            "status": "attach_plan_ready" if not missing_prerequisites else "attach_plan_incomplete",
+            "session_id": str(session_id or ""),
+            "requested_path": str(requested_path or "unknown"),
+            "attach_mechanism": attach_mechanism,
+            "required_transport": required_transport,
+            "supported_resume_modes": supported_resume_modes,
+            "owner_pid": owner_pid,
+            "candidate_session_id": str(candidate_payload.get("session_id") or ""),
+            "validation_status": str(validation_payload.get("status") or "unknown"),
+            "missing_prerequisites": missing_prerequisites,
+            "next_step": "implement_worker_attach_execution",
+        }
+
+    def _read_process_cmdline(self, pid: int) -> str | None:
+        if int(pid or 0) <= 0:
+            return None
+        try:
+            raw = Path(f"/proc/{int(pid)}/cmdline").read_bytes()
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip() or None
+        except Exception:
+            return None
+
+    def _read_process_status(self, pid: int) -> dict[str, Any] | None:
+        if int(pid or 0) <= 0:
+            return None
+        try:
+            raw = Path(f"/proc/{int(pid)}/status").read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return None
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        if not lines:
+            return None
+        payload: dict[str, Any] = {"raw": raw}
+        for line in lines:
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            payload[str(key).strip()] = str(value).strip()
+        state_text = str(payload.get("State") or "").strip()
+        payload["state"] = state_text
+        payload["state_code"] = state_text[:1] if state_text else ""
+        return payload
+
+    def _read_process_fd_link(self, pid: int, fd: int) -> str | None:
+        if int(pid or 0) <= 0:
+            return None
+        try:
+            return os.readlink(f"/proc/{int(pid)}/fd/{int(fd)}") or None
+        except Exception:
+            return None
+
+    def _attempt_live_worker_attach_handshake(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        attach_execution: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        execution_payload = dict(attach_execution) if isinstance(attach_execution, dict) else {}
+        owner_pid = execution_payload.get("owner_pid")
+        try:
+            pid_int = int(owner_pid)
+        except (TypeError, ValueError):
+            pid_int = None
+        if not pid_int or pid_int <= 0:
+            return {
+                "executed": True,
+                "status": "attach_action_handshake_failed",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "owner_pid": owner_pid,
+                "reason": "invalid_owner_pid",
+                "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
+                "handshake_attempted": False,
+                "handshake_detail": None,
+                "next_step": "fallback_to_cold_path",
+            }
+
+        deadline = time.monotonic() + (float(self.warm_attach_handshake_timeout_ms) / 1000.0)
+        attempts = 0
+        last_reason = "handshake_not_started"
+        last_detail: dict[str, Any] | None = None
+        while True:
+            attempts += 1
+            if time.monotonic() > deadline:
+                return {
+                    "executed": True,
+                    "status": "attach_action_handshake_timeout",
+                    "session_id": str(session_id or ""),
+                    "requested_path": str(requested_path or "unknown"),
+                    "owner_pid": pid_int,
+                    "reason": last_reason,
+                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
+                    "handshake_attempted": True,
+                    "handshake_detail": dict(last_detail) if isinstance(last_detail, dict) else None,
+                    "attempt_count": attempts,
+                    "next_step": "fallback_to_cold_path",
+                }
+
+            try:
+                os.kill(pid_int, 0)
+            except ProcessLookupError:
+                last_reason = "owner_pid_not_found_during_handshake"
+                last_detail = None
+                return {
+                    "executed": True,
+                    "status": "attach_action_handshake_failed",
+                    "session_id": str(session_id or ""),
+                    "requested_path": str(requested_path or "unknown"),
+                    "owner_pid": pid_int,
+                    "reason": last_reason,
+                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
+                    "handshake_attempted": True,
+                    "handshake_detail": None,
+                    "attempt_count": attempts,
+                    "next_step": "fallback_to_cold_path",
+                }
+            except PermissionError:
+                last_reason = "owner_pid_permission_denied_during_handshake"
+                last_detail = None
+                return {
+                    "executed": True,
+                    "status": "attach_action_handshake_failed",
+                    "session_id": str(session_id or ""),
+                    "requested_path": str(requested_path or "unknown"),
+                    "owner_pid": pid_int,
+                    "reason": last_reason,
+                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
+                    "handshake_attempted": True,
+                    "handshake_detail": None,
+                    "attempt_count": attempts,
+                    "next_step": "fallback_to_cold_path",
+                }
+
+            process_status = self._read_process_status(pid_int)
+            stdin_link = self._read_process_fd_link(pid_int, 0)
+            stdout_link = self._read_process_fd_link(pid_int, 1)
+            process_state = str((process_status or {}).get("state") or "").strip()
+            process_state_code = str((process_status or {}).get("state_code") or "").strip().upper()
+            handshake_detail = {
+                "process_state": process_state or None,
+                "stdin_link": stdin_link,
+                "stdout_link": stdout_link,
+            }
+            if process_state_code == "Z":
+                last_reason = "owner_pid_zombie_during_handshake"
+                last_detail = handshake_detail
+                return {
+                    "executed": True,
+                    "status": "attach_action_handshake_failed",
+                    "session_id": str(session_id or ""),
+                    "requested_path": str(requested_path or "unknown"),
+                    "owner_pid": pid_int,
+                    "reason": last_reason,
+                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
+                    "handshake_attempted": True,
+                    "handshake_detail": handshake_detail,
+                    "attempt_count": attempts,
+                    "next_step": "fallback_to_cold_path",
+                }
+            if process_status and stdin_link and stdout_link:
+                return {
+                    "executed": True,
+                    "status": "attach_action_handshake_succeeded",
+                    "session_id": str(session_id or ""),
+                    "requested_path": str(requested_path or "unknown"),
+                    "owner_pid": pid_int,
+                    "reason": "handshake_proc_probe_succeeded",
+                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
+                    "handshake_attempted": True,
+                    "handshake_detail": handshake_detail,
+                    "attempt_count": attempts,
+                    "next_step": "implement_live_stream_attach_after_handshake",
+                }
+
+            last_reason = "handshake_transport_endpoints_unavailable"
+            last_detail = handshake_detail
+            time.sleep(0.01)
+
+    def _terminate_warm_owner_process(self, *, pid: int | None, reason: str) -> bool:
+        try:
+            pid_int = int(pid or 0)
+        except (TypeError, ValueError):
+            return False
+        if pid_int <= 0:
+            return False
+        try:
+            if os.name == "posix":
+                try:
+                    pgid = os.getpgid(pid_int)
+                except Exception:
+                    pgid = 0
+                if pgid > 0:
+                    os.killpg(pgid, signal.SIGTERM)
+                    return True
+            os.kill(pid_int, signal.SIGTERM)
+            return True
+        except ProcessLookupError:
+            return False
+        except Exception:
+            logger.debug("warm_owner_process_termination_failed pid=%s reason=%s", pid_int, reason, exc_info=True)
+            return False
+
+    def _stream_events_from_worker_attach_socket(
+        self,
+        *,
+        session_id: str,
+        sock: socket.socket,
+        reader: Any,
+    ) -> Iterator[dict[str, Any]]:
+        terminal_received = False
+        try:
+            while True:
+                raw_line = reader.readline()
+                if not raw_line:
+                    break
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    yield {
+                        "type": "error",
+                        "error": "Warm attach stream returned invalid JSON.",
+                    }
+                    return
+                if isinstance(payload, dict):
+                    payload_type = str(payload.get("type") or "")
+                    if payload_type == "attach_ready":
+                        self.note_warm_session_worker_attach_ready(
+                            session_id=str(payload.get("session_id") or session_id or ""),
+                            transport_kind=str(payload.get("transport_kind") or "") or None,
+                            worker_endpoint=str(payload.get("worker_endpoint") or "") or None,
+                            resume_token=str(payload.get("resume_token") or "") or None,
+                            resume_deadline_ms=payload.get("resume_deadline_ms"),
+                        )
+                        continue
+                    if payload_type == "worker_terminal":
+                        continue
+                    if payload_type in {"done", "error"}:
+                        terminal_received = True
+                    yield dict(payload)
+                else:
+                    yield {
+                        "type": "error",
+                        "error": "Warm attach stream returned non-object payload.",
+                    }
+                    return
+            if not terminal_received:
+                yield {
+                    "type": "error",
+                    "error": "Warm attach stream closed before a terminal event was received.",
+                }
+        except socket.timeout:
+            terminal_received = True
+            yield {
+                "type": "error",
+                "error": "Warm attach stream timed out after attach succeeded.",
+            }
+        finally:
+            try:
+                reader.close()
+            except Exception:
+                pass
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def _attempt_live_worker_attach_resume(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        reuse_contract: dict[str, Any] | None,
+        attach_action: dict[str, Any] | None,
+        user_id: str,
+        message: str,
+        conversation_history: list[dict[str, str]] | None,
+    ) -> tuple[dict[str, Any], Iterator[dict[str, Any]] | None]:
+        contract_payload = dict(reuse_contract) if isinstance(reuse_contract, dict) else {}
+        attach_action_payload = dict(attach_action) if isinstance(attach_action, dict) else {}
+        if str(attach_action_payload.get("status") or "") != "attach_action_handshake_succeeded":
+            return ({
+                "executed": False,
+                "status": "attach_action_attach_unavailable",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "reason": "handshake_not_succeeded",
+                "transport_kind": contract_payload.get("transport_kind"),
+                "worker_endpoint": contract_payload.get("worker_endpoint"),
+                "resume_token_present": bool(contract_payload.get("resume_token")),
+                "next_step": "fallback_to_cold_path",
+            }, None)
+
+        transport_kind = str(contract_payload.get("transport_kind") or "").strip()
+        worker_endpoint = str(contract_payload.get("worker_endpoint") or "").strip()
+        resume_token = str(contract_payload.get("resume_token") or "").strip()
+        resume_deadline_ms = contract_payload.get("resume_deadline_ms")
+        try:
+            resume_deadline_int = int(resume_deadline_ms) if resume_deadline_ms is not None else None
+        except (TypeError, ValueError):
+            resume_deadline_int = None
+        now_ms = int(time.monotonic() * 1000)
+        if resume_deadline_int is not None and now_ms > resume_deadline_int:
+            return ({
+                "executed": True,
+                "status": "attach_action_attach_unavailable",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "reason": "resume_deadline_expired",
+                "transport_kind": transport_kind or None,
+                "worker_endpoint": worker_endpoint or None,
+                "resume_token_present": bool(resume_token),
+                "resume_deadline_ms": resume_deadline_int,
+                "next_step": "fallback_to_cold_path",
+            }, None)
+        if transport_kind != "unix_socket_jsonl":
+            return ({
+                "executed": False,
+                "status": "attach_action_attach_unavailable",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "reason": "unsupported_transport_kind",
+                "transport_kind": transport_kind or None,
+                "worker_endpoint": worker_endpoint or None,
+                "resume_token_present": bool(resume_token),
+                "next_step": "fallback_to_cold_path",
+            }, None)
+        missing_fields: list[str] = []
+        if not worker_endpoint:
+            missing_fields.append("worker_endpoint")
+        if not resume_token:
+            missing_fields.append("resume_token")
+        if missing_fields:
+            return ({
+                "executed": False,
+                "status": "attach_action_attach_unavailable",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "reason": "missing_attach_transport_fields",
+                "transport_kind": transport_kind,
+                "worker_endpoint": worker_endpoint or None,
+                "resume_token_present": bool(resume_token),
+                "missing_fields": missing_fields,
+                "next_step": "fallback_to_cold_path",
+            }, None)
+
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(float(self.warm_attach_resume_timeout_ms) / 1000.0)
+        try:
+            sock.connect(worker_endpoint)
+            request_payload = {
+                "type": "warm_attach_resume",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "resume_token": resume_token,
+                "user_id": str(user_id or ""),
+                "message": str(message or ""),
+                "conversation_history": list(conversation_history or []),
+            }
+            sock.sendall((json.dumps(request_payload, separators=(",", ":")) + "\n").encode("utf-8"))
+            reader = sock.makefile("rb")
+            ack_line = reader.readline()
+            if not ack_line:
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                return ({
+                    "executed": True,
+                    "status": "attach_action_attach_failed",
+                    "session_id": str(session_id or ""),
+                    "requested_path": str(requested_path or "unknown"),
+                    "reason": "attach_ack_missing",
+                    "transport_kind": transport_kind,
+                    "worker_endpoint": worker_endpoint,
+                    "resume_token_present": True,
+                    "next_step": "fallback_to_cold_path",
+                }, None)
+            try:
+                ack_payload = json.loads(ack_line.decode("utf-8", errors="ignore"))
+            except json.JSONDecodeError:
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                return ({
+                    "executed": True,
+                    "status": "attach_action_attach_failed",
+                    "session_id": str(session_id or ""),
+                    "requested_path": str(requested_path or "unknown"),
+                    "reason": "attach_ack_invalid_json",
+                    "transport_kind": transport_kind,
+                    "worker_endpoint": worker_endpoint,
+                    "resume_token_present": True,
+                    "next_step": "fallback_to_cold_path",
+                }, None)
+            if not isinstance(ack_payload, dict) or str(ack_payload.get("type") or "") != "attach_ack":
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                return ({
+                    "executed": True,
+                    "status": "attach_action_attach_failed",
+                    "session_id": str(session_id or ""),
+                    "requested_path": str(requested_path or "unknown"),
+                    "reason": "attach_ack_invalid_shape",
+                    "transport_kind": transport_kind,
+                    "worker_endpoint": worker_endpoint,
+                    "resume_token_present": True,
+                    "ack_payload": ack_payload if isinstance(ack_payload, dict) else None,
+                    "next_step": "fallback_to_cold_path",
+                }, None)
+            if not bool(ack_payload.get("accepted")):
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                return ({
+                    "executed": True,
+                    "status": "attach_action_attach_failed",
+                    "session_id": str(session_id or ""),
+                    "requested_path": str(requested_path or "unknown"),
+                    "reason": str(ack_payload.get("reason") or "attach_rejected"),
+                    "transport_kind": transport_kind,
+                    "worker_endpoint": worker_endpoint,
+                    "resume_token_present": True,
+                    "ack_payload": dict(ack_payload),
+                    "next_step": "fallback_to_cold_path",
+                }, None)
+            return ({
+                "executed": True,
+                "status": "attach_action_attach_succeeded",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "reason": str(ack_payload.get("reason") or "attach_accepted"),
+                "transport_kind": transport_kind,
+                "worker_endpoint": worker_endpoint,
+                "resume_token_present": True,
+                "ack_payload": dict(ack_payload),
+                "next_step": "stream_attached_worker_events",
+            }, self._stream_events_from_worker_attach_socket(session_id=session_id, sock=sock, reader=reader))
+        except socket.timeout:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            return ({
+                "executed": True,
+                "status": "attach_action_attach_timeout",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "reason": "attach_connect_or_ack_timeout",
+                "transport_kind": transport_kind,
+                "worker_endpoint": worker_endpoint,
+                "resume_token_present": bool(resume_token),
+                "next_step": "fallback_to_cold_path",
+            }, None)
+        except OSError as exc:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            return ({
+                "executed": True,
+                "status": "attach_action_attach_failed",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "reason": f"attach_socket_error:{exc.__class__.__name__}",
+                "transport_kind": transport_kind,
+                "worker_endpoint": worker_endpoint,
+                "resume_token_present": bool(resume_token),
+                "next_step": "fallback_to_cold_path",
+            }, None)
+
+    def _verify_worker_attach_session_binding(self, *, session_id: str, cmdline: str | None) -> dict[str, Any]:
+        cmdline_text = str(cmdline or "")
+        if not cmdline_text:
+            return {
+                "verified": False,
+                "status": "attach_owner_identity_verified_session_unverified",
+                "reason": "cmdline_unavailable",
+            }
+        if str(session_id or "") and str(session_id) in cmdline_text:
+            return {
+                "verified": True,
+                "status": "attach_owner_identity_verified_session_verified",
+                "reason": "session_id_found_in_cmdline",
+            }
+        return {
+            "verified": False,
+            "status": "attach_owner_identity_verified_session_unverified",
+            "reason": "session_id_not_found_in_cmdline",
+        }
+
+    def execute_worker_attach(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        attach_plan: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        plan_payload = dict(attach_plan) if isinstance(attach_plan, dict) else {}
+        owner_pid = plan_payload.get("owner_pid")
+        try:
+            pid_int = int(owner_pid)
+        except (TypeError, ValueError):
+            pid_int = None
+
+        if not pid_int or pid_int <= 0:
+            status = "attach_owner_pid_invalid"
+            reason = "invalid_owner_pid"
+        else:
+            try:
+                os.kill(pid_int, 0)
+            except ProcessLookupError:
+                status = "attach_owner_missing"
+                reason = "owner_pid_not_found"
+            except PermissionError:
+                status = "attach_owner_present_but_unverifiable"
+                reason = "owner_pid_permission_denied"
+            else:
+                cmdline = self._read_process_cmdline(pid_int)
+                identity_expected = "chat_worker_subprocess.py"
+                identity_verified = bool(cmdline) and identity_expected in str(cmdline)
+                session_binding = None
+                if identity_verified:
+                    session_binding = self._verify_worker_attach_session_binding(session_id=session_id, cmdline=cmdline)
+                    status = str(session_binding.get("status") or "attach_owner_present_identity_verified")
+                    reason = str(session_binding.get("reason") or "owner_pid_alive_identity_verified")
+                else:
+                    status = "attach_owner_present_wrong_identity"
+                    reason = "owner_pid_alive_identity_mismatch"
+
+        return {
+            "executed": False,
+            "status": status,
+            "session_id": str(session_id or ""),
+            "requested_path": str(requested_path or "unknown"),
+            "mode": str(plan_payload.get("mode") or "unknown"),
+            "owner_pid": owner_pid,
+            "reason": reason,
+            "cmdline": cmdline if 'cmdline' in locals() else None,
+            "session_binding": dict(session_binding) if isinstance(locals().get("session_binding"), dict) else None,
+            "next_step": "implement_worker_attach_execution",
+        }
+
+    def decide_worker_attach_eligibility(
+        self,
+        *,
+        validation: dict[str, Any] | None,
+        attach_plan: dict[str, Any] | None,
+        attach_execution: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        validation_payload = dict(validation) if isinstance(validation, dict) else {}
+        attach_plan_payload = dict(attach_plan) if isinstance(attach_plan, dict) else {}
+        attach_execution_payload = dict(attach_execution) if isinstance(attach_execution, dict) else {}
+        if not bool(validation_payload.get("valid")):
+            return {
+                "eligible": False,
+                "status": "attach_not_eligible",
+                "reason": str(validation_payload.get("status") or "validation_failed"),
+            }
+        if str(attach_plan_payload.get("status") or "") != "attach_plan_ready":
+            return {
+                "eligible": False,
+                "status": "attach_not_eligible",
+                "reason": str(attach_plan_payload.get("status") or "attach_plan_incomplete"),
+            }
+        execution_status = str(attach_execution_payload.get("status") or "unknown")
+        if execution_status == "attach_owner_identity_verified_session_verified":
+            return {
+                "eligible": True,
+                "status": "attach_eligible_probe_only",
+                "reason": execution_status,
+            }
+        return {
+            "eligible": False,
+            "status": "attach_not_eligible",
+            "reason": execution_status,
+        }
+
+    def execute_worker_attach_action(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        attach_eligibility: dict[str, Any] | None,
+        attach_execution: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        eligibility_payload = dict(attach_eligibility) if isinstance(attach_eligibility, dict) else {}
+        execution_payload = dict(attach_execution) if isinstance(attach_execution, dict) else {}
+        cmdline = str(execution_payload.get("cmdline") or "").strip()
+        if not bool(eligibility_payload.get("eligible")):
+            status = "attach_action_unavailable"
+            reason = str(eligibility_payload.get("status") or "attach_not_eligible")
+            result = {
+                "executed": False,
+                "status": status,
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "eligibility_status": str(eligibility_payload.get("status") or "unknown"),
+                "execution_status": str(execution_payload.get("status") or "unknown"),
+                "owner_pid": execution_payload.get("owner_pid"),
+                "reason": reason,
+                "next_step": "fallback_to_cold_path",
+            }
+        elif not cmdline:
+            status = "attach_action_handshake_unavailable"
+            reason = "missing_cmdline_for_handshake"
+            result = {
+                "executed": False,
+                "status": status,
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "eligibility_status": str(eligibility_payload.get("status") or "unknown"),
+                "execution_status": str(execution_payload.get("status") or "unknown"),
+                "owner_pid": execution_payload.get("owner_pid"),
+                "reason": reason,
+                "next_step": "fallback_to_cold_path",
+            }
+        else:
+            ready_payload = {
+                "executed": False,
+                "status": "attach_action_handshake_ready",
+                "session_id": str(session_id or ""),
+                "requested_path": str(requested_path or "unknown"),
+                "eligibility_status": str(eligibility_payload.get("status") or "unknown"),
+                "execution_status": str(execution_payload.get("status") or "unknown"),
+                "owner_pid": execution_payload.get("owner_pid"),
+                "reason": "handshake_prerequisites_observed",
+                "next_step": "attempt_live_worker_attach_handshake",
+            }
+            handshake_result = self._attempt_live_worker_attach_handshake(
+                session_id=session_id,
+                requested_path=requested_path,
+                attach_execution=execution_payload,
+            )
+            result = {
+                **ready_payload,
+                **(dict(handshake_result) if isinstance(handshake_result, dict) else {}),
+                "precondition_status": ready_payload["status"],
+                "precondition_reason": ready_payload["reason"],
+            }
+        result.setdefault("eligibility_status", str(eligibility_payload.get("status") or "unknown"))
+        result.setdefault("execution_status", str(execution_payload.get("status") or "unknown"))
+        result.setdefault("owner_pid", execution_payload.get("owner_pid"))
+        return result
+
+    def attempt_warm_reuse(
+        self,
+        *,
+        session_id: str,
+        reason: str,
+        requested_path: str,
+        candidate: dict[str, Any],
+        policy: dict[str, Any],
+        user_id: str,
+        message: str,
+        conversation_history: list[dict[str, str]] | None,
+    ) -> Iterator[dict[str, Any]] | None:
+        candidate_payload = self._normalize_warm_reuse_candidate(candidate) or {}
+        reuse_contract = dict(candidate_payload.get("reuse_contract") or {})
+        validation = self.validate_warm_reuse_contract(session_id=session_id, reuse_contract=reuse_contract)
+        missing_required_fields = list(validation.get("missing_required_fields") or [])
+        reserved_for_future = list(validation.get("reserved_future_fields") or [])
+        validation_status = str(validation.get("status") or "unknown")
+        resume_capability = str(validation.get("resume_capability") or "unknown")
+        attach_plan = None
+        attach_execution = None
+        attach_eligibility = None
+        attach_action = None
+        attach_resume = None
+        attached_stream: Iterator[dict[str, Any]] | None = None
+        if bool(validation.get("valid")):
+            if resume_capability == "worker_attach":
+                attach_plan = self.plan_worker_attach_handshake(
+                    session_id=session_id,
+                    requested_path=requested_path,
+                    candidate=candidate_payload,
+                    reuse_contract=reuse_contract,
+                    validation=validation,
+                )
+                attach_execution = self.execute_worker_attach(
+                    session_id=session_id,
+                    requested_path=requested_path,
+                    attach_plan=attach_plan,
+                )
+                attach_eligibility = self.decide_worker_attach_eligibility(
+                    validation=validation,
+                    attach_plan=attach_plan,
+                    attach_execution=attach_execution,
+                )
+                if isinstance(attach_eligibility, dict) and bool(attach_eligibility.get("eligible")):
+                    attach_action = self.execute_worker_attach_action(
+                        session_id=session_id,
+                        requested_path=requested_path,
+                        attach_eligibility=attach_eligibility,
+                        attach_execution=attach_execution,
+                    )
+                attach_action_status = str((attach_action or {}).get("status") or "")
+                if attach_action_status == "attach_action_handshake_succeeded":
+                    attach_resume, attached_stream = self._attempt_live_worker_attach_resume(
+                        session_id=session_id,
+                        requested_path=requested_path,
+                        reuse_contract=reuse_contract,
+                        attach_action=attach_action,
+                        user_id=user_id,
+                        message=message,
+                        conversation_history=conversation_history,
+                    )
+                    attach_resume_status = str((attach_resume or {}).get("status") or "")
+                    if attach_resume_status == "attach_action_attach_succeeded" and attached_stream is not None:
+                        attempt = "reuse_worker_attach_resume_streaming"
+                        detail = "warm reuse candidate passed validation, completed handshake, and attached to a live worker resume transport"
+                    elif attach_resume_status == "attach_action_attach_timeout":
+                        attempt = "reuse_worker_attach_resume_timeout"
+                        detail = "warm reuse candidate passed validation and handshake, but the live worker resume attach timed out and fell back safely"
+                    elif attach_resume_status == "attach_action_attach_failed":
+                        attempt = "reuse_worker_attach_resume_failed"
+                        detail = "warm reuse candidate passed validation and handshake, but the live worker resume attach failed and fell back safely"
+                    else:
+                        attempt = "reuse_worker_attach_resume_unavailable"
+                        detail = "warm reuse candidate passed validation and handshake, but no supported live worker resume transport was available"
+                elif attach_action_status == "attach_action_handshake_timeout":
+                    attempt = "reuse_worker_attach_handshake_timeout"
+                    detail = "warm reuse candidate passed validation, but the first live worker-attach handshake probe timed out and fell back safely"
+                elif attach_action_status == "attach_action_handshake_failed":
+                    attempt = "reuse_worker_attach_handshake_failed"
+                    detail = "warm reuse candidate passed validation, but the first live worker-attach handshake probe failed and fell back safely"
+                else:
+                    attempt = "reuse_worker_attach_not_supported_yet"
+                    detail = "warm reuse candidate passed validation and advertises worker_attach capability, but attach execution could not progress beyond readiness checks"
+            else:
+                attempt = "reuse_resume_not_supported_yet"
+                detail = "warm reuse candidate passed basic contract validation, but resume/handoff is not implemented yet"
+        elif validation_status == "missing_required_fields":
+            attempt = "reuse_contract_missing_required_fields"
+            detail = "warm reuse candidate is missing one or more required contract fields for a reuse attempt"
+        elif validation_status == "invalid_session_binding":
+            attempt = "reuse_contract_invalid_session_binding"
+            detail = "warm reuse candidate contract is bound to a different session than the attempted reuse target"
+        elif validation_status == "unsupported_contract_version":
+            attempt = "reuse_contract_unsupported_version"
+            detail = "warm reuse candidate contract version is not supported by the current validator"
+        else:
+            attempt = "reuse_contract_invalid"
+            detail = "warm reuse candidate contract failed validation"
+        payload = {
+            "event": "warm_reuse_attempt",
+            "session_id": str(session_id or ""),
+            "reason": str(reason or "unknown"),
+            "requested_path": str(requested_path or "unknown"),
+            "attempt": attempt,
+            "detail": detail,
+            "candidate": candidate_payload,
+            "reuse_contract": reuse_contract or None,
+            "validation": dict(validation),
+            "attach_plan": dict(attach_plan) if isinstance(attach_plan, dict) else None,
+            "attach_execution": dict(attach_execution) if isinstance(attach_execution, dict) else None,
+            "attach_eligibility": dict(attach_eligibility) if isinstance(attach_eligibility, dict) else None,
+            "attach_action": dict(attach_action) if isinstance(attach_action, dict) else None,
+            "attach_resume": dict(attach_resume) if isinstance(attach_resume, dict) else None,
+            "missing_required_fields": missing_required_fields,
+            "reserved_future_fields": reserved_for_future,
+            "policy": dict(policy),
+            "fallback_to": str(requested_path or "unknown"),
+            "fallback_reason": attempt,
+            "user_id": str(user_id or ""),
+            "message_length": len(str(message or "")),
+            "conversation_history_len": len(conversation_history or []),
+            "monotonic_ms": int(time.monotonic() * 1000),
+        }
+        self._warm_reuse_attempt_events.append(dict(payload))
+        if attached_stream is not None and attempt == "reuse_worker_attach_resume_streaming":
+            return attached_stream
+        return None
+
+    def record_warm_reuse_decision(
+        self,
+        session_id: str,
+        *,
+        reason: str,
+        candidate: dict[str, Any] | None,
+        policy: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        available = isinstance(candidate, dict)
+        policy_payload = dict(policy) if isinstance(policy, dict) else None
+        if available:
+            if bool((policy_payload or {}).get("allowed")):
+                decision = "candidate_available_reuse_allowed"
+                detail = str((policy_payload or {}).get("policy") or "allowed")
+            else:
+                decision = "candidate_available_policy_blocked"
+                detail = str((policy_payload or {}).get("policy") or "disabled_by_policy")
+        else:
+            decision = "candidate_unavailable"
+            detail = self._warm_session_unavailable_reason(session_id)
+        payload = {
+            "event": "warm_reuse_decision",
+            "session_id": str(session_id or ""),
+            "reason": str(reason or "unknown"),
+            "decision": decision,
+            "available": bool(available),
+            "detail": detail,
+            "policy": policy_payload,
+            "candidate": candidate if available else None,
+            "monotonic_ms": int(time.monotonic() * 1000),
+        }
+        self._warm_reuse_decision_events.append(dict(payload))
+        return payload
+
+    def warm_session_strategy(self) -> dict[str, Any]:
+        strategy = self.warm_session_contract().as_dict()
+        strategy["owner_state"] = self.warm_session_owner_state()
+        strategy["recent_candidate_probes"] = [dict(item) for item in list(self._warm_candidate_probe_events)[-12:]]
+        strategy["recent_reuse_policy_checks"] = [dict(item) for item in list(self._warm_reuse_policy_events)[-12:]]
+        strategy["recent_reuse_attempts"] = [dict(item) for item in list(self._warm_reuse_attempt_events)[-12:]]
+        strategy["recent_reuse_decisions"] = [dict(item) for item in list(self._warm_reuse_decision_events)[-12:]]
+        return strategy
 
     def startup_diagnostics(self) -> dict[str, Any]:
         health = self._recall_health()
@@ -565,12 +1905,17 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "api_url_configured": bool(self.api_url),
                 "direct_agent_enabled": self.direct_agent_enabled,
                 "persistent_sessions_requested": self.persistent_sessions_requested,
-                "persistent_sessions_enabled": self.persistent_sessions_enabled,
+                "persistent_sessions_enabled": self._effective_warm_continuity_enabled(),
+                "persistent_shared_backend_enabled": self._shared_backend_persistent_enabled(),
+                "persistent_worker_owned_enabled": self._worker_owned_warm_continuity_enabled(),
+                "persistent_runtime_ownership_requested": self.persistent_runtime_ownership_requested,
                 "persistent_runtime_ownership": self.persistent_runtime_ownership,
+                "persistent_sessions_enablement_reason": self._persistent_sessions_enablement_reason(),
                 "provider_configured": bool(self.provider),
                 "model_configured": bool(self.model),
                 "base_url_configured": bool(self.base_url),
             },
+            "warm_sessions": self.warm_session_strategy(),
             "agent_runtime": {
                 "agent_python_exists": Path(self.agent_python).exists(),
                 "agent_workdir_exists": Path(self.agent_workdir).exists(),
@@ -649,17 +1994,40 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             return True
         return False
 
-    def evict_session(self, session_id: str) -> bool:
+    def evict_session(self, session_id: str, *, reason: str = "explicit_eviction") -> bool:
         if not session_id:
             return False
-        return self._session_manager.evict(session_id)
+        owner_state = self.warm_session_owner_state()
+        owner_records = list((owner_state.get("owner_records") if isinstance(owner_state, dict) else None) or [])
+        target_record = next((record for record in owner_records if str((record or {}).get("session_id") or "") == str(session_id or "")), None)
+        owner_pid = (target_record or {}).get("owner_pid") if isinstance(target_record, dict) else None
+        live_attach_running = isinstance(target_record, dict) and str(target_record.get("state") or "") in {"attachable_running", "expired"} and bool(target_record.get("attach_worker_endpoint"))
+        evicted_any = False
+        session_manager = getattr(self, "_session_manager", None)
+        if session_manager is not None:
+            evicted_any = bool(session_manager.evict(session_id, reason=reason)) or evicted_any
+        warm_registry = getattr(self, "_warm_session_registry", None)
+        if warm_registry is not None and warm_registry is not session_manager:
+            evicted_any = bool(warm_registry.evict(session_id, reason=reason)) or evicted_any
+        if live_attach_running:
+            evicted_any = self._terminate_warm_owner_process(pid=owner_pid, reason=reason) or evicted_any
+        return evicted_any
 
     def persistent_stats(self) -> dict[str, int | bool]:
-        stats = self._session_manager.stats()
+        shared_stats = self._session_manager.stats()
+        warm_registry = getattr(self, "_warm_session_registry", None)
+        registry_stats = warm_registry.stats() if warm_registry is not None and hasattr(warm_registry, "stats") else {}
+        if self.persistent_runtime_ownership == "shared":
+            stats = shared_stats
+        else:
+            stats = registry_stats or shared_stats
         return {
             "requested": self.persistent_sessions_requested,
-            "enabled": self.persistent_sessions_enabled and self.direct_agent_enabled,
+            "enabled": self._effective_warm_continuity_enabled(),
+            "shared_backend_enabled": self._shared_backend_persistent_enabled(),
+            "worker_owned_enabled": self._worker_owned_warm_continuity_enabled(),
             "ownership": self.persistent_runtime_ownership,
+            "enablement_reason": self._persistent_sessions_enablement_reason(),
             "total": int(stats.get("total", 0)),
             "bootstrapped": int(stats.get("bootstrapped", 0)),
             "unbootstrapped": int(stats.get("unbootstrapped", 0)),
@@ -746,7 +2114,9 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "agent_kwargs_session_db_available": bool(health.get("agent_kwargs_session_db_available")),
                 "direct_agent_enabled": self.direct_agent_enabled,
                 "persistent_sessions_requested": self.persistent_sessions_requested,
-                "persistent_sessions_enabled": self.persistent_sessions_enabled,
+                "persistent_sessions_enabled": self._effective_warm_continuity_enabled(),
+                "persistent_shared_backend_enabled": self._shared_backend_persistent_enabled(),
+                "persistent_worker_owned_enabled": self._worker_owned_warm_continuity_enabled(),
                 "persistent_runtime_ownership": self.persistent_runtime_ownership,
             },
         )
@@ -760,9 +2130,13 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "base_url": self.base_url,
                 "direct_agent_enabled": self.direct_agent_enabled,
                 "persistent_sessions_requested": self.persistent_sessions_requested,
-                "persistent_sessions_enabled": self.persistent_sessions_enabled,
+                "persistent_sessions_enabled": self._effective_warm_continuity_enabled(),
+                "persistent_shared_backend_enabled": self._shared_backend_persistent_enabled(),
+                "persistent_worker_owned_enabled": self._worker_owned_warm_continuity_enabled(),
                 "persistent_runtime_ownership": self.persistent_runtime_ownership,
+                "persistent_sessions_enablement_reason": self._persistent_sessions_enablement_reason(),
             },
+            "warm_sessions": self.warm_session_strategy(),
             "health": self._recall_health(),
             "startup": self.startup_diagnostics(),
             "children": self.child_spawn_diagnostics(),
@@ -874,8 +2248,39 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
 
         recovered_fallback_history: list[dict[str, str]] = []
         persistent_fallback_triggered = False
-        requested_path = "agent-persistent" if (self.direct_agent_enabled and self.persistent_sessions_enabled) else ("agent" if self.direct_agent_enabled else "cli")
+        requested_path = self._selected_transport()
         self._record_session_launch(session_id=session_id, requested_path=requested_path, message=cleaned, user_id=user_id)
+        if session_id:
+            warm_probe = self.probe_warm_session_candidate(session_id, reason=f"stream_start:{requested_path}")
+            warm_candidate = warm_probe.get("candidate") if isinstance(warm_probe, dict) else None
+            warm_policy = None
+            if isinstance(warm_candidate, dict):
+                warm_policy = self.evaluate_warm_reuse_policy(
+                    session_id,
+                    reason=f"stream_start:{requested_path}",
+                    requested_path=requested_path,
+                    candidate=warm_candidate,
+                )
+                if isinstance(warm_policy, dict) and bool(warm_policy.get("allowed")):
+                    warm_reuse_events = self.attempt_warm_reuse(
+                        session_id=session_id,
+                        reason=f"stream_start:{requested_path}",
+                        requested_path=requested_path,
+                        candidate=warm_candidate,
+                        policy=warm_policy,
+                        user_id=user_id,
+                        message=cleaned,
+                        conversation_history=conversation_history,
+                    )
+                    if warm_reuse_events is not None:
+                        yield from warm_reuse_events
+                        return
+            self.record_warm_reuse_decision(
+                session_id,
+                reason=f"stream_start:{requested_path}",
+                candidate=warm_candidate,
+                policy=warm_policy,
+            )
 
         if self.direct_agent_enabled and self.persistent_sessions_enabled:
             self._record_transport_transition(
@@ -922,9 +2327,10 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 )
 
         if self.direct_agent_enabled:
+            direct_transport_label = "agent-worker-isolated" if self._worker_owned_warm_continuity_enabled() else "agent"
             self._record_transport_transition(
                 previous_path="agent-persistent" if persistent_fallback_triggered else "none",
-                next_path="agent",
+                next_path=direct_transport_label,
                 reason="direct_start",
                 session_id=session_id,
                 user_id=user_id,

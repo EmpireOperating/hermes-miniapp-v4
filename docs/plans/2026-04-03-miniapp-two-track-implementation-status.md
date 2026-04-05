@@ -3,6 +3,12 @@
 Linked primary plan:
 - `docs/plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
 
+Primary remaining-work checklist:
+- `docs/plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
+
+Warm-session ownership decision:
+- `docs/plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
+
 Purpose:
 - Provide an at-a-glance implementation checkpoint for any agent picking up work.
 - Mark strict status for Track A / Track B tasks.
@@ -45,11 +51,13 @@ Gap to close:
 - Subprocess path is present, but not yet a complete per-chat fault-domain boundary for full claimed-turn lifecycle ownership.
 
 ### A3: Preserve SSE/event contract while execution splits
-Status: Partial (mostly behavior-preserved)
+Status: Partial (major live regression now closed)
 Evidence:
 - Existing streaming/runtime tests remain green with launcher abstraction in place.
+- First-turn queue/SSE handoff bug was fixed so the original stream now publishes a normal terminal `done` before job completion instead of falling back to synthetic terminal DB recovery.
+- Live API and browser QA both verified that first and later turns return the UI/stream to a clean completed state.
 Gap to close:
-- Must be re-validated against fully externalized worker lifecycle (not only current hybrid path).
+- Still needs broader reconnect/tab-switch/multi-chat sign-off, not just the bounded warm-owner path.
 
 ### A4: Add per-worker OS-enforced resource boundaries
 Status: Partial
@@ -104,6 +112,7 @@ Evidence:
 Status: Done
 Evidence:
 - Transition recording implemented and exposed in `recent_transport_transitions`.
+- Runtime diagnostics now expose active job snapshots with per-session filtered `recent_transport_transitions` under `incident_snapshot.workers.active_jobs`.
 - Tests include persistent→direct→cli and resume relaunch attribution signatures.
 
 ### B4: Reproducible forensics scenarios
@@ -126,16 +135,47 @@ Evidence:
 
 ## Current Validation Snapshot
 
-Targeted tests run:
+Latest expanded backend-swap sign-off pass:
+
+Python targeted tests:
 - `tests/test_job_runtime_chat_job.py`
-- `tests/test_job_runtime_worker_launcher.py`
+- `tests/test_routes_chat.py`
 - `tests/test_routes_jobs_runtime.py`
+- `tests/test_job_runtime_worker_launcher.py`
 - `tests/test_hermes_client.py`
-- `tests/test_server_startup.py`
-- `tests/test_config.py`
+- `tests/test_fanout_storm_forensics.py`
+- `tests/test_streaming_hardening_guards.py`
 
 Result observed:
-- `104 passed`
+- `214 passed in 13.20s`
+
+Frontend/runtime targeted tests:
+- `tests/chat_history_helpers.test.mjs`
+- `tests/stream_controller.test.mjs`
+- `tests/visibility_skin_helpers.test.mjs`
+- `tests/bootstrap_auth_helpers.test.mjs`
+- `tests/frontend_runtime.test.mjs`
+
+Result observed:
+- `75 passed`
+
+Notable regression coverage now explicitly includes:
+- first-turn queue/SSE `done` handoff
+- second-turn same-worker continuity
+- attach-contract refresh before attached terminal `done`
+- stale history response suppression during active-chat changes
+- reconnect/replay cursor behavior across resumed streams
+- active-chat visibility reconciliation
+- same-chat conflict rejection without blocking a different chat from starting its own stream
+
+Additional live validation is captured in:
+- `docs/plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
+
+That live validation covered:
+- first-turn queue/SSE `done` handoff
+- second-turn same-worker continuity
+- attach-contract refresh before attached terminal `done`
+- browser UI recovery from `Sending…` / running back to normal send-ready state
 
 ---
 

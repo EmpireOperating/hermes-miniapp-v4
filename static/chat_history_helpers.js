@@ -1,4 +1,111 @@
 (function initHermesMiniappChatHistory(globalScope) {
+  function createMetaController(deps) {
+    const {
+      getActiveChatId,
+      setActiveChatId,
+      getRenderedChatId,
+      setRenderedChatId,
+      chatScrollTop,
+      chatStickToBottom,
+      messagesEl,
+      isNearBottomFn,
+      setDraft,
+      promptEl,
+      activeChatName,
+      panelTitle,
+      template,
+      nowStamp,
+      renderBody,
+      historyCount,
+      updateComposerState,
+      syncPinChatButton,
+      renderTabs,
+      syncActiveTabSelection,
+      syncLiveToolStreamForChat,
+      syncActivePendingStatus,
+      syncActiveLatencyChip,
+      updateJumpLatestVisibility,
+      getDraft,
+      chats,
+      scheduleTimeout,
+    } = deps;
+
+    function setActiveChatMeta(chatId, { fullTabRender = true, deferNonCritical = false } = {}) {
+      const previousActiveRaw = getActiveChatId();
+      const hadPreviousActive = previousActiveRaw != null;
+      const previousActiveChatId = Number(previousActiveRaw);
+      if (hadPreviousActive && Number(getRenderedChatId()) === previousActiveChatId) {
+        chatScrollTop.set(previousActiveChatId, messagesEl.scrollTop);
+        chatStickToBottom.set(previousActiveChatId, isNearBottomFn(messagesEl));
+      }
+      if (hadPreviousActive && previousActiveChatId) {
+        setDraft(previousActiveChatId, promptEl.value || '');
+      }
+
+      const nextActiveChatId = Number(chatId || 0);
+      if (!nextActiveChatId) {
+        setActiveChatId(null);
+        promptEl.value = '';
+        activeChatName.textContent = 'None';
+        panelTitle.textContent = 'Conversation';
+        messagesEl.innerHTML = '';
+        const node = template.content.firstElementChild.cloneNode(true);
+        node.classList.add('message--system');
+        node.querySelector('.message__role').textContent = 'system';
+        node.querySelector('.message__time').textContent = nowStamp();
+        renderBody(node.querySelector('.message__body'), 'No chats open. Start a new chat to continue.');
+        messagesEl.appendChild(node);
+        historyCount.textContent = '0';
+        setRenderedChatId(null);
+        updateComposerState();
+        syncPinChatButton();
+        renderTabs();
+        syncLiveToolStreamForChat(null);
+        syncActivePendingStatus();
+        syncActiveLatencyChip();
+        updateJumpLatestVisibility();
+        return;
+      }
+
+      setActiveChatId(nextActiveChatId);
+      promptEl.value = getDraft(nextActiveChatId);
+      const chat = chats.get(nextActiveChatId);
+      const title = chat?.title || 'Chat';
+      activeChatName.textContent = title;
+      panelTitle.textContent = `Conversation · ${title}`;
+      updateComposerState();
+      syncPinChatButton();
+
+      if (fullTabRender) {
+        renderTabs();
+      } else {
+        syncActiveTabSelection(previousActiveChatId, nextActiveChatId);
+      }
+
+      const finalizeMeta = () => {
+        syncLiveToolStreamForChat(nextActiveChatId);
+        syncActivePendingStatus();
+        syncActiveLatencyChip();
+        updateJumpLatestVisibility();
+      };
+
+      if (deferNonCritical) {
+        scheduleTimeout(finalizeMeta, 0);
+      } else {
+        finalizeMeta();
+      }
+    }
+
+    function setNoActiveChatMeta() {
+      setActiveChatMeta(null);
+    }
+
+    return {
+      setActiveChatMeta,
+      setNoActiveChatMeta,
+    };
+  }
+
   function createController(deps) {
     const {
       apiPost,
@@ -9,6 +116,7 @@
       setActiveChatMeta,
       renderMessages,
       hasLiveStreamController,
+      abortStreamController,
       mergeHydratedHistory,
       refreshTabNode,
       getActiveChatId,
@@ -33,6 +141,7 @@
       pendingChats,
       shouldResumeOnVisibilityChange,
       restorePendingStreamSnapshot,
+      finalizeHydratedPendingState,
     } = deps;
 
     const activeRenderState = {
@@ -71,6 +180,28 @@
       });
     }
 
+    function latestAssistantLikeBody(history, { pending } = {}) {
+      const entries = Array.isArray(history) ? history : [];
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const item = entries[index];
+        const role = String(item?.role || '').toLowerCase();
+        if (role !== 'assistant' && role !== 'hermes') continue;
+        if (Boolean(item?.pending) !== Boolean(pending)) continue;
+        const body = String(item?.body || '').trim();
+        if (!body) continue;
+        return body;
+      }
+      return '';
+    }
+
+    function hydratedCompletionMatchesVisibleLocalPending(previousHistory, nextHistory) {
+      const pendingBody = latestAssistantLikeBody(previousHistory, { pending: true });
+      if (!pendingBody) return false;
+      const completedBody = latestAssistantLikeBody(nextHistory, { pending: false });
+      if (!completedBody) return false;
+      return completedBody === pendingBody;
+    }
+
     function historiesDiffer(currentHistory, incomingHistory) {
       const a = currentHistory || [];
       const b = incomingHistory || [];
@@ -107,7 +238,9 @@
       const previousHistory = histories.get(targetChatId) || [];
       const chatPending = Boolean(data.chat?.pending);
       const localPendingWithoutLiveStream = hasLocalPendingWithoutLiveStream(targetChatId, previousHistory);
-      const preservePendingState = chatPending || localPendingWithoutLiveStream;
+      const matchedVisibleHydratedCompletion = !chatPending
+        && hydratedCompletionMatchesVisibleLocalPending(previousHistory, data.history || []);
+      const preservePendingState = chatPending || (localPendingWithoutLiveStream && !matchedVisibleHydratedCompletion);
       const shouldResumePending = preservePendingState && !hasLiveStreamController(targetChatId);
       const nextHistory = mergeHydratedHistory({
         previousHistory,
@@ -116,6 +249,9 @@
       });
       const historyChanged = historiesDiffer(previousHistory, nextHistory);
       histories.set(targetChatId, nextHistory);
+      if (matchedVisibleHydratedCompletion && typeof finalizeHydratedPendingState === 'function') {
+        finalizeHydratedPendingState(targetChatId);
+      }
       if (preservePendingState && typeof restorePendingStreamSnapshot === 'function') {
         restorePendingStreamSnapshot(targetChatId);
       }
@@ -216,10 +352,14 @@
       const history = histories.get(key) || [];
       let pendingMessage = null;
       for (let index = history.length - 1; index >= 0; index -= 1) {
-        if (history[index].pending && history[index].role === 'hermes') {
-          pendingMessage = history[index];
-          break;
+        const item = history[index];
+        if (!item?.pending) continue;
+        const role = String(item?.role || '').toLowerCase();
+        if (role !== 'hermes' && role !== 'assistant') {
+          continue;
         }
+        pendingMessage = item;
+        break;
       }
 
       if (!pendingMessage) {
@@ -322,9 +462,26 @@
         });
     }
 
+    function reconcilePendingStateFromStatus(statusChats = []) {
+      const entries = Array.isArray(statusChats) ? statusChats : [];
+      for (const chat of entries) {
+        const key = normalizeChatId(chat?.id);
+        if (!key) continue;
+        if (Boolean(chat?.pending)) continue;
+        if (hasLiveStreamController(key) && typeof abortStreamController === 'function') {
+          abortStreamController(key);
+        }
+        if (typeof finalizeHydratedPendingState === 'function') {
+          finalizeHydratedPendingState(key);
+        }
+      }
+    }
+
     async function refreshChats() {
       const data = await apiPost('/api/chats/status', {});
-      syncChats(data.chats || []);
+      const statusChats = data.chats || [];
+      syncChats(statusChats);
+      reconcilePendingStateFromStatus(statusChats);
       syncPinnedChats(data.pinned_chats || []);
       renderTabs();
       renderPinnedChats();
@@ -351,17 +508,23 @@
       const localPendingWithoutLiveStream = hasLocalPendingWithoutLiveStream(activeId, previousHistory);
 
       const chatPending = Boolean(data.chat?.pending);
-      const preservePendingState = chatPending || localPendingWithoutLiveStream;
+      const matchedVisibleHydratedCompletion = !chatPending
+        && hydratedCompletionMatchesVisibleLocalPending(previousHistory, data.history || []);
+      const preservePendingState = chatPending || (localPendingWithoutLiveStream && !matchedVisibleHydratedCompletion);
       const nextHistory = mergeHydratedHistory({
         previousHistory,
         nextHistory: data.history || [],
         chatPending: preservePendingState,
       });
       histories.set(activeId, nextHistory);
+      if (matchedVisibleHydratedCompletion && typeof finalizeHydratedPendingState === 'function') {
+        finalizeHydratedPendingState(activeId);
+      }
       if (preservePendingState && typeof restorePendingStreamSnapshot === 'function') {
         restorePendingStreamSnapshot(activeId);
       }
       upsertChat(data.chat);
+      refreshTabNode(activeId);
       renderMessages(activeId, { preserveViewport: true });
 
       const needsVisibilityResume = shouldResumeOnVisibilityChange({
@@ -371,7 +534,7 @@
         streamAbortControllers,
       });
       const serverPendingWithoutLiveStream = chatPending && !hasLiveStreamController(activeId);
-      if (needsVisibilityResume || serverPendingWithoutLiveStream || localPendingWithoutLiveStream) {
+      if (!matchedVisibleHydratedCompletion && (needsVisibilityResume || serverPendingWithoutLiveStream || localPendingWithoutLiveStream)) {
         void resumePendingChatStream(activeId, { force: localPendingWithoutLiveStream });
       }
     }
@@ -394,7 +557,7 @@
     };
   }
 
-  const api = { createController };
+  const api = { createController, createMetaController };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
   }

@@ -93,13 +93,18 @@ def execute_chat_job(
             job_id=job_id,
             session_id=session_id,
         )
+    saw_terminal_done = False
+    event_iter = None
     try:
-        for event in stream_events(
-            user_id=user_id,
-            message=message,
-            conversation_history=history,
-            session_id=session_id,
-        ):
+        event_iter = iter(
+            stream_events(
+                user_id=user_id,
+                message=message,
+                conversation_history=history,
+                session_id=session_id,
+            )
+        )
+        for event in event_iter:
             event_session_id = str(event.get("session_id") or "").strip()
             if event_session_id and event_session_id != session_id:
                 raise client_error_cls(
@@ -135,16 +140,22 @@ def execute_chat_job(
                     reply_text += chunk
                     runtime.publish_job_event(job_id, "chunk", {"text": chunk, "chat_id": chat_id})
             elif event_type == "done":
+                saw_terminal_done = True
                 reply_text = str(event.get("reply") or reply_text).strip()
                 latency_ms = int(event.get("latency_ms") or 0)
                 checkpoint_payload = event.get("runtime_checkpoint")
                 if isinstance(checkpoint_payload, list):
                     runtime_checkpoint = [item for item in checkpoint_payload if isinstance(item, dict)]
+                break
             elif event_type == "error":
                 raise client_error_cls(str(event.get("error") or "Hermes stream failed."))
     except client_error_cls as exc:
         raise retryable_error_cls(str(exc)) from exc
     finally:
+        if event_iter is not None:
+            close_iter = getattr(event_iter, "close", None)
+            if callable(close_iter):
+                close_iter()
         clear_spawn_trace_context = getattr(runtime.client, "clear_spawn_trace_context", None)
         if callable(clear_spawn_trace_context):
             clear_spawn_trace_context()
@@ -152,6 +163,9 @@ def execute_chat_job(
     state = runtime.store.get_job_state(job_id)
     if not state or state.get("status") != "running":
         return
+
+    if not saw_terminal_done:
+        raise retryable_error_cls("Hermes stream ended without a terminal done event.")
 
     if not reply_text:
         raise retryable_error_cls("Empty response from Hermes.")
@@ -195,17 +209,30 @@ def execute_chat_job(
             history=runtime_checkpoint,
         )
 
-    runtime.client.evict_session(session_id)
+    preserve_warm_owner = False
+    warm_owner_state = getattr(runtime.client, "warm_session_owner_state", None)
+    if callable(warm_owner_state):
+        try:
+            owner_state = warm_owner_state() or {}
+        except Exception:
+            owner_state = {}
+        records = list((owner_state.get("owner_records") if isinstance(owner_state, dict) else None) or [])
+        record = next((item for item in records if str((item or {}).get("session_id") or "") == str(session_id or "")), None)
+        preserve_warm_owner = isinstance(record, dict) and str(record.get("state") or "") == "attachable_running"
+
+    done_payload = {
+        "reply": reply_text,
+        "latency_ms": latency_ms,
+        "turn_count": runtime.store.get_turn_count(user_id, chat_id=chat_id),
+        "chat_id": chat_id,
+        "hard_truncated": was_hard_truncated,
+        "parts": len(reply_parts),
+    }
+    if preserve_warm_owner:
+        done_payload["persistent_mode"] = "warm-detached"
+        done_payload["warm_handoff"] = True
+        done_payload["session_id"] = session_id
+    runtime.publish_job_event(job_id, "done", done_payload)
+    if not preserve_warm_owner:
+        runtime.client.evict_session(session_id)
     runtime.store.complete_job(job_id)
-    runtime.publish_job_event(
-        job_id,
-        "done",
-        {
-            "reply": reply_text,
-            "latency_ms": latency_ms,
-            "turn_count": runtime.store.get_turn_count(user_id, chat_id=chat_id),
-            "chat_id": chat_id,
-            "hard_truncated": was_hard_truncated,
-            "parts": len(reply_parts),
-        },
-    )

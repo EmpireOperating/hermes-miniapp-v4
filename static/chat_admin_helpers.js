@@ -14,6 +14,7 @@
       chatTitleTagLabel,
       chatTitleTagRow,
       chatTitleTagButtons,
+      chatTabContextFork,
       apiPost,
       chats,
       pinnedChats,
@@ -36,9 +37,11 @@
       getActiveChatId,
       openChat,
       onLatencyByChatMutated,
+      chatTabContextMenu,
     } = deps;
 
     let chatTitleSelectedTag = 'none';
+    let tabContextTargetChatId = null;
 
     function parseTaggedChatTitle(rawTitle) {
       const title = String(rawTitle || '').trim();
@@ -226,6 +229,26 @@
       }
     }
 
+    function isChatForkBlocked(chatId) {
+      const key = Number(chatId);
+      if (!key) return false;
+      return pendingChats.has(key) || Boolean(chats.get(key)?.pending);
+    }
+
+    function syncChatTabContextMenuState(chatId) {
+      if (!chatTabContextFork) return;
+      const blocked = isChatForkBlocked(chatId);
+      chatTabContextFork.disabled = blocked;
+      chatTabContextFork.setAttribute('aria-disabled', blocked ? 'true' : 'false');
+      chatTabContextFork.title = blocked ? 'Wait for Hermes to finish before forking this chat.' : 'Fork chat';
+    }
+
+    function ensureForkChatAllowed(chatId) {
+      if (isChatForkBlocked(chatId)) {
+        throw new Error('Wait for Hermes to finish before forking this chat.');
+      }
+    }
+
     async function removeActiveChat() {
       const activeChatId = Number(getActiveChatId());
       if (!activeChatId) return;
@@ -280,6 +303,7 @@
     async function forkChatFrom(chatId) {
       const sourceChatId = Number(chatId);
       if (!sourceChatId) return;
+      ensureForkChatAllowed(sourceChatId);
 
       const sourceTitleRaw = String(chatLabel(sourceChatId) || `Chat ${sourceChatId}`).trim();
       const parsed = parseTaggedChatTitle(sourceTitleRaw);
@@ -299,6 +323,77 @@
       renderTabs();
       renderPinnedChats();
       renderMessages(nextActiveChatId);
+    }
+
+    function closeChatTabContextMenu() {
+      tabContextTargetChatId = null;
+      if (!chatTabContextMenu) return;
+      chatTabContextMenu.hidden = true;
+    }
+
+    function openChatTabContextMenu(chatId, clientX, clientY) {
+      if (!chatTabContextMenu) return;
+      tabContextTargetChatId = Number(chatId) || null;
+      if (!tabContextTargetChatId) {
+        closeChatTabContextMenu();
+        return;
+      }
+      syncChatTabContextMenuState(tabContextTargetChatId);
+      if (chatTabContextFork?.disabled) {
+        closeChatTabContextMenu();
+        return;
+      }
+
+      const viewportWidth = Number(windowObject?.innerWidth || 0);
+      const viewportHeight = Number(windowObject?.innerHeight || 0);
+      const menuWidth = 172;
+      const menuHeight = 44;
+      const left = Math.max(8, Math.min(Number(clientX || 0), Math.max(8, viewportWidth - menuWidth - 8)));
+      const top = Math.max(8, Math.min(Number(clientY || 0), Math.max(8, viewportHeight - menuHeight - 8)));
+
+      chatTabContextMenu.style.left = `${left}px`;
+      chatTabContextMenu.style.top = `${top}px`;
+      chatTabContextMenu.hidden = false;
+    }
+
+    function handleTabOverflowTriggerClick(event) {
+      const trigger = event?.target?.closest?.('[data-chat-tab-menu-trigger]');
+      if (!trigger) return;
+
+      const tab = trigger.closest('.chat-tab');
+      const chatId = Number(tab?.dataset?.chatId || 0);
+      if (!chatId || chatId !== Number(getActiveChatId())) {
+        closeChatTabContextMenu();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const existingTargetId = Number(tabContextTargetChatId || 0);
+      const isAlreadyOpenForSameChat = !chatTabContextMenu?.hidden && existingTargetId === chatId;
+      if (isAlreadyOpenForSameChat) {
+        closeChatTabContextMenu();
+        return;
+      }
+
+      const rect = trigger.getBoundingClientRect();
+      openChatTabContextMenu(chatId, rect.right - 6, rect.bottom + 6);
+    }
+
+    function handleGlobalChatContextMenuDismiss(event) {
+      if (chatTabContextMenu?.hidden) return;
+      const target = event?.target || null;
+      if (target && chatTabContextMenu?.contains?.(target)) return;
+      closeChatTabContextMenu();
+    }
+
+    async function handleTabContextForkClick(event) {
+      event?.preventDefault?.();
+      const chatId = Number(tabContextTargetChatId || 0);
+      closeChatTabContextMenu();
+      if (!chatId) return;
+      await forkChatFrom(chatId);
     }
 
     async function toggleActiveChatPin() {
@@ -344,6 +439,11 @@
       removeActiveChat,
       openPinnedChat,
       forkChatFrom,
+      closeChatTabContextMenu,
+      openChatTabContextMenu,
+      handleTabOverflowTriggerClick,
+      handleGlobalChatContextMenuDismiss,
+      handleTabContextForkClick,
       toggleActiveChatPin,
       openSettingsModal,
       closeSettingsModal,

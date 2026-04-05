@@ -165,6 +165,24 @@ def test_fork_chat_creates_new_chat_with_source_history(monkeypatch, tmp_path) -
     assert any(chat["id"] == payload["chat"]["id"] for chat in payload["chats"])
 
 
+def test_fork_chat_rejects_active_work(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    source_chat = server.store.create_chat("123", "Busy")
+    operator_message_id = server.store.add_message("123", source_chat.id, "operator", "still working")
+    server.store.enqueue_chat_job("123", source_chat.id, operator_message_id)
+
+    response = client.post(
+        "/api/chats/fork",
+        json={"init_data": "ok", "chat_id": source_chat.id, "title": "Busy alt"},
+    )
+
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert "finish before forking" in payload["error"].lower()
+    assert [chat.title for chat in server.store.list_chats("123")] == ["Busy"]
+
+
 def test_chat_routes_use_current_server_store_after_swap(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -215,8 +233,8 @@ def test_remove_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
 def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
-    captured = {"session_id": None}
-    monkeypatch.setattr(server.client, "evict_session", lambda session_id: captured.__setitem__("session_id", session_id) or True)
+    captured = {"session_id": None, "reason": None}
+    monkeypatch.setattr(server.client, "evict_session", lambda session_id, reason="explicit_eviction": captured.update({"session_id": session_id, "reason": reason}) or True)
 
     chat_id = server.store.ensure_default_chat("123")
     server.store.add_message("123", chat_id, "operator", "x")
@@ -225,6 +243,7 @@ def test_clear_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
 
     assert response.status_code == 200
     assert captured["session_id"] == f"miniapp-123-{chat_id}"
+    assert captured["reason"] == "invalidated_by_clear"
 
 def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
@@ -243,8 +262,8 @@ def test_clear_chat_cancels_open_stream_jobs(monkeypatch, tmp_path) -> None:
 def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
-    captured = {"session_id": None}
-    monkeypatch.setattr(server.client, "evict_session", lambda session_id: captured.__setitem__("session_id", session_id) or True)
+    captured = {"session_id": None, "reason": None}
+    monkeypatch.setattr(server.client, "evict_session", lambda session_id, reason="explicit_eviction": captured.update({"session_id": session_id, "reason": reason}) or True)
 
     default_chat_id = server.store.ensure_default_chat("123")
     alt_chat = server.store.create_chat("123", "Alt")
@@ -253,6 +272,7 @@ def test_remove_chat_evicts_persistent_runtime(monkeypatch, tmp_path) -> None:
 
     assert response.status_code == 200
     assert captured["session_id"] == f"miniapp-123-{alt_chat.id}"
+    assert captured["reason"] == "invalidated_by_remove"
     assert response.get_json()["active_chat_id"] == default_chat_id
 
 def test_file_preview_reads_allowed_path(monkeypatch, tmp_path) -> None:
@@ -506,6 +526,67 @@ def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None
     body = response.get_data(as_text=True)
     assert "already working" in body
 
+
+def test_stream_chat_allows_other_chat_while_first_chat_has_open_job(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    first_chat_id = server.store.ensure_default_chat("123")
+    second_chat = server.store.create_chat("123", "Second")
+
+    first_operator_message_id = server.store.add_message("123", first_chat_id, "operator", "first still running")
+    first_job_id = server.store.enqueue_chat_job("123", first_chat_id, first_operator_message_id)
+
+    class _SingleDoneSubscriber:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self._sent = False
+
+        def get(self, timeout=None):
+            if self._sent:
+                raise queue.Empty
+            self._sent = True
+            return {
+                "event": "done",
+                "event_id": 1,
+                "payload": dict(self._payload),
+            }
+
+    subscribers: dict[int, _SingleDoneSubscriber] = {}
+
+    def _subscribe_job_events(job_id: int, after_event_id: int = 0):
+        if after_event_id:
+            raise AssertionError("new stream should not request replay cursor")
+        subscribers[job_id] = _SingleDoneSubscriber(
+            {"chat_id": second_chat.id, "reply": "second ok", "latency_ms": 1}
+        )
+        return subscribers[job_id]
+
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", _subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": second_chat.id, "message": "second can still run"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"reply": "second ok"' in body
+
+    first_state = server.store.get_job_state(first_job_id)
+    assert first_state is not None
+    assert first_state["status"] in {"queued", "open", "running"}
+
+    open_first = server.store.get_open_job(user_id="123", chat_id=first_chat_id)
+    open_second = server.store.get_open_job(user_id="123", chat_id=second_chat.id)
+    assert open_first is not None
+    assert open_first["id"] == first_job_id
+    assert open_second is not None
+    assert int(open_second["id"]) != first_job_id
+    assert server.store.get_active_chat("123") == second_chat.id
+
+
 def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -515,6 +596,19 @@ def test_stream_resume_rejects_when_no_open_job(monkeypatch, tmp_path) -> None:
     assert response.status_code == 409
     body = response.get_data(as_text=True)
     assert "No active Hermes job" in body
+
+
+def test_stream_resume_without_open_job_does_not_change_active_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    main_chat_id = server.store.ensure_default_chat("123")
+    alt_chat = server.store.create_chat("123", "Alt")
+    server.store.set_active_chat("123", main_chat_id)
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": alt_chat.id})
+
+    assert response.status_code == 409
+    assert server.store.get_active_chat("123") == main_chat_id
 
 
 def test_stream_resume_dead_letters_stale_open_job_before_409(monkeypatch, tmp_path) -> None:
@@ -567,6 +661,27 @@ def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_pat
     assert '"_event_id": 1' in body
     assert '"_event_id": 2' in body
     assert "\\ndata:" not in body
+
+
+def test_stream_resume_with_open_job_does_not_change_active_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    main_chat_id = server.store.ensure_default_chat("123")
+    alt_chat = server.store.create_chat("123", "Alt")
+    server.store.set_active_chat("123", main_chat_id)
+    operator_message_id = server.store.add_message("123", alt_chat.id, "operator", "resume this")
+    job_id = server.store.enqueue_chat_job("123", alt_chat.id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == job_id
+
+    server._publish_job_event(job_id, "done", {"chat_id": alt_chat.id, "reply": "ok", "latency_ms": 1})
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": alt_chat.id})
+
+    assert response.status_code == 200
+    assert server.store.get_active_chat("123") == main_chat_id
+
 
 def test_stream_resume_can_request_only_events_after_last_seen_cursor(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
@@ -645,6 +760,109 @@ def test_stream_resume_emits_synthetic_terminal_when_queue_silent(monkeypatch, t
     assert "event: done" in body
     assert '"synthetic": true' in body
     assert '"job_status": "done"' in body
+
+
+def test_stream_resume_emits_done_for_dead_job_with_live_warm_handoff(monkeypatch, tmp_path) -> None:
+    import routes_chat_stream
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
+    _job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+
+    class _AlwaysEmptySubscriber:
+        def get(self, timeout=None):
+            raise queue.Empty
+
+    monotonic_ticks = iter([0.0, 5.0, 10.0, 15.0])
+    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 20.0))
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id, after_event_id=0: _AlwaysEmptySubscriber())
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+    monkeypatch.setattr(
+        server.store,
+        "get_job_state",
+        lambda _job_id: {"status": "dead", "error": None, "attempts": 1, "max_attempts": 1},
+    )
+    monkeypatch.setattr(
+        server.client,
+        "select_warm_session_candidate",
+        lambda session_id: {
+            "session_id": session_id,
+            "state": "attachable_running",
+            "attach_worker_endpoint": "/tmp/test.sock",
+            "attach_resume_token": "token-123",
+        },
+    )
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"job_status": "dead"' in body
+    assert '"warm_handoff": true' in body
+    assert '"persistent_mode": "warm-detached"' in body
+    assert 'stream detached to warm owner' in body
+
+
+def test_stream_efficiency_mode_throttles_job_state_db_reads(monkeypatch, tmp_path) -> None:
+    import routes_chat_stream
+
+    monkeypatch.setenv("MINI_APP_STREAM_EFFICIENCY_MODE", "1")
+    monkeypatch.setenv("MINI_APP_STREAM_METRICS_REFRESH_SECONDS", "10")
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+
+    class _AlwaysEmptySubscriber:
+        def get(self, timeout=None):
+            raise queue.Empty
+
+    monotonic_ticks = iter([0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0])
+    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 12.0))
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id, after_event_id=0: _AlwaysEmptySubscriber())
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+
+    polls = {"count": 0}
+
+    def _get_job_state(_job_id: int):
+        polls["count"] += 1
+        if polls["count"] < 2:
+            return {
+                "status": "running",
+                "error": None,
+                "queued_ahead": 0,
+                "running_total": 1,
+                "attempts": 1,
+                "max_attempts": 4,
+                "started_at": None,
+                "created_at": None,
+            }
+        return {
+            "status": "done",
+            "error": None,
+            "attempts": 1,
+            "max_attempts": 4,
+            "started_at": None,
+            "created_at": None,
+        }
+
+    monkeypatch.setattr(server.store, "get_job_state", _get_job_state)
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"synthetic": true' in body
+    assert polls["count"] == 2
 
 
 def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path) -> None:

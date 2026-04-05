@@ -6,6 +6,10 @@ const require = createRequire(import.meta.url);
 const bootstrapAuth = require('../static/bootstrap_auth_helpers.js');
 
 function buildHarness(overrides = {}) {
+  const {
+    desktopTestingEnabled = true,
+    ...controllerOverrides
+  } = overrides;
   let isAuthenticated = false;
   let operatorDisplayName = '';
   const authStatus = { textContent: '' };
@@ -14,6 +18,7 @@ function buildHarness(overrides = {}) {
   const devModeBadge = { hidden: true };
   const devSignInButton = { hidden: true, disabled: true };
   const sessionStorageData = new Map();
+
   const chats = new Map([[5, { pending: false }]]);
   const pendingChats = new Set();
   const histories = new Map();
@@ -30,7 +35,7 @@ function buildHarness(overrides = {}) {
   let warmCalls = 0;
 
   const controller = bootstrapAuth.createController({
-    desktopTestingEnabled: true,
+    desktopTestingEnabled,
     devAuthSessionStorageKey: 'dev-auth',
     devAuthControls,
     devModeBadge,
@@ -68,12 +73,14 @@ function buildHarness(overrides = {}) {
       };
     },
     normalizeHandle: (value) => String(value || '').trim().toLowerCase(),
+    initData: 'init-data-token',
+    parseSseEvent: () => ({ eventName: '', payload: null }),
     fallbackHandleFromDisplayName: (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, '-'),
     setOperatorDisplayName: (value) => { operatorDisplayName = String(value); },
     operatorName,
     refreshOperatorRoleLabels: () => { roleLabelsRefreshed += 1; },
     setSkin: (value) => { skin = String(value); },
-    upsertChat: (chat) => upsertedChats.push(chat),
+    syncChats: (chatList) => upsertedChats.push(...chatList),
     syncPinnedChats: (list) => pinnedSyncs.push(list),
     histories,
     setActiveChatMeta: (chatId) => { activeChatId = chatId == null ? null : Number(chatId); },
@@ -84,7 +91,7 @@ function buildHarness(overrides = {}) {
     pendingChats,
     resumePendingChatStream: (chatId) => { resumeCalls.push(Number(chatId)); },
     addLocalMessage: (chatId, message) => localMessages.push({ chatId: Number(chatId), message }),
-    ...overrides,
+    ...controllerOverrides,
   });
 
   return {
@@ -112,7 +119,7 @@ function buildHarness(overrides = {}) {
   };
 }
 
-test('syncDevAuthUi reflects desktop auth availability and auth state', () => {
+test('syncDevAuthUi reflects revealed desktop auth availability and auth state', () => {
   const harness = buildHarness();
 
   harness.controller.syncDevAuthUi();
@@ -124,6 +131,17 @@ test('syncDevAuthUi reflects desktop auth availability and auth state', () => {
   harness.setAuthenticated(true);
   harness.controller.syncDevAuthUi();
   assert.equal(harness.devSignInButton.hidden, true);
+});
+
+test('syncDevAuthUi keeps dev auth controls hidden when reveal mode is off', () => {
+  const harness = buildHarness({ desktopTestingEnabled: false });
+
+  harness.controller.syncDevAuthUi();
+
+  assert.equal(harness.devAuthControls.hidden, true);
+  assert.equal(harness.devModeBadge.hidden, true);
+  assert.equal(harness.devSignInButton.hidden, true);
+  assert.equal(harness.devSignInButton.disabled, true);
 });
 
 test('read/write dev auth defaults round-trip through session storage', () => {
@@ -182,4 +200,51 @@ test('applyAuthBootstrap supports explicit no-active-chat state', () => {
   assert.deepEqual(harness.localMessages, []);
   assert.equal(harness.getWarmCalls(), 0);
   assert.deepEqual(harness.pinnedSyncs, [[{ id: 11 }]]);
+});
+
+test('request utility delegates cover auth payload + safe JSON fallback', async () => {
+  const harness = buildHarness();
+
+  assert.deepEqual(harness.controller.authPayload({ chat_id: 7 }), {
+    init_data: 'init-data-token',
+    chat_id: 7,
+  });
+
+  const parsed = await harness.controller.safeReadJson({
+    json: async () => ({ ok: true }),
+  });
+  assert.deepEqual(parsed, { ok: true });
+
+  const invalid = await harness.controller.safeReadJson({
+    json: async () => { throw new Error('bad json'); },
+  });
+  assert.equal(invalid, null);
+});
+
+test('summarizeUiFailure and parseStreamErrorPayload sanitize noisy upstream payloads', () => {
+  const harness = buildHarness({
+    parseSseEvent: () => ({
+      eventName: 'error',
+      payload: { error: 'stream failed', chat_id: '42' },
+    }),
+  });
+
+  const htmlFallback = harness.controller.summarizeUiFailure('<!doctype html><html></html>', {
+    status: 500,
+    fallback: 'Request failed.',
+  });
+  assert.equal(htmlFallback, 'Request failed.');
+
+  const unavailable = harness.controller.summarizeUiFailure('gateway timeout', {
+    status: 503,
+    fallback: 'Request failed.',
+  });
+  assert.equal(unavailable, 'Mini app backend temporarily unavailable. Please wait a moment and reopen if needed.');
+
+  const parsed = harness.controller.parseStreamErrorPayload('event: error\ndata: {"error":"stream failed"}\n\n');
+  assert.deepEqual(parsed, {
+    eventName: 'error',
+    error: 'stream failed',
+    chatId: 42,
+  });
 });

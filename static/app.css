@@ -636,6 +636,14 @@ textarea:focus-visible {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   outline: none;
 }
+.chat-tab-context-menu__item[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat-tab-context-menu__item[disabled]:hover,
+.chat-tab-context-menu__item[disabled]:focus-visible {
+  background: transparent;
+}
 @keyframes pulse {
   0%, 100% { opacity: 0.45; transform: scale(0.96); }
   50% { opacity: 1; transform: scale(1); }

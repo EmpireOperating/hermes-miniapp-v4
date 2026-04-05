@@ -47,9 +47,9 @@ def register_chat_management_routes(
     def _serialize_pinned_chats(user_id: str) -> list[dict[str, object]]:
         return [serialize_chat_fn(chat) for chat in store_getter().list_pinned_chats(user_id=user_id)]
 
-    def _evict_chat_runtime(user_id: str, chat_id: int) -> None:
+    def _evict_chat_runtime(user_id: str, chat_id: int, *, reason: str = "chat_runtime_eviction") -> None:
         session_id = session_id_builder_fn(user_id, chat_id)
-        client_getter().evict_session(session_id)
+        client_getter().evict_session(session_id, reason=reason)
         store_getter().delete_runtime_checkpoint(session_id)
 
     def _require_json_user_id(
@@ -131,6 +131,13 @@ def register_chat_management_routes(
                 continue
             roots.append(root)
         return roots
+
+    def _file_preview_enabled(allowed_roots: list[Path]) -> bool:
+        raw = os.environ.get("MINI_APP_FILE_PREVIEW_ENABLED")
+        if raw is None:
+            # Backward-compatible default: keep preview enabled when allowed roots are configured.
+            return bool(allowed_roots)
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
     def _resolve_preview_path(path_text: str, *, allowed_roots: list[Path]) -> Path:
         cleaned = str(path_text or "").strip()
@@ -343,6 +350,8 @@ def register_chat_management_routes(
         store_getter().get_chat(user_id=user_id, chat_id=chat_id)
 
         allowed_roots = _file_preview_allowed_roots()
+        if not _file_preview_enabled(allowed_roots):
+            return json_error_fn("File preview feature is disabled", 403)
         if not allowed_roots:
             return json_error_fn("File preview is disabled: no allowed roots configured", 403)
 
@@ -506,6 +515,8 @@ def register_chat_management_routes(
                     return json_error_fn(str(exc), 400)
 
         store = store_getter()
+        if store.has_open_job(user_id=user_id, chat_id=chat_id):
+            return json_error_fn("Wait for Hermes to finish before forking this chat.", 409)
         forked_chat = store.fork_chat(user_id=user_id, source_chat_id=chat_id, title=requested_title)
         store.set_active_chat(user_id=user_id, chat_id=forked_chat.id)
         store.mark_chat_read(user_id=user_id, chat_id=forked_chat.id)
@@ -537,7 +548,7 @@ def register_chat_management_routes(
         store = store_getter()
         store.clear_chat(user_id=user_id, chat_id=chat_id)
         chat_record = store.get_chat(user_id=user_id, chat_id=chat_id)
-        _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
+        _evict_chat_runtime(user_id=user_id, chat_id=chat_id, reason="invalidated_by_clear")
         return {"ok": True, "chat": serialize_chat_fn(chat_record), "history": []}, 200
 
     @api_bp.post("/chats/remove")
@@ -555,7 +566,7 @@ def register_chat_management_routes(
             return allow_empty_error
 
         store = store_getter()
-        _evict_chat_runtime(user_id=user_id, chat_id=chat_id)
+        _evict_chat_runtime(user_id=user_id, chat_id=chat_id, reason="invalidated_by_remove")
         next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id, allow_empty=bool(allow_empty))
 
         if not next_chat_id:

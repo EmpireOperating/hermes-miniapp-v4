@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import queue
@@ -36,6 +37,23 @@ from store import ChatThread, SessionStore
 from validators import parse_chat_id, validate_message, validate_title
 
 BASE_DIR = Path(__file__).resolve().parent
+
+_previous_runtime = globals().get("runtime")
+if _previous_runtime is not None:
+    shutdown_previous_runtime = getattr(_previous_runtime, "shutdown", None)
+    if callable(shutdown_previous_runtime):
+        try:
+            shutdown_previous_runtime(reason="module_reload", join_timeout=2.0)
+        except Exception:
+            pass
+
+_previous_runtime_atexit = globals().get("_shutdown_runtime_at_exit")
+if callable(_previous_runtime_atexit):
+    try:
+        atexit.unregister(_previous_runtime_atexit)
+    except Exception:
+        pass
+
 CONFIG = MiniAppConfig.from_env()
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 PORT = CONFIG.port
@@ -74,7 +92,6 @@ ENABLE_HSTS = CONFIG.enable_hsts
 OPERATOR_DEBUG = CONFIG.operator_debug
 REQUEST_DEBUG = CONFIG.request_debug
 STREAM_TIMING_DEBUG = CONFIG.stream_timing_debug
-DEV_AUTH_ENABLED = CONFIG.dev_auth_enabled
 DEV_AUTH_SECRET = CONFIG.dev_auth_secret
 JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
 JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
@@ -158,6 +175,8 @@ api_bp = create_api_blueprint()
 
 def _create_client_with_resolved_ownership() -> HermesClient:
     previous = os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP")
+    previous_requested = os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED")
+    os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED"] = str(previous or "auto")
     os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP"] = PERSISTENT_RUNTIME_OWNERSHIP
     try:
         return HermesClient()
@@ -166,6 +185,10 @@ def _create_client_with_resolved_ownership() -> HermesClient:
             os.environ.pop("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", None)
         else:
             os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP"] = previous
+        if previous_requested is None:
+            os.environ.pop("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED", None)
+        else:
+            os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED"] = previous_requested
 
 
 client = _create_client_with_resolved_ownership()
@@ -206,6 +229,10 @@ def _cookie_secure() -> bool:
     if FORCE_SECURE_COOKIES:
         return True
     return bool(request.is_secure)
+
+
+def _dev_auth_enabled() -> bool:
+    return CONFIG.is_dev_auth_active()
 
 
 def _ensure_csp_nonce() -> str:
@@ -387,6 +414,13 @@ def _log_startup_diagnostics() -> None:
 
 
 runtime.start_once()
+
+
+def _shutdown_runtime_at_exit() -> None:
+    runtime.shutdown(reason="process_exit", join_timeout=1.0)
+
+
+atexit.register(_shutdown_runtime_at_exit)
 _log_startup_diagnostics()
 
 
@@ -443,7 +477,7 @@ register_public_routes(
     dev_reload=DEV_RELOAD,
     dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
     request_debug=REQUEST_DEBUG,
-    dev_auth_enabled=DEV_AUTH_ENABLED,
+    dev_auth_enabled_fn=_dev_auth_enabled,
     file_preview_enabled=_FILE_PREVIEW_ENABLED,
     file_preview_allowed_roots=_FILE_PREVIEW_ALLOWED_ROOTS,
     static_no_store_filenames=STATIC_NO_STORE_FILENAMES,
@@ -468,7 +502,7 @@ register_auth_routes(
     auth_session_max_age_seconds=AUTH_SESSION_MAX_AGE_SECONDS,
     build_job_log_fn=build_job_log,
     logger=app.logger,
-    dev_auth_enabled=DEV_AUTH_ENABLED,
+    dev_auth_enabled_fn=_dev_auth_enabled,
     dev_auth_secret=DEV_AUTH_SECRET,
 )
 

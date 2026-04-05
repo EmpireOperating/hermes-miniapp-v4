@@ -22,8 +22,10 @@ function buildHarness(overrides = {}) {
   let renderPinnedChatsCalls = 0;
   const resumeVisibilityChecks = [];
   const restoredSnapshots = [];
+  const abortedStreamChats = [];
   const markReadInFlight = new Set();
   const unseenStreamChats = new Set();
+  const finalizedHydratedPendingChats = [];
   const messagesContainer = {};
   const pendingChats = new Set([7]);
   let renderTabsCalls = 0;
@@ -70,6 +72,9 @@ function buildHarness(overrides = {}) {
     setActiveChatMeta: (chatId, options = {}) => activeMeta.push({ chatId: Number(chatId), options }),
     renderMessages: (chatId, options = {}) => renderedMessages.push({ chatId: Number(chatId), options }),
     hasLiveStreamController: () => false,
+    abortStreamController: (chatId) => {
+      abortedStreamChats.push(Number(chatId));
+    },
     mergeHydratedHistory: ({ nextHistory }) => nextHistory,
     refreshTabNode: (chatId) => refreshedTabs.push(Number(chatId)),
     getActiveChatId: () => activeChatId,
@@ -104,6 +109,15 @@ function buildHarness(overrides = {}) {
       updateComposerStateCalls += 1;
     },
     pendingChats,
+    finalizeHydratedPendingState: (chatId) => {
+      const key = Number(chatId);
+      finalizedHydratedPendingChats.push(key);
+      pendingChats.delete(key);
+      const chat = chats.get(key);
+      if (chat && typeof chat === 'object') {
+        chat.pending = false;
+      }
+    },
     restorePendingStreamSnapshot: (chatId) => {
       restoredSnapshots.push(Number(chatId));
       return false;
@@ -132,10 +146,12 @@ function buildHarness(overrides = {}) {
     pinnedStatusSyncCalls,
     resumeVisibilityChecks,
     restoredSnapshots,
+    abortedStreamChats,
     markReadInFlight,
     unseenStreamChats,
     messagesContainer,
     pendingChats,
+    finalizedHydratedPendingChats,
     getRenderTabsCalls: () => renderTabsCalls,
     getRenderPinnedChatsCalls: () => renderPinnedChatsCalls,
     getSyncActivePendingStatusCalls: () => syncActivePendingStatusCalls,
@@ -229,6 +245,48 @@ test('refreshChats syncs chat and pinned status with render/composer updates', a
   assert.equal(harness.getRenderPinnedChatsCalls(), 1);
   assert.equal(harness.getSyncActivePendingStatusCalls(), 1);
   assert.equal(harness.getUpdateComposerStateCalls(), 1);
+});
+
+test('refreshChats clears stale local pending state when server reports chat not pending and no live stream exists', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/status') {
+        return {
+          chats: [{ id: 7, unread_count: 0, pending: false }],
+          pinned_chats: [],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  await harness.controller.refreshChats();
+
+  assert.deepEqual(harness.finalizedHydratedPendingChats, [7]);
+  assert.equal(harness.pendingChats.has(7), false);
+});
+
+test('refreshChats aborts stale live stream controllers before finalizing when server reports chat complete', async () => {
+  const harness = buildHarness({
+    hasLiveStreamController: (chatId) => Number(chatId) === 7,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/status') {
+        return {
+          chats: [{ id: 7, unread_count: 0, pending: false }],
+          pinned_chats: [],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  await harness.controller.refreshChats();
+
+  assert.deepEqual(harness.abortedStreamChats, [7]);
+  assert.deepEqual(harness.finalizedHydratedPendingChats, [7]);
+  assert.equal(harness.pendingChats.has(7), false);
 });
 
 test('refreshChats tolerates missing chat arrays by defaulting to empty collections', async () => {
@@ -363,6 +421,42 @@ test('syncVisibleActiveChat forces resume when local pending assistant traces ex
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
 });
 
+test('syncVisibleActiveChat finalizes local pending immediately when hydrated completed assistant matches already-visible local pending reply', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          history: [{ id: 99, role: 'assistant', body: 'final answer', pending: false }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.unseenStreamChats.add(7);
+  harness.histories.set(7, [
+    { role: 'assistant', body: 'final answer', pending: true },
+  ]);
+
+  await harness.controller.syncVisibleActiveChat({
+    hidden: false,
+    streamAbortControllers: new Map(),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.finalizedHydratedPendingChats, [7]);
+  assert.equal(harness.pendingChats.has(7), false);
+  assert.deepEqual(harness.resumedChats, []);
+  assert.deepEqual(harness.refreshedTabs, [7]);
+  assert.deepEqual(harness.renderedMessages.at(-1), { chatId: 7, options: { preserveViewport: true } });
+});
+
 test('syncVisibleActiveChat ignores stale history responses when active chat changes mid-request', async () => {
   let resolveHistory;
   const historyGate = new Promise((resolve) => {
@@ -431,6 +525,21 @@ test('addLocalMessage and updatePendingAssistant mutate chat history in place', 
   assert.equal(history[1].role, 'hermes');
   assert.equal(history[1].body, 'done');
   assert.equal(history[1].pending, false);
+});
+
+test('updatePendingAssistant reuses pending assistant role from hydrated history instead of appending duplicate hermes message', () => {
+  const harness = buildHarness();
+  harness.histories.set(7, [
+    { role: 'assistant', body: 'partial', pending: true, created_at: '2026-04-04T12:00:00Z' },
+  ]);
+
+  harness.controller.updatePendingAssistant(7, 'completed', false);
+
+  const history = harness.histories.get(7) || [];
+  assert.equal(history.length, 1);
+  assert.equal(history[0].role, 'assistant');
+  assert.equal(history[0].body, 'completed');
+  assert.equal(history[0].pending, false);
 });
 
 test('updatePendingAssistant skips empty finalized writes without pending message', () => {
@@ -608,4 +717,172 @@ test('maybeMarkRead clears in-flight state when markRead fails', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(harness.markReadInFlight.has(7), false);
+});
+
+function buildMetaHarness() {
+  const chatScrollTop = new Map();
+  const chatStickToBottom = new Map();
+  const chats = new Map([
+    [3, { id: 3, title: 'Current chat' }],
+    [7, { id: 7, title: 'Target chat' }],
+  ]);
+  let activeChatId = 3;
+  let renderedChatId = 3;
+  const promptEl = { value: 'draft text' };
+  const activeChatName = { textContent: '' };
+  const panelTitle = { textContent: '' };
+  const historyCount = { textContent: '' };
+  const messagesEl = {
+    scrollTop: 42,
+    innerHTML: '<existing />',
+    appendChild(node) {
+      this.lastAppendedNode = node;
+    },
+  };
+
+  const roleNode = { textContent: '' };
+  const timeNode = { textContent: '' };
+  const bodyNode = {};
+  const cloneNode = {
+    classList: { add() {} },
+    querySelector(selector) {
+      if (selector === '.message__role') return roleNode;
+      if (selector === '.message__time') return timeNode;
+      if (selector === '.message__body') return bodyNode;
+      return null;
+    },
+  };
+  const template = {
+    content: {
+      firstElementChild: {
+        cloneNode() {
+          return cloneNode;
+        },
+      },
+    },
+  };
+
+  const calls = {
+    setDraft: [],
+    renderBody: [],
+    updateComposerState: 0,
+    syncPinChatButton: 0,
+    renderTabs: 0,
+    syncActiveTabSelection: [],
+    syncLiveToolStreamForChat: [],
+    syncActivePendingStatus: 0,
+    syncActiveLatencyChip: 0,
+    updateJumpLatestVisibility: 0,
+    scheduleTimeout: [],
+  };
+
+  const controller = chatHistory.createMetaController({
+    getActiveChatId: () => activeChatId,
+    setActiveChatId: (value) => {
+      activeChatId = value == null ? null : Number(value);
+    },
+    getRenderedChatId: () => renderedChatId,
+    setRenderedChatId: (value) => {
+      renderedChatId = value == null ? null : Number(value);
+    },
+    chatScrollTop,
+    chatStickToBottom,
+    messagesEl,
+    isNearBottomFn: () => true,
+    setDraft: (chatId, value) => calls.setDraft.push({ chatId: Number(chatId), value }),
+    promptEl,
+    activeChatName,
+    panelTitle,
+    template,
+    nowStamp: () => '10:30',
+    renderBody: (_container, text) => calls.renderBody.push(String(text)),
+    historyCount,
+    updateComposerState: () => {
+      calls.updateComposerState += 1;
+    },
+    syncPinChatButton: () => {
+      calls.syncPinChatButton += 1;
+    },
+    renderTabs: () => {
+      calls.renderTabs += 1;
+    },
+    syncActiveTabSelection: (previousChatId, nextChatId) => {
+      calls.syncActiveTabSelection.push({ previousChatId, nextChatId });
+    },
+    syncLiveToolStreamForChat: (chatId) => {
+      calls.syncLiveToolStreamForChat.push(chatId == null ? null : Number(chatId));
+    },
+    syncActivePendingStatus: () => {
+      calls.syncActivePendingStatus += 1;
+    },
+    syncActiveLatencyChip: () => {
+      calls.syncActiveLatencyChip += 1;
+    },
+    updateJumpLatestVisibility: () => {
+      calls.updateJumpLatestVisibility += 1;
+    },
+    getDraft: (chatId) => (Number(chatId) === 7 ? 'saved draft' : ''),
+    chats,
+    scheduleTimeout: (callback, delay) => {
+      calls.scheduleTimeout.push({ callback, delay });
+    },
+  });
+
+  return {
+    controller,
+    calls,
+    chatScrollTop,
+    chatStickToBottom,
+    promptEl,
+    activeChatName,
+    panelTitle,
+    historyCount,
+    messagesEl,
+    getActiveChatId: () => activeChatId,
+    getRenderedChatId: () => renderedChatId,
+    roleNode,
+    timeNode,
+  };
+}
+
+test('createMetaController defers non-critical active-chat updates and preserves prior draft/scroll state', () => {
+  const harness = buildMetaHarness();
+
+  harness.controller.setActiveChatMeta(7, { fullTabRender: false, deferNonCritical: true });
+
+  assert.deepEqual(harness.calls.setDraft, [{ chatId: 3, value: 'draft text' }]);
+  assert.equal(harness.chatScrollTop.get(3), 42);
+  assert.equal(harness.chatStickToBottom.get(3), true);
+  assert.equal(harness.getActiveChatId(), 7);
+  assert.equal(harness.promptEl.value, 'saved draft');
+  assert.equal(harness.activeChatName.textContent, 'Target chat');
+  assert.equal(harness.panelTitle.textContent, 'Conversation · Target chat');
+  assert.equal(harness.calls.renderTabs, 0);
+  assert.deepEqual(harness.calls.syncActiveTabSelection, [{ previousChatId: 3, nextChatId: 7 }]);
+  assert.equal(harness.calls.scheduleTimeout.length, 1);
+  assert.equal(harness.calls.syncLiveToolStreamForChat.length, 0);
+
+  harness.calls.scheduleTimeout[0].callback();
+  assert.deepEqual(harness.calls.syncLiveToolStreamForChat, [7]);
+  assert.equal(harness.calls.syncActivePendingStatus, 1);
+  assert.equal(harness.calls.syncActiveLatencyChip, 1);
+  assert.equal(harness.calls.updateJumpLatestVisibility, 1);
+});
+
+test('createMetaController setNoActiveChatMeta clears active state and renders empty-chat system card', () => {
+  const harness = buildMetaHarness();
+
+  harness.controller.setNoActiveChatMeta();
+
+  assert.equal(harness.getActiveChatId(), null);
+  assert.equal(harness.getRenderedChatId(), null);
+  assert.equal(harness.promptEl.value, '');
+  assert.equal(harness.activeChatName.textContent, 'None');
+  assert.equal(harness.panelTitle.textContent, 'Conversation');
+  assert.equal(harness.messagesEl.innerHTML, '');
+  assert.equal(harness.historyCount.textContent, '0');
+  assert.deepEqual(harness.calls.renderBody, ['No chats open. Start a new chat to continue.']);
+  assert.deepEqual(harness.calls.syncLiveToolStreamForChat, [null]);
+  assert.equal(harness.calls.renderTabs, 1);
+  assert.equal(harness.calls.updateComposerState, 1);
 });

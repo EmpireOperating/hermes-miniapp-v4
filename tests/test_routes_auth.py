@@ -204,6 +204,22 @@ def test_dev_auth_returns_404_when_bypass_disabled(monkeypatch, tmp_path) -> Non
     assert response.status_code == 404
 
 
+def test_dev_auth_returns_404_when_bypass_has_expired(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
+    monkeypatch.setenv("MINIAPP_DEV_SECRET", "expected-secret")
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS_EXPIRES_AT", "1")
+    server = load_server(monkeypatch, tmp_path)
+    client = server.app.test_client()
+
+    response = client.post(
+        "/api/dev/auth",
+        json={"user_id": 9001, "display_name": "Desktop Tester"},
+        headers={"X-Dev-Auth": "expected-secret"},
+    )
+
+    assert response.status_code == 404
+
+
 def test_dev_auth_rejects_wrong_secret(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
     monkeypatch.setenv("MINIAPP_DEV_SECRET", "expected-secret")

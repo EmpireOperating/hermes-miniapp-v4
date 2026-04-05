@@ -24,7 +24,11 @@ def test_startup_diagnostics_payload_maps_runtime_fields() -> None:
                     "direct_agent_enabled": True,
                     "persistent_sessions_requested": True,
                     "persistent_sessions_enabled": True,
+                    "persistent_shared_backend_enabled": True,
+                    "persistent_worker_owned_enabled": False,
+                    "persistent_runtime_ownership_requested": "auto",
                     "persistent_runtime_ownership": "shared",
+                    "persistent_sessions_enablement_reason": "shared_backend_runtime_enabled",
                 },
                 "agent_runtime": {
                     "session_db_available": True,
@@ -66,7 +70,11 @@ def test_startup_diagnostics_payload_maps_runtime_fields() -> None:
 
     assert payload["dependencies"]["transport"] == "agent-persistent"
     assert payload["dependencies"]["telegram_bot_token_configured"] is True
+    assert payload["dependencies"]["persistent_shared_backend_enabled"] is True
+    assert payload["dependencies"]["persistent_worker_owned_enabled"] is False
+    assert payload["dependencies"]["persistent_runtime_ownership_requested"] == "auto"
     assert payload["dependencies"]["persistent_runtime_ownership"] == "shared"
+    assert payload["dependencies"]["persistent_sessions_enablement_reason"] == "shared_backend_runtime_enabled"
     assert payload["invariants"]["assistant_hard_limit_gte_chunk_len"] is True
     assert payload["invariants"]["origin_check_has_allowlist"] is True
     assert payload["persistent"]["requested"] is True

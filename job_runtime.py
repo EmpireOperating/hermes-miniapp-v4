@@ -10,8 +10,8 @@ from typing import Callable
 
 from hermes_client import HermesClient, HermesClientError
 from job_status import JOB_EVENT_ERROR, JOB_EVENT_TERMINAL
-from job_runtime_chat_job import execute_chat_job
 from job_runtime_events import JobEventBroker
+from job_runtime_worker_launcher import InlineJobWorkerLauncher, JobWorkerLauncher
 from runtime_limits import (
     JOB_KEEPALIVE_INTERVAL_MAX_SECONDS,
     JOB_KEEPALIVE_INTERVAL_MIN_SECONDS,
@@ -36,6 +36,15 @@ class JobNonRetryableError(Exception):
     pass
 
 
+class JobDuplicateRunnerSuppressed(Exception):
+    """Raised when a duplicate in-process runner is detected for the same job_id.
+
+    This is an attribution/guardrail signal, not a user-visible terminal job failure.
+    """
+
+    pass
+
+
 class JobRuntime:
     def __init__(
         self,
@@ -51,6 +60,7 @@ class JobRuntime:
         job_event_history_max_jobs: int,
         job_event_history_ttl_seconds: int,
         session_id_builder: Callable[[str, int], str],
+        worker_launcher: JobWorkerLauncher | None = None,
     ) -> None:
         self.store = store
         self.client = client
@@ -69,6 +79,7 @@ class JobRuntime:
         self.job_event_buffer_cap = self.job_event_history_max_jobs
         self.job_event_history_ttl_seconds = max(MIN_JOB_EVENT_HISTORY_TTL_SECONDS, int(job_event_history_ttl_seconds))
         self.session_id_builder = session_id_builder
+        self.worker_launcher = worker_launcher or InlineJobWorkerLauncher()
 
         self._event_broker = JobEventBroker(
             event_buffer_cap=self.job_event_buffer_cap,
@@ -82,9 +93,13 @@ class JobRuntime:
         self._event_timestamps = self._event_broker._event_timestamps
 
         self.wake_event = threading.Event()
+        self._shutdown_event = threading.Event()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_started = False
         self._worker_threads: list[threading.Thread] = []
         self._worker_start_lock = threading.Lock()
         self._watchdog_started = False
+        self._watchdog_thread: threading.Thread | None = None
         self._watchdog_lock = threading.Lock()
 
         self.job_touch_min_interval_seconds = JOB_TOUCH_MIN_INTERVAL_SECONDS
@@ -105,8 +120,11 @@ class JobRuntime:
             "unexpected_dead": 0,
             "stale_chat_dead": 0,
             "stale_timeout_dead": 0,
+            "duplicate_runner_reject": 0,
         }
         self._runtime_counter_timeline: deque[tuple[float, str, int]] = deque(maxlen=4096)
+        self._active_job_runner_lock = threading.Lock()
+        self._active_job_runner_records: dict[int, dict[str, object]] = {}
 
     def publish_job_event(self, job_id: int, event_name: str, payload: dict[str, object]) -> None:
         if event_name not in JOB_EVENT_TERMINAL:
@@ -115,7 +133,9 @@ class JobRuntime:
             self._clear_touch_tracking(job_id)
 
         safe_payload = dict(payload or {})
-        if os.environ.get("MINI_APP_STREAM_TIMING_DEBUG", "0") == "1":
+        operator_debug = os.environ.get("MINI_APP_OPERATOR_DEBUG", os.environ.get("MINIAPP_OPERATOR_DEBUG", "0")) == "1"
+        stream_timing_debug = os.environ.get("MINI_APP_STREAM_TIMING_DEBUG", os.environ.get("MINIAPP_STREAM_TIMING_DEBUG", "0")) == "1"
+        if operator_debug and stream_timing_debug:
             timing_payload = safe_payload.get("_timing")
             if isinstance(timing_payload, dict):
                 merged_timing = dict(timing_payload)
@@ -219,10 +239,43 @@ class JobRuntime:
             return {"level": "warning", "reason": "recent_failures_detected"}
         return {"level": "ok", "reason": "healthy"}
 
+    @staticmethod
+    def _worker_isolation_boundary_signal(launcher_info: dict[str, object]) -> dict[str, object]:
+        info = dict(launcher_info or {})
+        launcher_name = str(info.get("name") or "").strip().lower()
+        isolation_mode = str(info.get("isolation") or "").strip().lower()
+
+        boundary_active = bool(launcher_name == "subprocess" or isolation_mode == "process")
+
+        limits_payload = info.get("limits") if isinstance(info.get("limits"), dict) else {}
+        required_limits = ("memory_mb", "max_tasks", "max_open_files")
+        limits_present = all(int(limits_payload.get(key, 0) or 0) > 0 for key in required_limits)
+
+        # Current enforcement mechanism is POSIX rlimit in preexec_fn.
+        boundary_enforced = bool(boundary_active and limits_present and os.name == "posix")
+
+        if boundary_enforced:
+            reason = "process_boundary_with_posix_rlimits"
+        elif boundary_active and not limits_present:
+            reason = "process_boundary_missing_limits"
+        elif boundary_active and os.name != "posix":
+            reason = "process_boundary_without_posix_rlimits"
+        else:
+            reason = "in_process_launcher"
+
+        return {
+            "active": boundary_active,
+            "enforced": boundary_enforced,
+            "reason": reason,
+        }
+
     def runtime_diagnostics(self) -> dict[str, object]:
         fd_open, fd_limit_soft = self._fd_metrics()
         with self._runtime_counter_lock:
             counters = dict(self._runtime_counters)
+
+        child_diagnostics_getter = getattr(self.client, "child_spawn_diagnostics", None)
+        child_diagnostics = child_diagnostics_getter() if callable(child_diagnostics_getter) else {}
 
         dead_letter_total = (
             int(counters.get("retry_exhausted_dead", 0))
@@ -240,6 +293,9 @@ class JobRuntime:
         with self._worker_start_lock:
             worker_alive = sum(1 for worker in self._worker_threads if worker.is_alive())
 
+        with self._active_job_runner_lock:
+            active_job_records = [dict(record) for _job_id, record in sorted(self._active_job_runner_records.items())]
+
         terminal_events = self._event_broker.terminal_rollup(limit=12, error_limit=6)
         runtime_rate_windows = self._runtime_rate_windows()
         terminal_rate_windows = self._event_broker.terminal_window_counts(windows=self._rate_windows())
@@ -250,11 +306,41 @@ class JobRuntime:
             runtime_window_5m=runtime_rate_windows.get("5m", {}),
         )
 
+        launcher_describe = getattr(self.worker_launcher, "describe", None)
+        launcher_info = launcher_describe() if callable(launcher_describe) else {"name": type(self.worker_launcher).__name__}
+        isolation_boundary = self._worker_isolation_boundary_signal(launcher_info)
+        child_timeouts = (child_diagnostics.get("timeouts") if isinstance(child_diagnostics, dict) else None) or {}
+        child_timeouts_total = int(child_timeouts.get("total", 0) or 0)
+        recent_transport_transitions = list((child_diagnostics.get("recent_transport_transitions") if isinstance(child_diagnostics, dict) else None) or [])
+        active_job_transport_snapshots: list[dict[str, object]] = []
+        for record in active_job_records:
+            session_id = str(record.get("session_id") or "")
+            matching_transitions = [
+                dict(item)
+                for item in recent_transport_transitions
+                if str((item or {}).get("session_id") or "") == session_id
+            ]
+            active_job_transport_snapshots.append(
+                {
+                    **record,
+                    "recent_transport_transitions": matching_transitions[-6:],
+                }
+            )
+
         incident_snapshot = {
             "generated_at": int(time.time()),
             "workers": {
                 "configured": int(self.job_worker_concurrency),
                 "alive": int(worker_alive),
+                "active_jobs": active_job_transport_snapshots,
+                "active_job_total": len(active_job_transport_snapshots),
+                "launcher": launcher_info,
+                "isolation_boundary": isolation_boundary,
+                "isolation_boundary_active": bool(isolation_boundary.get("active")),
+                "isolation_boundary_enforced": bool(isolation_boundary.get("enforced")),
+                "child_timeout_total": child_timeouts_total,
+                "child_timeouts_by_job": dict(child_timeouts.get("by_job") or {}),
+                "child_timeouts_by_chat": dict(child_timeouts.get("by_chat") or {}),
             },
             "wake_event_set": bool(self.wake_event.is_set()),
             "terminal_events": terminal_events,
@@ -277,12 +363,61 @@ class JobRuntime:
                 "startup_clamped_exhausted_total": startup_clamped_exhausted_total,
                 "preclaim_dead_letter_total": preclaim_dead_letter_total,
             },
+            "children": child_diagnostics,
+            "child_timeouts": child_timeouts,
+            "isolation_boundary": isolation_boundary,
             "incident_snapshot": incident_snapshot,
             # Flat aliases for quick grep/debug snapshots.
             "startup_recovered_running_total": startup_recovered_running_total,
             "startup_clamped_exhausted_total": startup_clamped_exhausted_total,
             "preclaim_dead_letter_total": preclaim_dead_letter_total,
         }
+
+    def _try_start_job_runner(self, *, job_id: int, user_id: str, chat_id: int) -> bool:
+        safe_job_id = int(job_id)
+        with self._active_job_runner_lock:
+            if safe_job_id in self._active_job_runner_records:
+                return False
+            session_id = str(self.session_id_builder(str(user_id or ""), int(chat_id)) or "")
+            self._active_job_runner_records[safe_job_id] = {
+                "job_id": safe_job_id,
+                "user_id": str(user_id or ""),
+                "chat_id": int(chat_id),
+                "session_id": session_id,
+                "started_at": int(time.time()),
+            }
+            note_started = getattr(self.client, "note_warm_session_worker_started", None)
+            if callable(note_started):
+                note_started(session_id=session_id, chat_id=int(chat_id), job_id=safe_job_id)
+            return True
+
+    def _finish_job_runner(self, job_id: int, *, outcome: str = "finished") -> None:
+        with self._active_job_runner_lock:
+            record = self._active_job_runner_records.pop(int(job_id), None)
+        if not isinstance(record, dict):
+            return
+        note_finished = getattr(self.client, "note_warm_session_worker_finished", None)
+        if callable(note_finished):
+            note_finished(
+                session_id=str(record.get("session_id") or ""),
+                chat_id=int(record.get("chat_id") or 0),
+                job_id=int(record.get("job_id") or 0),
+                outcome=str(outcome or "finished"),
+            )
+
+    def _terminate_job_children(self, *, job_id: int, reason: str) -> None:
+        terminator = getattr(self.client, "terminate_tracked_children", None)
+        if not callable(terminator):
+            return
+        try:
+            terminator(job_id=int(job_id), reason=str(reason or "runtime_cleanup"))
+        except Exception as exc:  # noqa: BLE001 - broad-except-policy: emergency cleanup must never break worker path
+            LOGGER.warning(
+                "job_child_cleanup_failed job_id=%s reason=%s error=%s",
+                int(job_id),
+                reason,
+                exc.__class__.__name__,
+            )
 
     def _touch_job_best_effort(self, job_id: int, *, force: bool = False) -> None:
         job_id = int(job_id)
@@ -336,10 +471,15 @@ class JobRuntime:
         return open_fds, soft_limit
 
     def start_once(self) -> None:
+        if self._shutdown_event.is_set():
+            LOGGER.info("job_runtime_start_skipped reason=shutdown")
+            return
+
         with self._watchdog_lock:
             if not self._watchdog_started:
                 watchdog = threading.Thread(target=self._watchdog_loop, name="miniapp-job-watchdog", daemon=True)
                 watchdog.start()
+                self._watchdog_thread = watchdog
                 self._watchdog_started = True
 
         with self._worker_start_lock:
@@ -358,6 +498,44 @@ class JobRuntime:
 
             self.wake_event.set()
 
+    def shutdown(self, *, reason: str = "shutdown", join_timeout: float = 1.0) -> None:
+        with self._shutdown_lock:
+            if self._shutdown_started:
+                return
+            self._shutdown_started = True
+            self._shutdown_event.set()
+            self.wake_event.set()
+
+        active_job_ids: list[int]
+        with self._active_job_runner_lock:
+            active_job_ids = sorted(int(job_id) for job_id in self._active_job_runner_records)
+
+        for job_id in active_job_ids:
+            self._terminate_job_children(job_id=job_id, reason=f"runtime_{reason}")
+
+        threads: list[threading.Thread] = []
+        with self._watchdog_lock:
+            if self._watchdog_thread is not None:
+                threads.append(self._watchdog_thread)
+        with self._worker_start_lock:
+            threads.extend(self._worker_threads)
+
+        deadline = time.monotonic() + max(0.1, float(join_timeout))
+        for thread in threads:
+            if thread is None or not thread.is_alive():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+
+        with self._watchdog_lock:
+            if self._watchdog_thread is not None and not self._watchdog_thread.is_alive():
+                self._watchdog_thread = None
+                self._watchdog_started = False
+        with self._worker_start_lock:
+            self._worker_threads[:] = [worker for worker in self._worker_threads if worker.is_alive()]
+
     def ensure_pending_jobs(self, user_id: str) -> None:
         for chat_id, operator_message_id in self.store.list_recoverable_pending_turns(user_id):
             job_id = self.store.enqueue_chat_job(
@@ -370,13 +548,26 @@ class JobRuntime:
             self.wake_event.set()
 
     def run_chat_job(self, job: dict[str, object]) -> None:
-        execute_chat_job(
-            self,
-            job,
-            retryable_error_cls=JobRetryableError,
-            non_retryable_error_cls=JobNonRetryableError,
-            client_error_cls=HermesClientError,
-        )
+        job_id = int(job.get("id") or 0)
+        user_id = str(job.get("user_id") or "")
+        chat_id = int(job.get("chat_id") or 0)
+
+        if not self._try_start_job_runner(job_id=job_id, user_id=user_id, chat_id=chat_id):
+            self._record_runtime_counter("duplicate_runner_reject")
+            raise JobDuplicateRunnerSuppressed(
+                f"Duplicate active job runner blocked for job_id={job_id} chat_id={chat_id}."
+            )
+
+        try:
+            self.worker_launcher.launch(
+                runtime=self,
+                job=job,
+                retryable_error_cls=JobRetryableError,
+                non_retryable_error_cls=JobNonRetryableError,
+                client_error_cls=HermesClientError,
+            )
+        finally:
+            self._finish_job_runner(job_id)
 
     def _safe_add_system_message(self, user_id: str, chat_id: int, text: str) -> None:
         try:
@@ -407,6 +598,7 @@ class JobRuntime:
             stale_chat_id = int(stale.get("chat_id") or 0)
             stale_user_id = str(stale.get("user_id") or "")
             if stale_job_id:
+                self._terminate_job_children(job_id=stale_job_id, reason="stale_timeout_dead")
                 self._record_runtime_counter("stale_timeout_dead")
                 self.publish_job_event(
                     stale_job_id,
@@ -425,20 +617,24 @@ class JobRuntime:
                 )
 
     def _watchdog_loop(self) -> None:
-        while True:
-            time.sleep(JOB_WATCHDOG_SLEEP_SECONDS)
+        while not self._shutdown_event.wait(timeout=JOB_WATCHDOG_SLEEP_SECONDS):
             self._sweep_stale_running_jobs()
 
     def _worker_loop(self) -> None:
-        while True:
+        while not self._shutdown_event.is_set():
             self.wake_event.wait(timeout=JOB_WORKER_WAIT_TIMEOUT_SECONDS)
             self.wake_event.clear()
+            if self._shutdown_event.is_set():
+                break
             self._process_available_jobs_once()
 
     def _process_available_jobs_once(self) -> None:
+        if self._shutdown_event.is_set():
+            return
+
         self._sweep_stale_running_jobs()
 
-        while True:
+        while not self._shutdown_event.is_set():
             job = self.store.claim_next_job()
             if not job:
                 break
@@ -451,8 +647,33 @@ class JobRuntime:
 
             try:
                 self.run_chat_job(job)
+            except JobDuplicateRunnerSuppressed as exc:
+                self._clear_touch_tracking(job_id)
+                fd_open, fd_limit_soft = self._fd_metrics()
+                LOGGER.warning(
+                    "job_duplicate_runner_suppressed job_id=%s user_id=%s chat_id=%s attempts=%s max_attempts=%s fd_open=%s fd_limit_soft=%s detail=%s",
+                    job_id,
+                    user_id,
+                    chat_id,
+                    attempts,
+                    max_attempts,
+                    fd_open,
+                    fd_limit_soft,
+                    exc,
+                )
+                self.publish_job_event(
+                    job_id,
+                    "meta",
+                    {
+                        "chat_id": chat_id,
+                        "source": "duplicate-runner",
+                        "detail": str(exc),
+                    },
+                )
+                continue
             except JobNonRetryableError as exc:
                 error_text = str(exc)
+                self._terminate_job_children(job_id=job_id, reason="non_retryable_dead")
                 self.store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
                 self._record_runtime_counter("non_retryable_dead")
                 self._clear_touch_tracking(job_id)
@@ -472,6 +693,7 @@ class JobRuntime:
                 self.publish_job_event(job_id, JOB_EVENT_ERROR, {"error": error_text, "chat_id": chat_id, "retrying": False})
             except JobRetryableError as exc:
                 error_text = str(exc)
+                self._terminate_job_children(job_id=job_id, reason="retryable_error")
                 retrying = self.store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=self.job_retry_base_seconds)
                 fd_open, fd_limit_soft = self._fd_metrics()
                 if retrying:
@@ -519,6 +741,7 @@ class JobRuntime:
             except Exception as exc:  # noqa: BLE001 - broad-except-policy: worker loop must quarantine unexpected failures per job
                 if self.is_stale_chat_job_error(exc):
                     error_text = f"Stale chat job dropped: {exc}"
+                    self._terminate_job_children(job_id=job_id, reason="stale_chat_dead")
                     self.store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
                     self._record_runtime_counter("stale_chat_dead")
                     self._clear_touch_tracking(job_id)
@@ -537,6 +760,7 @@ class JobRuntime:
                     self.publish_job_event(job_id, "meta", {"chat_id": chat_id, "source": "stale-chat", "detail": str(exc)})
                     continue
                 error_text = f"Unexpected worker failure: {exc}"
+                self._terminate_job_children(job_id=job_id, reason="unexpected_dead")
                 self.store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
                 self._record_runtime_counter("unexpected_dead")
                 self._clear_touch_tracking(job_id)

@@ -498,6 +498,50 @@ def test_list_recoverable_pending_turns_excludes_open_jobs(tmp_path) -> None:
     assert (chat_id, operator_message_id) not in recoverable_after_enqueue
 
 
+def test_open_job_ignores_exhausted_queued_rows(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u9b-exhausted"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "pending")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=2)
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    conn.execute(
+        "UPDATE chat_jobs SET attempts = max_attempts, status = 'queued' WHERE id = ?",
+        (job_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    assert store.has_open_job(user_id, chat_id) is False
+    assert store.get_open_job(user_id, chat_id) is None
+
+
+def test_list_recoverable_pending_turns_ignores_exhausted_queued_rows(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u9b-recoverable"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "recover me")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=2)
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    conn.execute(
+        "UPDATE chat_jobs SET attempts = max_attempts, status = 'queued' WHERE id = ?",
+        (job_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    recoverable = store.list_recoverable_pending_turns(user_id)
+    assert (chat_id, operator_message_id) in recoverable
+
+
 def test_retry_or_dead_letter_job_retries_then_dead_letters(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u10"
