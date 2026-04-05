@@ -751,3 +751,76 @@ test('patchVisibleToolTrace updates tool trace body/time and handles no-target s
   });
   assert.equal(noTarget, true);
 });
+
+test('createHistoryRenderController computes bottom virtual ranges with overscan', () => {
+  const controller = renderTraceHelpers.createHistoryRenderController({
+    messagesEl: { scrollHeight: 0, clientHeight: 480, scrollTop: 0, querySelectorAll: () => [], appendChild: () => {} },
+    jumpLatestButton: null,
+    jumpLastStartButton: null,
+    histories: new Map(),
+    virtualizationRanges: new Map(),
+    virtualMetrics: new Map(),
+    renderedHistoryLength: new Map(),
+    renderedHistoryVirtualized: new Map(),
+    unseenStreamChats: new Set(),
+    chatScrollTop: new Map(),
+    chatStickToBottom: new Map(),
+    getActiveChatId: () => 0,
+    getRenderedChatId: () => 0,
+    setRenderedChatId: () => {},
+    appendMessagesFn: () => {},
+    shouldUseAppendOnlyRenderFn: () => false,
+    renderTraceLogFn: () => {},
+    virtualOverscan: 10,
+    estimatedMessageHeight: 100,
+  });
+
+  const range = controller.computeVirtualRange({
+    total: 200,
+    scrollTop: 0,
+    viewportHeight: 400,
+    forceBottom: true,
+    estimatedHeight: 100,
+  });
+
+  assert.deepEqual(range, { start: 176, end: 200 });
+});
+
+test('createHistoryRenderController markStreamUpdate only marks active off-bottom chat', () => {
+  const unseen = new Set();
+  const refreshed = [];
+  const messagesEl = {
+    scrollHeight: 1000,
+    clientHeight: 400,
+    scrollTop: 200,
+    querySelectorAll: () => [],
+    appendChild: () => {},
+  };
+  const controller = renderTraceHelpers.createHistoryRenderController({
+    messagesEl,
+    jumpLatestButton: { hidden: true },
+    jumpLastStartButton: { hidden: true },
+    histories: new Map(),
+    virtualizationRanges: new Map(),
+    virtualMetrics: new Map(),
+    renderedHistoryLength: new Map(),
+    renderedHistoryVirtualized: new Map(),
+    unseenStreamChats: unseen,
+    chatScrollTop: new Map(),
+    chatStickToBottom: new Map(),
+    getActiveChatId: () => 7,
+    getRenderedChatId: () => 0,
+    setRenderedChatId: () => {},
+    refreshTabNode: (chatId) => refreshed.push(chatId),
+    appendMessagesFn: () => {},
+    shouldUseAppendOnlyRenderFn: () => false,
+    renderTraceLogFn: () => {},
+  });
+
+  controller.markStreamUpdate(5);
+  assert.equal(unseen.size, 0);
+
+  controller.markStreamUpdate(7);
+  assert.equal(unseen.has(7), true);
+  assert.deepEqual(refreshed, [7]);
+});

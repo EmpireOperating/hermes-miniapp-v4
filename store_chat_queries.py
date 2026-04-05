@@ -158,7 +158,18 @@ def list_recoverable_pending_turns(conn: Connection, *, user_id: str) -> list[tu
             """
             SELECT 1 AS present
             FROM chat_jobs
-            WHERE user_id = ? AND chat_id = ? AND status IN ('queued', 'running')
+            WHERE user_id = ?
+              AND chat_id = ?
+              AND (
+                status = 'running'
+                OR (
+                  status = 'queued'
+                  AND COALESCE(attempts, 0) < CASE
+                    WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0)
+                    ELSE 1
+                  END
+                )
+              )
             ORDER BY id DESC
             LIMIT 1
             """,

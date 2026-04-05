@@ -62,9 +62,10 @@ class _FakeStore:
 
 
 class _FakeClient:
-    def __init__(self, events: list[dict[str, object]]) -> None:
+    def __init__(self, events: list[dict[str, object]], *, warm_owner_state: dict[str, object] | None = None) -> None:
         self._events = events
         self.evicted_sessions: list[str] = []
+        self._warm_owner_state = warm_owner_state or {"owner_records": []}
 
     def should_include_conversation_history(self, *, session_id: str) -> bool:
         return False
@@ -76,14 +77,17 @@ class _FakeClient:
         self.evicted_sessions.append(str(session_id))
         return True
 
+    def warm_session_owner_state(self) -> dict[str, object]:
+        return dict(self._warm_owner_state)
+
     def stream_events(self, **_kwargs):
         yield from self._events
 
 
 class _FakeRuntime:
-    def __init__(self, events: list[dict[str, object]]) -> None:
+    def __init__(self, events: list[dict[str, object]], *, warm_owner_state: dict[str, object] | None = None) -> None:
         self.store = _FakeStore()
-        self.client = _FakeClient(events)
+        self.client = _FakeClient(events, warm_owner_state=warm_owner_state)
         self.session_id_builder = lambda user_id, chat_id: f"miniapp-{user_id}-{chat_id}"
         self.job_keepalive_interval_seconds = 10
         self.assistant_hard_limit = 5000
@@ -158,6 +162,120 @@ def test_execute_chat_job_completes_and_publishes_done_event() -> None:
     assert runtime.store.completed == [3]
     assert any(role == "hermes" and body == "hello world" for _, _, role, body in runtime.store.messages)
     assert any(name == "done" and payload.get("reply") == "hello world" for _, name, payload in runtime.published)
+
+
+def test_execute_chat_job_stops_consuming_stream_immediately_after_terminal_done() -> None:
+    closed = {"value": False}
+    trailing_consumed = {"value": False}
+
+    def _events(**_kwargs):
+        try:
+            yield {"type": "meta", "source": "agent"}
+            yield {"type": "chunk", "text": "hello world"}
+            yield {"type": "done", "reply": "hello world", "latency_ms": 5}
+            trailing_consumed["value"] = True
+            yield {"type": "tool", "display": "should-not-consume"}
+        finally:
+            closed["value"] = True
+
+    runtime = _FakeRuntime(events=[])
+    job = {"id": 32, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+        stream_events_fn=_events,
+    )
+
+    assert trailing_consumed["value"] is False
+    assert closed["value"] is True
+    assert any(name == "done" and payload.get("reply") == "hello world" for _, name, payload in runtime.published)
+
+
+def test_execute_chat_job_raises_retryable_when_stream_emits_chunks_without_done() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "meta", "source": "agent"},
+            {"type": "chunk", "text": "partial but non-terminal"},
+        ]
+    )
+    job = {"id": 31, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    with pytest.raises(RetryableError, match="without a terminal done event"):
+        execute_chat_job(
+            runtime,
+            job,
+            retryable_error_cls=RetryableError,
+            non_retryable_error_cls=NonRetryableError,
+            client_error_cls=ClientError,
+        )
+
+
+def test_execute_chat_job_preserves_evicted_warm_owner_state_on_completion() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "meta", "source": "agent"},
+            {"type": "chunk", "text": "hello world"},
+            {"type": "done", "reply": "hello world", "latency_ms": 5},
+        ],
+        warm_owner_state={
+            "owner_records": [
+                {
+                    "session_id": "miniapp-u-9",
+                    "state": "evicted",
+                }
+            ]
+        },
+    )
+    job = {"id": 29, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert runtime.client.evicted_sessions == ["miniapp-u-9"]
+    assert runtime.store.completed == [29]
+
+
+def test_execute_chat_job_preserves_attachable_warm_owner_on_completion() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "meta", "source": "agent"},
+            {"type": "chunk", "text": "hello world"},
+            {"type": "done", "reply": "hello world", "latency_ms": 5},
+        ],
+        warm_owner_state={
+            "owner_records": [
+                {
+                    "session_id": "miniapp-u-9",
+                    "state": "attachable_running",
+                }
+            ]
+        },
+    )
+    job = {"id": 30, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert runtime.client.evicted_sessions == []
+    assert runtime.store.completed == [30]
+    done_events = [event for event in runtime.published if event[1] == "done"]
+    assert done_events
+    assert done_events[-1][2]["persistent_mode"] == "warm-detached"
+    assert done_events[-1][2]["warm_handoff"] is True
 
 
 def test_execute_chat_job_raises_retryable_on_session_mismatch_event() -> None:

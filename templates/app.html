@@ -79,10 +79,6 @@
           <div class="masthead__status-row">
             <div class="status-group status-group--stacked">
               <div class="status-pill"><span class="status-dot"></span><span id="auth-status">Checking session…</span></div>
-              <div class="status-group status-group--dev" id="dev-auth-controls" {% if not dev_auth_enabled %}hidden{% endif %}>
-                <span class="status-pill status-pill--debug" id="dev-mode-badge">DEV MODE</span>
-                <button type="button" class="status-pill status-pill--muted status-pill-button" id="dev-signin-button">Dev sign-in</button>
-              </div>
             </div>
 
             <div class="status-group status-group--settings">
@@ -194,6 +190,10 @@
           <p class="modal__hint">Debug</p>
           <button type="button" class="status-pill status-pill--debug" id="render-trace-badge" aria-pressed="false">Render Trace OFF</button>
         </div>
+        {% if dev_auth_enabled %}
+        <p class="modal__hint">Desktop-only sign-in for local dev testing.</p>
+        <button type="button" class="action-button action-button--subtle" id="dev-signin-button">Dev sign-in</button>
+        {% endif %}
         <div class="modal__actions">
           <button type="button" id="settings-close" class="action-button">Close</button>
         </div>
@@ -217,6 +217,7 @@
       </div>
     </dialog>
 
+    {% if dev_auth_enabled %}
     <dialog id="dev-auth-modal" class="modal" aria-labelledby="dev-auth-modal-title">
       <form method="dialog" id="dev-auth-form" class="modal__card">
         <h2 id="dev-auth-modal-title" class="modal__title">Dev sign-in</h2>
@@ -235,6 +236,7 @@
         </div>
       </form>
     </dialog>
+    {% endif %}
 
     <template id="message-template">
       <article class="message">
@@ -263,10 +265,12 @@
         intervalMs: {{ dev_reload_interval_ms }},
         version: "{{ dev_reload_version }}",
         requestDebug: {{ 'true' if request_debug else 'false' }},
-        devAuthEnabled: {{ 'true' if dev_auth_enabled else 'false' }}
+        devAuthEnabled: {{ 'true' if dev_auth_enabled else 'false' }},
+        devAuthRevealHash: "#dev-auth"
       };
       window.__HERMES_BOOTSTRAP_VERSION__ = "{{ bootstrap_version }}";
       window.__HERMES_FILE_PREVIEW__ = {
+        enabled: {{ 'true' if file_preview_enabled else 'false' }},
         allowedRoots: {{ file_preview_allowed_roots_json|safe }}
       };
     </script>

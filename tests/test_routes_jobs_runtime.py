@@ -89,13 +89,32 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
         server.client,
         "runtime_status",
         lambda: {
-            "persistent": {"enabled": True, "total": 2, "bootstrapped": 1, "unbootstrapped": 1},
+            "persistent": {
+                "enabled": True,
+                "shared_backend_enabled": False,
+                "worker_owned_enabled": True,
+                "ownership": "checkpoint_only",
+                "enablement_reason": "worker_owned_warm_continuity_enabled",
+                "total": 2,
+                "bootstrapped": 1,
+                "unbootstrapped": 1,
+            },
             "routing": {
                 "model": "gpt-5.3-codex",
                 "provider": "openai-codex",
                 "base_url": "https://chatgpt.com/backend-api/codex",
                 "direct_agent_enabled": True,
                 "persistent_sessions_enabled": True,
+                "persistent_shared_backend_enabled": False,
+                "persistent_worker_owned_enabled": True,
+                "persistent_runtime_ownership": "checkpoint_only",
+                "persistent_sessions_enablement_reason": "worker_owned_warm_continuity_enabled",
+            },
+            "warm_sessions": {
+                "current_mode": "isolated_worker_owned_warm_continuity",
+                "owner": "isolated_worker_processes",
+                "target_mode": "isolated_worker_owned_warm_continuity",
+                "target_status": "enabled_in_subprocess_mode",
             },
             "health": {
                 "session_db_available": True,
@@ -126,9 +145,14 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
     data = response.get_json()
     assert data["ok"] is True
     assert data["persistent"]["enabled"] is True
+    assert data["persistent"]["worker_owned_enabled"] is True
+    assert data["persistent"]["shared_backend_enabled"] is False
     assert data["persistent"]["total"] == 2
     assert data["routing"]["provider"] == "openai-codex"
     assert data["routing"]["direct_agent_enabled"] is True
+    assert data["routing"]["persistent_worker_owned_enabled"] is True
+    assert data["warm_sessions"]["current_mode"] == "isolated_worker_owned_warm_continuity"
+    assert data["warm_sessions"]["target_mode"] == "isolated_worker_owned_warm_continuity"
     assert data["health"]["session_db_available"] is True
     assert data["health"]["agent_kwargs_has_session_db"] is True
     assert data["health"]["agent_kwargs_session_db_available"] is True
@@ -146,9 +170,78 @@ def test_runtime_duplicate_job_runner_guard(monkeypatch, tmp_path) -> None:
     runtime = server.runtime
     assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
     assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is False
+
+    diagnostics = runtime.runtime_diagnostics()
+    active_jobs = diagnostics["incident_snapshot"]["workers"]["active_jobs"]
+    assert diagnostics["incident_snapshot"]["workers"]["active_job_total"] == 1
+    assert active_jobs[0]["job_id"] == 991
+    assert active_jobs[0]["user_id"] == "123"
+    assert active_jobs[0]["chat_id"] == 55
+    assert active_jobs[0]["session_id"] == "miniapp-123-55"
+    assert active_jobs[0]["recent_transport_transitions"] == []
+
     runtime._finish_job_runner(991)
     assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
     runtime._finish_job_runner(991)
+
+
+def test_runtime_diagnostics_include_active_job_transport_transitions(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server.runtime
+
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
+    server.client._record_transport_transition(
+        previous_path="none",
+        next_path="agent",
+        reason="direct_start",
+        session_id="miniapp-123-55",
+        user_id="123",
+    )
+    server.client._record_transport_transition(
+        previous_path="agent",
+        next_path="cli",
+        reason="direct_failure:HermesClientError",
+        session_id="miniapp-123-55",
+        user_id="123",
+    )
+
+    diagnostics = runtime.runtime_diagnostics()
+    active_jobs = diagnostics["incident_snapshot"]["workers"]["active_jobs"]
+    assert len(active_jobs) == 1
+    assert [item["next_path"] for item in active_jobs[0]["recent_transport_transitions"]] == ["agent", "cli"]
+
+    runtime._finish_job_runner(991)
+
+
+def test_checkpoint_only_runtime_tracks_warm_owner_worker_events(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server.runtime
+
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
+    owner_state = server.client.warm_session_owner_state()
+    assert owner_state["owner_class"] == "IsolatedWorkerWarmSessionRegistryScaffold"
+    assert any(event.get("event") == "worker_started" and event.get("session_id") == "miniapp-123-55" for event in owner_state["recent_events"])
+    record = owner_state["owner_records"][0]
+    assert record["session_id"] == "miniapp-123-55"
+    assert record["state"] == "running"
+    assert record["lifecycle_phase"] == "active_attempt"
+    assert record["reusable"] is False
+    assert record["job_id"] == 991
+    assert record["chat_id"] == 55
+    assert owner_state["reusable_candidate_count"] == 0
+
+    runtime._finish_job_runner(991, outcome="completed")
+    owner_state = server.client.warm_session_owner_state()
+    assert any(event.get("event") == "worker_finished" and "outcome=completed" in str(event.get("detail") or "") for event in owner_state["recent_events"])
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "reusable_candidate"
+    assert record["lifecycle_phase"] == "post_attempt"
+    assert record["reusable"] is True
+    assert record["reusability_reason"] == "isolated_worker_warm_reuse_not_implemented"
+    assert record["last_outcome"] == "completed"
+    assert owner_state["reusable_candidate_count"] == 1
+    assert owner_state["reusable_candidate_session_ids"] == ["miniapp-123-55"]
 
 
 def test_runtime_can_be_configured_with_subprocess_worker_launcher(monkeypatch, tmp_path) -> None:

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
+import socket
 import sys
+import tempfile
+import threading
 import time
+from pathlib import Path
 
 import hermes_client
 import hermes_client_agent
@@ -77,14 +82,1245 @@ def test_persistent_session_manager_evict_and_stats() -> None:
     manager.get_or_create(session_id="miniapp-u-1", model="m1", max_iterations=90, create_agent=lambda: object())
     manager.get_or_create(session_id="miniapp-u-2", model="m1", max_iterations=90, create_agent=lambda: object())
 
-    stats_before = manager.stats()
-    assert stats_before["total"] == 2
+    stats = manager.stats()
+    assert stats["total"] == 2
+    assert stats["bootstrapped"] == 0
 
     assert manager.evict("miniapp-u-1") is True
-    assert manager.evict("missing") is False
+    assert manager.evict("miniapp-u-1") is False
+    assert manager.stats()["total"] == 1
 
-    stats_after = manager.stats()
-    assert stats_after["total"] == 1
+
+def test_persistent_session_manager_tracks_owner_events_and_state() -> None:
+    manager = hermes_client.PersistentSessionManager(max_sessions=8, idle_ttl_seconds=3600)
+
+    manager.get_or_create(session_id="miniapp-u-1", model="m1", max_iterations=90, create_agent=lambda: object())
+    manager.get_runtime("miniapp-u-1")
+    manager.evict("miniapp-u-1")
+
+    owner_state = manager.owner_state()
+    assert owner_state["owner_class"] == "PersistentSessionManager"
+    assert owner_state["active_owner_count"] == 0
+    recent_events = owner_state["recent_events"]
+    assert [event["event"] for event in recent_events][-3:] == ["created", "attach", "evicted_explicit"]
+    assert all(event["session_id"] == "miniapp-u-1" for event in recent_events[-3:])
+
+
+def test_client_exposes_warm_session_registry_alias() -> None:
+    client = hermes_client.HermesClient()
+
+    assert client._warm_session_registry is client._session_manager
+    assert type(client._warm_session_registry).__name__ == "PersistentSessionManager"
+
+
+def test_client_uses_isolated_worker_warm_registry_scaffold_in_checkpoint_only_mode(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    assert type(client._warm_session_registry).__name__ == "IsolatedWorkerWarmSessionRegistryScaffold"
+    assert client._warm_session_registry is not client._session_manager
+    owner_state = client.warm_session_owner_state()
+    assert owner_state["owner_class"] == "IsolatedWorkerWarmSessionRegistryScaffold"
+    assert owner_state["active_owner_count"] == 0
+    assert owner_state["owner_records"] == []
+    assert any(event["event"] == "scaffold_initialized" for event in owner_state["recent_events"])
+
+
+def test_isolated_worker_warm_registry_tracks_owner_records(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    owner_state = client.warm_session_owner_state()
+    assert owner_state["active_owner_count"] == 1
+    assert owner_state["active_session_ids"] == ["miniapp-123-55"]
+    record = owner_state["owner_records"][0]
+    assert record["session_id"] == "miniapp-123-55"
+    assert record["state"] == "running"
+    assert record["lifecycle_phase"] == "active_attempt"
+    assert record["reusable"] is False
+    assert record["reusability_reason"] == "worker_attempt_in_progress"
+    assert record["chat_id"] == 55
+    assert record["job_id"] == 991
+    assert record["owner_pid"] == 44001
+    assert record["last_finished_monotonic_ms"] is None
+    assert owner_state["reusable_candidate_count"] == 0
+
+    client.note_warm_session_worker_finished(session_id="miniapp-123-55", outcome="completed", chat_id=55, job_id=991, owner_pid=44001)
+    owner_state = client.warm_session_owner_state()
+    assert owner_state["active_owner_count"] == 0
+    assert owner_state["reusable_candidate_count"] == 1
+    assert owner_state["reusable_candidate_session_ids"] == ["miniapp-123-55"]
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "reusable_candidate"
+    assert record["lifecycle_phase"] == "post_attempt"
+    assert record["reusable"] is True
+    assert record["reusability_reason"] == "isolated_worker_warm_reuse_not_implemented"
+    assert record["last_outcome"] == "completed"
+    assert record["last_finished_monotonic_ms"] is not None
+    assert record["reusable_until_monotonic_ms"] is not None
+
+
+def test_isolated_worker_running_worker_becomes_attachable_candidate(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    client.note_warm_session_worker_attach_ready(
+        session_id="miniapp-123-55",
+        owner_pid=44001,
+        transport_kind="unix_socket_jsonl",
+        worker_endpoint="/tmp/miniapp-attach.sock",
+        resume_token="token-123",
+        resume_deadline_ms=int(time.monotonic() * 1000) + 5000,
+    )
+
+    owner_state = client.warm_session_owner_state()
+    assert owner_state["active_owner_count"] == 1
+    assert owner_state["attachable_owner_count"] == 1
+    assert owner_state["live_attach_ready_count"] == 1
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "attachable_running"
+    assert record["reusable"] is True
+    assert record["reusability_reason"] == "worker_attach_live_available"
+    assert record["attach_transport_kind"] == "unix_socket_jsonl"
+    assert record["attach_worker_endpoint"] == "/tmp/miniapp-attach.sock"
+    assert record["attach_resume_token"] == "token-123"
+    candidate = client.select_warm_session_candidate("miniapp-123-55")
+    assert candidate is not None
+    assert candidate["state"] == "attachable_running"
+    assert candidate["reuse_contract"]["resume_supported"] is True
+    assert candidate["reuse_contract"]["resume_capability"] == "worker_attach"
+    assert candidate["reuse_contract"]["transport_kind"] == "unix_socket_jsonl"
+    assert candidate["reuse_contract"]["worker_endpoint"] == "/tmp/miniapp-attach.sock"
+    assert candidate["reuse_contract"]["resume_token"] == "token-123"
+
+
+def test_isolated_worker_reusable_candidate_expires() -> None:
+    registry = hermes_client.IsolatedWorkerWarmSessionRegistryScaffold(reusable_candidate_ttl_ms=1000)
+    registry.note_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    registry.note_worker_finished(session_id="miniapp-123-55", outcome="completed", chat_id=55, job_id=991, owner_pid=44001)
+
+    before = registry.owner_state()
+    expiry = before["owner_records"][0]["reusable_until_monotonic_ms"]
+    registry._prune_reusable_candidates(now_ms=int(expiry) + 1)
+
+    owner_state = registry.owner_state()
+    assert owner_state["reusable_candidate_count"] == 0
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "expired"
+    assert record["reusable"] is False
+    assert record["reusability_reason"] == "candidate_ttl_expired"
+    assert any(event["event"] == "candidate_expired" for event in owner_state["recent_events"])
+
+
+def test_isolated_worker_attachable_candidate_expires_by_resume_deadline() -> None:
+    registry = hermes_client.IsolatedWorkerWarmSessionRegistryScaffold(reusable_candidate_ttl_ms=1000)
+    registry.note_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    registry.note_worker_attach_ready(
+        session_id="miniapp-123-55",
+        owner_pid=44001,
+        transport_kind="unix_socket_jsonl",
+        worker_endpoint="/tmp/miniapp-attach.sock",
+        resume_token="token-123",
+        resume_deadline_ms=123456,
+    )
+    registry._prune_reusable_candidates(now_ms=123457)
+
+    owner_state = registry.owner_state()
+    assert owner_state["attachable_owner_count"] == 0
+    assert owner_state["live_attach_ready_count"] == 0
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "expired"
+    assert record["reusability_reason"] == "attach_resume_deadline_expired"
+    assert any(event["event"] == "attach_expired" for event in owner_state["recent_events"])
+
+
+def test_attachable_running_worker_finished_preserves_live_attach_candidate() -> None:
+    registry = hermes_client.IsolatedWorkerWarmSessionRegistryScaffold(reusable_candidate_ttl_ms=1000)
+    registry.note_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    registry.note_worker_attach_ready(
+        session_id="miniapp-123-55",
+        owner_pid=44001,
+        transport_kind="unix_socket_jsonl",
+        worker_endpoint="/tmp/miniapp-attach.sock",
+        resume_token="token-123",
+        resume_deadline_ms=int(time.monotonic() * 1000) + 5000,
+    )
+    registry.note_worker_finished(session_id="miniapp-123-55", outcome="finished", chat_id=55, job_id=991, owner_pid=44001)
+
+    owner_state = registry.owner_state()
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "attachable_running"
+    assert record["reusability_reason"] == "worker_attach_live_available"
+    assert owner_state["live_attach_ready_count"] == 1
+
+
+def test_isolated_worker_reusable_candidate_invalidated_by_evict() -> None:
+    registry = hermes_client.IsolatedWorkerWarmSessionRegistryScaffold(reusable_candidate_ttl_ms=1000)
+    registry.note_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    registry.note_worker_finished(session_id="miniapp-123-55", outcome="completed", chat_id=55, job_id=991, owner_pid=44001)
+
+    assert registry.evict("miniapp-123-55", reason="invalidated_by_clear") is True
+    owner_state = registry.owner_state()
+    assert owner_state["reusable_candidate_count"] == 0
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "evicted"
+    assert record["lifecycle_phase"] == "invalidated"
+    assert record["reusable"] is False
+    assert record["reusability_reason"] == "invalidated_by_clear"
+    assert any(event["event"] == "evicted_explicit" and "invalidated_by=invalidated_by_clear" in str(event.get("detail") or "") for event in owner_state["recent_events"])
+
+
+def test_isolated_worker_registry_selects_reusable_candidate() -> None:
+    registry = hermes_client.IsolatedWorkerWarmSessionRegistryScaffold(reusable_candidate_ttl_ms=1000)
+    registry.note_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    assert registry.select_reusable_candidate("miniapp-123-55") is None
+    registry.note_worker_finished(session_id="miniapp-123-55", outcome="completed", chat_id=55, job_id=991, owner_pid=44001)
+
+    candidate = registry.select_reusable_candidate("miniapp-123-55")
+    assert candidate is not None
+    assert candidate["session_id"] == "miniapp-123-55"
+    assert candidate["state"] == "reusable_candidate"
+    assert candidate["reusable"] is True
+    reuse_contract = candidate["reuse_contract"]
+    assert reuse_contract["contract_version"] == "warm-reuse-v1"
+    assert reuse_contract["session_id"] == "miniapp-123-55"
+    assert reuse_contract["owner_pid"] == 44001
+    assert reuse_contract["owner_class"] == "IsolatedWorkerWarmSessionRegistryScaffold"
+    assert reuse_contract["lifecycle_phase"] == "post_attempt"
+    assert reuse_contract["reusability_reason"] == "isolated_worker_warm_reuse_not_implemented"
+    assert reuse_contract["resume_supported"] is False
+    assert reuse_contract["resume_capability"] == "none"
+    assert reuse_contract["supported_resume_modes"] == []
+    assert reuse_contract["required_transport"] == "subprocess"
+    assert reuse_contract["attach_mechanism"] == "pid_only"
+    assert reuse_contract["required_now"] == [
+        "contract_version",
+        "session_id",
+        "owner_class",
+        "owner_pid",
+        "lifecycle_phase",
+        "reusability_reason",
+    ]
+    assert reuse_contract["reserved_for_future"] == [
+        "resume_token",
+        "worker_endpoint",
+        "transport_kind",
+        "resume_deadline_ms",
+    ]
+    assert reuse_contract["resume_token"] is None
+    assert reuse_contract["worker_endpoint"] is None
+    assert reuse_contract["transport_kind"] is None
+    assert reuse_contract["resume_deadline_ms"] is None
+
+
+def test_client_select_warm_session_candidate_uses_active_registry(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+    assert client.select_warm_session_candidate("miniapp-123-55") is None
+    client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991)
+    client.note_warm_session_worker_finished(session_id="miniapp-123-55", outcome="completed", chat_id=55, job_id=991)
+    candidate = client.select_warm_session_candidate("miniapp-123-55")
+    assert candidate is not None
+    assert candidate["session_id"] == "miniapp-123-55"
+
+
+def test_probe_warm_session_candidate_records_unavailable_reason(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    probe = client.probe_warm_session_candidate("miniapp-123-missing", reason="stream_start:agent")
+    assert probe["available"] is False
+    assert probe["unavailable_reason"] == "no_owner_record"
+    recent = client.warm_session_strategy()["recent_candidate_probes"]
+    assert recent[-1]["session_id"] == "miniapp-123-missing"
+
+
+def test_record_warm_reuse_decision_unavailable(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    decision = client.record_warm_reuse_decision("miniapp-123-missing", reason="stream_start:agent", candidate=None)
+    assert decision["decision"] == "candidate_unavailable"
+    assert decision["detail"] == "no_owner_record"
+    recent = client.warm_session_strategy()["recent_reuse_decisions"]
+    assert recent[-1]["session_id"] == "miniapp-123-missing"
+
+
+def test_probe_warm_session_candidate_records_available_candidate(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+    client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991)
+    client.note_warm_session_worker_finished(session_id="miniapp-123-55", outcome="completed", chat_id=55, job_id=991)
+
+    probe = client.probe_warm_session_candidate("miniapp-123-55", reason="stream_start:agent")
+    assert probe["available"] is True
+    assert probe["candidate"]["session_id"] == "miniapp-123-55"
+    assert probe["unavailable_reason"] is None
+
+
+def test_evaluate_warm_reuse_policy_defaults_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+    client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991)
+    client.note_warm_session_worker_finished(session_id="miniapp-123-55", outcome="completed", chat_id=55, job_id=991)
+    candidate = client.select_warm_session_candidate("miniapp-123-55")
+
+    policy = client.evaluate_warm_reuse_policy(
+        "miniapp-123-55",
+        reason="stream_start:agent",
+        requested_path="agent",
+        candidate=candidate,
+    )
+    assert policy["allowed"] is False
+    assert policy["policy"] == "disabled_by_policy"
+    assert policy["candidate_available"] is True
+    assert policy["candidate"]["session_id"] == "miniapp-123-55"
+    recent = client.warm_session_strategy()["recent_reuse_policy_checks"]
+    assert recent[-1]["session_id"] == "miniapp-123-55"
+
+
+def test_record_warm_reuse_decision_available_policy_blocked(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+    client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991)
+    client.note_warm_session_worker_finished(session_id="miniapp-123-55", outcome="completed", chat_id=55, job_id=991)
+    candidate = client.select_warm_session_candidate("miniapp-123-55")
+    policy = client.evaluate_warm_reuse_policy(
+        "miniapp-123-55",
+        reason="stream_start:agent",
+        requested_path="agent",
+        candidate=candidate,
+    )
+
+    decision = client.record_warm_reuse_decision(
+        "miniapp-123-55",
+        reason="stream_start:agent",
+        candidate=candidate,
+        policy=policy,
+    )
+    assert decision["decision"] == "candidate_available_policy_blocked"
+    assert decision["available"] is True
+    assert decision["detail"] == "disabled_by_policy"
+    assert decision["policy"]["allowed"] is False
+    assert decision["candidate"]["session_id"] == "miniapp-123-55"
+    recent = client.warm_session_strategy()["recent_reuse_decisions"]
+    assert recent[-1]["session_id"] == "miniapp-123-55"
+
+
+def test_validate_warm_reuse_contract_reports_missing_required_fields(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    contract = {
+        "contract_version": "warm-reuse-v1",
+        "session_id": "miniapp-123-7",
+        "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+        "owner_pid": None,
+        "lifecycle_phase": "post_attempt",
+        "reusability_reason": "isolated_worker_warm_reuse_not_implemented",
+        "resume_supported": False,
+        "required_now": [
+            "contract_version",
+            "session_id",
+            "owner_class",
+            "owner_pid",
+            "lifecycle_phase",
+            "reusability_reason",
+        ],
+        "reserved_for_future": ["resume_token", "worker_endpoint", "transport_kind", "resume_deadline_ms"],
+    }
+
+    validation = client.validate_warm_reuse_contract(session_id="miniapp-123-7", reuse_contract=contract)
+    assert validation["valid"] is False
+    assert validation["status"] == "missing_required_fields"
+    assert validation["missing_required_fields"] == ["owner_pid"]
+    assert validation["resume_capability"] == "unknown"
+
+
+def test_validate_warm_reuse_contract_reports_invalid_session_binding(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    contract = {
+        "contract_version": "warm-reuse-v1",
+        "session_id": "miniapp-123-other",
+        "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+        "owner_pid": 4242,
+        "lifecycle_phase": "post_attempt",
+        "reusability_reason": "isolated_worker_warm_reuse_not_implemented",
+        "resume_supported": False,
+        "required_now": [
+            "contract_version",
+            "session_id",
+            "owner_class",
+            "owner_pid",
+            "lifecycle_phase",
+            "reusability_reason",
+        ],
+        "reserved_for_future": ["resume_token", "worker_endpoint", "transport_kind", "resume_deadline_ms"],
+    }
+
+    validation = client.validate_warm_reuse_contract(session_id="miniapp-123-7", reuse_contract=contract)
+    assert validation["valid"] is False
+    assert validation["status"] == "invalid_session_binding"
+    assert validation["missing_required_fields"] == []
+    assert validation["resume_capability"] == "unknown"
+
+
+def test_validate_warm_reuse_contract_reports_unsupported_version(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    contract = {
+        "contract_version": "warm-reuse-v2",
+        "session_id": "miniapp-123-7",
+        "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+        "owner_pid": 4242,
+        "lifecycle_phase": "post_attempt",
+        "reusability_reason": "isolated_worker_warm_reuse_not_implemented",
+        "resume_supported": False,
+        "required_now": [
+            "contract_version",
+            "session_id",
+            "owner_class",
+            "owner_pid",
+            "lifecycle_phase",
+            "reusability_reason",
+        ],
+        "reserved_for_future": ["resume_token", "worker_endpoint", "transport_kind", "resume_deadline_ms"],
+    }
+
+    validation = client.validate_warm_reuse_contract(session_id="miniapp-123-7", reuse_contract=contract)
+    assert validation["valid"] is False
+    assert validation["status"] == "unsupported_contract_version"
+    assert validation["missing_required_fields"] == []
+    assert validation["resume_capability"] == "unknown"
+
+
+def test_attempt_warm_reuse_records_invalid_session_binding_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    candidate = {
+        "session_id": "miniapp-123-7",
+        "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+        "owner_pid": 4242,
+        "reuse_contract": {
+            "contract_version": "warm-reuse-v1",
+            "session_id": "miniapp-123-other",
+            "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+            "owner_pid": 4242,
+            "lifecycle_phase": "post_attempt",
+            "reusability_reason": "isolated_worker_warm_reuse_not_implemented",
+            "resume_supported": False,
+            "required_now": [
+                "contract_version",
+                "session_id",
+                "owner_class",
+                "owner_pid",
+                "lifecycle_phase",
+                "reusability_reason",
+            ],
+            "reserved_for_future": ["resume_token", "worker_endpoint", "transport_kind", "resume_deadline_ms"],
+        },
+    }
+    policy = {"policy": "test_allow", "allowed": True}
+
+    result = client.attempt_warm_reuse(
+        session_id="miniapp-123-7",
+        reason="stream_start:agent",
+        requested_path="agent",
+        candidate=candidate,
+        policy=policy,
+        user_id="123",
+        message="hello",
+        conversation_history=None,
+    )
+
+    assert result is None
+    recent = client.warm_session_strategy()["recent_reuse_attempts"]
+    assert recent[-1]["attempt"] == "reuse_contract_invalid_session_binding"
+    assert recent[-1]["fallback_reason"] == "reuse_contract_invalid_session_binding"
+    assert recent[-1]["validation"]["status"] == "invalid_session_binding"
+    assert recent[-1]["validation"]["resume_capability"] == "none"
+
+
+def test_attempt_warm_reuse_records_unsupported_version_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    candidate = {
+        "session_id": "miniapp-123-7",
+        "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+        "owner_pid": 4242,
+        "reuse_contract": {
+            "contract_version": "warm-reuse-v2",
+            "session_id": "miniapp-123-7",
+            "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+            "owner_pid": 4242,
+            "lifecycle_phase": "post_attempt",
+            "reusability_reason": "isolated_worker_warm_reuse_not_implemented",
+            "resume_supported": False,
+            "required_now": [
+                "contract_version",
+                "session_id",
+                "owner_class",
+                "owner_pid",
+                "lifecycle_phase",
+                "reusability_reason",
+            ],
+            "reserved_for_future": ["resume_token", "worker_endpoint", "transport_kind", "resume_deadline_ms"],
+        },
+    }
+    policy = {"policy": "test_allow", "allowed": True}
+
+    result = client.attempt_warm_reuse(
+        session_id="miniapp-123-7",
+        reason="stream_start:agent",
+        requested_path="agent",
+        candidate=candidate,
+        policy=policy,
+        user_id="123",
+        message="hello",
+        conversation_history=None,
+    )
+
+    assert result is None
+    recent = client.warm_session_strategy()["recent_reuse_attempts"]
+    assert recent[-1]["attempt"] == "reuse_contract_unsupported_version"
+    assert recent[-1]["fallback_reason"] == "reuse_contract_unsupported_version"
+    assert recent[-1]["validation"]["status"] == "unsupported_contract_version"
+    assert recent[-1]["validation"]["resume_capability"] == "none"
+
+
+def test_attempt_warm_reuse_records_contract_missing_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    candidate = {
+        "session_id": "miniapp-123-7",
+        "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+        "owner_pid": None,
+        "reuse_contract": {
+            "contract_version": "warm-reuse-v1",
+            "session_id": "miniapp-123-7",
+            "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+            "owner_pid": None,
+            "lifecycle_phase": "post_attempt",
+            "reusability_reason": "isolated_worker_warm_reuse_not_implemented",
+            "resume_supported": False,
+            "required_now": [
+                "contract_version",
+                "session_id",
+                "owner_class",
+                "owner_pid",
+                "lifecycle_phase",
+                "reusability_reason",
+            ],
+            "reserved_for_future": ["resume_token", "worker_endpoint", "transport_kind", "resume_deadline_ms"],
+        },
+    }
+    policy = {"policy": "test_allow", "allowed": True}
+
+    result = client.attempt_warm_reuse(
+        session_id="miniapp-123-7",
+        reason="stream_start:agent",
+        requested_path="agent",
+        candidate=candidate,
+        policy=policy,
+        user_id="123",
+        message="hello",
+        conversation_history=None,
+    )
+
+    assert result is None
+    recent = client.warm_session_strategy()["recent_reuse_attempts"]
+    assert recent[-1]["attempt"] == "reuse_contract_missing_required_fields"
+    assert recent[-1]["fallback_to"] == "agent"
+    assert recent[-1]["fallback_reason"] == "reuse_contract_missing_required_fields"
+    assert recent[-1]["reuse_contract"]["contract_version"] == "warm-reuse-v1"
+    assert recent[-1]["validation"]["status"] == "missing_required_fields"
+    assert recent[-1]["validation"]["resume_capability"] == "none"
+    assert recent[-1]["missing_required_fields"] == ["owner_pid"]
+    assert recent[-1]["policy"]["policy"] == "test_allow"
+
+
+def test_attempt_warm_reuse_records_resume_not_supported_yet(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    candidate = {
+        "session_id": "miniapp-123-7",
+        "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+        "owner_pid": 4242,
+        "reuse_contract": {
+            "contract_version": "warm-reuse-v1",
+            "session_id": "miniapp-123-7",
+            "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+            "owner_pid": 4242,
+            "lifecycle_phase": "post_attempt",
+            "reusability_reason": "isolated_worker_warm_reuse_not_implemented",
+            "resume_supported": False,
+            "resume_capability": "none",
+            "supported_resume_modes": [],
+            "required_transport": "subprocess",
+            "attach_mechanism": "pid_only",
+            "required_now": [
+                "contract_version",
+                "session_id",
+                "owner_class",
+                "owner_pid",
+                "lifecycle_phase",
+                "reusability_reason",
+            ],
+            "reserved_for_future": ["resume_token", "worker_endpoint", "transport_kind", "resume_deadline_ms"],
+        },
+    }
+    policy = {"policy": "test_allow", "allowed": True}
+
+    result = client.attempt_warm_reuse(
+        session_id="miniapp-123-7",
+        reason="stream_start:agent",
+        requested_path="agent",
+        candidate=candidate,
+        policy=policy,
+        user_id="123",
+        message="hello",
+        conversation_history=[{"role": "user", "content": "earlier"}],
+    )
+
+    assert result is None
+    recent = client.warm_session_strategy()["recent_reuse_attempts"]
+    assert recent[-1]["attempt"] == "reuse_resume_not_supported_yet"
+    assert recent[-1]["fallback_to"] == "agent"
+    assert recent[-1]["reuse_contract"]["owner_pid"] == 4242
+    assert recent[-1]["validation"]["status"] == "valid"
+    assert recent[-1]["validation"]["resume_capability"] == "none"
+    assert recent[-1]["missing_required_fields"] == []
+    assert recent[-1]["reserved_future_fields"] == [
+        "resume_token",
+        "worker_endpoint",
+        "transport_kind",
+        "resume_deadline_ms",
+    ]
+    assert recent[-1]["conversation_history_len"] == 1
+
+
+def test_execute_worker_attach_reports_owner_missing(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    attach_plan = {
+        "mode": "worker_attach",
+        "planned": True,
+        "deferred": True,
+        "status": "attach_plan_ready",
+        "session_id": "miniapp-123-7",
+        "requested_path": "agent",
+        "attach_mechanism": "pid_only",
+        "required_transport": "subprocess",
+        "supported_resume_modes": ["worker_attach"],
+        "owner_pid": 4242,
+        "candidate_session_id": "miniapp-123-7",
+        "validation_status": "valid",
+        "missing_prerequisites": [],
+        "next_step": "implement_worker_attach_execution",
+    }
+
+    def fake_kill(pid, sig):
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(hermes_client.os, "kill", fake_kill)
+
+    execution = client.execute_worker_attach(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        attach_plan=attach_plan,
+    )
+    assert execution["executed"] is False
+    assert execution["status"] == "attach_owner_missing"
+    assert execution["owner_pid"] == 4242
+
+
+def test_execute_worker_attach_reports_owner_present_wrong_identity(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    attach_plan = {
+        "mode": "worker_attach",
+        "planned": True,
+        "deferred": True,
+        "status": "attach_plan_ready",
+        "session_id": "miniapp-123-7",
+        "requested_path": "agent",
+        "attach_mechanism": "pid_only",
+        "required_transport": "subprocess",
+        "supported_resume_modes": ["worker_attach"],
+        "owner_pid": 4242,
+        "candidate_session_id": "miniapp-123-7",
+        "validation_status": "valid",
+        "missing_prerequisites": [],
+        "next_step": "implement_worker_attach_execution",
+    }
+
+    monkeypatch.setattr(hermes_client.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(client, "_read_process_cmdline", lambda pid: "/usr/bin/python other_process.py")
+
+    execution = client.execute_worker_attach(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        attach_plan=attach_plan,
+    )
+    assert execution["executed"] is False
+    assert execution["status"] == "attach_owner_present_wrong_identity"
+    assert execution["owner_pid"] == 4242
+
+
+def test_execute_worker_attach_reports_owner_present_identity_verified_but_session_unverified(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    attach_plan = {
+        "mode": "worker_attach",
+        "planned": True,
+        "deferred": True,
+        "status": "attach_plan_ready",
+        "session_id": "miniapp-123-7",
+        "requested_path": "agent",
+        "attach_mechanism": "pid_only",
+        "required_transport": "subprocess",
+        "supported_resume_modes": ["worker_attach"],
+        "owner_pid": 4242,
+        "candidate_session_id": "miniapp-123-7",
+        "validation_status": "valid",
+        "missing_prerequisites": [],
+        "next_step": "implement_worker_attach_execution",
+    }
+
+    monkeypatch.setattr(hermes_client.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(client, "_read_process_cmdline", lambda pid: "/usr/bin/python chat_worker_subprocess.py --session other-session")
+
+    execution = client.execute_worker_attach(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        attach_plan=attach_plan,
+    )
+    assert execution["executed"] is False
+    assert execution["status"] == "attach_owner_identity_verified_session_unverified"
+    assert execution["session_binding"]["verified"] is False
+    assert execution["owner_pid"] == 4242
+
+
+def test_execute_worker_attach_reports_owner_present_identity_and_session_verified(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    attach_plan = {
+        "mode": "worker_attach",
+        "planned": True,
+        "deferred": True,
+        "status": "attach_plan_ready",
+        "session_id": "miniapp-123-7",
+        "requested_path": "agent",
+        "attach_mechanism": "pid_only",
+        "required_transport": "subprocess",
+        "supported_resume_modes": ["worker_attach"],
+        "owner_pid": 4242,
+        "candidate_session_id": "miniapp-123-7",
+        "validation_status": "valid",
+        "missing_prerequisites": [],
+        "next_step": "implement_worker_attach_execution",
+    }
+
+    monkeypatch.setattr(hermes_client.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(client, "_read_process_cmdline", lambda pid: "/usr/bin/python chat_worker_subprocess.py --session miniapp-123-7")
+
+    execution = client.execute_worker_attach(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        attach_plan=attach_plan,
+    )
+    assert execution["executed"] is False
+    assert execution["status"] == "attach_owner_identity_verified_session_verified"
+    assert execution["session_binding"]["verified"] is True
+    assert execution["owner_pid"] == 4242
+
+
+def test_decide_worker_attach_eligibility_reports_probe_only(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    validation = {"valid": True, "status": "valid", "resume_capability": "worker_attach"}
+    attach_plan = {"status": "attach_plan_ready", "missing_prerequisites": []}
+    attach_execution = {"status": "attach_owner_identity_verified_session_verified", "executed": False}
+
+    eligibility = client.decide_worker_attach_eligibility(
+        validation=validation,
+        attach_plan=attach_plan,
+        attach_execution=attach_execution,
+    )
+    assert eligibility["status"] == "attach_eligible_probe_only"
+    assert eligibility["eligible"] is True
+
+
+def test_execute_worker_attach_action_reports_handshake_unavailable_when_cmdline_missing(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    eligibility = {"status": "attach_eligible_probe_only", "eligible": True, "reason": "attach_owner_identity_verified_session_verified"}
+    attach_execution = {"status": "attach_owner_identity_verified_session_verified", "executed": False, "owner_pid": 4242, "cmdline": None}
+
+    action = client.execute_worker_attach_action(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        attach_eligibility=eligibility,
+        attach_execution=attach_execution,
+    )
+    assert action["executed"] is False
+    assert action["status"] == "attach_action_handshake_unavailable"
+    assert action["owner_pid"] == 4242
+
+
+def test_attempt_live_worker_attach_handshake_succeeds_with_proc_metadata(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    monkeypatch.setattr(hermes_client.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(
+        client,
+        "_read_process_status",
+        lambda pid: {"state": "S (sleeping)", "state_code": "S"},
+    )
+    monkeypatch.setattr(
+        client,
+        "_read_process_fd_link",
+        lambda pid, fd: {0: "pipe:[12345]", 1: "pipe:[67890]"}.get(fd),
+    )
+
+    action = client._attempt_live_worker_attach_handshake(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        attach_execution={"owner_pid": 4242},
+    )
+    assert action["executed"] is True
+    assert action["status"] == "attach_action_handshake_succeeded"
+    assert action["owner_pid"] == 4242
+    assert action["handshake_detail"]["stdin_link"] == "pipe:[12345]"
+    assert action["handshake_detail"]["stdout_link"] == "pipe:[67890]"
+
+
+def test_execute_worker_attach_action_runs_live_handshake_when_ready(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    eligibility = {"status": "attach_eligible_probe_only", "eligible": True, "reason": "attach_owner_identity_verified_session_verified"}
+    attach_execution = {
+        "status": "attach_owner_identity_verified_session_verified",
+        "executed": False,
+        "owner_pid": 4242,
+        "cmdline": "/usr/bin/python chat_worker_subprocess.py --session miniapp-123-7",
+    }
+    monkeypatch.setattr(
+        client,
+        "_attempt_live_worker_attach_handshake",
+        lambda *, session_id, requested_path, attach_execution: {
+            "executed": True,
+            "status": "attach_action_handshake_succeeded",
+            "session_id": session_id,
+            "requested_path": requested_path,
+            "owner_pid": attach_execution.get("owner_pid"),
+            "reason": "handshake_proc_probe_succeeded",
+            "handshake_attempted": True,
+            "handshake_timeout_ms": 250,
+            "handshake_detail": {"stdin_link": "pipe:[12345]", "stdout_link": "pipe:[67890]"},
+            "next_step": "implement_live_stream_attach_after_handshake",
+        },
+    )
+
+    action = client.execute_worker_attach_action(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        attach_eligibility=eligibility,
+        attach_execution=attach_execution,
+    )
+    assert action["executed"] is True
+    assert action["status"] == "attach_action_handshake_succeeded"
+    assert action["owner_pid"] == 4242
+    assert action["precondition_status"] == "attach_action_handshake_ready"
+    assert action["handshake_attempted"] is True
+
+
+def test_evict_session_terminates_live_attach_owner(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+    client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    client.note_warm_session_worker_attach_ready(
+        session_id="miniapp-123-55",
+        owner_pid=44001,
+        transport_kind="unix_socket_jsonl",
+        worker_endpoint="/tmp/miniapp-attach.sock",
+        resume_token="token-123",
+        resume_deadline_ms=int(time.monotonic() * 1000) + 5000,
+    )
+    terminated = []
+    monkeypatch.setattr(client, "_terminate_warm_owner_process", lambda *, pid, reason: terminated.append((pid, reason)) or True)
+
+    result = client.evict_session("miniapp-123-55", reason="invalidated_by_remove")
+
+    assert result is True
+    assert terminated == [(44001, "invalidated_by_remove")]
+    owner_state = client.warm_session_owner_state()
+    assert owner_state["owner_records"][0]["state"] == "evicted"
+
+
+def test_stream_events_from_worker_attach_socket_refreshes_attach_contract(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    class _FakeReader:
+        def __init__(self) -> None:
+            self._lines = [
+                f'{{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/next.sock","resume_token":"next-token","resume_deadline_ms":{int(time.monotonic() * 1000) + 5000}}}\n'.encode(),
+                b'{"type":"done","reply":"ok","source":"warm-attach","latency_ms":1}\n',
+                b"",
+            ]
+            self.closed = False
+
+        def readline(self):
+            return self._lines.pop(0)
+
+        def close(self):
+            self.closed = True
+
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    reader = _FakeReader()
+    sock = _FakeSocket()
+    events = list(client._stream_events_from_worker_attach_socket(session_id="miniapp-123-55", sock=sock, reader=reader))
+
+    assert events == [{"type": "done", "reply": "ok", "source": "warm-attach", "latency_ms": 1}]
+    owner_state = client.warm_session_owner_state()
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "attachable_running"
+    assert record["attach_worker_endpoint"] == "/tmp/next.sock"
+    assert record["attach_resume_token"] == "next-token"
+    assert reader.closed is True
+    assert sock.closed is True
+
+
+def test_stream_events_from_worker_attach_socket_reports_error_on_eof_without_terminal_event(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    class _FakeReader:
+        def __init__(self) -> None:
+            self._lines = [
+                b'{"type":"meta","source":"warm-attach"}\n',
+                b"",
+            ]
+            self.closed = False
+
+        def readline(self):
+            return self._lines.pop(0)
+
+        def close(self):
+            self.closed = True
+
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    reader = _FakeReader()
+    sock = _FakeSocket()
+    events = list(client._stream_events_from_worker_attach_socket(session_id="miniapp-123-55", sock=sock, reader=reader))
+
+    assert events == [
+        {"type": "meta", "source": "warm-attach"},
+        {"type": "error", "error": "Warm attach stream closed before a terminal event was received."},
+    ]
+    assert reader.closed is True
+    assert sock.closed is True
+
+
+def test_attempt_live_worker_attach_resume_succeeds_over_unix_socket(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        socket_path = Path(tmpdir) / "warm-attach.sock"
+        received = {}
+
+        def _server() -> None:
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(socket_path))
+            server.listen(1)
+            conn, _addr = server.accept()
+            with conn:
+                reader = conn.makefile("rb")
+                request = json.loads(reader.readline().decode("utf-8"))
+                received.update(request)
+                conn.sendall(b'{"type":"attach_ack","accepted":true,"reason":"accepted_for_test"}\n')
+                conn.sendall(b'{"type":"meta","source":"warm-attach"}\n')
+                conn.sendall(b'{"type":"done","reply":"attached ok","source":"warm-attach","latency_ms":1}\n')
+                reader.close()
+            server.close()
+
+        thread = threading.Thread(target=_server, daemon=True)
+        thread.start()
+        time.sleep(0.02)
+
+        action, events_iter = client._attempt_live_worker_attach_resume(
+            session_id="miniapp-123-7",
+            requested_path="agent",
+            reuse_contract={
+                "transport_kind": "unix_socket_jsonl",
+                "worker_endpoint": str(socket_path),
+                "resume_token": "token-123",
+                "resume_deadline_ms": int(time.monotonic() * 1000) + 5000,
+            },
+            attach_action={"status": "attach_action_handshake_succeeded"},
+            user_id="123",
+            message="hello",
+            conversation_history=[{"role": "user", "content": "earlier"}],
+        )
+        events = list(events_iter or [])
+        thread.join(timeout=1)
+
+    assert action["status"] == "attach_action_attach_succeeded"
+    assert action["reason"] == "accepted_for_test"
+    assert received["type"] == "warm_attach_resume"
+    assert received["session_id"] == "miniapp-123-7"
+    assert received["resume_token"] == "token-123"
+    assert [event.get("type") for event in events] == ["meta", "done"]
+    assert events[-1]["reply"] == "attached ok"
+
+
+def test_attempt_warm_reuse_returns_live_attach_stream_when_transport_available(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    candidate = {
+        "session_id": "miniapp-123-7",
+        "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+        "owner_pid": 4242,
+        "reuse_contract": {
+            "contract_version": "warm-reuse-v1",
+            "session_id": "miniapp-123-7",
+            "owner_class": "IsolatedWorkerWarmSessionRegistryScaffold",
+            "owner_pid": 4242,
+            "lifecycle_phase": "post_attempt",
+            "reusability_reason": "isolated_worker_warm_reuse_not_implemented",
+            "resume_supported": False,
+            "resume_capability": "worker_attach",
+            "supported_resume_modes": ["worker_attach"],
+            "required_transport": "subprocess",
+            "attach_mechanism": "pid_only",
+            "transport_kind": "unix_socket_jsonl",
+            "worker_endpoint": "/tmp/fake.sock",
+            "resume_token": "token-123",
+            "resume_deadline_ms": int(time.monotonic() * 1000) + 5000,
+            "required_now": [
+                "contract_version",
+                "session_id",
+                "owner_class",
+                "owner_pid",
+                "lifecycle_phase",
+                "reusability_reason",
+            ],
+            "reserved_for_future": ["resume_token", "worker_endpoint", "transport_kind", "resume_deadline_ms"],
+        },
+    }
+    policy = {"policy": "test_allow", "allowed": True}
+    monkeypatch.setattr(hermes_client.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(client, "_read_process_cmdline", lambda pid: "/usr/bin/python chat_worker_subprocess.py --session miniapp-123-7")
+    monkeypatch.setattr(
+        client,
+        "_read_process_status",
+        lambda pid: {"state": "S (sleeping)", "state_code": "S"},
+    )
+    monkeypatch.setattr(
+        client,
+        "_read_process_fd_link",
+        lambda pid, fd: {0: "pipe:[12345]", 1: "pipe:[67890]"}.get(fd),
+    )
+    monkeypatch.setattr(
+        client,
+        "_attempt_live_worker_attach_resume",
+        lambda **kwargs: (
+            {
+                "executed": True,
+                "status": "attach_action_attach_succeeded",
+                "session_id": kwargs["session_id"],
+                "requested_path": kwargs["requested_path"],
+                "reason": "accepted_for_test",
+                "transport_kind": "unix_socket_jsonl",
+                "worker_endpoint": "/tmp/fake.sock",
+                "resume_token_present": True,
+                "ack_payload": {"type": "attach_ack", "accepted": True},
+                "next_step": "stream_attached_worker_events",
+            },
+            iter([
+                {"type": "meta", "source": "warm-attach"},
+                {"type": "done", "reply": "attached ok", "source": "warm-attach", "latency_ms": 1},
+            ]),
+        ),
+    )
+
+    result = client.attempt_warm_reuse(
+        session_id="miniapp-123-7",
+        reason="stream_start:agent",
+        requested_path="agent",
+        candidate=candidate,
+        policy=policy,
+        user_id="123",
+        message="hello",
+        conversation_history=None,
+    )
+
+    assert result is not None
+    assert list(result) == [
+        {"type": "meta", "source": "warm-attach"},
+        {"type": "done", "reply": "attached ok", "source": "warm-attach", "latency_ms": 1},
+    ]
+    recent = client.warm_session_strategy()["recent_reuse_attempts"]
+    assert recent[-1]["attempt"] == "reuse_worker_attach_resume_streaming"
+    assert recent[-1]["validation"]["status"] == "valid"
+    assert recent[-1]["attach_action"]["status"] == "attach_action_handshake_succeeded"
+    assert recent[-1]["attach_resume"]["status"] == "attach_action_attach_succeeded"
+    assert recent[-1]["attach_resume"]["transport_kind"] == "unix_socket_jsonl"
+
+
+def test_stream_events_attempts_warm_reuse_when_policy_allows(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+    client.note_warm_session_worker_started(session_id="miniapp-123-7", chat_id=7, job_id=9001)
+    client.note_warm_session_worker_finished(session_id="miniapp-123-7", outcome="completed", chat_id=7, job_id=9001)
+
+    monkeypatch.setattr(
+        client,
+        "evaluate_warm_reuse_policy",
+        lambda session_id, *, reason, requested_path, candidate: {
+            "event": "warm_reuse_policy_check",
+            "session_id": session_id,
+            "reason": reason,
+            "requested_path": requested_path,
+            "policy": "test_allow",
+            "allowed": True,
+            "detail": "test policy enabled",
+            "candidate_available": True,
+            "candidate": candidate,
+            "monotonic_ms": 1,
+        },
+    )
+
+    attempted = {"count": 0}
+    original_attempt = client.attempt_warm_reuse
+
+    def fake_attempt(*, session_id, reason, requested_path, candidate, policy, user_id, message, conversation_history):
+        attempted["count"] += 1
+        return original_attempt(
+            session_id=session_id,
+            reason=reason,
+            requested_path=requested_path,
+            candidate=candidate,
+            policy=policy,
+            user_id=user_id,
+            message=message,
+            conversation_history=conversation_history,
+        )
+
+    monkeypatch.setattr(client, "attempt_warm_reuse", fake_attempt)
+    monkeypatch.setattr(
+        client,
+        "_stream_via_agent",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "agent"},
+                {"type": "chunk", "text": "ok"},
+                {"type": "done", "reply": "ok", "source": "agent", "latency_ms": 1},
+            ]
+        ),
+    )
+    monkeypatch.setattr(client, "_stream_via_cli_progress", lambda **kwargs: (_ for _ in ()).throw(AssertionError("cli fallback should not run")))
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-7"))
+    assert attempted["count"] == 1
+    assert any(event.get("source") == "agent" for event in events)
+    assert any(event.get("type") == "done" for event in events)
+    recent = client.warm_session_strategy()["recent_reuse_attempts"]
+    assert recent[-1]["attempt"] == "reuse_contract_missing_required_fields"
+    assert recent[-1]["fallback_to"] == "agent"
+    assert recent[-1]["policy"]["policy"] == "test_allow"
+
+
+def test_stream_events_skips_warm_reuse_attempt_when_policy_blocks(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    client = hermes_client.HermesClient()
+    client.note_warm_session_worker_started(session_id="miniapp-123-7", chat_id=7, job_id=9001)
+    client.note_warm_session_worker_finished(session_id="miniapp-123-7", outcome="completed", chat_id=7, job_id=9001)
+
+    monkeypatch.setattr(client, "attempt_warm_reuse", lambda **kwargs: (_ for _ in ()).throw(AssertionError("warm reuse attempt should not run")))
+    monkeypatch.setattr(
+        client,
+        "_stream_via_agent",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "agent"},
+                {"type": "chunk", "text": "ok"},
+                {"type": "done", "reply": "ok", "source": "agent", "latency_ms": 1},
+            ]
+        ),
+    )
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-7"))
+    assert any(event.get("source") == "agent" for event in events)
+    assert any(event.get("type") == "done" for event in events)
+    assert client.warm_session_strategy()["recent_reuse_attempts"] == []
 
 
 def test_stream_events_prefers_persistent_runtime_when_enabled(monkeypatch) -> None:
@@ -139,6 +1375,17 @@ def test_stream_events_skips_persistent_runtime_when_ownership_is_checkpoint_onl
     assert client.persistent_sessions_requested is True
     assert client.persistent_sessions_enabled is False
     assert client.persistent_runtime_ownership == "checkpoint_only"
+
+
+def test_persistent_runtime_ownership_defaults_to_auto_resolution(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.delenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", raising=False)
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+
+    client = hermes_client.HermesClient()
+
+    assert client.persistent_runtime_ownership == "checkpoint_only"
+    assert client.persistent_sessions_enabled is False
 
 
 def test_should_include_conversation_history_when_checkpoint_only_ownership(monkeypatch) -> None:
@@ -397,16 +1644,78 @@ def test_runtime_status_reports_recall_health(monkeypatch) -> None:
     assert health.get("agent_kwargs_session_db_available") is True
     assert health.get("session_search_ready") is True
 
+    warm_sessions = status.get("warm_sessions") or {}
+    assert warm_sessions.get("current_mode") == "shared_backend_warm_runtime"
+    assert warm_sessions.get("owner") == "shared_backend_process"
+    assert warm_sessions.get("owner_class") == "PersistentSessionManager"
+    assert warm_sessions.get("lifecycle_state") == "active_when_session_manager_entry_exists"
+    assert warm_sessions.get("eviction_policy") == "session_manager_idle_ttl_or_capacity"
+    owner_state = warm_sessions.get("owner_state") or {}
+    assert owner_state.get("owner_class") == "PersistentSessionManager"
+    assert isinstance(owner_state.get("recent_events"), list)
+    assert warm_sessions.get("target_mode") == "isolated_worker_owned_warm_continuity"
+
     startup = status.get("startup") or {}
     startup_routing = startup.get("routing") or {}
     assert startup_routing.get("selected_transport") == "agent-persistent"
-    assert startup_routing.get("direct_agent_enabled") is True
     assert startup_routing.get("persistent_sessions_requested") is True
+    assert startup_routing.get("persistent_sessions_enabled") is True
+    assert startup_routing.get("persistent_shared_backend_enabled") is True
+    assert startup_routing.get("persistent_worker_owned_enabled") is False
+    assert startup_routing.get("persistent_runtime_ownership_requested") == "auto"
     assert startup_routing.get("persistent_runtime_ownership") == "shared"
+    assert startup_routing.get("persistent_sessions_enablement_reason") == "shared_backend_runtime_enabled"
+    startup_warm = startup.get("warm_sessions") or {}
+    assert startup_warm.get("current_mode") == "shared_backend_warm_runtime"
+    assert startup_warm.get("owner_class") == "PersistentSessionManager"
 
     children = status.get("children") or {}
     assert "caps" in children
     assert "active_total" in children
+
+
+def test_warm_session_strategy_reports_worker_owned_continuity_for_subprocess_mode(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+
+    client = hermes_client.HermesClient()
+    contract = client.warm_session_contract()
+    strategy = client.warm_session_strategy()
+    status = client.runtime_status()
+
+    assert contract.current_mode == "isolated_worker_owned_warm_continuity"
+    assert contract.owner == "isolated_worker_processes"
+    assert contract.owner_class == "IsolatedWorkerWarmSessionRegistryScaffold"
+    assert contract.lifecycle_state == "worker_owned_live_attach_or_checkpoint_continuity"
+    assert contract.lifecycle_scope == "per_chat_isolated_worker"
+    assert contract.eviction_policy == "worker_owner_lifecycle_attach_deadline_or_explicit_invalidation"
+    assert contract.enabled is True
+    assert contract.requested is True
+    assert contract.ownership == "checkpoint_only"
+    assert contract.target_mode == "isolated_worker_owned_warm_continuity"
+    assert contract.target_status == "enabled_in_subprocess_mode"
+    assert strategy.get("owner_state", {}).get("owner_class") == "IsolatedWorkerWarmSessionRegistryScaffold"
+    assert any(event.get("event") == "scaffold_initialized" for event in strategy.get("owner_state", {}).get("recent_events", []))
+    assert strategy.get("recent_candidate_probes") == []
+    assert strategy.get("recent_reuse_policy_checks") == []
+    assert strategy.get("recent_reuse_attempts") == []
+    assert status.get("routing", {}).get("persistent_sessions_enabled") is True
+    assert status.get("routing", {}).get("persistent_shared_backend_enabled") is False
+    assert status.get("routing", {}).get("persistent_worker_owned_enabled") is True
+    assert status.get("routing", {}).get("persistent_sessions_enablement_reason") == "worker_owned_warm_continuity_enabled"
+    assert status.get("startup", {}).get("routing", {}).get("selected_transport") == "agent-worker-isolated"
+    assert status.get("persistent", {}).get("enabled") is True
+    assert status.get("persistent", {}).get("worker_owned_enabled") is True
+    assert strategy.get("recent_reuse_decisions") == []
+    strategy_without_extras = dict(strategy)
+    strategy_without_extras.pop("owner_state", None)
+    strategy_without_extras.pop("recent_candidate_probes", None)
+    strategy_without_extras.pop("recent_reuse_policy_checks", None)
+    strategy_without_extras.pop("recent_reuse_attempts", None)
+    strategy_without_extras.pop("recent_reuse_decisions", None)
+    assert strategy_without_extras == contract.as_dict()
 
 
 def test_child_spawn_caps_default_enabled(monkeypatch) -> None:
@@ -505,6 +1814,77 @@ def test_terminate_tracked_children_deregisters_processes(monkeypatch) -> None:
     assert any(event.get("event") == "spawn" and event.get("job_id") == 9100 for event in recent_events)
     assert any(event.get("event") == "finish" and event.get("job_id") == 9100 for event in recent_events)
     assert diagnostics.get("timeouts", {}).get("total") == 0
+    client.clear_spawn_trace_context()
+
+
+def test_terminate_tracked_children_uses_killpg_for_chat_worker_subprocess(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_JOB", "3")
+
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
+    client.register_child_spawn(
+        transport="chat-worker-subprocess",
+        pid=43001,
+        command=["python", "worker.py"],
+        session_id="miniapp-123-88",
+    )
+
+    kill_calls: list[tuple[int, int]] = []
+    killpg_calls: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(hermes_client.os, "kill", lambda pid, sig: kill_calls.append((int(pid), int(sig))))
+    monkeypatch.setattr(hermes_client.os, "killpg", lambda pgid, sig: killpg_calls.append((int(pgid), int(sig))))
+    monkeypatch.setattr(hermes_client.os, "getpid", lambda: 50000)
+    monkeypatch.setattr(
+        hermes_client.os,
+        "getpgid",
+        lambda pid: 50000 if int(pid) == 50000 else 43099,
+    )
+
+    summary = client.terminate_tracked_children(job_id=9100, reason="test_cleanup")
+
+    assert summary["targeted"] == 1
+    assert summary["killed"] == 1
+    assert kill_calls == []
+    assert killpg_calls == [(43099, int(hermes_client.signal.SIGKILL))]
+    client.clear_spawn_trace_context()
+
+
+def test_observed_descendant_telemetry_tracks_active_and_recent_events(monkeypatch) -> None:
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
+
+    client.observe_descendant_spawn(
+        transport="agent-direct",
+        pid=53101,
+        command=["python", "worker.py"],
+        session_id="miniapp-123-88",
+        parent_transport="chat-worker-subprocess",
+        parent_pid=43001,
+    )
+    client.observe_descendant_spawn(
+        transport="cli-stream",
+        pid=53102,
+        command=["python", "cli.py"],
+        session_id="miniapp-123-88",
+        parent_transport="chat-worker-subprocess",
+        parent_pid=43001,
+    )
+
+    diagnostics = client.child_spawn_diagnostics()
+    assert diagnostics.get("descendant_active_total") == 2
+    assert diagnostics.get("descendant_active_by_transport") == {"agent-direct": 1, "cli-stream": 1}
+    assert diagnostics.get("descendant_active_by_job") == {"9100": 2}
+    assert diagnostics.get("descendant_active_by_chat") == {"88": 2}
+    assert diagnostics.get("descendant_high_water_total") == 2
+    recent = diagnostics.get("recent_descendant_events") or []
+    assert any(event.get("event") == "descendant_spawn" and event.get("pid") == 53101 for event in recent)
+
+    client.observe_descendant_finish(pid=53101, outcome="completed", return_code=0, parent_transport="chat-worker-subprocess", parent_pid=43001)
+    diagnostics = client.child_spawn_diagnostics()
+    assert diagnostics.get("descendant_active_total") == 1
+    recent = diagnostics.get("recent_descendant_events") or []
+    assert any(event.get("event") == "descendant_finish" and event.get("pid") == 53101 for event in recent)
     client.clear_spawn_trace_context()
 
 
@@ -1348,12 +2728,96 @@ def test_stream_via_cli_progress_supports_iterator_only_stdout(monkeypatch) -> N
     assert any(event.get("type") == "done" and event.get("reply") == "reply from iterator stdout" for event in events)
 
 
+def test_stream_via_cli_progress_strips_cli_response_box_frame(monkeypatch) -> None:
+    client = hermes_client.HermesClient()
+
+    def fake_popen(*args, **kwargs):
+        return _FakeProcess(
+            stdout=_LineStream(
+                [
+                    "ignored before query\n",
+                    "Query: hello\n",
+                    "⚕ Hermes\n",
+                    "Hi — how can I help?\n",
+                    "╰──────────────────────────────────────────────────────────────────────────────╯\n",
+                    "Duration: 1.2s\n",
+                ]
+            ),
+            stderr=_LineStream([]),
+            wait_return_code=0,
+        )
+
+    monkeypatch.setattr(hermes_client_cli.subprocess, "Popen", fake_popen)
+
+    events = list(client._stream_via_cli_progress("hello"))
+    done_event = next(event for event in events if event.get("type") == "done")
+    assert done_event.get("reply") == "Hi — how can I help?"
+
+
 def test_stream_via_agent_runner_script_does_not_duplicate_tool_formatter_map() -> None:
     client = hermes_client.HermesClient()
     script = client._agent_runner_script()
 
     assert "tool_emojis = {" not in script
     assert "'display': format_tool_progress(" not in script
+
+
+def test_stream_via_agent_runner_script_forwards_provider_and_base_url() -> None:
+    client = hermes_client.HermesClient()
+    script = client._agent_runner_script()
+
+    assert "if payload.get('provider'):" in script
+    assert "agent_kwargs['provider'] = payload['provider']" in script
+    assert "if payload.get('base_url'):" in script
+    assert "agent_kwargs['base_url'] = payload['base_url']" in script
+
+
+def test_stream_via_agent_runner_script_uses_protocol_stdout_and_redirects_noise() -> None:
+    client = hermes_client.HermesClient()
+    script = client._agent_runner_script()
+
+    assert "_protocol_stdout = getattr(sys, '__stdout__', None) or sys.stdout" in script
+    assert "_protocol_stdout.write(json.dumps(payload, ensure_ascii=False)" in script
+    assert "_protocol_stdout.flush()" in script
+    assert "with contextlib.redirect_stdout(io.StringIO()):" in script
+
+
+def test_stream_via_agent_payload_includes_provider_and_base_url(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
+    client = hermes_client.HermesClient()
+    client.provider = "test-provider"
+    client.base_url = "https://example.invalid/v1"
+    monkeypatch.setattr(os.path, "exists", lambda _path: True)
+
+    captured = {}
+
+    def fake_popen(*args, **kwargs):
+        process = _FakeProcess(
+            stdout=_LineStream([
+                '{"kind":"done","reply":"ok","source":"agent","latency_ms":1}\n',
+            ]),
+            stderr=_LineStream([]),
+            wait_return_code=0,
+        )
+        original_write = process.stdin.write
+
+        def capturing_write(data):
+            captured['payload'] = data
+            return original_write(data)
+
+        process.stdin.write = capturing_write
+        process.returncode = 0
+        return process
+
+    monkeypatch.setattr(hermes_client_agent.subprocess, "Popen", fake_popen)
+
+    events = list(client._stream_via_agent(user_id="123", message="hello", session_id="miniapp-123-provider-forward"))
+    done_event = next(event for event in events if event.get("type") == "done")
+    assert done_event.get("reply") == "ok"
+    payload = json.loads(captured["payload"])
+    assert payload.get("provider") == "test-provider"
+    assert payload.get("base_url") == "https://example.invalid/v1"
 
 
 def test_stream_via_agent_formats_tool_display_in_parent(monkeypatch) -> None:

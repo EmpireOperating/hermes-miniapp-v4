@@ -54,6 +54,7 @@ class MiniAppConfig:
     stream_metrics_refresh_seconds: int
     dev_auth_enabled: bool
     dev_auth_secret: str
+    dev_auth_expires_at_epoch: int | None
     job_event_history_max_jobs: int
     job_event_history_ttl_seconds: int
     dev_reload_watch_paths: tuple[Path, ...]
@@ -63,6 +64,15 @@ class MiniAppConfig:
             ownership_mode=self.persistent_runtime_ownership,
             job_worker_launcher=self.job_worker_launcher,
         )
+
+    def is_dev_auth_active(self, now: int | None = None) -> bool:
+        if not self.dev_auth_enabled:
+            return False
+        expires_at = self.dev_auth_expires_at_epoch
+        if expires_at is None:
+            return True
+        current_time = int(now if now is not None else _now_epoch_seconds())
+        return current_time < expires_at
 
     @classmethod
     def from_env(cls) -> "MiniAppConfig":
@@ -181,6 +191,10 @@ class MiniAppConfig:
                 or os.environ.get("MINI_APP_DEV_SECRET")
                 or ""
             ).strip(),
+            dev_auth_expires_at_epoch=_as_optional_int_any(
+                "MINIAPP_DEV_BYPASS_EXPIRES_AT",
+                "MINI_APP_DEV_BYPASS_EXPIRES_AT",
+            ),
             job_event_history_max_jobs=_as_int_in_range(
                 "MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS",
                 DEFAULT_JOB_EVENT_HISTORY_MAX_JOBS,
@@ -254,6 +268,24 @@ def _as_choice(name: str, default: str, allowed: set[str]) -> str:
         allowed_text = ", ".join(sorted(allowed))
         raise ValueError(f"{name} must be one of: {allowed_text}")
     return raw
+
+
+def _as_optional_int_any(*names: str) -> int | None:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is None:
+            continue
+        stripped = str(raw).strip()
+        if not stripped:
+            return None
+        return int(stripped)
+    return None
+
+
+def _now_epoch_seconds() -> int:
+    import time
+
+    return int(time.time())
 
 
 def _resolve_persistent_runtime_ownership(*, ownership_mode: str, job_worker_launcher: str) -> str:

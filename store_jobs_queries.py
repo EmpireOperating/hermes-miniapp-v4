@@ -7,28 +7,50 @@ from job_status import JOB_STATUS_DEAD, JOB_STATUS_QUEUED, JOB_STATUS_RUNNING, S
 
 def has_open_job(conn: Connection, *, user_id: str, chat_id: int) -> bool:
     row = conn.execute(
-        f"""
+        """
         SELECT 1 AS present
         FROM chat_jobs
-        WHERE user_id = ? AND chat_id = ? AND status IN {SQL_JOB_STATUS_OPEN}
+        WHERE user_id = ?
+          AND chat_id = ?
+          AND (
+            status = ?
+            OR (
+              status = ?
+              AND COALESCE(attempts, 0) < CASE
+                WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0)
+                ELSE 1
+              END
+            )
+          )
         ORDER BY id DESC
         LIMIT 1
         """,
-        (user_id, chat_id),
+        (user_id, chat_id, JOB_STATUS_RUNNING, JOB_STATUS_QUEUED),
     ).fetchone()
     return bool(row)
 
 
 def get_open_job(conn: Connection, *, user_id: str, chat_id: int) -> dict[str, Any] | None:
     row = conn.execute(
-        f"""
+        """
         SELECT id, user_id, chat_id, operator_message_id, status, attempts, max_attempts
         FROM chat_jobs
-        WHERE user_id = ? AND chat_id = ? AND status IN {SQL_JOB_STATUS_OPEN}
+        WHERE user_id = ?
+          AND chat_id = ?
+          AND (
+            status = ?
+            OR (
+              status = ?
+              AND COALESCE(attempts, 0) < CASE
+                WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0)
+                ELSE 1
+              END
+            )
+          )
         ORDER BY id DESC
         LIMIT 1
         """,
-        (user_id, int(chat_id)),
+        (user_id, int(chat_id), JOB_STATUS_RUNNING, JOB_STATUS_QUEUED),
     ).fetchone()
     if not row:
         return None

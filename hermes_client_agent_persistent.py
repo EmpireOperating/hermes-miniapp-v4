@@ -26,7 +26,6 @@ class HermesClientPersistentAgentMixin:
             "platform": "telegram",
             "session_db": session_db,
         }
-
         if (
             session_db is None
             and getattr(self, "direct_agent_enabled", False)

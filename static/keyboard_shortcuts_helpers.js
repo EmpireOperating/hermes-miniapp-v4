@@ -27,6 +27,14 @@
     return Number(windowObject.innerWidth || 0) >= 861;
   }
 
+  function hasOpenDialog(documentObject) {
+    try {
+      return Boolean(documentObject?.querySelector?.('dialog[open]'));
+    } catch {
+      return false;
+    }
+  }
+
   function handleTabClick(event, { activeChatId, openChat }) {
     if (event?.target?.closest?.("[data-chat-tab-menu-trigger]")) return;
     const tab = event.target.closest(".chat-tab");
@@ -49,6 +57,7 @@
     mobileQuoteMode,
     isDesktopViewportFn,
     settingsModal,
+    documentObject,
     isTextEntryElementFn,
     activeChatId,
     chats,
@@ -59,7 +68,7 @@
     if (event.isComposing) return;
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     if (mobileQuoteMode || !isDesktopViewportFn()) return;
-    if (settingsModal?.open) return;
+    if (settingsModal?.open || hasOpenDialog(documentObject)) return;
 
     const isArrowLeft = event.key === "ArrowLeft";
     const isArrowRight = event.key === "ArrowRight";
@@ -94,6 +103,7 @@
     mobileQuoteMode,
     isDesktopViewportFn,
     settingsModal,
+    documentObject,
     isTextEntryElementFn,
     jumpLatestButton,
     jumpLastStartButton,
@@ -105,7 +115,7 @@
     if (event.isComposing) return;
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     if (mobileQuoteMode || !isDesktopViewportFn()) return;
-    if (settingsModal?.open) return;
+    if (settingsModal?.open || hasOpenDialog(documentObject)) return;
 
     const target = event.target;
     if (isTextEntryElementFn(target)) return;
@@ -152,7 +162,7 @@
     if (event.isComposing) return;
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     if (mobileQuoteMode || !isDesktopViewportFn()) return;
-    if (settingsModal?.open) return;
+    if (settingsModal?.open || hasOpenDialog(documentObject)) return;
     if (event.key !== "Enter" || event.shiftKey) return;
 
     const target = event.target;
@@ -169,6 +179,39 @@
     } catch {
       promptEl.focus();
     }
+  }
+
+  function handleGlobalChatActionShortcut(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn,
+    documentObject,
+    isTextEntryElementFn,
+    activeChatId,
+    createChat,
+    removeActiveChat,
+  }) {
+    if (event.defaultPrevented) return;
+    if (event.isComposing) return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.repeat) return;
+    if (mobileQuoteMode || !isDesktopViewportFn()) return;
+    if (hasOpenDialog(documentObject)) return;
+
+    const target = event.target;
+    if (isTextEntryElementFn(target)) return;
+
+    const isEscape = event.key === "Escape" || event.code === "Escape";
+    const isBackquote = event.code === "Backquote" || event.key === "`";
+    if (!isEscape && !isBackquote) return;
+
+    if (isEscape && Number(activeChatId) <= 0) return;
+
+    event.preventDefault();
+    if (isEscape) {
+      void removeActiveChat();
+      return;
+    }
+    void createChat();
   }
 
   function shouldReleaseControlFocusAfterClick(target, {
@@ -284,8 +327,180 @@
     releaseStickyControlFocusFn();
   }
 
+  function createController(deps) {
+    const {
+      windowObject,
+      documentObject,
+      messagesEl,
+      promptEl,
+      settingsModal,
+      jumpLatestButton,
+      jumpLastStartButton,
+      chats,
+      getActiveChatId,
+      getMobileQuoteMode,
+      openChat,
+      openPinnedChat,
+      getNextChatTabId,
+      handleJumpLatest,
+      handleJumpLastStart,
+      focusMessagesPaneIfActiveChat,
+      createChat,
+      removeActiveChat,
+    } = deps;
+
+    function getOrderedChatIdsFromState() {
+      return getOrderedChatIds(chats);
+    }
+
+    function isDesktopViewportFromState() {
+      return isDesktopViewport(windowObject);
+    }
+
+    function handleTabClickFromState(event) {
+      return handleTabClick(event, {
+        activeChatId: getActiveChatId(),
+        openChat,
+      });
+    }
+
+    function handlePinnedChatClickFromState(event) {
+      return handlePinnedChatClick(event, {
+        activeChatId: getActiveChatId(),
+        chats,
+        openPinnedChat,
+      });
+    }
+
+    function handleGlobalTabCycleFromState(event) {
+      return handleGlobalTabCycle(event, {
+        mobileQuoteMode: getMobileQuoteMode(),
+        isDesktopViewportFn: isDesktopViewportFromState,
+        settingsModal,
+        documentObject,
+        isTextEntryElementFn: isTextEntryElement,
+        activeChatId: getActiveChatId(),
+        chats,
+        getNextChatTabId,
+        openChat,
+      });
+    }
+
+    function scrollMessagesByArrowFromState(direction) {
+      return scrollMessagesByArrow(messagesEl, direction);
+    }
+
+    function handleGlobalArrowJumpFromState(event) {
+      return handleGlobalArrowJump(event, {
+        mobileQuoteMode: getMobileQuoteMode(),
+        isDesktopViewportFn: isDesktopViewportFromState,
+        settingsModal,
+        documentObject,
+        isTextEntryElementFn: isTextEntryElement,
+        jumpLatestButton,
+        jumpLastStartButton,
+        handleJumpLatest,
+        handleJumpLastStart,
+        scrollMessages: scrollMessagesByArrowFromState,
+      });
+    }
+
+    function handleGlobalComposerFocusShortcutFromState(event) {
+      return handleGlobalComposerFocusShortcut(event, {
+        mobileQuoteMode: getMobileQuoteMode(),
+        isDesktopViewportFn: isDesktopViewportFromState,
+        settingsModal,
+        isTextEntryElementFn: isTextEntryElement,
+        activeChatId: getActiveChatId(),
+        messagesEl,
+        promptEl,
+        documentObject,
+      });
+    }
+
+    function handleGlobalChatActionShortcutFromState(event) {
+      return handleGlobalChatActionShortcut(event, {
+        mobileQuoteMode: getMobileQuoteMode(),
+        isDesktopViewportFn: isDesktopViewportFromState,
+        documentObject,
+        isTextEntryElementFn: isTextEntryElement,
+        activeChatId: getActiveChatId(),
+        createChat,
+        removeActiveChat,
+      });
+    }
+
+    function shouldReleaseControlFocusAfterClickFromState(target) {
+      return shouldReleaseControlFocusAfterClick(target, {
+        isTextEntryElementFn: isTextEntryElement,
+        settingsModal,
+      });
+    }
+
+    function releaseStickyControlFocusFromState() {
+      return releaseStickyControlFocus({
+        mobileQuoteMode: getMobileQuoteMode(),
+        isDesktopViewportFn: isDesktopViewportFromState,
+        documentObject,
+        promptEl,
+        messagesEl,
+        activeChatId: getActiveChatId(),
+        settingsModal,
+        focusMessagesPaneIfActiveChat,
+      });
+    }
+
+    function handleGlobalControlClickFocusCleanupFromState(event) {
+      return handleGlobalControlClickFocusCleanup(event, {
+        shouldReleaseControlFocusAfterClickFn: shouldReleaseControlFocusAfterClickFromState,
+        releaseStickyControlFocusFn: releaseStickyControlFocusFromState,
+        windowObject,
+      });
+    }
+
+    function handleGlobalControlMouseDownFocusGuardFromState(event) {
+      return handleGlobalControlMouseDownFocusGuard(event, {
+        mobileQuoteMode: getMobileQuoteMode(),
+        isDesktopViewportFn: isDesktopViewportFromState,
+        shouldReleaseControlFocusAfterClickFn: shouldReleaseControlFocusAfterClickFromState,
+      });
+    }
+
+    function handleGlobalControlEnterDefuseFromState(event) {
+      return handleGlobalControlEnterDefuse(event, {
+        mobileQuoteMode: getMobileQuoteMode(),
+        isDesktopViewportFn: isDesktopViewportFromState,
+        isTextEntryElementFn: isTextEntryElement,
+        settingsModal,
+        documentObject,
+        promptEl,
+        messagesEl,
+        releaseStickyControlFocusFn: releaseStickyControlFocusFromState,
+      });
+    }
+
+    return {
+      getOrderedChatIds: getOrderedChatIdsFromState,
+      isTextEntryElement,
+      isDesktopViewport: isDesktopViewportFromState,
+      handleTabClick: handleTabClickFromState,
+      handlePinnedChatClick: handlePinnedChatClickFromState,
+      handleGlobalTabCycle: handleGlobalTabCycleFromState,
+      scrollMessagesByArrow: scrollMessagesByArrowFromState,
+      handleGlobalArrowJump: handleGlobalArrowJumpFromState,
+      handleGlobalComposerFocusShortcut: handleGlobalComposerFocusShortcutFromState,
+      handleGlobalChatActionShortcut: handleGlobalChatActionShortcutFromState,
+      shouldReleaseControlFocusAfterClick: shouldReleaseControlFocusAfterClickFromState,
+      releaseStickyControlFocus: releaseStickyControlFocusFromState,
+      handleGlobalControlClickFocusCleanup: handleGlobalControlClickFocusCleanupFromState,
+      handleGlobalControlMouseDownFocusGuard: handleGlobalControlMouseDownFocusGuardFromState,
+      handleGlobalControlEnterDefuse: handleGlobalControlEnterDefuseFromState,
+    };
+  }
+
   const api = {
     CONTROL_FOCUS_SELECTOR,
+    createController,
     getOrderedChatIds,
     isTextEntryElement,
     isDesktopViewport,
@@ -295,6 +510,7 @@
     scrollMessagesByArrow,
     handleGlobalArrowJump,
     handleGlobalComposerFocusShortcut,
+    handleGlobalChatActionShortcut,
     shouldReleaseControlFocusAfterClick,
     releaseStickyControlFocus,
     handleGlobalControlClickFocusCleanup,

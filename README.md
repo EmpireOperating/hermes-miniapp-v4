@@ -121,6 +121,11 @@ Optional hardening settings:
 - `MINI_APP_JOB_RETRY_BASE_SECONDS=2` (exponential backoff base seconds)
 - `MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS=256` (cap in-memory SSE history cache)
 - `MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS=1800` (expire idle SSE history)
+- `MINI_APP_CHILD_SPAWN_CAPS_ENABLED=1` (enabled by default; set to `0` only for emergency rollback/debugging)
+- `MINI_APP_CHILD_SPAWN_CAP_TOTAL=16` (global active child process cap)
+- `MINI_APP_CHILD_SPAWN_CAP_PER_CHAT=4` (active child cap per chat)
+- `MINI_APP_CHILD_SPAWN_CAP_PER_JOB=1` (active child cap per job; keeps duplicate runners from fan-out)
+- `MINI_APP_CHILD_SPAWN_CAP_PER_SESSION=2` (active child cap per session)
 
 Optional dev hot-reload settings:
 
@@ -216,6 +221,14 @@ The compose profile publishes `127.0.0.1:9377` only and requires API/admin keys.
 - Startup now emits structured dependency diagnostics (`HermesClient startup diagnostics` and `miniapp startup diagnostics`) with config/dependency readiness flags and redacted values.
 - True external push from unrelated Hermes events is not implemented yet.
 - Port `8080` may already be occupied on this machine; keep using the `.env` `PORT` value (`8787`) unless intentionally changed.
+
+## Child spawn hardening runbook
+
+- See `docs/miniapp-child-spawn-hardening-runbook.md` for:
+  - cap tuning guidance
+  - runtime diagnostics fields to watch
+  - log signatures for spawn lineage and cleanup
+  - incident-response steps when FD/OOM-like symptoms reappear
 
 ## Troubleshooting wrong build showing in Telegram
 

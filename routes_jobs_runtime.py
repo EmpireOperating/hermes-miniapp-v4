@@ -71,6 +71,7 @@ def register_jobs_runtime_routes(
             "ok": True,
             "persistent": runtime_payload.get("persistent") or {},
             "routing": runtime_payload.get("routing") or {},
+            "warm_sessions": runtime_payload.get("warm_sessions") or {},
             "health": runtime_payload.get("health") or {},
             "runtime": runtime_diagnostics,
         }, 200

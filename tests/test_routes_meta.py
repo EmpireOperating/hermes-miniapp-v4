@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 from server_test_utils import load_server
@@ -45,6 +46,28 @@ def test_create_app_returns_flask_app(monkeypatch, tmp_path) -> None:
     app = server.create_app()
 
     assert app is server.app
+
+
+def test_server_reload_shuts_down_previous_runtime_threads(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    old_runtime = server.runtime
+    old_worker_threads = list(old_runtime._worker_threads)
+    old_watchdog = old_runtime._watchdog_thread
+
+    reloaded = load_server(monkeypatch, tmp_path)
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        workers_stopped = all(not thread.is_alive() for thread in old_worker_threads)
+        watchdog_stopped = old_watchdog is None or not old_watchdog.is_alive()
+        if workers_stopped and watchdog_stopped:
+            break
+        time.sleep(0.02)
+
+    assert reloaded.runtime is not old_runtime
+    assert all(not thread.is_alive() for thread in old_worker_threads)
+    assert old_watchdog is None or not old_watchdog.is_alive()
+
 
 def test_enforced_origin_check_rejects_disallowed_origin(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "https://allowed.example")
@@ -258,6 +281,19 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert file_preview_src in page
     assert app_src in page
     assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(chat_tabs_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(keyboard_src) < page.index(interaction_src) < page.index(bootstrap_auth_src) < page.index(chat_history_src) < page.index(chat_admin_src) < page.index(shell_ui_src) < page.index(composer_viewport_src) < page.index(visibility_skin_src) < page.index(startup_bindings_src) < page.index(render_trace_src) < page.index(file_preview_src) < page.index(app_src)
+
+
+def test_app_hides_dev_stream_and_source_pills_from_main_ui(monkeypatch, tmp_path) -> None:
+    _server, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    page = response.get_data(as_text=True)
+    assert 'id="latency-chip"' in page
+    assert 'id="source-chip"' not in page
+    assert 'id="stream-chip"' not in page
+    assert 'id="dev-mode-badge"' not in page
 
 
 def test_runtime_helpers_static_asset_is_no_store(monkeypatch, tmp_path) -> None:
@@ -500,6 +536,22 @@ def test_app_dev_config_exposes_request_debug_flag(monkeypatch, tmp_path) -> Non
 
     assert "window.__HERMES_DEV__" in page
     assert "requestDebug: true" in page
+    assert 'id="render-trace-badge"' in page
+
+
+def test_app_hides_dev_auth_controls_when_dev_features_are_disabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("MINI_APP_OPERATOR_DEBUG", raising=False)
+    monkeypatch.delenv("MINI_APP_REQUEST_DEBUG", raising=False)
+    monkeypatch.delenv("MINIAPP_REQUEST_DEBUG", raising=False)
+    monkeypatch.delenv("MINIAPP_DEV_BYPASS", raising=False)
+    monkeypatch.delenv("MINIAPP_DEV_BYPASS_EXPIRES_AT", raising=False)
+    _, client = _client(monkeypatch, tmp_path)
+
+    page = _app_page(client)
+
+    assert 'id="render-trace-badge"' in page
+    assert 'id="dev-auth-controls"' not in page
+    assert 'id="dev-signin-button"' not in page
 
 
 def test_app_dev_config_exposes_dev_auth_flag(monkeypatch, tmp_path) -> None:
@@ -509,6 +561,22 @@ def test_app_dev_config_exposes_dev_auth_flag(monkeypatch, tmp_path) -> None:
     page = _app_page(client)
 
     assert "devAuthEnabled: true" in page
+    assert 'devAuthRevealHash: "#dev-auth"' in page
+    assert 'id="dev-auth-controls"' not in page
+    assert 'id="dev-signin-button"' in page
+    assert 'id="dev-auth-modal"' in page
+    assert 'id="dev-auth-secret"' in page
+
+
+def test_app_dev_config_hides_expired_dev_auth_flag(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS_EXPIRES_AT", "1")
+    _, client = _client(monkeypatch, tmp_path)
+
+    page = _app_page(client)
+
+    assert "devAuthEnabled: false" in page
+    assert 'devAuthRevealHash: "#dev-auth"' in page
 
 
 def test_app_dev_config_exposes_bootstrap_version(monkeypatch, tmp_path) -> None:
@@ -560,6 +628,12 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "function parseStreamErrorPayload(rawBody)" in bootstrap_auth_script
     assert "async function askForDevAuth" in bootstrap_auth_script
     assert 'fetchImpl("/api/dev/auth"' in bootstrap_auth_script
+    assert 'const devAuthRevealHash = String(devConfig.devAuthRevealHash || "#dev-auth").trim() || "#dev-auth";' in app_script
+    assert 'const currentLocationHash = typeof window?.location?.hash === "string" ? window.location.hash : "";' in app_script
+    assert 'const desktopTestingRequested = currentLocationHash === devAuthRevealHash || currentLocationHash.startsWith(`${devAuthRevealHash}:`);' in app_script
+    assert 'const desktopTestingEnabled = Boolean(devConfig.devAuthEnabled) && desktopTestingRequested;' in app_script
+    assert 'const devAuthHashSecret = desktopTestingRequested && currentLocationHash.startsWith(`${devAuthRevealHash}:`)' in app_script
+    assert 'appendSystemMessage("Dev auth is currently disabled. Enable the bypass flag, then reload /app#dev-auth.");' in app_script
     assert "bootstrapAuthHelpers.createController({" in app_script
     assert "bootstrapAuthController.authPayload(extra)" in app_script
     assert "bootstrapAuthController.safeReadJson(response)" in app_script
@@ -670,8 +744,9 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "function handleMessageFileRefClick(event)" in file_preview_script
     assert "filePreviewHelpers.createController({" in app_script
     assert 'throw new Error("HermesMiniappFilePreview is required before app.js")' in app_script
-    assert "dev-auth-modal" in template
     assert "chat-title-modal" in template
+    assert '{% if dev_auth_enabled %}' in template
+    assert "dev-auth-modal" in template
     assert "dev-auth-secret" in template
     assert "tg?.initData || \"\"" in app_script
     assert "Telegram connection missing" not in app_script
@@ -835,8 +910,10 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert 'id="file-preview-expand-down"' in template
     assert 'id="file-preview-close"' in template
     assert 'window.__HERMES_FILE_PREVIEW__ = {' in template
+    assert "enabled: {{ 'true' if file_preview_enabled else 'false' }}" in template
     assert 'allowedRoots: {{ file_preview_allowed_roots_json|safe }}' in template
-    assert 'const filePreviewAllowedRoots = Array.isArray(filePreviewConfig.allowedRoots)' in script
+    assert 'const filePreviewFeatureEnabled = Boolean(filePreviewConfig.enabled);' in script
+    assert 'const filePreviewAllowedRoots = filePreviewFeatureEnabled && Array.isArray(filePreviewConfig.allowedRoots)' in script
     assert 'messagesEl?.addEventListener("click", handleMessageFileRefClick);' in script
     assert 'filePreviewController.handleMessageFileRefClick(event)' in script
     assert 'filePreviewController.openFilePreview(previewRequest, options)' in script

@@ -6,16 +6,25 @@ const devConfig = window.__HERMES_DEV__ || {
   version: "",
   requestDebug: false,
   devAuthEnabled: false,
+  devAuthRevealHash: "#dev-auth",
 };
 const streamDebugEnabled = Boolean(devConfig.requestDebug);
-const desktopTestingEnabled = Boolean(devConfig.devAuthEnabled);
-const filePreviewConfig = window.__HERMES_FILE_PREVIEW__ || { allowedRoots: [] };
-const filePreviewAllowedRoots = Array.isArray(filePreviewConfig.allowedRoots)
+const devAuthRevealHash = String(devConfig.devAuthRevealHash || "#dev-auth").trim() || "#dev-auth";
+const currentLocationHash = typeof window?.location?.hash === "string" ? window.location.hash : "";
+const desktopTestingRequested = currentLocationHash === devAuthRevealHash || currentLocationHash.startsWith(`${devAuthRevealHash}:`);
+const desktopTestingEnabled = Boolean(devConfig.devAuthEnabled) && desktopTestingRequested;
+const devAuthHashSecret = desktopTestingRequested && currentLocationHash.startsWith(`${devAuthRevealHash}:`)
+  ? decodeURIComponent(currentLocationHash.slice(devAuthRevealHash.length + 1))
+  : "";
+const filePreviewConfig = window.__HERMES_FILE_PREVIEW__ || { enabled: false, allowedRoots: [] };
+const filePreviewFeatureEnabled = Boolean(filePreviewConfig.enabled);
+const filePreviewAllowedRoots = filePreviewFeatureEnabled && Array.isArray(filePreviewConfig.allowedRoots)
   ? filePreviewConfig.allowedRoots
       .map((value) => String(value || "").trim())
       .filter((value) => value.startsWith("/"))
   : [];
 const sharedUtils = window.HermesMiniappSharedUtils;
+
 if (!sharedUtils) {
   throw new Error("HermesMiniappSharedUtils is required before app.js");
 }
@@ -89,8 +98,7 @@ const skinName = document.getElementById("skin-name");
 const panelHint = document.getElementById("panel-hint");
 const panelTitle = document.getElementById("panel-title");
 const latencyChip = document.getElementById("latency-chip");
-const sourceChip = null;
-const streamChip = null;
+const streamChip = document.getElementById("stream-chip");
 const jumpLatestButton = document.getElementById("jump-latest");
 const jumpLastStartButton = document.getElementById("jump-last-start");
 const body = document.body;
@@ -453,8 +461,19 @@ function preserveViewportDuringUiMutation(mutator) {
 }
 
 function setChatLatency(chatId, text) {
+  const key = Number(chatId);
+  const normalized = String(text || "").trim() || "--";
   const result = latencyViewController.setChatLatency(chatId, text);
   persistLatencyByChatToStorage();
+  if (key > 0) {
+    renderTraceLog("latency-update", {
+      chatId: key,
+      activeChatId: Number(activeChatId),
+      hidden: document.visibilityState !== "visible",
+      latency: normalized,
+      chipText: String(latencyChip?.textContent || "").trim(),
+    });
+  }
   return result;
 }
 
@@ -487,6 +506,22 @@ function setActivityChip(chip, text) {
 function setStreamStatus(text) {
   if (!streamStatus) return;
   streamStatus.textContent = String(text || "");
+}
+
+function setElementHidden(element, hidden) {
+  if (!element) return;
+  if (hidden) {
+    element.setAttribute("hidden", "hidden");
+    return;
+  }
+  element.removeAttribute("hidden");
+}
+
+function syncDebugOnlyPillVisibility() {
+  const showDevAuthPill=Boolean(devConfig.devAuthEnabled && desktopTestingRequested);
+  const showDebugPills = Boolean(devConfig.requestDebug && desktopTestingRequested);
+  setElementHidden(devAuthControls, !showDevAuthPill);
+  setElementHidden(devModeBadge, !showDebugPills);
 }
 
 function loadLatencyByChatFromStorage() {
@@ -640,6 +675,7 @@ function handleMessageFileRefClick(event) {
 const bootstrapAuthController = bootstrapAuthHelpers.createController({
   desktopTestingEnabled,
   devAuthSessionStorageKey: DEV_AUTH_SESSION_STORAGE_KEY,
+  devAuthHashSecret,
   devAuthControls,
   devModeBadge,
   devSignInButton,
@@ -682,7 +718,9 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
 });
 
 function syncDevAuthUi() {
-  return bootstrapAuthController.syncDevAuthUi();
+  const result = bootstrapAuthController.syncDevAuthUi();
+  syncDebugOnlyPillVisibility();
+  return result;
 }
 
 function readDevAuthDefaults() {
@@ -741,7 +779,23 @@ function triggerIncomingMessageHaptic(chatId, { messageKey = "", fallbackToLates
 }
 
 function incrementUnread(chatId) {
-  return hapticUnreadController.incrementUnread(chatId);
+  const key = Number(chatId);
+  const beforeChat = chats.get(key);
+  const beforeUnread = Math.max(0, Number(beforeChat?.unread_count || 0));
+  const result = hapticUnreadController.incrementUnread(chatId);
+  const afterChat = chats.get(key);
+  const afterUnread = Math.max(0, Number(afterChat?.unread_count || 0));
+  if (key > 0) {
+    renderTraceLog("unread-increment", {
+      chatId: key,
+      activeChatId: Number(activeChatId),
+      hidden: document.visibilityState !== "visible",
+      beforeUnread,
+      afterUnread,
+      incremented: afterUnread > beforeUnread,
+    });
+  }
+  return result;
 }
 
 function loadDraftsFromStorage() {
@@ -1194,11 +1248,29 @@ function getOrCreateTabNode(chatId) {
 }
 
 function getTabBadgeState(chat) {
-  return chatUiHelpers.getTabBadgeState({
+  const badgeState = chatUiHelpers.getTabBadgeState({
     chat,
     pendingChats,
     unseenStreamChats,
   });
+  const chatId = Number(chat?.id || 0);
+  if (chatId > 0) {
+    const unread = Math.max(0, Number(chat?.unread_count || 0));
+    const pending = pendingChats.has(chatId) || Boolean(chat?.pending);
+    const unseen = unseenStreamChats.has(chatId);
+    if (pending || unread > 0 || unseen || chatId === Number(activeChatId)) {
+      renderTraceLog("tab-badge-state", {
+        chatId,
+        activeChatId: Number(activeChatId),
+        pending,
+        unread,
+        unseen,
+        badgeText: String(badgeState?.text || ""),
+        badgeClasses: Array.isArray(badgeState?.classes) ? badgeState.classes.slice() : [],
+      });
+    }
+  }
+  return badgeState;
 }
 
 function applyTabBadgeState(badge, badgeState) {
@@ -1264,6 +1336,16 @@ function syncPinChatButton() {
 }
 
 function refreshTabNode(chatId) {
+  const key = Number(chatId);
+  const chat = chats.get(key);
+  renderTraceLog("tab-refresh-request", {
+    chatId: key,
+    activeChatId: Number(activeChatId),
+    pendingLocal: pendingChats.has(key),
+    pendingServer: Boolean(chat?.pending),
+    unread: Math.max(0, Number(chat?.unread_count || 0)),
+    unseen: unseenStreamChats.has(key),
+  });
   chatUiHelpers.refreshTabNode({
     chatId,
     tabNodes,
@@ -1424,6 +1506,7 @@ const chatHistoryController = chatHistoryHelpers.createController({
   setActiveChatMeta,
   renderMessages,
   hasLiveStreamController,
+  abortStreamController,
   mergeHydratedHistory: runtimeHelpers.mergeHydratedHistory,
   refreshTabNode,
   getActiveChatId: () => Number(activeChatId),
@@ -1450,6 +1533,9 @@ const chatHistoryController = chatHistoryHelpers.createController({
   syncActivePendingStatus,
   updateComposerState,
   pendingChats,
+  finalizeHydratedPendingState: (chatId) => {
+    finalizeStreamPendingState(chatId, false);
+  },
   restorePendingStreamSnapshot,
   shouldResumeOnVisibilityChange: (args = {}) => {
     if (reconnectResumeBlockedChats.has(Number(args?.activeChatId))) {
@@ -1472,6 +1558,7 @@ const chatAdminController = chatAdminHelpers.createController({
   chatTitleTagRow,
   chatTitleTagButtons,
   chatTabContextMenu,
+  chatTabContextFork,
   apiPost,
   chats,
   pinnedChats,
@@ -1617,6 +1704,7 @@ const startupBindingsController = startupBindingsHelpers.createController({
   handleGlobalTabCycle,
   handleGlobalArrowJump,
   handleGlobalComposerFocusShortcut,
+  handleGlobalChatActionShortcut,
   handleGlobalControlEnterDefuse,
   handleGlobalControlMouseDownFocusGuard,
   handleGlobalControlClickFocusCleanup,
@@ -1980,7 +2068,12 @@ async function bootstrap() {
           return;
         }
         authStatus.textContent = "Desktop testing ready";
-        appendSystemMessage(data?.error || "Use Dev sign-in to test outside Telegram.");
+        appendSystemMessage(data?.error || "Use /app#dev-auth to open Dev sign-in outside Telegram.");
+        return;
+      }
+      if (desktopTestingRequested && !Boolean(devConfig.devAuthEnabled)) {
+        authStatus.textContent = "Debug sign-in unavailable";
+        appendSystemMessage("Dev auth is currently disabled. Enable the bypass flag, then reload /app#dev-auth.");
         return;
       }
       authStatus.textContent = "Sign-in failed";
@@ -2023,7 +2116,6 @@ const streamController = streamControllerHelpers.createController({
   compactChatLabel,
   setStreamStatus,
   setActivityChip,
-  sourceChip,
   streamChip,
   latencyChip,
   finalizeInlineToolTrace,
@@ -2062,6 +2154,17 @@ const streamController = streamControllerHelpers.createController({
 });
 
 function finalizeStreamPendingState(chatId, wasAborted) {
+  const key = Number(chatId);
+  const beforeChat = chats.get(key);
+  renderTraceLog("stream-pending-finalize-before", {
+    chatId: key,
+    wasAborted: Boolean(wasAborted),
+    activeChatId: Number(activeChatId),
+    pendingLocal: pendingChats.has(key),
+    pendingServer: Boolean(beforeChat?.pending),
+    unread: Math.max(0, Number(beforeChat?.unread_count || 0)),
+    unseen: unseenStreamChats.has(key),
+  });
   finalizeChatStreamState({
     chatId,
     wasAborted,
@@ -2069,6 +2172,17 @@ function finalizeStreamPendingState(chatId, wasAborted) {
     chats,
     setStreamPhase,
   });
+  const afterChat = chats.get(key);
+  renderTraceLog("stream-pending-finalize-after", {
+    chatId: key,
+    wasAborted: Boolean(wasAborted),
+    activeChatId: Number(activeChatId),
+    pendingLocal: pendingChats.has(key),
+    pendingServer: Boolean(afterChat?.pending),
+    unread: Math.max(0, Number(afterChat?.unread_count || 0)),
+    unseen: unseenStreamChats.has(key),
+  });
+  refreshTabNode(key);
 }
 
 function applyDonePayload(chatId, payload, builtReplyRef, options = {}) {
@@ -2177,8 +2291,7 @@ async function sendPrompt(message) {
     if (!response.ok || !response.body) {
       const fallback = await response.text();
       const parsedError = parseStreamErrorPayload(fallback);
-      const normalizedError = parsedError.error.toLowerCase();
-      const alreadyWorking = response.status === 409 && normalizedError.includes("already working on this chat");
+      const alreadyWorking = response.status === 409;
       const sanitizedFallbackMessage = summarizeUiFailure(parsedError.error || fallback, {
         status: response.status,
         fallback: "Hermes call failed.",
@@ -2277,12 +2390,11 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
 
     if (!response.ok || !response.body) {
       const fallback = await response.text();
-      const normalizedFallback = String(fallback || "").toLowerCase();
       const sanitizedResumeFailure = summarizeUiFailure(fallback, {
         status: response.status,
         fallback: `Resume failed: ${response.status}`,
       });
-      const noActiveJob = response.status === 409 && normalizedFallback.includes("no active hermes job");
+      const noActiveJob = response.status === 409;
       if (noActiveJob) {
         setStreamPhase(key, STREAM_PHASES.FINALIZED);
         await hydrateChatAfterGracefulResumeCompletion(key);
@@ -2423,6 +2535,8 @@ const keyboardShortcutsController = keyboardShortcutsHelpers.createController({
   handleJumpLatest,
   handleJumpLastStart,
   focusMessagesPaneIfActiveChat,
+  createChat,
+  removeActiveChat,
 });
 
 function closeChatTabContextMenu() {
@@ -2479,6 +2593,10 @@ function handleGlobalArrowJump(event) {
 
 function handleGlobalComposerFocusShortcut(event) {
   return keyboardShortcutsController.handleGlobalComposerFocusShortcut(event);
+}
+
+function handleGlobalChatActionShortcut(event) {
+  return keyboardShortcutsController.handleGlobalChatActionShortcut(event);
 }
 
 function shouldReleaseControlFocusAfterClick(target) {
@@ -2577,6 +2695,26 @@ function installVisibilitySkinLifecycle() {
   return visibilitySkinController.installLifecycleListeners();
 }
 
+function installPendingCompletionWatchdog() {
+  const intervalMs = 8000;
+  window.setInterval(() => {
+    if (!isAuthenticated || pendingChats.size === 0) return;
+    void (async () => {
+      try {
+        await refreshChats();
+        if (Number(activeChatId) > 0 && pendingChats.has(Number(activeChatId))) {
+          await syncVisibleActiveChat({
+            hidden: document.visibilityState !== "visible",
+            streamAbortControllers: streamController.getAbortControllers(),
+          });
+        }
+      } catch {
+        // Best-effort watchdog: healthy streams still finalize through normal SSE handling.
+      }
+    })();
+  }, intervalMs);
+}
+
 tabsEl?.addEventListener?.("click", handleTabOverflowTriggerClick, true);
 chatTabContextFork?.addEventListener?.("click", (event) => {
   void handleTabContextForkClick(event);
@@ -2596,6 +2734,7 @@ installCoreEventBindings();
 installActionButtonBindings();
 installShellModalBindings();
 installVisibilitySkinLifecycle();
+installPendingCompletionWatchdog();
 startDevAutoRefresh();
 installTapToDismissKeyboard();
 installKeyboardViewportSync();

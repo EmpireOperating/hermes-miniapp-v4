@@ -99,6 +99,8 @@ class HermesClientDirectAgentMixin:
             "conversation_history": self._normalize_conversation_history(conversation_history),
             "session_id": session_id or f"miniapp-{user_id}-{uuid.uuid4().hex[:8]}",
             "model": self.model,
+            "provider": self.provider,
+            "base_url": self.base_url,
             "max_iterations": self.max_iterations,
             "tool_progress_mode": self.tool_progress_mode,
         }
@@ -109,9 +111,11 @@ class HermesClientDirectAgentMixin:
         child_env["VIRTUAL_ENV"] = self.agent_venv
         child_env["PATH"] = f"{self.agent_venv}/bin:{child_env.get('PATH', '')}"
 
+        command = [self.agent_python, "-u", "-c", self._agent_runner_script()]
+        self.assert_child_spawn_allowed(transport="agent-direct", session_id=str(payload.get("session_id") or ""))
         try:
             process = subprocess.Popen(
-                [self.agent_python, "-u", "-c", self._agent_runner_script()],
+                command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -121,6 +125,31 @@ class HermesClientDirectAgentMixin:
             )
         except OSError as exc:
             raise HermesClientError(f"Failed to start Hermes direct agent: {exc}") from exc
+
+        child_pid = int(getattr(process, "pid", 0) or 0)
+        if child_pid <= 0:
+            child_pid = id(process)
+
+        try:
+            self.register_child_spawn(
+                transport="agent-direct",
+                pid=child_pid,
+                command=command,
+                session_id=payload.get("session_id"),
+            )
+        except HermesClientError:
+            process.kill()
+            try:
+                process.wait(timeout=1)
+            except Exception:
+                pass
+            for stream in (process.stdin, process.stdout, process.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass
+            raise
 
         closed_stream_ids: set[int] = set()
 
@@ -194,11 +223,15 @@ class HermesClientDirectAgentMixin:
         threading.Thread(target=_stdout_reader, name="miniapp-direct-agent-stdout", daemon=True).start()
         threading.Thread(target=_stderr_reader, name="miniapp-direct-agent-stderr", daemon=True).start()
 
+        spawn_outcome = "unknown"
+        final_return_code: int | None = None
+
         try:
             yield {"type": "meta", "source": "agent"}
 
             while True:
                 if (time.monotonic() - started) > float(self.timeout_seconds):
+                    spawn_outcome = "timeout_kill"
                     process.kill()
                     raise HermesClientError(_build_timeout_message())
 
@@ -233,12 +266,15 @@ class HermesClientDirectAgentMixin:
                         "latency_ms": item.get("latency_ms"),
                     }
                 elif kind == "error":
+                    spawn_outcome = "stream_error"
                     raise HermesClientError(str(item.get("error") or "Hermes agent run failed."))
 
             remaining = max(0.1, float(self.timeout_seconds) - (time.monotonic() - started))
             try:
                 return_code = process.wait(timeout=remaining)
+                final_return_code = int(return_code)
             except subprocess.TimeoutExpired as exc:
+                spawn_outcome = "wait_timeout_kill"
                 process.kill()
                 raise HermesClientError(_build_timeout_message()) from exc
 
@@ -246,19 +282,31 @@ class HermesClientDirectAgentMixin:
                 stderr_done.wait(timeout=0.2)
             stderr = "\n".join(stderr_lines).strip()
             if return_code != 0 and stderr:
+                spawn_outcome = "nonzero_exit"
                 raise HermesClientError(stderr)
             if return_code != 0:
+                spawn_outcome = "nonzero_exit"
                 raise HermesClientError(f"Hermes direct agent exited with status {return_code}.")
+            spawn_outcome = "completed"
         finally:
             _safe_close_stream(process.stdin, stream_name="stdin")
             if process.poll() is None:
+                spawn_outcome = "cleanup_kill" if spawn_outcome == "unknown" else spawn_outcome
                 process.kill()
                 try:
                     process.wait(timeout=1)
                 except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log teardown wait failures are non-fatal after kill
                     pass
+            polled_return_code = process.poll()
+            if final_return_code is None and isinstance(polled_return_code, int):
+                final_return_code = int(polled_return_code)
             _safe_close_stream(process.stdout, stream_name="stdout")
             _safe_close_stream(process.stderr, stream_name="stderr")
+            self.deregister_child_spawn(
+                pid=child_pid,
+                outcome=spawn_outcome,
+                return_code=final_return_code,
+            )
 
     def _normalize_conversation_history(
         self,
@@ -306,12 +354,17 @@ class HermesClientDirectAgentMixin:
     def _agent_runner_script(self) -> str:
         return textwrap.dedent(
             """
+            import contextlib
+            import io
             import json
             import sys
             import time
 
+            _protocol_stdout = getattr(sys, '__stdout__', None) or sys.stdout
+
             def emit(payload):
-                print(json.dumps(payload, ensure_ascii=False), flush=True)
+                _protocol_stdout.write(json.dumps(payload, ensure_ascii=False) + '\n')
+                _protocol_stdout.flush()
 
             payload = json.loads(sys.stdin.read() or '{}')
             from run_agent import AIAgent
@@ -347,14 +400,19 @@ class HermesClientDirectAgentMixin:
             }
             if payload.get('model'):
                 agent_kwargs['model'] = payload['model']
+            if payload.get('provider'):
+                agent_kwargs['provider'] = payload['provider']
+            if payload.get('base_url'):
+                agent_kwargs['base_url'] = payload['base_url']
 
             try:
                 agent = AIAgent(**agent_kwargs)
-                result = agent.run_conversation(
-                    message,
-                    conversation_history=payload.get('conversation_history') or [],
-                    task_id=payload.get('session_id') or 'miniapp-agent',
-                )
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = agent.run_conversation(
+                        message,
+                        conversation_history=payload.get('conversation_history') or [],
+                        task_id=payload.get('session_id') or 'miniapp-agent',
+                    )
                 reply = str(result.get('final_response') or '').strip()
                 if not reply:
                     emit({'kind': 'error', 'error': str(result.get('error') or 'Hermes agent returned an empty reply.')})

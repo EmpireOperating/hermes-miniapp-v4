@@ -45,6 +45,7 @@
       handleGlobalTabCycle,
       handleGlobalArrowJump,
       handleGlobalComposerFocusShortcut,
+      handleGlobalChatActionShortcut,
       handleGlobalControlEnterDefuse,
       handleGlobalControlMouseDownFocusGuard,
       handleGlobalControlClickFocusCleanup,
@@ -134,6 +135,7 @@
       documentObject.addEventListener('keydown', handleGlobalTabCycle);
       documentObject.addEventListener('keydown', handleGlobalArrowJump);
       documentObject.addEventListener('keydown', handleGlobalComposerFocusShortcut);
+      documentObject.addEventListener('keydown', handleGlobalChatActionShortcut);
       documentObject.addEventListener('keydown', handleGlobalControlEnterDefuse, true);
       documentObject.addEventListener('mousedown', handleGlobalControlMouseDownFocusGuard, true);
       documentObject.addEventListener('click', handleGlobalControlClickFocusCleanup, true);
@@ -165,13 +167,16 @@
       closeAppTopButton?.addEventListener('click', handleCloseApp);
       renderTraceBadge?.addEventListener('click', handleRenderTraceBadgeClick);
       settingsButton?.addEventListener('click', openSettingsModal);
-
       devSignInButton?.addEventListener('click', () => {
-        void signInWithDevAuth().catch((error) => {
-          authStatusEl.textContent = 'Dev sign-in error';
-          appendSystemMessage(`Dev sign-in failed: ${error.message}`);
-          syncDevAuthUi();
-        });
+        void (async () => {
+          try {
+            await signInWithDevAuth();
+          } catch (error) {
+            authStatusEl.textContent = 'Dev sign-in error';
+            appendSystemMessage(`Dev sign-in failed: ${error?.message || String(error)}`);
+            syncDevAuthUi();
+          }
+        })();
       });
 
       settingsClose?.addEventListener('click', closeSettingsModal);

@@ -38,9 +38,13 @@
         collapsed: false,
       };
 
-      const firstPendingHermesIndex = history.findIndex((item) => item?.role === "hermes" && item?.pending);
-      if (firstPendingHermesIndex >= 0) {
-        history.splice(firstPendingHermesIndex, 0, next);
+      const firstPendingAssistantIndex = history.findIndex((item) => {
+        if (!item?.pending) return false;
+        const role = String(item?.role || "").toLowerCase();
+        return role === "hermes" || role === "assistant";
+      });
+      if (firstPendingAssistantIndex >= 0) {
+        history.splice(firstPendingAssistantIndex, 0, next);
       } else {
         history.push(next);
       }
@@ -215,7 +219,6 @@
       compactChatLabel,
       setStreamStatus,
       setActivityChip,
-      sourceChip,
       streamChip,
       latencyChip,
       finalizeInlineToolTrace,
@@ -255,6 +258,8 @@
     const streamAbortControllers = new Map();
     const lastStreamEventIdByChat = new Map();
     const focusRestoreEligibleByChat = new Map();
+    const firstAssistantNotificationKeyByChat = new Map();
+    let nextAssistantNotificationId = 0;
 
     function setFocusRestoreEligibility(chatId, eligible) {
       const key = Number(chatId);
@@ -330,15 +335,48 @@
       return streamAbortControllers;
     }
 
+    function consumeFirstAssistantNotification(chatId) {
+      const key = Number(chatId);
+      const messageKey = String(firstAssistantNotificationKeyByChat.get(key) || "").trim();
+      firstAssistantNotificationKeyByChat.delete(key);
+      return messageKey;
+    }
+
+    function notifyFirstAssistantChunk(chatId) {
+      const key = Number(chatId);
+      if (!key || firstAssistantNotificationKeyByChat.has(key)) {
+        return false;
+      }
+      if (Number(getActiveChatId()) === key) {
+        return false;
+      }
+      nextAssistantNotificationId += 1;
+      const messageKey = `chat:${key}:assistant-stream:${nextAssistantNotificationId}`;
+      firstAssistantNotificationKeyByChat.set(key, messageKey);
+      triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory: false });
+      incrementUnread(chatId);
+      renderTabs();
+      return true;
+    }
+
     function applyDonePayload(chatId, payload, builtReplyRef, { updateUnread = true } = {}) {
       builtReplyRef.value = payload.reply || builtReplyRef.value;
       finalizeInlineToolTrace(chatId);
       clearStreamCursor?.(chatId);
       updatePendingAssistant(chatId, builtReplyRef.value, false);
       clearPendingStreamSnapshot?.(chatId);
+      const hadEarlyAssistantNotification = Boolean(consumeFirstAssistantNotification(chatId));
       const doneTurnCount = Number(payload?.turn_count || 0);
       const doneMessageKey = doneTurnCount > 0 ? `chat:${Number(chatId)}:turn:${doneTurnCount}` : "";
-      triggerIncomingMessageHaptic(chatId, { messageKey: doneMessageKey });
+      const doneActiveChatId = Number(getActiveChatId());
+      const shouldIncrementUnreadOnDone = Boolean(
+        updateUnread
+        && !hadEarlyAssistantNotification
+        && doneActiveChatId !== Number(chatId)
+      );
+      if (!hadEarlyAssistantNotification) {
+        triggerIncomingMessageHaptic(chatId, { messageKey: doneMessageKey });
+      }
       markStreamUpdate(chatId);
       const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, false);
       const patchedToolTrace = patchVisibleToolTrace(chatId);
@@ -353,11 +391,25 @@
       }
       // Hydrate from persisted history so server-extracted metadata (e.g. file_refs/ref_id)
       // is attached to the finalized assistant turn in the active view.
-      void hydrateChatAfterGracefulResumeCompletion(chatId);
+      // Force the local chat state to completed while hydrating so a slightly stale
+      // history response cannot re-mark the chat as pending after the terminal `done`.
+      void hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted: true });
       setChatLatency(chatId, formatLatency(payload.latency_ms));
       setStreamStatus(`Reply received in ${chatLabel(chatId)}`);
       setActivityChip(streamChip, `stream: complete · ${compactChatLabel(chatId)}`);
-      if (updateUnread && Number(getActiveChatId()) !== Number(chatId)) {
+      renderTraceLog("stream-done-state", {
+        chatId: Number(chatId),
+        activeChatId: doneActiveChatId,
+        hidden: typeof document !== "undefined" ? document.visibilityState !== "visible" : false,
+        updateUnread: Boolean(updateUnread),
+        hadEarlyAssistantNotification,
+        shouldIncrementUnreadOnDone,
+        doneTurnCount,
+        doneMessageKey,
+        latencyMs: Number(payload?.latency_ms || 0),
+        replyLength: builtReplyRef.value.length,
+      });
+      if (shouldIncrementUnreadOnDone) {
         incrementUnread(chatId);
         renderTabs();
       }
@@ -383,9 +435,6 @@
           incomingSkin: payload.skin,
           // current skin is tracked in app.js; this event is intentionally ignored.
         });
-      }
-      if (eventName === "meta" && payload.source) {
-        setActivityChip(sourceChip, `source: ${payload.source}`);
       }
       if (eventName === "meta" && payload.detail) {
         const detail = String(payload.detail || "").trim();
@@ -428,7 +477,12 @@
 
       if (eventName === "chunk") {
         setStreamPhase(chatId, STREAM_PHASES.STREAMING_ASSISTANT);
-        builtReplyRef.value += payload.text || "";
+        const chunkText = String(payload.text || "");
+        const hadAssistantText = builtReplyRef.value.length > 0;
+        builtReplyRef.value += chunkText;
+        if (!hadAssistantText && chunkText) {
+          notifyFirstAssistantChunk(chatId);
+        }
         updatePendingAssistant(chatId, builtReplyRef.value, true);
         markStreamUpdate(chatId);
         const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, true);
@@ -450,6 +504,7 @@
         setStreamPhase(chatId, STREAM_PHASES.ERROR);
         finalizeInlineToolTrace(chatId);
         clearStreamCursor?.(chatId);
+        consumeFirstAssistantNotification(chatId);
         updatePendingAssistant(chatId, payload.error || "Hermes stream failed.", false);
         markStreamUpdate(chatId);
         syncActiveMessageView(chatId, { preserveViewport: true });
@@ -472,8 +527,11 @@
       setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
       const fallbackReply = builtReplyRef.value || "The response ended before completion.";
       finalizeInlineToolTrace(chatId);
+      const hadEarlyAssistantNotification = Boolean(consumeFirstAssistantNotification(chatId));
       updatePendingAssistant(chatId, fallbackReply, false);
-      triggerIncomingMessageHaptic(chatId, { fallbackToLatestHistory: true });
+      if (!hadEarlyAssistantNotification) {
+        triggerIncomingMessageHaptic(chatId, { fallbackToLatestHistory: true });
+      }
       markStreamUpdate(chatId);
       setChatLatency(chatId, "--");
       const patchedAssistant = patchVisiblePendingAssistant(chatId, fallbackReply, false);
@@ -489,7 +547,7 @@
       }
       setStreamStatus("Stream closed early");
       setActivityChip(streamChip, "stream: closed early");
-      if (Number(getActiveChatId()) !== Number(chatId)) {
+      if (!hadEarlyAssistantNotification && Number(getActiveChatId()) !== Number(chatId)) {
         incrementUnread(chatId);
       }
     }
@@ -510,12 +568,18 @@
 
       while (true) {
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done) {
+          renderTraceLog("stream-reader-closed", {
+            chatId: Number(chatId),
+            terminalReceived,
+            bufferedTailLength: buffer.length,
+          });
+          break;
+        }
         const decodedChunk = decoder.decode(value, { stream: true });
         streamDebugLog("sse-read", {
           chatId: Number(chatId),
           chunkLength: decodedChunk.length,
-          chunkPreview: decodedChunk.slice(0, 180),
         });
         buffer += decodedChunk;
         const events = buffer.split(/\r?\n\r?\n/);
@@ -546,8 +610,15 @@
           if (shouldSkipReplayedEvent(key, payload)) {
             continue;
           }
-          if (handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
+          const handledAsTerminal = handleStreamEvent(chatId, eventName, payload, builtReplyRef);
+          if (handledAsTerminal) {
             terminalReceived = true;
+            renderTraceLog("stream-terminal-event", {
+              chatId: Number(chatId),
+              eventName,
+              bufferedTailLength: buffer.length,
+              replyLength: builtReplyRef.value.length,
+            });
             break;
           }
         }
@@ -575,14 +646,29 @@
           eventName,
           hasPayload: Boolean(payload),
           tailLength: trimmedBuffer.length,
-          tailPreview: trimmedBuffer.slice(0, 220),
         });
-        if (payload && !shouldSkipReplayedEvent(key, payload) && handleStreamEvent(chatId, eventName, payload, builtReplyRef)) {
-          terminalReceived = true;
+        if (payload && !shouldSkipReplayedEvent(key, payload)) {
+          const handledAsTerminal = handleStreamEvent(chatId, eventName, payload, builtReplyRef);
+          if (handledAsTerminal) {
+            terminalReceived = true;
+            renderTraceLog("stream-terminal-buffer-tail", {
+              chatId: Number(chatId),
+              eventName,
+              tailLength: trimmedBuffer.length,
+              replyLength: builtReplyRef.value.length,
+            });
+          }
         }
       }
 
       const earlyClosed = !terminalReceived;
+      renderTraceLog("stream-consume-finished", {
+        chatId: Number(chatId),
+        terminalReceived,
+        earlyClosed,
+        suppressEarlyCloseFallback: Boolean(suppressEarlyCloseFallback),
+        replyLength: builtReplyRef.value.length,
+      });
       if (earlyClosed && !suppressEarlyCloseFallback) {
         applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent);
       }
@@ -593,22 +679,28 @@
       };
     }
 
-    async function hydrateChatAfterGracefulResumeCompletion(chatId) {
+    async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {}) {
       const key = Number(chatId);
       if (!key || typeof loadChatHistory !== "function") return;
       clearStreamCursor?.(key);
       clearPendingStreamSnapshot?.(key);
       try {
         const hydrated = await loadChatHistory(key, { activate: Number(getActiveChatId()) === key });
+        const hydratedChat = hydrated && typeof hydrated === "object" && hydrated.chat && typeof hydrated.chat === "object"
+          ? { ...hydrated.chat }
+          : hydrated?.chat;
+        if (forceCompleted && hydratedChat && typeof hydratedChat === "object") {
+          hydratedChat.pending = false;
+        }
         if (typeof upsertChat === "function") {
-          upsertChat(hydrated.chat);
+          upsertChat(hydratedChat);
         }
         const previousHistory = histories?.get?.(key) || [];
         const nextHistory = typeof mergeHydratedHistory === "function"
           ? mergeHydratedHistory({
             previousHistory,
             nextHistory: hydrated.history || [],
-            chatPending: Boolean(hydrated.chat?.pending),
+            chatPending: forceCompleted ? false : Boolean(hydratedChat?.pending),
           })
           : (hydrated.history || []);
         histories?.set?.(key, nextHistory);
@@ -631,8 +723,17 @@
         resetReplayCursor,
       });
       if (!consumeResult?.earlyClosed) {
+        renderTraceLog("stream-reconnect-not-needed", {
+          chatId: Number(chatId),
+          terminalReceived: Boolean(consumeResult?.terminalReceived),
+        });
         return false;
       }
+      renderTraceLog("stream-reconnect-needed", {
+        chatId: Number(chatId),
+        terminalReceived: Boolean(consumeResult?.terminalReceived),
+        replyLength: builtReplyRef.value.length,
+      });
       if (typeof onEarlyClose === "function") {
         await onEarlyClose();
       }
@@ -689,7 +790,16 @@
       }
 
       const shouldRestoreFocus = Boolean(focusRestoreEligibleByChat.get(key));
+      renderTraceLog("stream-finalize-begin", {
+        chatId: key,
+        wasAborted: Boolean(wasAborted),
+        activeChatId: Number(getActiveChatId()),
+        hidden: typeof document !== "undefined" ? document.visibilityState !== "visible" : false,
+      });
       clearStreamAbortController(key, streamController);
+      if (!wasAborted) {
+        consumeFirstAssistantNotification(key);
+      }
       if (wasAborted) {
         // Abort is commonly used for intentional stream handoff (send -> resume or
         // resume -> resume rollover). Do not clear pending/phase here, or we can

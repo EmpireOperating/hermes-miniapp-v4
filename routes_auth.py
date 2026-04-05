@@ -27,7 +27,7 @@ def register_auth_routes(
     auth_session_max_age_seconds: int,
     build_job_log_fn: Callable[..., str],
     logger,
-    dev_auth_enabled: bool = False,
+    dev_auth_enabled_fn: Callable[[], bool] = lambda: False,
     dev_auth_secret: str = "",
 ) -> None:
     def _serialize_turn(turn) -> dict[str, object]:
@@ -124,7 +124,7 @@ def register_auth_routes(
 
     @api_bp.post("/dev/auth")
     def dev_auth() -> Response | tuple[dict[str, object], int]:
-        if not dev_auth_enabled or not dev_auth_secret:
+        if not dev_auth_enabled_fn() or not dev_auth_secret:
             return {"ok": False, "error": "Not found."}, 404
 
         payload = request_payload_fn()

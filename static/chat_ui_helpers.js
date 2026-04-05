@@ -70,7 +70,9 @@
 
   function applyTabNodeState({ node, chat, activeChatId, pendingChats, unseenStreamChats, getTabBadgeState: customBadgeState, applyTabBadgeState: customApplyBadgeState }) {
     if (!node || !chat) return;
-    const isActive = Number(chat.id) === Number(activeChatId);
+    const chatId = toPositiveInt(chat.id);
+    const isActive = chatId === Number(activeChatId);
+    const isPending = Boolean(chatId && (pendingChats.has(chatId) || chat.pending));
     node.classList.toggle("is-active", isActive);
     node.classList.toggle("is-pinned", Boolean(chat.is_pinned));
     node.setAttribute("aria-selected", isActive ? "true" : "false");
@@ -94,7 +96,7 @@
 
     const overflowTrigger = node.querySelector("[data-chat-tab-menu-trigger]");
     if (overflowTrigger) {
-      overflowTrigger.hidden = !isActive;
+      overflowTrigger.hidden = !isActive || isPending;
     }
   }
 

@@ -16,13 +16,21 @@ def register_public_routes(
     dev_reload: bool,
     dev_reload_interval_ms: int,
     request_debug: bool,
-    dev_auth_enabled: bool = False,
+    dev_auth_enabled: bool | None = None,
+    dev_auth_enabled_fn: Callable[[], bool] = lambda: False,
+    file_preview_enabled: bool = False,
     file_preview_allowed_roots: tuple[str, ...] = (),
     static_no_store_filenames: set[str] | frozenset[str] = frozenset(),
     asset_version_fn: Callable[[str], str],
     dev_reload_version_fn: Callable[[], str],
     ensure_csp_nonce_fn: Callable[[], str],
 ) -> None:
+    resolved_dev_auth_enabled_fn = (
+        (lambda: bool(dev_auth_enabled))
+        if dev_auth_enabled is not None
+        else dev_auth_enabled_fn
+    )
+
     @public_bp.get("/")
     def root() -> tuple[dict[str, str], int]:
         return {"status": "ok", "service": "hermes-miniapp"}, 200
@@ -62,7 +70,8 @@ def register_public_routes(
                 dev_reload_interval_ms=dev_reload_interval_ms,
                 dev_reload_version=dev_reload_version_fn(),
                 request_debug=request_debug,
-                dev_auth_enabled=dev_auth_enabled,
+                dev_auth_enabled=resolved_dev_auth_enabled_fn(),
+                file_preview_enabled=file_preview_enabled,
                 file_preview_allowed_roots_json=json.dumps(list(file_preview_allowed_roots)),
                 boot_skin=boot_skin,
                 csp_nonce=ensure_csp_nonce_fn(),

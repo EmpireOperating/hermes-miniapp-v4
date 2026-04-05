@@ -29,5 +29,8 @@ class ChatRouteContext:
     serialize_chat_fn: Callable[[Any], dict[str, object]]
     session_id_builder_fn: Callable[[str, int], str]
     job_max_attempts: int
+    stream_timing_debug: bool
+    stream_efficiency_mode: bool
+    stream_metrics_refresh_seconds: int
     build_job_log_fn: Callable[..., str]
     logger: Any
