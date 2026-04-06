@@ -180,6 +180,20 @@ def list_recoverable_pending_turns(conn: Connection, *, user_id: str) -> list[tu
         ).fetchone()
         if open_job:
             continue
+        existing_turn_job = conn.execute(
+            """
+            SELECT 1 AS present
+            FROM chat_jobs
+            WHERE user_id = ?
+              AND chat_id = ?
+              AND operator_message_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id, chat_id, message_id),
+        ).fetchone()
+        if existing_turn_job:
+            continue
         recoverable.append((chat_id, message_id))
     return recoverable
 
