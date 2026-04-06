@@ -462,10 +462,20 @@
             if (payload.job_status === "running") {
               const elapsedMs = Number(payload.elapsed_ms);
               if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
-                setChatLatency(chatId, `${formatLatency(elapsedMs)} · live`);
+                const runningLatency = `${formatLatency(elapsedMs)} · live`;
+                setChatLatency(chatId, runningLatency);
+                setActivityChip(latencyChip, `latency: ${runningLatency}`);
               } else {
                 setChatLatency(chatId, "calculating...");
+                setActivityChip(latencyChip, "latency: calculating...");
               }
+            } else if (payload.job_status === "queued") {
+              const queuedAhead = Number(payload.queued_ahead);
+              const queueLabel = Number.isFinite(queuedAhead) && queuedAhead > 0
+                ? `queued · ahead: ${queuedAhead}`
+                : "queued...";
+              setChatLatency(chatId, queueLabel);
+              setActivityChip(latencyChip, `latency: ${queueLabel}`);
             }
           }
         }

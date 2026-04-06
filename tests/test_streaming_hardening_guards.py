@@ -93,6 +93,8 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "setActivityChip?.(streamChip, \"stream: recovery paused\");" in runtime_helpers_js
     assert "function createHapticUnreadController({" in runtime_helpers_js
     assert "consumeStreamWithReconnect(key, response, builtReplyRef" in app_js
+    assert "const queueLabel = Number.isFinite(queuedAhead) && queuedAhead > 0" in _read_static("stream_controller.js")
+    assert "setActivityChip(latencyChip, `latency: ${queueLabel}`);" in _read_static("stream_controller.js")
     assert "await resumePendingChatStream(key, { force: true });" not in app_js
     assert "const reconnectResumeBlockedChats = new Set();" in app_js
     assert "if (reconnectResumeBlockedChats.has(key)) {" in app_js
