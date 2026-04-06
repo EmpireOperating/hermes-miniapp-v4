@@ -240,13 +240,36 @@
       const blocked = isChatForkBlocked(chatId);
       chatTabContextFork.disabled = blocked;
       chatTabContextFork.setAttribute('aria-disabled', blocked ? 'true' : 'false');
-      chatTabContextFork.title = blocked ? 'Wait for Hermes to finish before forking this chat.' : 'Fork chat';
+      chatTabContextFork.title = blocked ? 'Wait for Hermes to finish before branching this chat.' : 'Branch chat';
     }
 
     function ensureForkChatAllowed(chatId) {
       if (isChatForkBlocked(chatId)) {
-        throw new Error('Wait for Hermes to finish before forking this chat.');
+        throw new Error('Wait for Hermes to finish before branching this chat.');
       }
+    }
+
+    function getNextBranchTitle(sourceTitle) {
+      const cleanedSourceTitle = String(sourceTitle || '').trim() || 'branch';
+      const lineageMatch = cleanedSourceTitle.match(/^(.*?) #(\d+)$/);
+      const lineageBase = String(lineageMatch?.[1] || cleanedSourceTitle).trim() || 'branch';
+      let maxSuffix = cleanedSourceTitle === lineageBase ? 1 : 0;
+      const lineagePattern = new RegExp(`^${lineageBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?: #(\\d+))?$`);
+      const inspectChat = (chat) => {
+        const rawTitle = String(chat?.title || '').trim();
+        if (!rawTitle) return;
+        const parsed = parseTaggedChatTitle(rawTitle);
+        const title = String(parsed?.title || rawTitle).trim();
+        const match = title.match(lineagePattern);
+        if (!match) return;
+        const suffix = match[1] ? Number.parseInt(match[1], 10) : 1;
+        if (Number.isFinite(suffix)) {
+          maxSuffix = Math.max(maxSuffix, suffix);
+        }
+      };
+      chats.forEach(inspectChat);
+      pinnedChats.forEach(inspectChat);
+      return maxSuffix <= 0 ? lineageBase : `${lineageBase} #${maxSuffix + 1}`;
     }
 
     async function removeActiveChat() {
@@ -308,10 +331,10 @@
       const sourceTitleRaw = String(chatLabel(sourceChatId) || `Chat ${sourceChatId}`).trim();
       const parsed = parseTaggedChatTitle(sourceTitleRaw);
       const sourceTitle = String(parsed.title || sourceTitleRaw || `Chat ${sourceChatId}`).trim();
-      const forkBaseTitle = `${sourceTitle} (fork)`;
-      const forkTitle = formatTaggedChatTitle(forkBaseTitle, parsed.tag);
+      const branchBaseTitle = getNextBranchTitle(sourceTitle);
+      const forkTitle = formatTaggedChatTitle(branchBaseTitle, parsed.tag);
 
-      const data = await apiPost('/api/chats/fork', { chat_id: sourceChatId, title: forkTitle });
+      const data = await apiPost('/api/chats/branch', { chat_id: sourceChatId, title: forkTitle });
       syncChats(data.chats || []);
       syncPinnedChats(data.pinned_chats || []);
       upsertChat(data.chat);
@@ -438,6 +461,7 @@
       ensureSilentCloseTabAllowed,
       removeActiveChat,
       openPinnedChat,
+      getNextBranchTitle,
       forkChatFrom,
       closeChatTabContextMenu,
       openChatTabContextMenu,

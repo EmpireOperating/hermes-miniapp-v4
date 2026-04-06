@@ -181,14 +181,14 @@ function buildHarness(overrides = {}) {
           pinned_chats: [{ id: 11, title: 'Pinned only', is_pinned: true }],
         };
       }
-      if (path === '/api/chats/fork') {
+      if (path === '/api/chats/branch') {
         return {
-          chat: { id: 19, title: payload.title || 'Current (fork)', is_pinned: false },
+          chat: { id: 19, title: payload.title || 'Current #2', parent_chat_id: 7, is_pinned: false },
           active_chat_id: 19,
           history: [{ id: 200, body: 'old' }],
           chats: [
             { id: 7, title: '[bug]Current', is_pinned: true },
-            { id: 19, title: payload.title || 'Current (fork)', is_pinned: false },
+            { id: 19, title: payload.title || 'Current #2', parent_chat_id: 7, is_pinned: false },
           ],
           pinned_chats: [{ id: 7, title: '[bug]Current', is_pinned: true }],
         };
@@ -497,14 +497,14 @@ test('removeActiveChat can transition to explicit no-active-chat state', async (
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
 });
 
-test('forkChatFrom clones chat history into a new active fork', async () => {
+test('forkChatFrom clones chat history into a new active branch', async () => {
   const harness = buildHarness();
 
   await harness.controller.forkChatFrom(7);
 
   assert.deepEqual(harness.apiCalls[0], {
-    path: '/api/chats/fork',
-    payload: { chat_id: 7, title: '[bug]Current (fork)' },
+    path: '/api/chats/branch',
+    payload: { chat_id: 7, title: '[bug]Current #2' },
   });
   assert.deepEqual(harness.histories.get(19), [{ id: 200, body: 'old' }]);
   assert.deepEqual(harness.setActiveCalls, [19]);
@@ -519,7 +519,7 @@ test('forkChatFrom rejects chats with active local work before calling the backe
 
   await assert.rejects(
     harness.controller.forkChatFrom(7),
-    /Wait for Hermes to finish before forking this chat\./,
+    /Wait for Hermes to finish before branching this chat\./,
   );
 
   assert.deepEqual(harness.apiCalls, []);
@@ -533,7 +533,7 @@ test('forkChatFrom rejects chats marked pending by server state before calling t
 
   await assert.rejects(
     harness.controller.forkChatFrom(7),
-    /Wait for Hermes to finish before forking this chat\./,
+    /Wait for Hermes to finish before branching this chat\./,
   );
 
   assert.deepEqual(harness.apiCalls, []);
@@ -561,8 +561,8 @@ test('forkChatFrom clones selected chat into a new active tab and hydrates histo
   await harness.controller.forkChatFrom(7);
 
   assert.deepEqual(harness.apiCalls[0], {
-    path: '/api/chats/fork',
-    payload: { chat_id: 7, title: '[bug]Current (fork)' },
+    path: '/api/chats/branch',
+    payload: { chat_id: 7, title: '[bug]Current #2' },
   });
   assert.deepEqual(harness.histories.get(19), [{ id: 200, body: 'old' }]);
   assert.deepEqual(harness.setActiveCalls, [19]);
@@ -637,6 +637,15 @@ test('chat tab context menu stays hidden and disables fork action for pending ch
   assert.match(harness.chatTabContextFork.title, /Wait for Hermes to finish/);
 });
 
+test('getNextBranchTitle follows Hermes lineage numbering semantics', () => {
+  const harness = buildHarness();
+  harness.chats.set(19, { id: 19, title: '[bug]Current #2', is_pinned: false });
+  harness.pinnedChats.set(21, { id: 21, title: '[bug]Current #3', is_pinned: true });
+
+  assert.equal(harness.controller.getNextBranchTitle('Current'), 'Current #4');
+  assert.equal(harness.controller.getNextBranchTitle('Current #2'), 'Current #4');
+});
+
 test('handleTabOverflowTriggerClick opens/toggles only for active chat tab', () => {
   const harness = buildHarness();
   const trigger = {
@@ -695,7 +704,7 @@ test('tab-context fork and global-dismiss handlers close menu and preserve insid
   harness.controller.openChatTabContextMenu(7, 40, 40);
   await harness.controller.handleTabContextForkClick({ preventDefault() {} });
   assert.equal(harness.chatTabContextMenu.hidden, true);
-  assert.equal(harness.apiCalls.at(-1).path, '/api/chats/fork');
+  assert.equal(harness.apiCalls.at(-1).path, '/api/chats/branch');
 
   harness.controller.openChatTabContextMenu(7, 40, 40);
   harness.controller.handleGlobalChatContextMenuDismiss({ target: menuTarget });

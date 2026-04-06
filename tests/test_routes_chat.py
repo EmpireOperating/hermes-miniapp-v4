@@ -140,7 +140,7 @@ def test_reopen_chat_from_zero_tabs_does_not_create_main_backup_chat(monkeypatch
     assert payload["active_chat_id"] == feature_chat.id
 
 
-def test_fork_chat_creates_new_chat_with_source_history(monkeypatch, tmp_path) -> None:
+def test_branch_chat_creates_new_chat_with_source_history(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path, max_title_len=32)
 
     source_chat = server.store.create_chat("123", "Feature")
@@ -148,7 +148,7 @@ def test_fork_chat_creates_new_chat_with_source_history(monkeypatch, tmp_path) -
     server.store.add_message("123", source_chat.id, "hermes", "ack")
 
     response = client.post(
-        "/api/chats/fork",
+        "/api/chats/branch",
         json={"init_data": "ok", "chat_id": source_chat.id, "title": "Feature alt"},
     )
 
@@ -157,7 +157,9 @@ def test_fork_chat_creates_new_chat_with_source_history(monkeypatch, tmp_path) -
     assert payload["ok"] is True
     assert payload["chat"]["id"] != source_chat.id
     assert payload["chat"]["title"] == "Feature alt"
+    assert payload["chat"]["parent_chat_id"] == source_chat.id
     assert payload["active_chat_id"] == payload["chat"]["id"]
+    assert payload["branched_from_chat_id"] == source_chat.id
     assert payload["forked_from_chat_id"] == source_chat.id
     assert [turn["body"] for turn in payload["history"]] == ["check /tmp/source.py:7", "ack"]
     assert len(payload["history"][0].get("file_refs") or []) == 1
@@ -165,7 +167,7 @@ def test_fork_chat_creates_new_chat_with_source_history(monkeypatch, tmp_path) -
     assert any(chat["id"] == payload["chat"]["id"] for chat in payload["chats"])
 
 
-def test_fork_chat_rejects_active_work(monkeypatch, tmp_path) -> None:
+def test_branch_chat_rejects_active_work(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
     source_chat = server.store.create_chat("123", "Busy")
@@ -173,13 +175,13 @@ def test_fork_chat_rejects_active_work(monkeypatch, tmp_path) -> None:
     server.store.enqueue_chat_job("123", source_chat.id, operator_message_id)
 
     response = client.post(
-        "/api/chats/fork",
+        "/api/chats/branch",
         json={"init_data": "ok", "chat_id": source_chat.id, "title": "Busy alt"},
     )
 
     assert response.status_code == 409
     payload = response.get_json()
-    assert "finish before forking" in payload["error"].lower()
+    assert "finish before branching" in payload["error"].lower()
     assert [chat.title for chat in server.store.list_chats("123")] == ["Busy"]
 
 
@@ -1060,8 +1062,9 @@ def test_reopen_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None
 
 
 def test_fork_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
-    server, client = _authed_client(monkeypatch, tmp_path)
+    _, client = _authed_client(monkeypatch, tmp_path)
 
+    _assert_missing_chat_404(client, "/api/chats/branch")
     _assert_missing_chat_404(client, "/api/chats/fork")
 
 

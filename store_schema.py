@@ -37,11 +37,13 @@ class StoreSchemaMixin:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     title TEXT NOT NULL,
+                    parent_chat_id INTEGER,
                     is_archived INTEGER NOT NULL DEFAULT 0,
                     is_pinned INTEGER NOT NULL DEFAULT 0,
                     last_read_message_id INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(parent_chat_id) REFERENCES chat_threads(id) ON DELETE SET NULL
                 )
                 """
             )
@@ -175,9 +177,14 @@ class StoreSchemaMixin:
                 conn.execute(
                     "ALTER TABLE chat_threads ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0"
                 )
+            if "parent_chat_id" not in columns:
+                conn.execute("ALTER TABLE chat_threads ADD COLUMN parent_chat_id INTEGER")
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_threads_user_flags ON chat_threads(user_id, is_archived, is_pinned, id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_threads_parent ON chat_threads(user_id, parent_chat_id, id)"
             )
 
             user_pref_columns = {

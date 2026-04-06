@@ -492,6 +492,7 @@ def register_chat_management_routes(
             "pinned_chats": pinned_chats,
         }, 200
 
+    @api_bp.post("/chats/branch")
     @api_bp.post("/chats/fork")
     @guard_json_payload_user_chat_route(
         request_payload_fn=request_payload_fn,
@@ -501,7 +502,7 @@ def register_chat_management_routes(
         not_found_error_fn=_json_not_found,
         should_map_fn=_is_chat_not_found_key_error,
     )
-    def fork_chat(payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
+    def branch_chat(payload: dict[str, object], user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
         raw_title = payload.get("title")
         requested_title: str | None = None
         if raw_title is not None:
@@ -516,7 +517,7 @@ def register_chat_management_routes(
 
         store = store_getter()
         if store.has_open_job(user_id=user_id, chat_id=chat_id):
-            return json_error_fn("Wait for Hermes to finish before forking this chat.", 409)
+            return json_error_fn("Wait for Hermes to finish before branching this chat.", 409)
         forked_chat = store.fork_chat(user_id=user_id, source_chat_id=chat_id, title=requested_title)
         store.set_active_chat(user_id=user_id, chat_id=forked_chat.id)
         store.mark_chat_read(user_id=user_id, chat_id=forked_chat.id)
@@ -529,6 +530,7 @@ def register_chat_management_routes(
             "ok": True,
             "chat": serialize_chat_fn(forked_chat),
             "active_chat_id": forked_chat.id,
+            "branched_from_chat_id": chat_id,
             "forked_from_chat_id": chat_id,
             "history": history,
             "chats": chats,
