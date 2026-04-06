@@ -34,6 +34,9 @@ test('app.js file-preview wrappers keep delegating to filePreviewController', as
     ['openFilePreviewByPath', 'filePreviewController.openFilePreviewByPath(pathText, options)'],
     ['requestFilePreviewExpansion', 'filePreviewController.requestFilePreviewExpansion(direction)'],
     ['requestFullFilePreview', 'filePreviewController.requestFullFilePreview()'],
+    ['handleMessageFileRefTouchStart', 'filePreviewController.handleMessageFileRefTouchStart(event)'],
+    ['handleMessageFileRefTouchMove', 'filePreviewController.handleMessageFileRefTouchMove(event)'],
+    ['cancelPendingMessageFileRefTouch', 'filePreviewController.cancelPendingMessageFileRefTouch()'],
     ['handleMessageFileRefClick', 'filePreviewController.handleMessageFileRefClick(event)'],
   ];
 

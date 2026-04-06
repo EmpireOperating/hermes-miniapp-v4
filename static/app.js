@@ -712,6 +712,18 @@ function requestFullFilePreview() {
   return filePreviewController.requestFullFilePreview();
 }
 
+function handleMessageFileRefTouchStart(event) {
+  return filePreviewController.handleMessageFileRefTouchStart(event);
+}
+
+function handleMessageFileRefTouchMove(event) {
+  return filePreviewController.handleMessageFileRefTouchMove(event);
+}
+
+function cancelPendingMessageFileRefTouch() {
+  return filePreviewController.cancelPendingMessageFileRefTouch();
+}
+
 function handleMessageFileRefClick(event) {
   return filePreviewController.handleMessageFileRefClick(event);
 }
@@ -2573,7 +2585,11 @@ messageActionsHelpers.bindMessageCopyHandler({
   copyTextToClipboard,
 });
 messagesEl?.addEventListener("click", handleMessageFileRefClick);
+messagesEl?.addEventListener("touchstart", handleMessageFileRefTouchStart, { passive: true });
+messagesEl?.addEventListener("touchmove", handleMessageFileRefTouchMove, { passive: true });
 messagesEl?.addEventListener("touchend", handleMessageFileRefClick, { passive: false });
+messagesEl?.addEventListener("touchcancel", cancelPendingMessageFileRefTouch);
+messagesEl?.addEventListener("scroll", cancelPendingMessageFileRefTouch, { passive: true });
 filePreviewExpandUp?.addEventListener("click", () => requestFilePreviewExpansion("up"));
 filePreviewLoadFull?.addEventListener("click", requestFullFilePreview);
 filePreviewExpandDown?.addEventListener("click", () => requestFilePreviewExpansion("down"));
