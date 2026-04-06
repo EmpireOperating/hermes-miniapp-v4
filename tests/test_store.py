@@ -81,10 +81,11 @@ def test_fork_chat_clones_history_without_mutating_source_chat(tmp_path) -> None
     store.add_message(user_id, source_chat.id, "operator", "review /tmp/demo.py:12")
     store.add_message(user_id, source_chat.id, "hermes", "looks good")
 
-    forked_chat = store.fork_chat(user_id=user_id, source_chat_id=source_chat.id, title="Source (fork)")
+    forked_chat = store.fork_chat(user_id=user_id, source_chat_id=source_chat.id, title="Source #2")
 
     assert forked_chat.id != source_chat.id
-    assert forked_chat.title == "Source (fork)"
+    assert forked_chat.title == "Source #2"
+    assert forked_chat.parent_chat_id == source_chat.id
 
     source_history = store.get_history(user_id, source_chat.id)
     fork_history = store.get_history(user_id, forked_chat.id)
@@ -100,6 +101,23 @@ def test_fork_chat_clones_history_without_mutating_source_chat(tmp_path) -> None
     store.add_message(user_id, forked_chat.id, "operator", "branch-only")
     assert len(store.get_history(user_id, source_chat.id)) == 2
     assert len(store.get_history(user_id, forked_chat.id)) == 3
+
+
+
+def test_fork_chat_defaults_to_lineage_title_and_increments_suffixes(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u4branch-default"
+    source_chat = store.create_chat(user_id, "[feat]Source")
+    store.add_message(user_id, source_chat.id, "operator", "start")
+    store.add_message(user_id, source_chat.id, "hermes", "ok")
+
+    first_branch = store.fork_chat(user_id=user_id, source_chat_id=source_chat.id)
+    second_branch = store.fork_chat(user_id=user_id, source_chat_id=source_chat.id)
+
+    assert first_branch.title == "[feat]Source #2"
+    assert second_branch.title == "[feat]Source #3"
+    assert first_branch.parent_chat_id == source_chat.id
+    assert second_branch.parent_chat_id == source_chat.id
 
 
 def test_pinned_chat_remains_recoverable_after_close_and_can_reopen(tmp_path) -> None:

@@ -25,6 +25,7 @@ MAX_TITLE_LEN = 120
 class ChatThread:
     id: int
     title: str
+    parent_chat_id: int | None
     unread_count: int
     pending: bool
     is_pinned: bool

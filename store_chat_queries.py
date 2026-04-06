@@ -29,6 +29,7 @@ def hydrate_chat_thread(row) -> ChatThread:
     return ChatThread(
         id=int(row["id"]),
         title=str(row["title"]),
+        parent_chat_id=int(row["parent_chat_id"]) if row["parent_chat_id"] not in (None, "") else None,
         unread_count=int(row["unread_count"] or 0),
         pending=bool(int(row["pending"] or 0)),
         is_pinned=bool(int(row["is_pinned"] or 0)),
@@ -62,6 +63,7 @@ def select_chat_rows(
                 ct.id,
                 ct.user_id,
                 ct.title,
+                ct.parent_chat_id,
                 ct.updated_at,
                 ct.created_at,
                 ct.is_pinned,
@@ -90,6 +92,7 @@ def select_chat_rows(
         SELECT
             ft.id,
             ft.title,
+            ft.parent_chat_id,
             ft.updated_at,
             ft.created_at,
             ft.is_pinned,

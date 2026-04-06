@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from store_chat_mutations import cancel_open_jobs_for_chat, clear_chat as clear_chat_rows, remove_chat as remove_chat_row
 from store_chat_queries import (
     first_unarchived_chat_id,
@@ -142,6 +144,26 @@ class StoreChatsMixin:
             chat_id = int(cursor.lastrowid)
         return self.get_chat(user_id, chat_id)
 
+    def _get_next_title_in_lineage(self, conn, *, user_id: str, base_title: str) -> str:
+        cleaned_base = str(base_title or "").strip() or "branch"
+        match = re.match(r"^(.*?) #(\d+)$", cleaned_base)
+        lineage_base = str(match.group(1)).strip() if match else cleaned_base
+        escaped = lineage_base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        rows = conn.execute(
+            "SELECT title FROM chat_threads WHERE user_id = ? AND (title = ? OR title LIKE ? ESCAPE '\\')",
+            (user_id, lineage_base, f"{escaped} #%"),
+        ).fetchall()
+        existing = [str(row["title"] or "") for row in rows]
+        if not existing:
+            return lineage_base
+
+        max_num = 1
+        for current_title in existing:
+            suffix_match = re.match(r"^.* #(\d+)$", current_title)
+            if suffix_match:
+                max_num = max(max_num, int(suffix_match.group(1)))
+        return f"{lineage_base} #{max_num + 1}"
+
     def fork_chat(self, user_id: str, source_chat_id: int, title: str | None = None) -> ChatThread:
         with self._connect() as conn:
             self._ensure_chat_exists(conn, user_id, source_chat_id)
@@ -151,13 +173,17 @@ class StoreChatsMixin:
             ).fetchone()
             source_title = str(source["title"] or "Chat") if source else "Chat"
 
-            cleaned_title = str(title or "").strip() or f"{source_title} (fork)"
+            cleaned_title = str(title or "").strip() or self._get_next_title_in_lineage(
+                conn,
+                user_id=user_id,
+                base_title=source_title,
+            )
             if len(cleaned_title) > MAX_TITLE_LEN:
                 raise ValueError(f"Title exceeds {MAX_TITLE_LEN} characters")
 
             cursor = conn.execute(
-                "INSERT INTO chat_threads (user_id, title, is_archived) VALUES (?, ?, 0)",
-                (user_id, cleaned_title),
+                "INSERT INTO chat_threads (user_id, title, parent_chat_id, is_archived) VALUES (?, ?, ?, 0)",
+                (user_id, cleaned_title, source_chat_id),
             )
             fork_chat_id = int(cursor.lastrowid)
 
