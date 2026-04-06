@@ -67,6 +67,10 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     runtime_helpers_js = _read_static("runtime_helpers.js")
     bootstrap_auth_js = _read_static("bootstrap_auth_helpers.js")
 
+    assert "const RESUME_RECOVERY_MAX_ATTEMPTS = 3;" in app_js
+    assert "function isTransientResumeRecoveryError(error)" in app_js
+    assert "function nextResumeRecoveryDelayMs(attempt)" in app_js
+    assert "for (let attempt = 1; attempt <= RESUME_RECOVERY_MAX_ATTEMPTS; attempt += 1) {" in app_js
     assert "const noActiveJob = response.status === 409;" in app_js
     assert "function parseStreamErrorPayload(rawBody)" in bootstrap_auth_js
     assert "bootstrapAuthController.parseStreamErrorPayload(rawBody)" in app_js
@@ -75,9 +79,18 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "await hydrateChatAfterGracefulResumeCompletion(key);" in app_js
     assert "triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });" in app_js
     assert "streamActivityController.markResumeAlreadyComplete(key);" in app_js
+    assert "const transientReconnectFailure = isTransientResumeRecoveryError(error);" in app_js
+    assert "console.warn(`[W_STREAM_RECONNECT_RETRY] chat=${key} attempt=${attempt}/${RESUME_RECOVERY_MAX_ATTEMPTS}`, error);" in app_js
+    assert "await delayMs(nextResumeRecoveryDelayMs(attempt));" in app_js
+    assert "const stillPending = Boolean(chats.get(key)?.pending) || pendingChats.has(key);" in app_js
+    assert "Reconnect recovery is paused for '${chatLabel(key)}'. Send a new message to try again." in app_js
     assert "setStreamStatus?.(`Stream already complete in ${chatLabel?.(key) || \"Chat\"}`);" in runtime_helpers_js
     assert "setActivityChip?.(latencyChip, \"latency: --\");" in runtime_helpers_js
     assert "setChatLatency?.(key, \"--\");" in runtime_helpers_js
+    assert "setActivityChip?.(latencyChip, \"latency: reconnecting...\");" in runtime_helpers_js
+    assert "setChatLatency?.(key, \"reconnecting...\");" in runtime_helpers_js
+    assert "setStreamStatus?.(\"Reconnect recovery paused — action needed\");" in runtime_helpers_js
+    assert "setActivityChip?.(streamChip, \"stream: recovery paused\");" in runtime_helpers_js
     assert "function createHapticUnreadController({" in runtime_helpers_js
     assert "consumeStreamWithReconnect(key, response, builtReplyRef" in app_js
     assert "await resumePendingChatStream(key, { force: true });" not in app_js

@@ -333,13 +333,19 @@
       setActivityChip?.(streamChip, "stream: network failure");
     }
 
-    function markStreamReconnecting(chatId) {
+    function markStreamReconnecting(chatId, { attempt = null, maxAttempts = null } = {}) {
       const key = normalizeChatId(chatId);
       const activeKey = normalizeChatId(getActiveChatId?.());
       if (!key || key !== activeKey) return;
-      setStreamStatus?.(`Reconnecting stream in ${chatLabel?.(key) || "Chat"}...`);
+      const normalizedAttempt = Number.isFinite(Number(attempt)) ? Number(attempt) : null;
+      const normalizedMaxAttempts = Number.isFinite(Number(maxAttempts)) ? Number(maxAttempts) : null;
+      const attemptSuffix = normalizedAttempt && normalizedMaxAttempts
+        ? ` (attempt ${normalizedAttempt}/${normalizedMaxAttempts})`
+        : "";
+      setStreamStatus?.(`Reconnecting stream in ${chatLabel?.(key) || "Chat"}${attemptSuffix}...`);
       setActivityChip?.(streamChip, `stream: reconnecting · ${compactChatLabel?.(key) || "Chat"}`);
-      syncActiveLatencyChip?.();
+      setActivityChip?.(latencyChip, "latency: reconnecting...");
+      setChatLatency?.(key, "reconnecting...");
     }
 
     function markResumeAlreadyComplete(chatId) {
@@ -356,8 +362,10 @@
     function markReconnectFailed(chatId) {
       const key = normalizeChatId(chatId);
       if (!key || normalizeChatId(getActiveChatId?.()) !== key) return;
-      setStreamStatus?.("Stream reconnect failed");
-      setActivityChip?.(streamChip, "stream: reconnect failed");
+      setStreamStatus?.("Reconnect recovery paused — action needed");
+      setActivityChip?.(streamChip, "stream: recovery paused");
+      setActivityChip?.(latencyChip, "latency: --");
+      setChatLatency?.(key, "--");
     }
 
     return {
