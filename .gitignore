@@ -24,6 +24,10 @@ miniapp.db-wal
 ops/camofox/cookies/
 *.log
 
+# Local planning / repro scratch files
+.hermes/
+tmp_*
+
 # OS/editor
 .DS_Store
 .idea/
