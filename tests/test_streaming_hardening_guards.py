@@ -97,7 +97,17 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "setActivityChip(latencyChip, `latency: ${queueLabel}`);" in _read_static("stream_controller.js")
     assert "await resumePendingChatStream(key, { force: true });" not in app_js
     assert "const reconnectResumeBlockedChats = new Set();" in app_js
+    assert "const resumeAttemptedAtByChat = new Map();" in app_js
+    assert "const resumeCooldownUntilByChat = new Map();" in app_js
+    assert "const resumeInFlightByChat = new Set();" in app_js
     assert "if (reconnectResumeBlockedChats.has(key)) {" in app_js
+    assert "if (cooldownUntil > now) {" in app_js
+    assert "if (resumeInFlightByChat.has(key)) {" in app_js
+    assert "if (lastAttemptAt > 0 && (now - lastAttemptAt) < RESUME_REATTACH_MIN_INTERVAL_MS) {" in app_js
+    assert "resumeInFlightByChat.add(key);" in app_js
+    assert "resumeAttemptedAtByChat.set(key, now);" in app_js
+    assert "resumeCooldownUntilByChat.set(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);" in app_js
+    assert "resumeInFlightByChat.delete(key);" in app_js
     assert "blockReconnectResume(key);" in app_js
     assert "clearReconnectResumeBlock(chatId);" in app_js
     assert "console.warn(`[E_STREAM_RECONNECT_FAILED] chat=${key}`, error);" in app_js

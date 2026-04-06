@@ -193,6 +193,9 @@ let pinnedChatsCollapsed = false;
 let hasPinnedChatsCollapsePreference = false;
 const pendingChats = new Set();
 const reconnectResumeBlockedChats = new Set();
+const resumeAttemptedAtByChat = new Map();
+const resumeCooldownUntilByChat = new Map();
+const resumeInFlightByChat = new Set();
 const latencyByChat = new Map();
 const runtimeHelpers = window.HermesMiniappRuntime;
 if (!runtimeHelpers) {
@@ -1981,6 +1984,8 @@ function reportBootstrapMismatch(reason, details = []) {
 
 const RESUME_RECOVERY_MAX_ATTEMPTS = 3;
 const RESUME_RECOVERY_BASE_DELAY_MS = 900;
+const RESUME_REATTACH_MIN_INTERVAL_MS = 1200;
+const RESUME_COMPLETE_SETTLE_MS = 2500;
 const RESUME_RECOVERY_TRANSIENT_ERROR_RE = /load failed|failed to fetch|network(?:error| failure| request failed)?|the network connection was lost|fetch failed|temporarily unavailable/i;
 
 function delayMs(ms) {
@@ -2435,6 +2440,7 @@ async function sendPrompt(message) {
 async function resumePendingChatStream(chatId, { force = false } = {}) {
   const key = Number(chatId);
   if (!key || !isAuthenticated) return;
+  try {
   if (reconnectResumeBlockedChats.has(key)) {
     suppressBlockedChatPending(key);
     renderTabs();
@@ -2442,10 +2448,25 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
     syncActivePendingStatus();
     return;
   }
+  const now = Date.now();
+  const cooldownUntil = Number(resumeCooldownUntilByChat.get(key) || 0);
+  if (cooldownUntil > now) {
+    return;
+  }
+  if (resumeInFlightByChat.has(key)) {
+    return;
+  }
   const hasLiveController = hasLiveStreamController(key);
   if (hasLiveController && !force) return;
+  const lastAttemptAt = Number(resumeAttemptedAtByChat.get(key) || 0);
+  if (lastAttemptAt > 0 && (now - lastAttemptAt) < RESUME_REATTACH_MIN_INTERVAL_MS) {
+    return;
+  }
   const chatPending = Boolean(chats.get(key)?.pending);
   if (!chatPending && !force) return;
+
+  resumeInFlightByChat.add(key);
+  resumeAttemptedAtByChat.set(key, now);
 
   if (force && hasLiveController) {
     abortStreamController(key);
@@ -2492,6 +2513,7 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
         });
         const noActiveJob = response.status === 409;
         if (noActiveJob) {
+          resumeCooldownUntilByChat.set(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
           setStreamPhase(key, STREAM_PHASES.FINALIZED);
           await hydrateChatAfterGracefulResumeCompletion(key);
           triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
@@ -2534,6 +2556,7 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
         await hydrateChatAfterGracefulResumeCompletion(key);
         const stillPending = Boolean(chats.get(key)?.pending) || pendingChats.has(key);
         if (!stillPending) {
+          resumeCooldownUntilByChat.set(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
           setStreamPhase(key, STREAM_PHASES.FINALIZED);
           triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
           streamActivityController.markResumeAlreadyComplete(key);
@@ -2557,6 +2580,9 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
     } finally {
       await finalizeStreamLifecycle(key, streamController, { wasAborted });
     }
+  }
+  } finally {
+    resumeInFlightByChat.delete(key);
   }
 }
 
