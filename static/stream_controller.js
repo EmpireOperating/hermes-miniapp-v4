@@ -258,7 +258,7 @@
     const streamAbortControllers = new Map();
     const lastStreamEventIdByChat = new Map();
     const focusRestoreEligibleByChat = new Map();
-    const firstAssistantNotificationKeyByChat = new Map();
+    const firstAssistantNotificationStateByChat = new Map();
     let nextAssistantNotificationId = 0;
 
     function setFocusRestoreEligibility(chatId, eligible) {
@@ -337,25 +337,33 @@
 
     function consumeFirstAssistantNotification(chatId) {
       const key = Number(chatId);
-      const messageKey = String(firstAssistantNotificationKeyByChat.get(key) || "").trim();
-      firstAssistantNotificationKeyByChat.delete(key);
-      return messageKey;
+      const notificationState = firstAssistantNotificationStateByChat.get(key) || null;
+      firstAssistantNotificationStateByChat.delete(key);
+      return notificationState;
     }
 
     function notifyFirstAssistantChunk(chatId) {
       const key = Number(chatId);
-      if (!key || firstAssistantNotificationKeyByChat.has(key)) {
+      if (!key || firstAssistantNotificationStateByChat.has(key)) {
         return false;
       }
-      if (Number(getActiveChatId()) === key) {
-        return false;
-      }
+      const isVisibleActiveChat = Boolean(
+        Number(getActiveChatId()) === key
+        && (typeof document === "undefined" || document.visibilityState === "visible")
+      );
       nextAssistantNotificationId += 1;
       const messageKey = `chat:${key}:assistant-stream:${nextAssistantNotificationId}`;
-      firstAssistantNotificationKeyByChat.set(key, messageKey);
+      const notificationState = {
+        messageKey,
+        unreadIncremented: false,
+      };
+      firstAssistantNotificationStateByChat.set(key, notificationState);
       triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory: false });
-      incrementUnread(chatId);
-      renderTabs();
+      if (!isVisibleActiveChat) {
+        incrementUnread(chatId);
+        renderTabs();
+        notificationState.unreadIncremented = true;
+      }
       return true;
     }
 
@@ -365,16 +373,23 @@
       clearStreamCursor?.(chatId);
       updatePendingAssistant(chatId, builtReplyRef.value, false);
       clearPendingStreamSnapshot?.(chatId);
-      const hadEarlyAssistantNotification = Boolean(consumeFirstAssistantNotification(chatId));
+      const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
+      const hadEarlyAssistantHaptic = Boolean(String(earlyAssistantNotification?.messageKey || "").trim());
+      const hadEarlyAssistantUnread = Boolean(earlyAssistantNotification?.unreadIncremented);
       const doneTurnCount = Number(payload?.turn_count || 0);
       const doneMessageKey = doneTurnCount > 0 ? `chat:${Number(chatId)}:turn:${doneTurnCount}` : "";
       const doneActiveChatId = Number(getActiveChatId());
+      const doneHidden = typeof document !== "undefined" ? document.visibilityState !== "visible" : false;
       const shouldIncrementUnreadOnDone = Boolean(
         updateUnread
-        && !hadEarlyAssistantNotification
+        && !hadEarlyAssistantUnread
         && doneActiveChatId !== Number(chatId)
       );
-      if (!hadEarlyAssistantNotification) {
+      const shouldTriggerHapticOnDone = Boolean(
+        !hadEarlyAssistantUnread
+        && (doneActiveChatId !== Number(chatId) || doneHidden)
+      );
+      if (shouldTriggerHapticOnDone) {
         triggerIncomingMessageHaptic(chatId, { messageKey: doneMessageKey });
       }
       markStreamUpdate(chatId);
@@ -400,9 +415,11 @@
       renderTraceLog("stream-done-state", {
         chatId: Number(chatId),
         activeChatId: doneActiveChatId,
-        hidden: typeof document !== "undefined" ? document.visibilityState !== "visible" : false,
+        hidden: doneHidden,
         updateUnread: Boolean(updateUnread),
-        hadEarlyAssistantNotification,
+        hadEarlyAssistantHaptic,
+        hadEarlyAssistantUnread,
+        shouldTriggerHapticOnDone,
         shouldIncrementUnreadOnDone,
         doneTurnCount,
         doneMessageKey,
@@ -527,9 +544,16 @@
       setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
       const fallbackReply = builtReplyRef.value || "The response ended before completion.";
       finalizeInlineToolTrace(chatId);
-      const hadEarlyAssistantNotification = Boolean(consumeFirstAssistantNotification(chatId));
+      const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
+      const hadEarlyAssistantHaptic = Boolean(String(earlyAssistantNotification?.messageKey || "").trim());
+      const hadEarlyAssistantUnread = Boolean(earlyAssistantNotification?.unreadIncremented);
+      const earlyCloseHidden = typeof document !== "undefined" ? document.visibilityState !== "visible" : false;
       updatePendingAssistant(chatId, fallbackReply, false);
-      if (!hadEarlyAssistantNotification) {
+      const shouldTriggerHapticOnEarlyClose = Boolean(
+        !hadEarlyAssistantUnread
+        && (Number(getActiveChatId()) !== Number(chatId) || earlyCloseHidden)
+      );
+      if (shouldTriggerHapticOnEarlyClose) {
         triggerIncomingMessageHaptic(chatId, { fallbackToLatestHistory: true });
       }
       markStreamUpdate(chatId);
@@ -547,7 +571,7 @@
       }
       setStreamStatus("Stream closed early");
       setActivityChip(streamChip, "stream: closed early");
-      if (!hadEarlyAssistantNotification && Number(getActiveChatId()) !== Number(chatId)) {
+      if (!hadEarlyAssistantUnread && Number(getActiveChatId()) !== Number(chatId)) {
         incrementUnread(chatId);
       }
     }

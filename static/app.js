@@ -1979,8 +1979,23 @@ function reportBootstrapMismatch(reason, details = []) {
   console.error("[miniapp/bootstrap]", message);
 }
 
+const RESUME_RECOVERY_MAX_ATTEMPTS = 3;
+const RESUME_RECOVERY_BASE_DELAY_MS = 900;
+const RESUME_RECOVERY_TRANSIENT_ERROR_RE = /load failed|failed to fetch|network(?:error| failure| request failed)?|the network connection was lost|fetch failed|temporarily unavailable/i;
+
 function delayMs(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function isTransientResumeRecoveryError(error) {
+  const message = String(error?.message || error || "").trim();
+  return RESUME_RECOVERY_TRANSIENT_ERROR_RE.test(message);
+}
+
+function nextResumeRecoveryDelayMs(attempt) {
+  const normalizedAttempt = Math.max(1, Number(attempt) || 1);
+  const jitterMs = Math.floor(Math.random() * 180);
+  return RESUME_RECOVERY_BASE_DELAY_MS * normalizedAttempt + jitterMs;
 }
 
 function isRetryableAuthBootstrapFailure(response, data) {
@@ -2447,70 +2462,101 @@ async function resumePendingChatStream(chatId, { force = false } = {}) {
   updateComposerState();
 
   if (Number(activeChatId) === key) {
-    // Preserve the last visible latency value during reconnect instead of flashing
-    // a placeholder like "recalculating...", which is visually disruptive.
-    streamActivityController.markStreamReconnecting(key);
+    streamActivityController.markStreamReconnecting(key, {
+      attempt: 1,
+      maxAttempts: RESUME_RECOVERY_MAX_ATTEMPTS,
+    });
   }
 
   const builtReplyRef = { value: "" };
-  let wasAborted = false;
-  const streamController = new AbortController();
-  setStreamFocusRestoreEligibility(key, false);
-  setStreamAbortController(key, streamController);
 
-  try {
-    const response = await fetch("/api/chat/stream/resume", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(authPayload({ chat_id: key, after_event_id: getStoredStreamCursor(key) })),
-      signal: streamController.signal,
-    });
+  for (let attempt = 1; attempt <= RESUME_RECOVERY_MAX_ATTEMPTS; attempt += 1) {
+    let wasAborted = false;
+    const streamController = new AbortController();
+    setStreamFocusRestoreEligibility(key, false);
+    setStreamAbortController(key, streamController);
 
-    if (!response.ok || !response.body) {
-      const fallback = await response.text();
-      const sanitizedResumeFailure = summarizeUiFailure(fallback, {
-        status: response.status,
-        fallback: `Resume failed: ${response.status}`,
+    try {
+      const response = await fetch("/api/chat/stream/resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(authPayload({ chat_id: key, after_event_id: getStoredStreamCursor(key) })),
+        signal: streamController.signal,
       });
-      const noActiveJob = response.status === 409;
-      if (noActiveJob) {
-        setStreamPhase(key, STREAM_PHASES.FINALIZED);
-        await hydrateChatAfterGracefulResumeCompletion(key);
-        triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
-        streamActivityController.markResumeAlreadyComplete(key);
+
+      if (!response.ok || !response.body) {
+        const fallback = await response.text();
+        const sanitizedResumeFailure = summarizeUiFailure(fallback, {
+          status: response.status,
+          fallback: `Resume failed: ${response.status}`,
+        });
+        const noActiveJob = response.status === 409;
+        if (noActiveJob) {
+          setStreamPhase(key, STREAM_PHASES.FINALIZED);
+          await hydrateChatAfterGracefulResumeCompletion(key);
+          triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
+          streamActivityController.markResumeAlreadyComplete(key);
+          return;
+        }
+        throw new Error(sanitizedResumeFailure);
+      }
+
+      const resumed = await consumeStreamWithReconnect(key, response, builtReplyRef, {
+        fallbackTraceEvent: "stream-resume-fallback-patch",
+        onEarlyClose: async () => {
+          // Resume stream segments can early-close without terminal state on mobile/WebView.
+          // Reconnect instead of finalizing local pending state.
+          await resumePendingChatStream(Number(key), { force: true });
+        },
+      });
+      if (resumed) return;
+      return;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        wasAborted = true;
         return;
       }
-      throw new Error(sanitizedResumeFailure);
-    }
+      const transientReconnectFailure = isTransientResumeRecoveryError(error);
+      const hasAttemptsRemaining = transientReconnectFailure && attempt < RESUME_RECOVERY_MAX_ATTEMPTS;
+      if (hasAttemptsRemaining) {
+        console.warn(`[W_STREAM_RECONNECT_RETRY] chat=${key} attempt=${attempt}/${RESUME_RECOVERY_MAX_ATTEMPTS}`, error);
+        if (Number(activeChatId) === key) {
+          streamActivityController.markStreamReconnecting(key, {
+            attempt: attempt + 1,
+            maxAttempts: RESUME_RECOVERY_MAX_ATTEMPTS,
+          });
+        }
+        await delayMs(nextResumeRecoveryDelayMs(attempt));
+        continue;
+      }
 
-    const resumed = await consumeStreamWithReconnect(key, response, builtReplyRef, {
-      fallbackTraceEvent: "stream-resume-fallback-patch",
-      onEarlyClose: async () => {
-        // Resume stream segments can early-close without terminal state on mobile/WebView.
-        // Reconnect instead of finalizing local pending state.
-        await resumePendingChatStream(Number(key), { force: true });
-      },
-    });
-    if (resumed) return;
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      wasAborted = true;
+      if (transientReconnectFailure) {
+        await hydrateChatAfterGracefulResumeCompletion(key);
+        const stillPending = Boolean(chats.get(key)?.pending) || pendingChats.has(key);
+        if (!stillPending) {
+          setStreamPhase(key, STREAM_PHASES.FINALIZED);
+          triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
+          streamActivityController.markResumeAlreadyComplete(key);
+          return;
+        }
+      }
+
+      blockReconnectResume(key);
+      setStreamPhase(key, STREAM_PHASES.ERROR);
+      finalizeInlineToolTrace(key);
+      console.warn(`[E_STREAM_RECONNECT_FAILED] chat=${key}`, error);
+      appendSystemMessage(`Could not reconnect '${chatLabel(key)}': ${error.message}`);
+      appendSystemMessage(`Reconnect recovery is paused for '${chatLabel(key)}'. Send a new message to try again.`);
+      renderTabs();
+      updateComposerState();
+      syncActivePendingStatus();
+      if (Number(activeChatId) === key) {
+        streamActivityController.markReconnectFailed(key);
+      }
       return;
+    } finally {
+      await finalizeStreamLifecycle(key, streamController, { wasAborted });
     }
-    blockReconnectResume(key);
-    setStreamPhase(key, STREAM_PHASES.ERROR);
-    finalizeInlineToolTrace(key);
-    console.warn(`[E_STREAM_RECONNECT_FAILED] chat=${key}`, error);
-    appendSystemMessage(`Could not reconnect '${chatLabel(key)}': ${error.message}`);
-    appendSystemMessage(`Auto-resume is paused for '${chatLabel(key)}'. Send a new message to try again.`);
-    renderTabs();
-    updateComposerState();
-    syncActivePendingStatus();
-    if (Number(activeChatId) === key) {
-      streamActivityController.markReconnectFailed(key);
-    }
-  } finally {
-    await finalizeStreamLifecycle(key, streamController, { wasAborted });
   }
 }
 
