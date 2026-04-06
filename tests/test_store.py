@@ -557,7 +557,24 @@ def test_list_recoverable_pending_turns_ignores_exhausted_queued_rows(tmp_path) 
     conn.close()
 
     recoverable = store.list_recoverable_pending_turns(user_id)
-    assert (chat_id, operator_message_id) in recoverable
+    assert (chat_id, operator_message_id) not in recoverable
+
+
+def test_list_recoverable_pending_turns_excludes_latest_operator_turn_with_existing_dead_job(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u9b-existing-job"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "do not resurrect me")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == job_id
+    retried = store.retry_or_dead_letter_job(job_id, "boom", retry_base_seconds=1)
+    assert retried is False
+
+    recoverable = store.list_recoverable_pending_turns(user_id)
+    assert (chat_id, operator_message_id) not in recoverable
 
 
 def test_retry_or_dead_letter_job_retries_then_dead_letters(tmp_path) -> None:
