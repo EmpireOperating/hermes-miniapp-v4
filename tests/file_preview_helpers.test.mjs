@@ -521,11 +521,118 @@ test('requestFilePreviewExpansion and requestFullFilePreview reuse current reque
   ]);
 });
 
-test('handleMessageFileRefClick prevents default and opens ref previews only for matching triggers', async () => {
+test('touch-driven file preview opens only when movement stays within mobile tap slop', async () => {
+  const harness = buildHarness();
+  let prevented = 0;
+  const trigger = { dataset: { fileRefId: '  ref-88  ' } };
+
+  harness.controller.handleMessageFileRefTouchStart({
+    target: {
+      closest(selector) {
+        assert.equal(selector, '.message-file-ref');
+        return trigger;
+      },
+    },
+    touches: [{ clientX: 100, clientY: 200 }],
+  });
+
+  harness.controller.handleMessageFileRefTouchMove({
+    touches: [{ clientX: 108, clientY: 207 }],
+  });
+
+  harness.controller.handleMessageFileRefClick({
+    type: 'touchend',
+    target: {
+      closest() {
+        return trigger;
+      },
+    },
+    changedTouches: [{ clientX: 109, clientY: 208 }],
+    preventDefault() {
+      prevented += 1;
+    },
+  });
+
+  await Promise.resolve();
+
+  assert.equal(prevented, 1);
+  assert.equal(harness.apiCalls[0].payload.ref_id, 'ref-88');
+});
+
+test('touch-driven file preview cancels when movement exceeds mobile tap slop', async () => {
+  const harness = buildHarness();
+  const trigger = { dataset: { fileRefId: 'ref-89' } };
+
+  harness.controller.handleMessageFileRefTouchStart({
+    target: {
+      closest() {
+        return trigger;
+      },
+    },
+    touches: [{ clientX: 10, clientY: 20 }],
+  });
+
+  harness.controller.handleMessageFileRefTouchMove({
+    touches: [{ clientX: 28, clientY: 20 }],
+  });
+
+  harness.controller.handleMessageFileRefClick({
+    type: 'touchend',
+    target: {
+      closest() {
+        return trigger;
+      },
+    },
+    changedTouches: [{ clientX: 28, clientY: 20 }],
+    preventDefault() {
+      throw new Error('touchend should not prevent default after scroll-like movement');
+    },
+  });
+
+  await Promise.resolve();
+
+  assert.equal(harness.apiCalls.length, 0);
+});
+
+test('touch-driven file preview cancels when chat scroll begins before touchend', async () => {
+  const harness = buildHarness();
+  const trigger = { dataset: { fileRefId: 'ref-90' } };
+
+  harness.controller.handleMessageFileRefTouchStart({
+    target: {
+      closest() {
+        return trigger;
+      },
+    },
+    touches: [{ clientX: 44, clientY: 55 }],
+  });
+
+  harness.controller.cancelPendingMessageFileRefTouch();
+
+  harness.controller.handleMessageFileRefClick({
+    type: 'touchend',
+    target: {
+      closest() {
+        return trigger;
+      },
+    },
+    changedTouches: [{ clientX: 45, clientY: 56 }],
+    preventDefault() {
+      throw new Error('touchend should not prevent default after scroll cancellation');
+    },
+  });
+
+  await Promise.resolve();
+
+  assert.equal(harness.apiCalls.length, 0);
+});
+
+test('handleMessageFileRefClick still prevents default and opens ref previews for direct click triggers', async () => {
   const harness = buildHarness();
   let prevented = 0;
 
   harness.controller.handleMessageFileRefClick({
+    type: 'click',
     target: {
       closest(selector) {
         assert.equal(selector, '.message-file-ref');

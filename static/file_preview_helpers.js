@@ -18,7 +18,9 @@
       setCurrentFilePreview,
     } = deps;
 
+    const MOBILE_MESSAGE_FILE_REF_TAP_SLOP_PX = 14;
     let filePreviewRequestGeneration = 0;
+    let pendingMessageFileRefTouch = null;
 
     function nextFilePreviewRequestGeneration() {
       filePreviewRequestGeneration += 1;
@@ -378,9 +380,79 @@
       });
     }
 
-    function handleMessageFileRefClick(event) {
-      const trigger = event?.target?.closest?.('.message-file-ref');
+    function getMessageFileRefTrigger(event) {
+      return event?.target?.closest?.('.message-file-ref') || null;
+    }
+
+    function getTouchPoint(event) {
+      const touch = event?.changedTouches?.[0] || event?.touches?.[0] || null;
+      if (touch) {
+        return {
+          clientX: Number(touch.clientX || 0),
+          clientY: Number(touch.clientY || 0),
+        };
+      }
+      return {
+        clientX: Number(event?.clientX || 0),
+        clientY: Number(event?.clientY || 0),
+      };
+    }
+
+    function cancelPendingMessageFileRefTouch() {
+      pendingMessageFileRefTouch = null;
+    }
+
+    function handleMessageFileRefTouchStart(event) {
+      const trigger = getMessageFileRefTrigger(event);
       if (!trigger) return;
+      const refId = String(trigger.dataset?.fileRefId || '').trim();
+      if (!refId) {
+        cancelPendingMessageFileRefTouch();
+        return;
+      }
+      const { clientX, clientY } = getTouchPoint(event);
+      pendingMessageFileRefTouch = {
+        trigger,
+        refId,
+        startX: clientX,
+        startY: clientY,
+      };
+    }
+
+    function handleMessageFileRefTouchMove(event) {
+      if (!pendingMessageFileRefTouch) return;
+      const { clientX, clientY } = getTouchPoint(event);
+      const deltaX = clientX - pendingMessageFileRefTouch.startX;
+      const deltaY = clientY - pendingMessageFileRefTouch.startY;
+      if (Math.hypot(deltaX, deltaY) > MOBILE_MESSAGE_FILE_REF_TAP_SLOP_PX) {
+        cancelPendingMessageFileRefTouch();
+      }
+    }
+
+    function handleMessageFileRefClick(event) {
+      const trigger = getMessageFileRefTrigger(event);
+      if (!trigger) {
+        if (event?.type === 'touchend') {
+          cancelPendingMessageFileRefTouch();
+        }
+        return;
+      }
+
+      const refId = String(trigger.dataset.fileRefId || '').trim();
+      if (!refId) {
+        if (event?.type === 'touchend') {
+          cancelPendingMessageFileRefTouch();
+        }
+        return;
+      }
+
+      if (event?.type === 'touchend') {
+        if (!pendingMessageFileRefTouch) return;
+        const isSameTrigger = pendingMessageFileRefTouch.trigger === trigger;
+        const isSameRefId = pendingMessageFileRefTouch.refId === refId;
+        cancelPendingMessageFileRefTouch();
+        if (!isSameTrigger || !isSameRefId) return;
+      }
 
       // Telegram mobile webviews can occasionally miss delegated click for inline
       // buttons while still delivering touchend. Bind both and handle here.
@@ -388,8 +460,6 @@
         event.preventDefault();
       }
 
-      const refId = String(trigger.dataset.fileRefId || '').trim();
-      if (!refId) return;
       openFilePreviewByRef(refId);
     }
 
@@ -410,6 +480,9 @@
       openFilePreviewByPath,
       requestFilePreviewExpansion,
       requestFullFilePreview,
+      handleMessageFileRefTouchStart,
+      handleMessageFileRefTouchMove,
+      cancelPendingMessageFileRefTouch,
       handleMessageFileRefClick,
     };
   }
