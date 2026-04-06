@@ -481,8 +481,52 @@ function syncActiveLatencyChip() {
   return latencyViewController.syncActiveLatencyChip();
 }
 
+const bootMetrics = (() => {
+  const existing = window.__HERMES_BOOT_METRICS__;
+  if (existing && typeof existing === "object") {
+    return existing;
+  }
+  const next = {};
+  window.__HERMES_BOOT_METRICS__ = next;
+  return next;
+})();
+const bootPerf = typeof window.performance !== "undefined" ? window.performance : null;
+function bootNowMs() {
+  return bootPerf && typeof bootPerf.now === "function" ? bootPerf.now() : Date.now();
+}
+function recordBootMetric(name, value = bootNowMs()) {
+  const normalized = Math.max(0, Math.round(Number(value) || 0));
+  bootMetrics[name] = normalized;
+  return normalized;
+}
+function syncBootLatencyChip(stage = "") {
+  const startedAt = Number(bootMetrics.shellInlineStartMs || 0);
+  if (!startedAt || !latencyChip) {
+    return;
+  }
+  const elapsedMs = Math.max(0, Math.round(bootNowMs() - startedAt));
+  setActivityChip(latencyChip, `open: ${elapsedMs}ms`);
+  if (stage) {
+    latencyChip.dataset.bootStage = stage;
+  }
+}
+function logBootStage(stage, extra = {}) {
+  const metricName = `${String(stage || "stage").replace(/[^a-z0-9]+/gi, "_")}Ms`;
+  const elapsedMs = recordBootMetric(metricName);
+  syncBootLatencyChip(stage);
+  console.info("[miniapp/boot]", {
+    stage,
+    elapsedMs,
+    ...extra,
+  });
+}
+recordBootMetric("appScriptStartMs");
+syncBootLatencyChip("app-script-start");
+
 function revealShell() {
   document.documentElement?.setAttribute("data-shell-ready", "1");
+  recordBootMetric("shellRevealMs");
+  syncBootLatencyChip("shell-visible");
 }
 
 function chatLabel(chatId) {
@@ -1940,6 +1984,9 @@ async function fetchAuthBootstrapWithRetry() {
   let lastData = null;
   let lastError = null;
 
+  recordBootMetric("authBootstrapStartMs");
+  syncBootLatencyChip("auth-request");
+
   for (let attempt = 1; attempt <= AUTH_BOOTSTRAP_MAX_ATTEMPTS; attempt += 1) {
     try {
       const response = await fetch("/api/auth", {
@@ -1949,11 +1996,15 @@ async function fetchAuthBootstrapWithRetry() {
       });
       const data = await safeReadJson(response);
       if (response.ok && data?.ok) {
+        recordBootMetric("authBootstrapSuccessMs");
+        logBootStage("auth-bootstrap-ok", { attempt, status: response.status });
         return { response, data };
       }
       lastResponse = response;
       lastData = data;
       if (!isRetryableAuthBootstrapFailure(response, data) || attempt >= AUTH_BOOTSTRAP_MAX_ATTEMPTS) {
+        recordBootMetric("authBootstrapFailureMs");
+        logBootStage("auth-bootstrap-failed", { attempt, status: response.status, retryable: false });
         return { response, data };
       }
     } catch (error) {
@@ -1972,8 +2023,10 @@ async function fetchAuthBootstrapWithRetry() {
     return { response: lastResponse, data: lastData };
   }
   if (lastError) {
+    recordBootMetric("authBootstrapErrorMs");
     throw lastError;
   }
+  recordBootMetric("authBootstrapErrorMs");
   throw new Error("Session bootstrap failed before response.");
 }
 
@@ -2018,10 +2071,17 @@ async function maybeRefreshForBootstrapVersionMismatch() {
 }
 
 async function bootstrap() {
+  logBootStage("bootstrap-start", { hasTelegram: Boolean(tg) });
+  if (authStatus) {
+    authStatus.textContent = tg ? "Opening Hermes…" : "Waiting for Telegram…";
+  }
+  syncBootLatencyChip("bootstrap-start");
+
   if (tg) {
     try {
       tg.ready?.();
       tg.expand?.();
+      logBootStage("telegram-webapp-ready");
     } catch {
       // Non-fatal: proceed with auth even when client WebApp helpers partially fail.
     }
@@ -2082,6 +2142,10 @@ async function bootstrap() {
     }
 
     applyAuthBootstrap(data, { preferredUsername: tg?.initDataUnsafe?.user?.username || "" });
+    logBootStage("auth-bootstrap-applied", {
+      activeChatId: Number(data?.active_chat_id || 0),
+      chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
+    });
     const restoredPendingSnapshot = Number(data?.active_chat_id || 0) > 0 && Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === Number(data.active_chat_id))?.pending)
       ? restorePendingStreamSnapshot(Number(data.active_chat_id))
       : false;
@@ -2089,12 +2153,14 @@ async function bootstrap() {
       renderMessages(Number(data.active_chat_id), { preserveViewport: true });
     }
   } catch (error) {
+    recordBootMetric("bootstrapErrorMs");
     authStatus.textContent = "Sign-in error";
     appendSystemMessage(`Could not start the app: ${error.message}`);
   } finally {
     syncDevAuthUi();
     updateComposerState();
     revealShell();
+    logBootStage("bootstrap-finished", { authenticated: Boolean(isAuthenticated) });
   }
 }
 
