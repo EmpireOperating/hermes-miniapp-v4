@@ -9,6 +9,8 @@
         const allowed = new Set(["terminal", "oracle", "obsidian"]);
         const serverBoot = {{ boot_skin|tojson }};
         let resolved = allowed.has(serverBoot) ? serverBoot : "terminal";
+        const perf = typeof window.performance !== "undefined" ? window.performance : null;
+        const startedAt = perf && typeof perf.now === "function" ? perf.now() : Date.now();
 
         try {
           const savedSkin = localStorage.getItem("hermes_skin");
@@ -21,20 +23,19 @@
           // Local storage may be blocked in privacy mode.
         }
 
-        // Keep shell hidden until bootstrap resolves the authenticated skin,
-        // preventing a brief flash of the default terminal skin on fresh domains.
-        // Safety valve: if JS initialization fails or is blocked, auto-reveal
-        // after a short timeout so users never see a permanent blank page.
-        document.documentElement.setAttribute("data-shell-ready", "0");
+        // Render the shell immediately so launch is visually responsive.
+        // The boot skin already comes from cookies/localStorage, so we can avoid
+        // blocking first paint on the auth/bootstrap request.
+        document.documentElement.setAttribute("data-shell-ready", "1");
         document.documentElement.setAttribute("data-skin", resolved);
         window.__HERMES_SKIN_BOOT__ = resolved;
+        window.__HERMES_BOOT_METRICS__ = Object.assign({}, window.__HERMES_BOOT_METRICS__, {
+          shellInlineStartMs: Math.round(startedAt),
+          shellVisibleMs: Math.round(startedAt),
+          bootSkin: resolved,
+        });
 
-        const revealFallback = () => {
-          document.documentElement.setAttribute("data-shell-ready", "1");
-        };
-        window.setTimeout(revealFallback, 4000);
         window.addEventListener("error", (event) => {
-          revealFallback();
           const rawMessage = String(event?.error?.message || event?.message || "");
           if (!rawMessage) {
             return;
@@ -43,7 +44,7 @@
           if (!bootstrapMismatch) {
             return;
           }
-          const authStatus = document.getElementById("auth-status");
+          const authStatus=document.getElementById("auth-status");
           if (authStatus) {
             authStatus.textContent = "Client bootstrap mismatch";
             authStatus.title = "The app assets are out of sync. Please reload.";
@@ -53,14 +54,17 @@
     </script>
     <style>
       html[data-shell-ready="0"] body {
-        visibility: hidden;
+        visibility: visible;
       }
       html[data-shell-ready="1"] body {
         visibility: visible;
       }
     </style>
+    <link rel="preconnect" href="https://telegram.org" crossorigin>
+    <link rel="dns-prefetch" href="//telegram.org">
+    <link rel="preload" as="image" href="/static/hermes-banner.png">
     <link rel="stylesheet" href="/static/app.css?v={{ css_version }}">
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body data-skin="{{ boot_skin }}">
     <div class="shell">
@@ -274,25 +278,25 @@
         allowedRoots: {{ file_preview_allowed_roots_json|safe }}
       };
     </script>
-    <script src="/static/runtime_helpers.js?v={{ helpers_version }}"></script>
-    <script src="/static/app_shared_utils.js?v={{ shared_utils_version }}"></script>
-    <script src="/static/chat_ui_helpers.js?v={{ chat_ui_helpers_version }}"></script>
-    <script src="/static/chat_tabs_helpers.js?v={{ chat_tabs_helpers_version }}"></script>
-    <script src="/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}"></script>
-    <script src="/static/stream_state_helpers.js?v={{ stream_state_helpers_version }}"></script>
-    <script src="/static/stream_controller.js?v={{ stream_controller_version }}"></script>
-    <script src="/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}"></script>
-    <script src="/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}"></script>
-    <script src="/static/interaction_helpers.js?v={{ interaction_helpers_version }}"></script>
-    <script src="/static/bootstrap_auth_helpers.js?v={{ bootstrap_auth_helpers_version }}"></script>
-    <script src="/static/chat_history_helpers.js?v={{ chat_history_helpers_version }}"></script>
-    <script src="/static/chat_admin_helpers.js?v={{ chat_admin_helpers_version }}"></script>
-    <script src="/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}"></script>
-    <script src="/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}"></script>
-    <script src="/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}"></script>
-    <script src="/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}"></script>
-    <script src="/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}"></script>
-    <script src="/static/file_preview_helpers.js?v={{ file_preview_helpers_version }}"></script>
-    <script src="/static/app.js?v={{ app_js_version }}"></script>
+    <script defer src="/static/runtime_helpers.js?v={{ helpers_version }}"></script>
+    <script defer src="/static/app_shared_utils.js?v={{ shared_utils_version }}"></script>
+    <script defer src="/static/chat_ui_helpers.js?v={{ chat_ui_helpers_version }}"></script>
+    <script defer src="/static/chat_tabs_helpers.js?v={{ chat_tabs_helpers_version }}"></script>
+    <script defer src="/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}"></script>
+    <script defer src="/static/stream_state_helpers.js?v={{ stream_state_helpers_version }}"></script>
+    <script defer src="/static/stream_controller.js?v={{ stream_controller_version }}"></script>
+    <script defer src="/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}"></script>
+    <script defer src="/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}"></script>
+    <script defer src="/static/interaction_helpers.js?v={{ interaction_helpers_version }}"></script>
+    <script defer src="/static/bootstrap_auth_helpers.js?v={{ bootstrap_auth_helpers_version }}"></script>
+    <script defer src="/static/chat_history_helpers.js?v={{ chat_history_helpers_version }}"></script>
+    <script defer src="/static/chat_admin_helpers.js?v={{ chat_admin_helpers_version }}"></script>
+    <script defer src="/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}"></script>
+    <script defer src="/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}"></script>
+    <script defer src="/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}"></script>
+    <script defer src="/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}"></script>
+    <script defer src="/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}"></script>
+    <script defer src="/static/file_preview_helpers.js?v={{ file_preview_helpers_version }}"></script>
+    <script defer src="/static/app.js?v={{ app_js_version }}"></script>
   </body>
 </html>
