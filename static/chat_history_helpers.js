@@ -457,18 +457,67 @@
       }
     }
 
+    function getMessageBottomOffset(node, container) {
+      if (!node || !container) return null;
+
+      const offsetTop = Number(node?.offsetTop);
+      const offsetHeight = Number(node?.offsetHeight);
+      if (Number.isFinite(offsetTop) && Number.isFinite(offsetHeight)) {
+        return Math.max(0, offsetTop + offsetHeight);
+      }
+
+      const nodeBottom = Number(node?.dataset?.bottomOffset || node?.bottomOffset);
+      if (Number.isFinite(nodeBottom)) {
+        return Math.max(0, nodeBottom);
+      }
+
+      const containerRect = container?.getBoundingClientRect?.();
+      const nodeRect = node?.getBoundingClientRect?.();
+      const scrollTop = Number(container?.scrollTop);
+      const containerTop = Number(containerRect?.top);
+      const nodeRectBottom = Number(nodeRect?.bottom);
+      if (Number.isFinite(scrollTop) && Number.isFinite(containerTop) && Number.isFinite(nodeRectBottom)) {
+        return Math.max(0, scrollTop + (nodeRectBottom - containerTop));
+      }
+
+      return null;
+    }
+
+    function hasReachedNewestUnreadMessageBottom(chatId, { tolerance = 40 } = {}) {
+      const key = normalizeChatId(chatId);
+      const unread = getCurrentUnreadCount(key);
+      if (unread <= 0) return true;
+      const container = messagesContainer;
+      if (!container || typeof container.querySelectorAll !== 'function') {
+        return isNearBottomFn(messagesContainer, tolerance);
+      }
+
+      const assistantNodes = container.querySelectorAll('.message[data-role="assistant"]:not(.message--pending), .message[data-role="hermes"]:not(.message--pending)');
+      const newestUnreadNode = assistantNodes?.[assistantNodes.length - 1] || null;
+      if (!newestUnreadNode) {
+        return isNearBottomFn(messagesContainer, tolerance);
+      }
+
+      const viewportBottom = Number(container.scrollTop) + Number(container.clientHeight || container.offsetHeight || 0);
+      const messageBottom = getMessageBottomOffset(newestUnreadNode, container);
+      if (!Number.isFinite(viewportBottom) || !Number.isFinite(messageBottom)) {
+        return isNearBottomFn(messagesContainer, tolerance);
+      }
+      return viewportBottom + tolerance >= messageBottom;
+    }
+
     function shouldMarkReadNow(chatId, { force = false, requireUnread = true } = {}) {
       const key = normalizeChatId(chatId);
       if (!key || !getIsAuthenticated() || !isActiveChat(key)) {
         return false;
       }
       if (!force) {
-        if (!isNearBottomFn(messagesContainer, 40)) return false;
         if (unseenStreamChats.has(key)) return false;
         if (requireUnread) {
           const unread = getCurrentUnreadCount(key);
           if (unread <= 0) return false;
         }
+        if (!hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })) return false;
       }
       return true;
     }

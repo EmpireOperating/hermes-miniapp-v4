@@ -399,6 +399,18 @@
       stopLiveLatencyLoopIfIdle();
     }
 
+    function ensureResumedLiveLatency(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key || liveLatencyStartedAtByChat.has(key)) return;
+      const currentLatencyText = String(latencyChip?.textContent || '').replace(/^latency:\s*/i, '').trim();
+      const resumedSeconds = parseLatencyDisplayToSeconds(currentLatencyText);
+      if (resumedSeconds != null) {
+        beginLiveLatency(key, { elapsedMs: resumedSeconds * 1000 });
+        return;
+      }
+      beginLiveLatency(key);
+    }
+
     function syncActivePendingStatus() {
       const activeKey = normalizeChatId(getActiveChatId?.());
       const chat = activeKey ? chats.get(activeKey) : null;
@@ -408,6 +420,7 @@
         return;
       }
       if (activeKey && hasLiveStreamController?.(activeKey)) {
+        ensureResumedLiveLatency(activeKey);
         setStreamStatus?.(`Hermes responding in ${chatLabel?.(activeKey) || "Chat"}`);
         setActivityChip?.(streamChip, `stream: active · ${compactChatLabel?.(activeKey) || "Chat"}`);
         syncActiveLatencyChip?.();
@@ -547,7 +560,8 @@
       const activeKey = normalizeChatId(getActiveChatId?.());
       if (!key || key !== activeKey) return;
       clearReconnectTimer(key);
-      beginLiveLatency(key);
+      ensureResumedLiveLatency(key);
+      tickLiveLatency();
       setStreamStatus?.(`Using tools in ${chatLabel?.(key) || "Chat"}`);
       setActivityChip?.(streamChip, `stream: tools active · ${compactChatLabel?.(key) || "Chat"}`);
     }
