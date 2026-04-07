@@ -1282,6 +1282,15 @@ function blockReconnectResume(chatId) {
 
 function upsertChat(chat) {
   const next = chatTabsController.upsertChat(chat);
+  const chatIdValue = (next?.id ?? chat?.id ?? 0);
+  const key = Number(chatIdValue);
+  const cooldownUntil = Number(resumeCooldownUntilByChat.get(key) || 0);
+  if (key > 0 && cooldownUntil > Date.now()) {
+    const synced = chats.get(key);
+    if (synced && typeof synced === 'object') {
+      synced.pending = false;
+    }
+  }
   suppressBlockedChatPending(next?.id ?? chat?.id);
   return next;
 }
@@ -1292,6 +1301,16 @@ function syncPinnedChats(chatList) {
 
 function syncChats(chatList) {
   const next = chatTabsController.syncChats(chatList);
+  const now = Date.now();
+  for (const [chatId, until] of resumeCooldownUntilByChat.entries()) {
+    const key = Number(chatId);
+    const cooldownUntil = Number(until || 0);
+    if (!key || cooldownUntil <= now) continue;
+    const chat = chats.get(key);
+    if (chat && typeof chat === 'object') {
+      chat.pending = false;
+    }
+  }
   for (const blockedChatId of reconnectResumeBlockedChats) {
     suppressBlockedChatPending(blockedChatId);
   }

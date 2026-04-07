@@ -421,6 +421,37 @@ test('syncVisibleActiveChat forces resume when local pending assistant traces ex
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
 });
 
+test('syncVisibleActiveChat skips rerender when hydrated active history is render-identical', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'hello' }]);
+
+  await harness.controller.syncVisibleActiveChat({
+    hidden: false,
+    streamAbortControllers: new Map(),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.renderedMessages, []);
+  assert.deepEqual(harness.resumedChats, []);
+  assert.deepEqual(harness.refreshedTabs, [7]);
+});
+
 test('syncVisibleActiveChat finalizes local pending immediately when hydrated completed assistant matches already-visible local pending reply', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,

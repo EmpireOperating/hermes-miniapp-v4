@@ -213,6 +213,25 @@
       return aLast.id !== bLast.id || aLast.body !== bLast.body || aLast.role !== bLast.role;
     }
 
+    function historyRenderSignature(history) {
+      const entries = Array.isArray(history) ? history : [];
+      return entries.map((item, index) => {
+        const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
+        const fileRefSignature = fileRefs
+          .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
+          .join('|');
+        return [
+          index,
+          String(item?.id || ''),
+          String(item?.role || ''),
+          String(item?.body || ''),
+          item?.pending ? 'pending' : 'final',
+          String(item?.created_at || ''),
+          fileRefSignature,
+        ].join('::');
+      }).join('||');
+    }
+
     async function loadChatHistory(chatId, { activate = true } = {}) {
       const targetChatId = normalizeChatId(chatId);
       try {
@@ -511,12 +530,15 @@
       const matchedVisibleHydratedCompletion = !chatPending
         && hydratedCompletionMatchesVisibleLocalPending(previousHistory, data.history || []);
       const preservePendingState = chatPending || (localPendingWithoutLiveStream && !matchedVisibleHydratedCompletion);
+      const previousRenderSignature = historyRenderSignature(previousHistory);
       const nextHistory = mergeHydratedHistory({
         previousHistory,
         nextHistory: data.history || [],
         chatPending: preservePendingState,
       });
       histories.set(activeId, nextHistory);
+      const nextRenderSignature = historyRenderSignature(nextHistory);
+      const shouldRenderActiveHistory = previousRenderSignature !== nextRenderSignature;
       if (matchedVisibleHydratedCompletion && typeof finalizeHydratedPendingState === 'function') {
         finalizeHydratedPendingState(activeId);
       }
@@ -525,7 +547,9 @@
       }
       upsertChat(data.chat);
       refreshTabNode(activeId);
-      renderMessages(activeId, { preserveViewport: true });
+      if (shouldRenderActiveHistory) {
+        renderMessages(activeId, { preserveViewport: true });
+      }
 
       const needsVisibilityResume = shouldResumeOnVisibilityChange({
         hidden: Boolean(hidden),

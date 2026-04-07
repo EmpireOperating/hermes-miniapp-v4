@@ -294,7 +294,99 @@
     latencyChip,
     setChatLatency,
     syncActiveLatencyChip,
+    formatLatency,
   }) {
+    const RECONNECT_PILL_DELAY_MS = 2200;
+    const LIVE_LATENCY_TICK_MS = 1000;
+    const liveLatencyStartedAtByChat = new Map();
+    const reconnectDisplayTimerByChat = new Map();
+    let liveLatencyIntervalId = null;
+
+    function clearReconnectTimer(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key) return;
+      const existing = reconnectDisplayTimerByChat.get(key);
+      if (existing) {
+        clearTimeout(existing);
+        reconnectDisplayTimerByChat.delete(key);
+      }
+    }
+
+    function parseLatencyDisplayToSeconds(latencyText) {
+      const normalized = String(latencyText || '')
+        .replace(/·\s*live$/i, '')
+        .trim();
+      if (!normalized || normalized === '--') return null;
+      const match = normalized.match(/^(?:(\d+)m)?\s*(?:(\d+)s)?$/i);
+      if (!match) return null;
+      const minutes = Number(match[1] || 0);
+      const seconds = Number(match[2] || 0);
+      if (!Number.isFinite(minutes) || !Number.isFinite(seconds)) return null;
+      return (minutes * 60) + seconds;
+    }
+
+    function stopLiveLatencyLoopIfIdle() {
+      const activeKey = normalizeChatId(getActiveChatId?.());
+      if (activeKey && liveLatencyStartedAtByChat.has(activeKey)) {
+        return;
+      }
+      if (liveLatencyIntervalId) {
+        clearInterval(liveLatencyIntervalId);
+        liveLatencyIntervalId = null;
+      }
+    }
+
+    function tickLiveLatency() {
+      const activeKey = normalizeChatId(getActiveChatId?.());
+      if (!activeKey) {
+        stopLiveLatencyLoopIfIdle();
+        return;
+      }
+      const activeChat = chats?.get?.(activeKey) || null;
+      const isStillLive = Boolean(activeChat?.pending) || Boolean(hasLiveStreamController?.(activeKey));
+      if (!isStillLive) {
+        clearLiveLatency(activeKey);
+        return;
+      }
+      const startedAt = Number(liveLatencyStartedAtByChat.get(activeKey) || 0);
+      if (!startedAt) {
+        stopLiveLatencyLoopIfIdle();
+        return;
+      }
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+      const fallbackSeconds = `${Math.max(0, Math.ceil(elapsedMs / 1000))}s`;
+      const runningLatency = `${formatLatency?.(elapsedMs) || fallbackSeconds} · live`;
+      setActivityChip?.(latencyChip, `latency: ${runningLatency}`);
+      setChatLatency?.(activeKey, runningLatency);
+    }
+
+    function ensureLiveLatencyLoop() {
+      if (liveLatencyIntervalId) return;
+      liveLatencyIntervalId = setInterval(tickLiveLatency, LIVE_LATENCY_TICK_MS);
+      liveLatencyIntervalId?.unref?.();
+    }
+
+    function beginLiveLatency(chatId, { elapsedMs = null } = {}) {
+      const key = normalizeChatId(chatId);
+      if (!key) return;
+      clearReconnectTimer(key);
+      const normalizedElapsedMs = Number(elapsedMs);
+      if (Number.isFinite(normalizedElapsedMs) && normalizedElapsedMs >= 0) {
+        liveLatencyStartedAtByChat.set(key, Date.now() - normalizedElapsedMs);
+      } else if (!liveLatencyStartedAtByChat.has(key)) {
+        liveLatencyStartedAtByChat.set(key, Date.now());
+      }
+      tickLiveLatency();
+      ensureLiveLatencyLoop();
+    }
+
+    function clearLiveLatency(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key) return;
+      liveLatencyStartedAtByChat.delete(key);
+      stopLiveLatencyLoopIfIdle();
+    }
+
     function syncActivePendingStatus() {
       const activeKey = normalizeChatId(getActiveChatId?.());
       const chat = activeKey ? chats.get(activeKey) : null;
@@ -316,19 +408,23 @@
       }
     }
 
-    function markStreamActive(chatId) {
+    function markStreamActive(chatId, { elapsedMs = null } = {}) {
+      clearReconnectTimer(chatId);
       setStreamStatus?.(`Hermes responding in ${chatLabel?.(chatId) || "Chat"}`);
       setActivityChip?.(streamChip, `stream: active · ${compactChatLabel?.(chatId) || "Chat"}`);
-      setActivityChip?.(latencyChip, "latency: calculating...");
-      setChatLatency?.(chatId, "calculating...");
+      beginLiveLatency(chatId, { elapsedMs });
     }
 
-    function markStreamError() {
+    function markStreamError(chatId = null) {
+      clearReconnectTimer(chatId);
+      clearLiveLatency(chatId || getActiveChatId?.());
       setStreamStatus?.("Stream error");
       setActivityChip?.(streamChip, "stream: error");
     }
 
-    function markNetworkFailure() {
+    function markNetworkFailure(chatId = null) {
+      clearReconnectTimer(chatId);
+      clearLiveLatency(chatId || getActiveChatId?.());
       setStreamStatus?.("Network failure");
       setActivityChip?.(streamChip, "stream: network failure");
     }
@@ -342,15 +438,48 @@
       const attemptSuffix = normalizedAttempt && normalizedMaxAttempts
         ? ` (attempt ${normalizedAttempt}/${normalizedMaxAttempts})`
         : "";
-      setStreamStatus?.(`Reconnecting stream in ${chatLabel?.(key) || "Chat"}${attemptSuffix}...`);
-      setActivityChip?.(streamChip, `stream: reconnecting · ${compactChatLabel?.(key) || "Chat"}`);
-      setActivityChip?.(latencyChip, "latency: reconnecting...");
-      setChatLatency?.(key, "reconnecting...");
+      clearReconnectTimer(key);
+      const timerId = setTimeout(() => {
+        reconnectDisplayTimerByChat.delete(key);
+        setStreamStatus?.(`Reconnecting stream in ${chatLabel?.(key) || "Chat"}${attemptSuffix}...`);
+        setActivityChip?.(streamChip, `stream: reconnecting · ${compactChatLabel?.(key) || "Chat"}`);
+        setActivityChip?.(latencyChip, "latency: reconnecting...");
+        setChatLatency?.(key, "reconnecting...");
+      }, RECONNECT_PILL_DELAY_MS);
+      timerId?.unref?.();
+      reconnectDisplayTimerByChat.set(key, timerId);
+    }
+
+    function markStreamComplete(chatId, latencyText = "--") {
+      const key = normalizeChatId(chatId);
+      if (!key) return;
+      clearReconnectTimer(key);
+      const liveStartedAt = Number(liveLatencyStartedAtByChat.get(key) || 0);
+      const activeKey = normalizeChatId(getActiveChatId?.());
+      let resolvedLatency = String(latencyText || "").trim() || "--";
+      if (liveStartedAt > 0 && activeKey === key) {
+        const liveElapsedMs = Math.max(0, Date.now() - liveStartedAt);
+        const liveLatency = formatLatency?.(liveElapsedMs) || `${Math.max(0, Math.ceil(liveElapsedMs / 1000))}s`;
+        const resolvedSeconds = parseLatencyDisplayToSeconds(resolvedLatency);
+        const liveSeconds = parseLatencyDisplayToSeconds(liveLatency);
+        if (liveSeconds != null && (resolvedSeconds == null || liveSeconds > resolvedSeconds)) {
+          resolvedLatency = liveLatency;
+        }
+      }
+      clearLiveLatency(key);
+      setActivityChip?.(latencyChip, `latency: ${resolvedLatency}`);
+      setChatLatency?.(key, resolvedLatency);
+      if (activeKey === key) {
+        setStreamStatus?.(`Reply received in ${chatLabel?.(key) || "Chat"}`);
+        setActivityChip?.(streamChip, `stream: complete · ${compactChatLabel?.(key) || "Chat"}`);
+      }
     }
 
     function markResumeAlreadyComplete(chatId) {
       const key = normalizeChatId(chatId);
       if (!key) return;
+      clearReconnectTimer(key);
+      clearLiveLatency(key);
       setActivityChip?.(latencyChip, "latency: --");
       setChatLatency?.(key, "--");
       if (normalizeChatId(getActiveChatId?.()) === key) {
@@ -362,10 +491,22 @@
     function markReconnectFailed(chatId) {
       const key = normalizeChatId(chatId);
       if (!key || normalizeChatId(getActiveChatId?.()) !== key) return;
+      clearReconnectTimer(key);
+      clearLiveLatency(key);
       setStreamStatus?.("Reconnect recovery paused — action needed");
       setActivityChip?.(streamChip, "stream: recovery paused");
       setActivityChip?.(latencyChip, "latency: --");
       setChatLatency?.(key, "--");
+    }
+
+    function markToolActivity(chatId) {
+      const key = normalizeChatId(chatId);
+      const activeKey = normalizeChatId(getActiveChatId?.());
+      if (!key || key !== activeKey) return;
+      clearReconnectTimer(key);
+      beginLiveLatency(key);
+      setStreamStatus?.(`Using tools in ${chatLabel?.(key) || "Chat"}`);
+      setActivityChip?.(streamChip, `stream: tools active · ${compactChatLabel?.(key) || "Chat"}`);
     }
 
     return {
@@ -374,8 +515,10 @@
       markStreamError,
       markNetworkFailure,
       markStreamReconnecting,
+      markStreamComplete,
       markResumeAlreadyComplete,
       markReconnectFailed,
+      markToolActivity,
     };
   }
 
