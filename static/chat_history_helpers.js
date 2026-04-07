@@ -222,7 +222,6 @@
           .join('|');
         return [
           index,
-          String(item?.id || ''),
           String(item?.role || ''),
           String(item?.body || ''),
           item?.pending ? 'pending' : 'final',

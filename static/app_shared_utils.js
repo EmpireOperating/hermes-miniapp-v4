@@ -110,6 +110,46 @@
     return `${minutes}m ${seconds}s`;
   }
 
+  function normalizeLatencyText(rawValue) {
+    const text = String(rawValue || "").trim();
+    if (!text) return "--";
+
+    const liveSuffixMatch = text.match(/\s*·\s*live$/i);
+    const liveSuffix = liveSuffixMatch ? " · live" : "";
+    const normalizedBase = liveSuffixMatch ? text.slice(0, liveSuffixMatch.index).trim() : text;
+    if (!normalizedBase) return liveSuffix ? `--${liveSuffix}` : "--";
+    if (normalizedBase === "--") return liveSuffix ? `--${liveSuffix}` : "--";
+    if (/^(reconnecting|recalculating|queued|pending|idle|network failure|error)(?:\b.*)?$/i.test(normalizedBase)) {
+      return `${normalizedBase}${liveSuffix}`;
+    }
+
+    const millisecondsMatch = normalizedBase.match(/^(\d+(?:\.\d+)?)\s*ms$/i);
+    if (millisecondsMatch) {
+      return `${formatLatency(Number(millisecondsMatch[1]))}${liveSuffix}`;
+    }
+
+    const secondsMatch = normalizedBase.match(/^(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?$/i);
+    if (secondsMatch) {
+      return `${formatLatency(Number(secondsMatch[1]) * 1000)}${liveSuffix}`;
+    }
+
+    const minutesSecondsMatch = normalizedBase.match(/^(\d+)\s*m(?:in(?:ute)?s?)?(?:\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?)?$/i);
+    if (minutesSecondsMatch) {
+      const minutes = Number(minutesSecondsMatch[1] || 0);
+      const seconds = Number(minutesSecondsMatch[2] || 0);
+      if (Number.isFinite(minutes) && Number.isFinite(seconds) && minutes >= 0 && seconds >= 0) {
+        return `${formatLatency(((minutes * 60) + seconds) * 1000)}${liveSuffix}`;
+      }
+    }
+
+    const bareNumber = Number(normalizedBase);
+    if (Number.isFinite(bareNumber) && bareNumber >= 0) {
+      return `${formatLatency(bareNumber)}${liveSuffix}`;
+    }
+
+    return `${normalizedBase}${liveSuffix}`;
+  }
+
   function escapeHtml(input) {
     return (input || "")
       .replaceAll("&", "&amp;")
@@ -236,6 +276,7 @@
     formatMessageTime,
     nowStamp,
     formatLatency,
+    normalizeLatencyText,
     escapeHtml,
     cleanDisplayText,
     copyTextToClipboard,

@@ -508,7 +508,7 @@ function syncBootLatencyChip(stage = "") {
     return;
   }
   const elapsedMs = Math.max(0, Math.round(bootNowMs() - startedAt));
-  setActivityChip(latencyChip, `open: ${elapsedMs}ms`);
+  setActivityChip(latencyChip, `open: ${formatLatency(elapsedMs)}`);
   if (stage) {
     latencyChip.dataset.bootStage = stage;
   }
@@ -522,6 +522,32 @@ function logBootStage(stage, extra = {}) {
     elapsedMs,
     ...extra,
   });
+  return elapsedMs;
+}
+function readBootMetric(name) {
+  const value = Number(bootMetrics?.[name]);
+  return Number.isFinite(value) ? value : 0;
+}
+function bootDuration(startMetric, endMetric) {
+  const start = readBootMetric(startMetric);
+  const end = readBootMetric(endMetric);
+  if (!start || !end || end < start) {
+    return null;
+  }
+  return Math.max(0, end - start);
+}
+function summarizeBootMetrics(extra = {}) {
+  const summary = {
+    totalOpenMs: bootDuration("appScriptStartMs", "bootstrap_finishedMs"),
+    authWaitMs: bootDuration("auth_request_dispatchedMs", "auth_response_receivedMs"),
+    authApplyMs: bootDuration("auth_bootstrap_applied_startMs", "auth_bootstrap_applied_finishedMs"),
+    firstRenderMs: bootDuration("initial_render_startMs", "initial_render_finishedMs"),
+    emptyRenderMs: bootDuration("initial_empty_chat_render_startMs", "initial_empty_chat_render_finishedMs"),
+    shellRevealMs: bootDuration("appScriptStartMs", "shellRevealMs"),
+    ...extra,
+  };
+  console.info("[miniapp/boot-summary]", summary);
+  return summary;
 }
 recordBootMetric("appScriptStartMs");
 syncBootLatencyChip("app-script-start");
@@ -774,6 +800,9 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   pendingChats,
   resumePendingChatStream,
   addLocalMessage,
+  onBootstrapStage: (stage, details = {}) => {
+    logBootStage(stage, details);
+  },
 });
 
 function syncDevAuthUi() {
@@ -2170,7 +2199,14 @@ async function bootstrap() {
   }
 
   try {
+    logBootStage("auth-request-dispatched", {
+      hasTelegramInitData: Boolean(initData),
+    });
     const { response, data } = await fetchAuthBootstrapWithRetry();
+    logBootStage("auth-response-received", {
+      status: Number(response?.status || 0),
+      ok: Boolean(response?.ok && data?.ok),
+    });
 
     if (!response.ok || !data?.ok) {
       if (desktopTestingEnabled) {
@@ -2212,6 +2248,12 @@ async function bootstrap() {
     updateComposerState();
     revealShell();
     logBootStage("bootstrap-finished", { authenticated: Boolean(isAuthenticated) });
+    summarizeBootMetrics({
+      authenticated: Boolean(isAuthenticated),
+      activeChatId: Number(activeChatId || 0),
+      chatCount: chats.size,
+      pendingActiveChat: Boolean(activeChatId && chats.get(Number(activeChatId))?.pending),
+    });
   }
 }
 
@@ -2268,6 +2310,11 @@ const streamController = streamControllerHelpers.createController({
   persistStreamCursor: setStoredStreamCursor,
   clearStreamCursor: clearStoredStreamCursor,
   clearPendingStreamSnapshot,
+  markStreamActive: (chatId, options = {}) => streamActivityController.markStreamActive(chatId, options),
+  markStreamQueued: (chatId, options = {}) => streamActivityController.markStreamQueued(chatId, options),
+  markStreamComplete: (chatId, latencyText) => streamActivityController.markStreamComplete(chatId, latencyText),
+  markToolActivity: (chatId) => streamActivityController.markToolActivity(chatId),
+  markStreamError: (chatId) => streamActivityController.markStreamError(chatId),
 });
 
 function finalizeStreamPendingState(chatId, wasAborted) {

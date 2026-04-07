@@ -1,4 +1,16 @@
 (function (globalScope) {
+  let normalizeLatencyText = globalScope.HermesMiniappSharedUtils?.normalizeLatencyText || null;
+  if (!normalizeLatencyText && typeof module !== "undefined" && module.exports && typeof require === "function") {
+    try {
+      normalizeLatencyText = require("./app_shared_utils.js").normalizeLatencyText;
+    } catch {
+      normalizeLatencyText = null;
+    }
+  }
+  if (!normalizeLatencyText) {
+    normalizeLatencyText = (value) => String(value || "").trim() || "--";
+  }
+
   function normalizeChatId(value) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -114,7 +126,7 @@
     if (!key) {
       return { nextMap: latencyByChat, chipText: null };
     }
-    const normalized = String(text || "").trim() || "--";
+    const normalized = normalizeLatencyText(text);
     latencyByChat.set(key, normalized);
     if (normalizeChatId(activeChatId) === key) {
       return { nextMap: latencyByChat, chipText: `latency: ${normalized}` };
@@ -149,11 +161,11 @@
         let normalized = "";
         let ts = 0;
         if (value && typeof value === "object") {
-          normalized = String(value.value || "").trim();
+          normalized = normalizeLatencyText(value.value);
           ts = Number(value.ts || 0);
         }
 
-        if (!normalized) continue;
+        if (!normalized || normalized === "--") continue;
         if (hasTtl) {
           if (!Number.isFinite(ts) || ts <= 0) continue;
           if (Number.isFinite(now) && now - ts > ttl) continue;
@@ -196,11 +208,11 @@
         if (stored >= maxEntries) break;
         const key = normalizeChatId(chatId);
         if (!key) continue;
-        const normalized = String(value || "").trim();
-        if (!normalized) continue;
+        const normalized = normalizeLatencyText(value);
+        if (!normalized || normalized === "--") continue;
 
         const existingEntry = existing[String(key)];
-        const existingValue = String(existingEntry?.value || "").trim();
+        const existingValue = normalizeLatencyText(existingEntry?.value);
         const existingTs = Number(existingEntry?.ts || 0);
         const preserveTs = existingValue === normalized && Number.isFinite(existingTs) && existingTs > 0;
 
@@ -429,6 +441,22 @@
       setActivityChip?.(streamChip, "stream: network failure");
     }
 
+    function markStreamQueued(chatId, { queuedAhead = null } = {}) {
+      const key = normalizeChatId(chatId);
+      const activeKey = normalizeChatId(getActiveChatId?.());
+      if (!key || key !== activeKey) return;
+      clearReconnectTimer(key);
+      clearLiveLatency(key);
+      const normalizedQueuedAhead = Number(queuedAhead);
+      const queueLabel = Number.isFinite(normalizedQueuedAhead) && normalizedQueuedAhead > 0
+        ? `queued · ahead: ${normalizedQueuedAhead}`
+        : "queued...";
+      setStreamStatus?.(`Queue update (${chatLabel?.(key) || "Chat"}): queued`);
+      setActivityChip?.(streamChip, `stream: queued · ${compactChatLabel?.(key) || "Chat"}`);
+      setActivityChip?.(latencyChip, `latency: ${queueLabel}`);
+      setChatLatency?.(key, queueLabel);
+    }
+
     function markStreamReconnecting(chatId, { attempt = null, maxAttempts = null } = {}) {
       const key = normalizeChatId(chatId);
       const activeKey = normalizeChatId(getActiveChatId?.());
@@ -480,8 +508,12 @@
       if (!key) return;
       clearReconnectTimer(key);
       clearLiveLatency(key);
-      setActivityChip?.(latencyChip, "latency: --");
-      setChatLatency?.(key, "--");
+      const existingLatency = String(latencyChip?.textContent || '').trim();
+      const hasResolvedLatency = existingLatency.startsWith('latency: ') && existingLatency !== 'latency: --';
+      if (!hasResolvedLatency) {
+        setActivityChip?.(latencyChip, "latency: --");
+        setChatLatency?.(key, "--");
+      }
       if (normalizeChatId(getActiveChatId?.()) === key) {
         setStreamStatus?.(`Stream already complete in ${chatLabel?.(key) || "Chat"}`);
         setActivityChip?.(streamChip, `stream: complete · ${compactChatLabel?.(key) || "Chat"}`);
@@ -514,6 +546,7 @@
       markStreamActive,
       markStreamError,
       markNetworkFailure,
+      markStreamQueued,
       markStreamReconnecting,
       markStreamComplete,
       markResumeAlreadyComplete,
