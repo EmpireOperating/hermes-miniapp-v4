@@ -29,6 +29,7 @@ function buildControllerHarness() {
   const markToolActivityCalls = [];
   const markStreamActiveCalls = [];
   const markStreamErrorCalls = [];
+  const markStreamClosedEarlyCalls = [];
   const histories = new Map();
 
   const deps = {
@@ -124,6 +125,13 @@ function buildControllerHarness() {
       streamStatuses.push('Stream error');
       streamChipUpdates.push('stream: error');
     },
+    markStreamClosedEarly: (chatId) => {
+      const key = Number(chatId);
+      markStreamClosedEarlyCalls.push(key);
+      latencyUpdates.push({ chatId: key, text: '--' });
+      streamStatuses.push('Stream closed early');
+      streamChipUpdates.push('stream: closed early');
+    },
   };
 
   const controller = streamController.createController(deps);
@@ -150,6 +158,7 @@ function buildControllerHarness() {
     markToolActivityCalls,
     markStreamActiveCalls,
     markStreamErrorCalls,
+    markStreamClosedEarlyCalls,
     histories,
   };
 }
@@ -538,6 +547,21 @@ test('consumeStreamResponse does not increment unread for visible active chat re
   assert.deepEqual(unreadIncrements, []);
   assert.equal(incomingHaptics.length, 1);
   assert.match(String(incomingHaptics[0].options?.messageKey || ''), /^chat:42:assistant-stream:/);
+});
+
+test('consumeStreamResponse routes early-close fallback through markStreamClosedEarly when available', async () => {
+  const harness = buildControllerHarness();
+  const { response } = makeSseResponse('event: meta\ndata: {"detail":"running","source":"queue"}\n\n');
+
+  const result = await harness.controller.consumeStreamResponse(9, response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+  });
+
+  assert.equal(result.terminalReceived, false);
+  assert.equal(result.earlyClosed, true);
+  assert.deepEqual(harness.markStreamClosedEarlyCalls, [9]);
+  assert.equal(harness.streamStatuses.includes('Stream closed early'), true);
+  assert.equal(harness.streamChipUpdates.includes('stream: closed early'), true);
 });
 
 test('consumeStreamResponse can suppress early-close fallback and report non-terminal close', async () => {

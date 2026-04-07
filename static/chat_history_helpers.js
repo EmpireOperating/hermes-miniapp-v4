@@ -149,6 +149,7 @@
       chatId: null,
     };
     const deferredMarkReadRetry = new Map();
+    const optimisticUnreadClears = new Map();
     const enqueueUiMutation = typeof runAfterUiMutation === 'function'
       ? runAfterUiMutation
       : (callback) => scheduleTimeout(callback, 0);
@@ -161,10 +162,38 @@
       return normalizeChatId(chatId) === normalizeChatId(getActiveChatId());
     }
 
+    function getCurrentUnreadCount(chatId) {
+      const key = normalizeChatId(chatId);
+      const optimisticUnread = optimisticUnreadClears.get(key);
+      if (Number.isFinite(optimisticUnread)) {
+        return Math.max(0, Number(optimisticUnread));
+      }
+      return Math.max(0, Number(chats.get(key)?.unread_count || 0));
+    }
+
     function clearUnreadCount(chatId) {
       const key = normalizeChatId(chatId);
-      if (!chats.has(key)) return;
-      chats.get(key).unread_count = 0;
+      const chat = chats.get(key);
+      if (!chat) return;
+      const unread = Math.max(0, Number(chat.unread_count || 0));
+      if (!optimisticUnreadClears.has(key)) {
+        optimisticUnreadClears.set(key, unread);
+      }
+      chat.unread_count = 0;
+    }
+
+    function restoreUnreadCount(chatId) {
+      const key = normalizeChatId(chatId);
+      const chat = chats.get(key);
+      const previousUnread = optimisticUnreadClears.get(key);
+      optimisticUnreadClears.delete(key);
+      if (!chat || !Number.isFinite(previousUnread)) return;
+      chat.unread_count = Math.max(0, Number(previousUnread));
+    }
+
+    function finalizeUnreadClear(chatId) {
+      const key = normalizeChatId(chatId);
+      optimisticUnreadClears.delete(key);
     }
 
     function hasLocalPendingWithoutLiveStream(chatId, history) {
@@ -274,7 +303,6 @@
         restorePendingStreamSnapshot(targetChatId);
       }
 
-      clearUnreadCount(targetChatId);
       refreshTabNode(targetChatId);
 
       if (!isActiveChat(targetChatId)) {
@@ -299,8 +327,6 @@
       const requestId = getLastOpenChatRequestId() + 1;
       setLastOpenChatRequestId(requestId);
       const hadCachedHistory = histories.has(targetChatId);
-
-      clearUnreadCount(targetChatId);
 
       if (hadCachedHistory) {
         setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: true });
@@ -422,6 +448,7 @@
     async function markRead(chatId) {
       const key = normalizeChatId(chatId);
       const data = await apiPost('/api/chats/mark-read', { chat_id: key });
+      finalizeUnreadClear(key);
       upsertChat(data.chat);
       renderTabs();
       if (isActiveChat(key)) {
@@ -430,7 +457,7 @@
       }
     }
 
-    function shouldMarkReadNow(chatId, { force = false } = {}) {
+    function shouldMarkReadNow(chatId, { force = false, requireUnread = true } = {}) {
       const key = normalizeChatId(chatId);
       if (!key || !getIsAuthenticated() || !isActiveChat(key)) {
         return false;
@@ -438,8 +465,10 @@
       if (!force) {
         if (!isNearBottomFn(messagesContainer, 40)) return false;
         if (unseenStreamChats.has(key)) return false;
-        const unread = Number(chats.get(key)?.unread_count || 0);
-        if (unread <= 0) return false;
+        if (requireUnread) {
+          const unread = getCurrentUnreadCount(key);
+          if (unread <= 0) return false;
+        }
       }
       return true;
     }
@@ -457,6 +486,34 @@
       return deferred;
     }
 
+    function startMarkReadRequest(chatId, { force = false } = {}) {
+      const key = normalizeChatId(chatId);
+      clearUnreadCount(key);
+      renderTabs();
+      if (isActiveChat(key)) {
+        syncActivePendingStatus();
+        updateComposerState();
+      }
+      markReadInFlight.add(key);
+      void markRead(key)
+        .catch(() => {
+          restoreUnreadCount(key);
+          renderTabs();
+          if (isActiveChat(key)) {
+            syncActivePendingStatus();
+            updateComposerState();
+          }
+          // Best-effort read sync; retry on next visibility/scroll tick.
+        })
+        .finally(() => {
+          markReadInFlight.delete(key);
+          const deferred = consumeDeferredMarkRead(key);
+          if (deferred && shouldMarkReadNow(key, { ...deferred, requireUnread: false })) {
+            startMarkReadRequest(key, deferred);
+          }
+        });
+    }
+
     function maybeMarkRead(chatId, { force = false } = {}) {
       const key = normalizeChatId(chatId);
       if (!shouldMarkReadNow(key, { force })) {
@@ -466,18 +523,7 @@
         rememberDeferredMarkRead(key, { force });
         return;
       }
-      markReadInFlight.add(key);
-      void markRead(key)
-        .catch(() => {
-          // Best-effort read sync; retry on next visibility/scroll tick.
-        })
-        .finally(() => {
-          markReadInFlight.delete(key);
-          const deferred = consumeDeferredMarkRead(key);
-          if (deferred) {
-            maybeMarkRead(key, deferred);
-          }
-        });
+      startMarkReadRequest(key, { force });
     }
 
     function reconcilePendingStateFromStatus(statusChats = []) {

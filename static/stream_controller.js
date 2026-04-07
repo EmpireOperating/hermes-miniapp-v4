@@ -599,7 +599,6 @@
         triggerIncomingMessageHaptic(chatId, { fallbackToLatestHistory: true });
       }
       markStreamUpdate(chatId);
-      setChatLatency(chatId, "--");
       const patchedAssistant = patchVisiblePendingAssistant(chatId, fallbackReply, false);
       const patchedToolTrace = patchVisibleToolTrace(chatId);
       renderTraceLog(fallbackTraceEvent, {
@@ -611,8 +610,13 @@
       if (!patchedAssistant || !patchedToolTrace) {
         syncActiveMessageView(chatId, { preserveViewport: true });
       }
-      setStreamStatus("Stream closed early");
-      setActivityChip(streamChip, "stream: closed early");
+      if (typeof deps.markStreamClosedEarly === "function") {
+        deps.markStreamClosedEarly(chatId);
+      } else {
+        setChatLatency(chatId, "--");
+        setStreamStatus("Stream closed early");
+        setActivityChip(streamChip, "stream: closed early");
+      }
       if (!hadEarlyAssistantUnread && Number(getActiveChatId()) !== Number(chatId)) {
         incrementUnread(chatId);
       }

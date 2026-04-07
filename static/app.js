@@ -2315,6 +2315,7 @@ const streamController = streamControllerHelpers.createController({
   markStreamComplete: (chatId, latencyText) => streamActivityController.markStreamComplete(chatId, latencyText),
   markToolActivity: (chatId) => streamActivityController.markToolActivity(chatId),
   markStreamError: (chatId) => streamActivityController.markStreamError(chatId),
+  markStreamClosedEarly: (chatId) => streamActivityController.markStreamClosedEarly(chatId),
 });
 
 function finalizeStreamPendingState(chatId, wasAborted) {
