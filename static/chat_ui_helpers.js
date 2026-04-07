@@ -28,14 +28,6 @@
     const unread = Math.max(0, Number(chat.unread_count || 0));
     const hasUnseenInViewport = unseenStreamChats.has(chatKey);
 
-    if (pending) {
-      return {
-        text: "…",
-        classes: ["is-visible", "is-pending"],
-        ariaLabel: "Pending response",
-      };
-    }
-
     if (unread > 0 || hasUnseenInViewport) {
       return {
         text: "•",
@@ -44,6 +36,14 @@
           unread > 0
             ? `${unread} unread ${unread === 1 ? "message" : "messages"}`
             : "New messages below current scroll position",
+      };
+    }
+
+    if (pending) {
+      return {
+        text: "…",
+        classes: ["is-visible", "is-pending"],
+        ariaLabel: "Pending response",
       };
     }
 

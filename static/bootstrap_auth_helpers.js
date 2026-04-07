@@ -40,6 +40,7 @@
       pendingChats,
       resumePendingChatStream,
       addLocalMessage,
+      onBootstrapStage = null,
     } = deps;
 
     async function safeReadJson(response) {
@@ -133,6 +134,10 @@
     }
 
     function applyAuthBootstrap(data, { preferredUsername = "" } = {}) {
+      onBootstrapStage?.("auth-bootstrap-applied-start", {
+        activeChatId: Number(data?.active_chat_id || 0),
+        chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
+      });
       setIsAuthenticated(true);
       const telegramUsername = normalizeHandle(preferredUsername);
       const apiUsername = normalizeHandle(data?.user?.username);
@@ -144,22 +149,48 @@
       refreshOperatorRoleLabels();
       setSkin(data.skin || "terminal");
 
+      onBootstrapStage?.("auth-bootstrap-sync-chats-start", {
+        chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
+      });
       syncChats(data.chats || []);
       syncPinnedChats(data.pinned_chats || []);
+      onBootstrapStage?.("auth-bootstrap-sync-chats-finished", {
+        chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
+      });
       const activeId = Number(data.active_chat_id || 0);
       if (!activeId) {
         setActiveChatMeta(null);
         renderPinnedChats();
         syncDevAuthUi();
+        onBootstrapStage?.("auth-bootstrap-applied-finished", {
+          activeChatId: 0,
+          chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
+          pendingResumeTriggered: false,
+        });
         return;
       }
 
       histories.set(activeId, data.history || []);
       setActiveChatMeta(activeId);
       renderPinnedChats();
+      onBootstrapStage?.("initial-render-start", {
+        activeChatId: activeId,
+        historyCount: Array.isArray(data?.history) ? data.history.length : 0,
+      });
       renderMessages(activeId);
+      onBootstrapStage?.("initial-render-finished", {
+        activeChatId: activeId,
+        historyCount: Array.isArray(data?.history) ? data.history.length : 0,
+      });
+      onBootstrapStage?.("warm-history-cache-triggered", {
+        activeChatId: activeId,
+      });
       warmChatHistoryCache();
-      if (Boolean(chats.get(activeId)?.pending) && !pendingChats.has(activeId)) {
+      const shouldResumePending = Boolean(chats.get(activeId)?.pending) && !pendingChats.has(activeId);
+      if (shouldResumePending) {
+        onBootstrapStage?.("pending-stream-resume-triggered", {
+          activeChatId: activeId,
+        });
         void resumePendingChatStream(activeId);
       }
       if (!(data.history || []).length) {
@@ -168,9 +199,20 @@
           body: "You're all set. This chat is empty.",
           created_at: new Date().toISOString(),
         });
+        onBootstrapStage?.("initial-empty-chat-render-start", {
+          activeChatId: activeId,
+        });
         renderMessages(activeId);
+        onBootstrapStage?.("initial-empty-chat-render-finished", {
+          activeChatId: activeId,
+        });
       }
       syncDevAuthUi();
+      onBootstrapStage?.("auth-bootstrap-applied-finished", {
+        activeChatId: activeId,
+        chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
+        pendingResumeTriggered: shouldResumePending,
+      });
     }
 
     async function askForDevAuth(defaults) {

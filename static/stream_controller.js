@@ -259,6 +259,7 @@
     const lastStreamEventIdByChat = new Map();
     const focusRestoreEligibleByChat = new Map();
     const firstAssistantNotificationStateByChat = new Map();
+    const immediateFinalizedChats = new Set();
     let nextAssistantNotificationId = 0;
 
     function setFocusRestoreEligibility(chatId, eligible) {
@@ -386,7 +387,8 @@
         && doneActiveChatId !== Number(chatId)
       );
       const shouldTriggerHapticOnDone = Boolean(
-        !hadEarlyAssistantUnread
+        !hadEarlyAssistantHaptic
+        && !hadEarlyAssistantUnread
         && (doneActiveChatId !== Number(chatId) || doneHidden)
       );
       if (shouldTriggerHapticOnDone) {
@@ -438,6 +440,8 @@
         latencyMs: Number(payload?.latency_ms || 0),
         replyLength: builtReplyRef.value.length,
       });
+      immediateFinalizedChats.add(Number(chatId));
+      finalizeStreamPendingState(chatId, false);
       if (shouldIncrementUnreadOnDone) {
         incrementUnread(chatId);
         renderTabs();
@@ -473,7 +477,11 @@
             setActivityChip(streamChip, `stream: ${detail} · ${compactChatLabel(chatId)}`);
             if (payload.job_status === "running") {
               const elapsedMs = Number(payload.elapsed_ms);
-              if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
+              if (typeof deps.markStreamActive === "function") {
+                deps.markStreamActive(chatId, {
+                  elapsedMs: Number.isFinite(elapsedMs) && elapsedMs >= 0 ? elapsedMs : null,
+                });
+              } else if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
                 const runningLatency = `${formatLatency(elapsedMs)} · live`;
                 setChatLatency(chatId, runningLatency);
                 setActivityChip(latencyChip, `latency: ${runningLatency}`);
@@ -483,11 +491,15 @@
               }
             } else if (payload.job_status === "queued") {
               const queuedAhead = Number(payload.queued_ahead);
-              const queueLabel = Number.isFinite(queuedAhead) && queuedAhead > 0
-                ? `queued · ahead: ${queuedAhead}`
-                : "queued...";
-              setChatLatency(chatId, queueLabel);
-              setActivityChip(latencyChip, `latency: ${queueLabel}`);
+              if (typeof deps.markStreamQueued === "function") {
+                deps.markStreamQueued(chatId, { queuedAhead });
+              } else {
+                const queueLabel = Number.isFinite(queuedAhead) && queuedAhead > 0
+                  ? `queued · ahead: ${queuedAhead}`
+                  : "queued...";
+                setChatLatency(chatId, queueLabel);
+                setActivityChip(latencyChip, `latency: ${queueLabel}`);
+              }
             }
           }
         }
@@ -551,9 +563,13 @@
         updatePendingAssistant(chatId, payload.error || "Hermes stream failed.", false);
         markStreamUpdate(chatId);
         syncActiveMessageView(chatId, { preserveViewport: true });
-        setChatLatency(chatId, "--");
-        setStreamStatus("Stream error");
-        setActivityChip(streamChip, "stream: error");
+        if (typeof deps.markStreamError === "function") {
+          deps.markStreamError(chatId);
+        } else {
+          setChatLatency(chatId, "--");
+          setStreamStatus("Stream error");
+          setActivityChip(streamChip, "stream: error");
+        }
         return true;
       }
 
@@ -740,7 +756,6 @@
           .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
           .join('|');
         return [
-          String(item?.id || ''),
           role,
           String(item?.body || ''),
           item?.pending ? 'pending' : 'final',
@@ -889,7 +904,12 @@
         // transiently mark an active chat idle while the replacement stream is live.
         return;
       }
-      finalizeStreamPendingState(key, wasAborted);
+      const finalizedAtDone = immediateFinalizedChats.has(key);
+      if (finalizedAtDone) {
+        immediateFinalizedChats.delete(key);
+      } else {
+        finalizeStreamPendingState(key, wasAborted);
+      }
 
       syncClosingConfirmation();
 

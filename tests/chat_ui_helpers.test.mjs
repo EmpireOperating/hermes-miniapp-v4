@@ -5,9 +5,21 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const chatUi = require('../static/chat_ui_helpers.js');
 
-test('getTabBadgeState prioritizes pending badge', () => {
+test('getTabBadgeState prioritizes unread dot over pending when chat already has unread replies', () => {
   const badge = chatUi.getTabBadgeState({
     chat: { id: 5, pending: true, unread_count: 2 },
+    pendingChats: new Set(),
+    unseenStreamChats: new Set(),
+  });
+
+  assert.equal(badge.text, '•');
+  assert.deepEqual(badge.classes, ['is-visible', 'is-unread-dot']);
+  assert.equal(badge.ariaLabel, '2 unread messages');
+});
+
+test('getTabBadgeState keeps pending badge when chat is pending and has no unread or unseen reply', () => {
+  const badge = chatUi.getTabBadgeState({
+    chat: { id: 5, pending: true, unread_count: 0 },
     pendingChats: new Set(),
     unseenStreamChats: new Set(),
   });

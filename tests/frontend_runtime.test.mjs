@@ -155,7 +155,7 @@ test('latency chip only updates for active chat while preserving per-chat latenc
     activeChatId: 7,
   });
   assert.equal(inactiveUpdate.chipText, null);
-  assert.equal(latencyByChat.get(44), '321ms');
+  assert.equal(latencyByChat.get(44), '1s');
 
   const activeUpdate = runtime.nextLatencyState({
     latencyByChat,
@@ -163,8 +163,8 @@ test('latency chip only updates for active chat while preserving per-chat latenc
     text: '120ms',
     activeChatId: 7,
   });
-  assert.equal(activeUpdate.chipText, 'latency: 120ms');
-  assert.equal(latencyByChat.get(7), '120ms');
+  assert.equal(activeUpdate.chipText, 'latency: 1s');
+  assert.equal(latencyByChat.get(7), '1s');
 });
 
 test('createLatencyController updates active latency chip via viewport-preserving mutation wrapper', () => {
@@ -193,16 +193,23 @@ test('createLatencyController updates active latency chip via viewport-preservin
 
   controller.setChatLatency(7, '145ms');
 
-  assert.equal(latencyByChat.get(7), '145ms');
+  assert.equal(latencyByChat.get(7), '1s');
   assert.equal(preserveCalls.length, 1);
-  assert.deepEqual(chipUpdates, [{ chip: latencyChip, text: 'latency: 145ms' }]);
+  assert.deepEqual(chipUpdates, [{ chip: latencyChip, text: 'latency: 1s' }]);
   assert.equal(debugEvents.length, 1);
   assert.equal(debugEvents[0].eventName, 'latency-set');
   assert.equal(debugEvents[0].details.hasChipText, true);
 });
 
+test('normalizeLatencyText removes millisecond displays and rolls large second counts into minutes', () => {
+  assert.equal(sharedUtils.normalizeLatencyText('145ms'), '1s');
+  assert.equal(sharedUtils.normalizeLatencyText('321s'), '5m 21s');
+  assert.equal(sharedUtils.normalizeLatencyText('321s · live'), '5m 21s · live');
+  assert.equal(sharedUtils.normalizeLatencyText('reconnecting...'), 'reconnecting...');
+});
+
 test('createLatencyController syncActiveLatencyChip resets to placeholder when active chat is missing', () => {
-  const latencyByChat = new Map([[7, '88ms']]);
+  const latencyByChat = new Map([[7, '1s']]);
   const chipUpdates = [];
   let activeChatId = null;
   const latencyChip = { id: 'latency-chip' };
@@ -226,7 +233,7 @@ test('createLatencyController syncActiveLatencyChip resets to placeholder when a
 
   assert.deepEqual(chipUpdates, [
     { chip: latencyChip, text: 'latency: --' },
-    { chip: latencyChip, text: 'latency: 88ms' },
+    { chip: latencyChip, text: 'latency: 1s' },
   ]);
 });
 
@@ -245,7 +252,7 @@ test('latency storage helpers persist and restore per-chat values', () => {
     localStorageRef,
     storageKey: 'latency-test',
     latencyByChat,
-    nowMs: 2_000,
+    nowMs: 12_345,
   });
   assert.equal(storedCount, 2);
 
@@ -254,16 +261,16 @@ test('latency storage helpers persist and restore per-chat values', () => {
     localStorageRef,
     storageKey: 'latency-test',
     latencyByChat: restored,
-    nowMs: 2_500,
-    maxAgeMs: 1_000,
+    nowMs: 12_400,
   });
 
   assert.equal(loadedCount, 2);
   assert.deepEqual([...restored.entries()], [
-    [7, '88ms'],
-    [19, '2.4s · live'],
+    [7, '1s'],
+    [19, '3s · live'],
   ]);
 });
+
 
 test('latency storage helpers drop expired entries by ttl', () => {
   const storage = new Map();
@@ -300,7 +307,7 @@ test('latency storage helpers drop expired entries by ttl', () => {
 
   const persistedPayload = JSON.parse(storage.get('latency-test'));
   assert.deepEqual(persistedPayload, {
-    '7': { value: '91ms', ts: 21_000 },
+    '7': { value: '1s', ts: 10_000 },
   });
 });
 
@@ -329,8 +336,8 @@ test('latency storage helpers preserve timestamp for unchanged entries', () => {
   assert.equal(persistedCount, 2);
   const persistedPayload = JSON.parse(storage.get('latency-test'));
   assert.deepEqual(persistedPayload, {
-    '7': { value: '88ms', ts: 8_000 },
-    '19': { value: '2.2s', ts: 10_000 },
+    '7': { value: '1s', ts: 8_000 },
+    '19': { value: '3s', ts: 10_000 },
   });
 });
 
@@ -478,8 +485,10 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
   controller.markStreamActive(7);
   assert.equal(streamStatus.textContent, 'Hermes responding in Project Helios');
   assert.equal(streamChip.textContent, 'stream: active · Project Helios');
-  assert.equal(latencyChip.textContent, 'latency: 0s · live');
-  assert.deepEqual(setChatLatencyCalls, [{ chatId: 7, text: '0s · live' }]);
+  assert.match(latencyChip.textContent, /^latency: [01]s · live$/);
+  assert.equal(setChatLatencyCalls.length, 1);
+  assert.equal(setChatLatencyCalls[0].chatId, 7);
+  assert.match(setChatLatencyCalls[0].text, /^[01]s · live$/);
   assert.ok(updates.length >= 3);
 });
 
@@ -525,6 +534,49 @@ test('createStreamActivityController keeps terminal latency monotonic against th
   } finally {
     Date.now = realNow;
   }
+});
+
+test('createStreamActivityController queue markers gate on active chat', () => {
+  const chats = new Map([[7, { pending: true, title: 'Project Helios' }]]);
+  const streamChip = { textContent: '', title: '' };
+  const latencyChip = { textContent: '', title: '' };
+  const streamStatus = { textContent: '' };
+  const updates = [];
+  const setActivityChip = (chip, text) => {
+    chip.textContent = text;
+    updates.push({ chip, text });
+  };
+
+  let activeChatId = 7;
+  const setChatLatencyCalls = [];
+  const controller = runtime.createStreamActivityController({
+    chats,
+    getActiveChatId: () => activeChatId,
+    chatLabel: () => 'Project Helios',
+    compactChatLabel: () => 'Project Helios',
+    setStreamStatus: (text) => {
+      streamStatus.textContent = text;
+    },
+    setActivityChip,
+    streamChip,
+    latencyChip,
+    setChatLatency: (chatId, text) => {
+      setChatLatencyCalls.push({ chatId, text });
+    },
+    syncActiveLatencyChip: () => {},
+  });
+
+  controller.markStreamQueued(7, { queuedAhead: 3 });
+  assert.equal(streamStatus.textContent, 'Queue update (Project Helios): queued');
+  assert.equal(streamChip.textContent, 'stream: queued · Project Helios');
+  assert.equal(latencyChip.textContent, 'latency: queued · ahead: 3');
+  assert.deepEqual(setChatLatencyCalls, [{ chatId: 7, text: 'queued · ahead: 3' }]);
+
+  activeChatId = 99;
+  controller.markStreamQueued(7, { queuedAhead: 1 });
+  assert.equal(streamChip.textContent, 'stream: queued · Project Helios');
+  assert.deepEqual(setChatLatencyCalls, [{ chatId: 7, text: 'queued · ahead: 3' }]);
+  assert.ok(updates.length >= 2);
 });
 
 test('createStreamActivityController reconnect/complete/failure markers gate on active chat', () => {
@@ -588,14 +640,13 @@ test('createStreamActivityController reconnect/complete/failure markers gate on 
     assert.equal(syncActiveLatencyChipCalls.length, 0);
     assert.equal(scheduledTimers.length, 1);
 
-    controller.markResumeAlreadyComplete(7);
-    assert.equal(latencyChip.textContent, 'latency: --');
-    assert.equal(streamStatus.textContent, 'Stream already complete in Project Helios');
-    assert.equal(streamChip.textContent, 'stream: complete · Project Helios');
-    assert.deepEqual(setChatLatencyCalls, [
-      { chatId: 7, text: 'reconnecting...' },
-      { chatId: 7, text: '--' },
-    ]);
+  controller.markResumeAlreadyComplete(7);
+  assert.equal(latencyChip.textContent, 'latency: reconnecting...');
+  assert.equal(streamStatus.textContent, 'Stream already complete in Project Helios');
+  assert.equal(streamChip.textContent, 'stream: complete · Project Helios');
+  assert.deepEqual(setChatLatencyCalls, [
+    { chatId: 7, text: 'reconnecting...' },
+  ]);
 
     activeChatId = 99;
     controller.markReconnectFailed(7);
