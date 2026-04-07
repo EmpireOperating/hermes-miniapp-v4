@@ -1737,6 +1737,7 @@ const streamActivityController = runtimeHelpers.createStreamActivityController({
   latencyChip,
   setChatLatency,
   syncActiveLatencyChip,
+  formatLatency,
 });
 
 const visibilitySkinController = visibilitySkinHelpers.createController({

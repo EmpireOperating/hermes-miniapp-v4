@@ -26,7 +26,17 @@ function buildHarness(overrides = {}) {
   const markReadInFlight = new Set();
   const unseenStreamChats = new Set();
   const finalizedHydratedPendingChats = [];
-  const messagesContainer = {};
+  const renderedAssistantNodes = [];
+  const messagesContainer = {
+    scrollTop: 0,
+    clientHeight: 0,
+    querySelectorAll: (selector) => {
+      if (selector === '.message[data-role="assistant"]:not(.message--pending), .message[data-role="hermes"]:not(.message--pending)') {
+        return renderedAssistantNodes;
+      }
+      return [];
+    },
+  };
   const pendingChats = new Set([7]);
   let renderTabsCalls = 0;
   let syncActivePendingStatusCalls = 0;
@@ -152,12 +162,20 @@ function buildHarness(overrides = {}) {
     messagesContainer,
     pendingChats,
     finalizedHydratedPendingChats,
+    renderedAssistantNodes,
     getRenderTabsCalls: () => renderTabsCalls,
     getRenderPinnedChatsCalls: () => renderPinnedChatsCalls,
     getSyncActivePendingStatusCalls: () => syncActivePendingStatusCalls,
     getUpdateComposerStateCalls: () => updateComposerStateCalls,
     setActiveChatId: (value) => { activeChatId = Number(value); },
     setIsNearBottom: (value) => { isNearBottom = Boolean(value); },
+    setRenderedAssistantNodes: (nodes) => {
+      renderedAssistantNodes.splice(0, renderedAssistantNodes.length, ...nodes);
+    },
+    setMessageViewport: ({ scrollTop = messagesContainer.scrollTop, clientHeight = messagesContainer.clientHeight } = {}) => {
+      messagesContainer.scrollTop = Number(scrollTop);
+      messagesContainer.clientHeight = Number(clientHeight);
+    },
     setIsAuthenticated: (value) => { isAuthenticated = Boolean(value); },
   };
 }
@@ -727,6 +745,52 @@ test('maybeMarkRead force mode bypasses near-bottom/unread gates', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.deepEqual(harness.markReadCalls, [7]);
+});
+
+test('maybeMarkRead waits for the bottom of the newest unread assistant message, not generic chat bottom proximity', async () => {
+  const nearBottomCalls = [];
+  const harness = buildHarness({
+    isNearBottomFn: (container, threshold) => {
+      nearBottomCalls.push({ container, threshold });
+      return true;
+    },
+  });
+
+  harness.chats.get(7).unread_count = 1;
+  harness.setRenderedAssistantNodes([
+    { offsetTop: 120, offsetHeight: 80 },
+    { offsetTop: 420, offsetHeight: 140 },
+  ]);
+  harness.setMessageViewport({ scrollTop: 240, clientHeight: 240 });
+
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.markReadCalls, []);
+
+  harness.setMessageViewport({ scrollTop: 300, clientHeight: 240 });
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, [7]);
+  assert.deepEqual(nearBottomCalls, []);
+});
+
+test('maybeMarkRead falls back to generic near-bottom gating when newest unread message cannot be measured', async () => {
+  const nearBottomCalls = [];
+  const harness = buildHarness({
+    isNearBottomFn: (container, threshold) => {
+      nearBottomCalls.push({ container, threshold });
+      return true;
+    },
+  });
+
+  harness.chats.get(7).unread_count = 1;
+  harness.setRenderedAssistantNodes([{ offsetTop: Number.NaN, offsetHeight: Number.NaN }]);
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, [7]);
+  assert.deepEqual(nearBottomCalls, [{ container: harness.messagesContainer, threshold: 40 }]);
 });
 
 test('maybeMarkRead clears unread optimistically as soon as bottom-threshold read sync starts', async () => {

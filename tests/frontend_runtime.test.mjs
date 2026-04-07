@@ -430,6 +430,50 @@ test('applyAuthBootstrap clears stale tabs when auth bootstrap returns zero open
   assert.equal(operatorName.textContent, 'operator');
 });
 
+test('createStreamActivityController syncActivePendingStatus restarts live latency ticking for active live chat', () => {
+  const chats = new Map([[7, { pending: false, title: 'Project Helios' }]]);
+  const streamChip = { textContent: '', title: '' };
+  const latencyChip = { textContent: 'latency: 59s · live', title: '' };
+  const streamStatus = { textContent: '' };
+  const updates = [];
+  const setActivityChip = (chip, text) => {
+    chip.textContent = text;
+    updates.push({ chip, text });
+  };
+  const realNow = Date.now;
+  Date.now = () => 1_000_000;
+  try {
+    const controller = runtime.createStreamActivityController({
+      chats,
+      getActiveChatId: () => 7,
+      hasLiveStreamController: () => true,
+      chatLabel: () => 'Project Helios',
+      compactChatLabel: () => 'Project Helios',
+      setStreamStatus: (text) => {
+        streamStatus.textContent = text;
+      },
+      setActivityChip,
+      streamChip,
+      latencyChip,
+      setChatLatency: () => {},
+      syncActiveLatencyChip: () => {},
+      formatLatency: sharedUtils.formatLatency,
+    });
+
+    controller.syncActivePendingStatus();
+    assert.equal(streamStatus.textContent, 'Hermes responding in Project Helios');
+    assert.equal(streamChip.textContent, 'stream: active · Project Helios');
+    assert.equal(latencyChip.textContent, 'latency: 59s · live');
+
+    Date.now = () => 1_003_000;
+    controller.markToolActivity(7);
+    assert.equal(latencyChip.textContent, 'latency: 1m 2s · live');
+    assert.ok(updates.some((entry) => entry.text === 'latency: 1m 2s · live'));
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test('createStreamActivityController syncActivePendingStatus and stream active markers preserve chip contract', () => {
   const chats = new Map([[7, { pending: true, title: 'Project Helios' }]]);
   const streamChip = { textContent: '', title: '' };
@@ -486,9 +530,9 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
   assert.equal(streamStatus.textContent, 'Hermes responding in Project Helios');
   assert.equal(streamChip.textContent, 'stream: active · Project Helios');
   assert.match(latencyChip.textContent, /^latency: [01]s · live$/);
-  assert.equal(setChatLatencyCalls.length, 1);
-  assert.equal(setChatLatencyCalls[0].chatId, 7);
-  assert.match(setChatLatencyCalls[0].text, /^[01]s · live$/);
+  assert.ok(setChatLatencyCalls.length >= 1);
+  assert.equal(setChatLatencyCalls.at(-1).chatId, 7);
+  assert.match(setChatLatencyCalls.at(-1).text, /^[01]s · live$/);
   assert.ok(updates.length >= 3);
 });
 
