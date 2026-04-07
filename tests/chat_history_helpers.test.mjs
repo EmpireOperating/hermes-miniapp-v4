@@ -201,6 +201,15 @@ test('hydrateChatFromServer updates history and rerenders active chat', async ()
   assert.deepEqual(harness.restoredSnapshots, []);
 });
 
+test('hydrateChatFromServer preserves local unread count until mark-read threshold is reached', async () => {
+  const harness = buildHarness();
+
+  await harness.controller.hydrateChatFromServer(7, 0, false);
+
+  assert.equal(harness.chats.get(7).unread_count, 2);
+  assert.deepEqual(harness.refreshedTabs, [7]);
+});
+
 test('hydrateChatFromServer restores pending snapshot for pending chats before resuming', async () => {
   const harness = buildHarness({
     apiPost: async (path, payload) => {
@@ -228,6 +237,15 @@ test('openChat uses cached history path before background hydration', async () =
   assert.deepEqual(harness.activeMeta.at(-1), { chatId: 7, options: { fullTabRender: false, deferNonCritical: true } });
   assert.deepEqual(harness.renderedMessages.at(0), { chatId: 7, options: {} });
   assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), true);
+});
+
+test('openChat keeps unread dot state while opening cached unread chat', async () => {
+  const harness = buildHarness();
+  harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+
+  await harness.controller.openChat(7);
+
+  assert.equal(harness.chats.get(7).unread_count, 2);
 });
 
 test('refreshChats syncs chat and pinned status with render/composer updates', async () => {
@@ -711,6 +729,56 @@ test('maybeMarkRead force mode bypasses near-bottom/unread gates', async () => {
   assert.deepEqual(harness.markReadCalls, [7]);
 });
 
+test('maybeMarkRead clears unread optimistically as soon as bottom-threshold read sync starts', async () => {
+  let resolveMarkRead;
+  const markReadStarted = new Promise((resolve) => {
+    resolveMarkRead = resolve;
+  });
+  let releaseMarkRead;
+  const markReadSettled = new Promise((resolve) => {
+    releaseMarkRead = resolve;
+  });
+
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      if (path === '/api/chats/mark-read') {
+        resolveMarkRead();
+        await markReadSettled;
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+        };
+      }
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      if (path === '/api/chats/open') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false },
+          history: [{ id: 2, role: 'assistant', body: 'opened' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  harness.chats.get(7).unread_count = 2;
+  harness.controller.maybeMarkRead(7);
+  await markReadStarted;
+
+  assert.equal(harness.chats.get(7).unread_count, 0);
+  assert.equal(harness.getRenderTabsCalls(), 1);
+
+  releaseMarkRead();
+  await markReadSettled;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(harness.chats.get(7).unread_count, 0);
+  assert.equal(harness.getRenderTabsCalls(), 2);
+});
+
 test('maybeMarkRead retries once after in-flight call settles when a second intent arrived', async () => {
   let resolveFirstMarkRead;
   let markReadCallCount = 0;
@@ -778,6 +846,27 @@ test('maybeMarkRead clears in-flight state when markRead fails', async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(harness.markReadInFlight.has(7), false);
+});
+
+test('maybeMarkRead restores unread dot if optimistic mark-read sync fails', async () => {
+  const harness = buildHarness({
+    apiPost: async (path) => {
+      if (path === '/api/chats/mark-read') {
+        throw new Error('mark-read failed');
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  harness.chats.get(7).unread_count = 2;
+  harness.controller.maybeMarkRead(7);
+
+  assert.equal(harness.chats.get(7).unread_count, 0);
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(harness.chats.get(7).unread_count, 2);
+  assert.equal(harness.getRenderTabsCalls(), 2);
 });
 
 function buildMetaHarness() {

@@ -441,6 +441,17 @@
       setActivityChip?.(streamChip, "stream: network failure");
     }
 
+    function markStreamClosedEarly(chatId = null) {
+      clearReconnectTimer(chatId);
+      clearLiveLatency(chatId || getActiveChatId?.());
+      const key = normalizeChatId(chatId || getActiveChatId?.());
+      if (key) {
+        setChatLatency?.(key, "--");
+      }
+      setStreamStatus?.("Stream closed early");
+      setActivityChip?.(streamChip, "stream: closed early");
+    }
+
     function markStreamQueued(chatId, { queuedAhead = null } = {}) {
       const key = normalizeChatId(chatId);
       const activeKey = normalizeChatId(getActiveChatId?.());
@@ -546,6 +557,7 @@
       markStreamActive,
       markStreamError,
       markNetworkFailure,
+      markStreamClosedEarly,
       markStreamQueued,
       markStreamReconnecting,
       markStreamComplete,
