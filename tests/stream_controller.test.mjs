@@ -18,6 +18,8 @@ function buildControllerHarness() {
   const toolTraceLines = [];
   const streamDebugEvents = [];
   const finalizeCalls = [];
+  const syncedActiveRenders = [];
+  const scheduledActiveRenders = [];
   const persistedCursors = [];
   const clearedCursors = [];
   const incomingHaptics = [];
@@ -52,8 +54,8 @@ function buildControllerHarness() {
     patchVisiblePendingAssistant: () => false,
     patchVisibleToolTrace: () => false,
     renderTraceLog: () => {},
-    syncActiveMessageView: () => {},
-    scheduleActiveMessageView: () => {},
+    syncActiveMessageView: (chatId) => { syncedActiveRenders.push(Number(chatId)); },
+    scheduleActiveMessageView: (chatId) => { scheduledActiveRenders.push(Number(chatId)); },
     setChatLatency: (chatId, text) => latencyUpdates.push({ chatId: Number(chatId), text: String(text) }),
     incrementUnread: (chatId) => unreadIncrements.push(Number(chatId)),
     getActiveChatId: () => 9,
@@ -105,6 +107,8 @@ function buildControllerHarness() {
     toolTraceLines,
     streamDebugEvents,
     finalizeCalls,
+    syncedActiveRenders,
+    scheduledActiveRenders,
     persistedCursors,
     clearedCursors,
     incomingHaptics,
@@ -182,9 +186,83 @@ test('consumeStreamResponse stops on first terminal event and ignores trailing t
   assert.equal(harness.pendingAssistantUpdates[0].text, 'final answer');
   assert.equal(harness.streamStatuses.at(-1), 'Reply received in chat-9');
   assert.equal(harness.streamChipUpdates.at(-1), 'stream: complete · #9');
-  assert.deepEqual(harness.latencyUpdates.at(-1), { chatId: 9, text: '42 ms' });
+  assert.deepEqual(harness.latencyUpdates.at(-1), { chatId: 9, text: '1s' });
+  assert.deepEqual(harness.syncedActiveRenders, [9]);
+  assert.deepEqual(harness.scheduledActiveRenders, []);
   assert.equal(stream.getCancelCalls(), 1);
   assert.equal(harness.pendingAssistantUpdates[0].text.includes('The response ended before completion.'), false);
+});
+
+test('consumeStreamResponse skips immediate full reconcile on done when visible patching succeeds', async () => {
+  const phases = new Map();
+  const syncedActiveRenders = [];
+  const renderedMessages = [];
+  const controller = streamController.createController({
+    parseSseEvent: sharedUtils.parseSseEvent,
+    formatLatency: sharedUtils.formatLatency,
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: (chatId) => phases.get(Number(chatId)) || streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: (chatId, phase) => phases.set(Number(chatId), phase),
+    isPatchPhaseAllowed: () => true,
+    chats: new Map(),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    finalizeInlineToolTrace: () => {},
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    patchVisiblePendingAssistant: () => true,
+    patchVisibleToolTrace: () => true,
+    renderTraceLog: () => {},
+    syncActiveMessageView: (chatId) => { syncedActiveRenders.push(Number(chatId)); },
+    scheduleActiveMessageView: () => {},
+    setChatLatency: () => {},
+    incrementUnread: () => {},
+    getActiveChatId: () => 9,
+    triggerIncomingMessageHaptic: () => {},
+    messagesEl: null,
+    promptEl: { focus: () => {} },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    streamDebugLog: () => {},
+    finalizeStreamPendingState: () => {},
+    appendInlineToolTrace: () => {},
+    loadChatHistory: async () => ({ chat: { id: 9, pending: false }, history: [{ role: 'assistant', body: 'final answer', pending: false }] }),
+    upsertChat: () => {},
+    histories: new Map([[9, [{ role: 'assistant', body: 'final answer', pending: false }]]]),
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    renderMessages: (chatId, options = {}) => renderedMessages.push({ chatId: Number(chatId), options }),
+    persistStreamCursor: () => {},
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    markStreamComplete: () => {},
+  });
+
+  const payload = [
+    'event: done',
+    'data: {"reply":"final answer","latency_ms":42,"turn_count":2}',
+    '',
+  ].join('\n');
+  const stream = makeSseResponse(payload);
+  const result = await controller.consumeStreamResponse(9, stream.response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(result.terminalReceived, true);
+  assert.deepEqual(syncedActiveRenders, []);
+  assert.deepEqual(renderedMessages, []);
 });
 
 test('consumeStreamResponse notifies background chats on first assistant chunk without duplicating unread/haptic on done', async () => {
@@ -430,7 +508,7 @@ test('consumeStreamResponse parses CRLF-framed SSE events incrementally', async 
   assert.equal(harness.pendingAssistantUpdates.at(-1)?.isStreaming, false);
   assert.equal(harness.streamStatuses.at(-1), 'Reply received in chat-9');
   assert.equal(harness.streamChipUpdates.at(-1), 'stream: complete · #9');
-  assert.deepEqual(harness.latencyUpdates.at(-1), { chatId: 9, text: '7 ms' });
+  assert.deepEqual(harness.latencyUpdates.at(-1), { chatId: 9, text: '1s' });
 });
 
 test('hydrateChatAfterGracefulResumeCompletion merges hydrated history and rerenders active chat', async () => {

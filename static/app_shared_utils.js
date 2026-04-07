@@ -103,16 +103,11 @@
   function formatLatency(msValue) {
     const ms = Number(msValue);
     if (!Number.isFinite(ms) || ms < 0) return "--";
-    if (ms < 1000) return `${Math.round(ms)} ms`;
-
-    const totalSeconds = Math.round(ms / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
-
-    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
-    if (minutes > 0) return `${minutes}m ${seconds}s`;
-    return `${seconds}s`;
+    return `${minutes}m ${seconds}s`;
   }
 
   function escapeHtml(input) {

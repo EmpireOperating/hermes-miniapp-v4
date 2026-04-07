@@ -39,6 +39,11 @@ def test_stream_state_helper_exports_phase_api_and_guardrails():
 
 def test_stream_controller_module_exports_core_api():
     controller_js = _read_static("stream_controller.js")
+    shared_utils_js = _read_static("app_shared_utils.js")
+
+    assert "const totalSeconds = Math.max(0, Math.ceil(ms / 1000));" in shared_utils_js
+    assert "if (totalSeconds < 60) return `${totalSeconds}s`;" in shared_utils_js
+    assert "const fallbackSeconds = `${Math.max(0, Math.ceil(elapsedMs / 1000))}s`;" in _read_static("runtime_helpers.js")
 
     assert "HermesMiniappStreamController" in controller_js
     assert "function createToolTraceController({" in controller_js
@@ -48,7 +53,10 @@ def test_stream_controller_module_exports_core_api():
     assert "async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {})" in controller_js
     assert "async function consumeStreamWithReconnect(chatId, response, builtReplyRef" in controller_js
     assert "function finalizeStreamLifecycle(chatId, streamController, { wasAborted })" in controller_js
+    assert "if (typeof deps.markToolActivity === \"function\") {" in controller_js
+    assert "if (typeof deps.markStreamComplete === \"function\") {" in controller_js
     assert 'renderTraceLog("stream-done-state"' in controller_js
+    assert 'syncActiveMessageView(chatId, { preserveViewport: true });' in controller_js
     assert 'streamDebugLog("sse-read"' in controller_js
     assert 'chunkPreview:' not in controller_js
     assert 'tailPreview:' not in controller_js
@@ -85,8 +93,20 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "const stillPending = Boolean(chats.get(key)?.pending) || pendingChats.has(key);" in app_js
     assert "Reconnect recovery is paused for '${chatLabel(key)}'. Send a new message to try again." in app_js
     assert "setStreamStatus?.(`Stream already complete in ${chatLabel?.(key) || \"Chat\"}`);" in runtime_helpers_js
+    assert "const RECONNECT_PILL_DELAY_MS = 2200;" in runtime_helpers_js
+    assert "const LIVE_LATENCY_TICK_MS = 1000;" in runtime_helpers_js
+    assert "const liveLatencyStartedAtByChat = new Map();" in runtime_helpers_js
+    assert "const reconnectDisplayTimerByChat = new Map();" in runtime_helpers_js
+    assert "const activeChat = chats?.get?.(activeKey) || null;" in runtime_helpers_js
+    assert "const isStillLive = Boolean(activeChat?.pending) || Boolean(hasLiveStreamController?.(activeKey));" in runtime_helpers_js
+    assert "if (!isStillLive) {" in runtime_helpers_js
+    assert "clearLiveLatency(activeKey);" in runtime_helpers_js
+    assert "function beginLiveLatency(chatId, { elapsedMs = null } = {})" in runtime_helpers_js
+    assert "function markToolActivity(chatId)" in runtime_helpers_js
+    assert "function markStreamComplete(chatId, latencyText = \"--\")" in runtime_helpers_js
     assert "setActivityChip?.(latencyChip, \"latency: --\");" in runtime_helpers_js
     assert "setChatLatency?.(key, \"--\");" in runtime_helpers_js
+    assert "const timerId = setTimeout(() => {" in runtime_helpers_js
     assert "setActivityChip?.(latencyChip, \"latency: reconnecting...\");" in runtime_helpers_js
     assert "setChatLatency?.(key, \"reconnecting...\");" in runtime_helpers_js
     assert "setStreamStatus?.(\"Reconnect recovery paused — action needed\");" in runtime_helpers_js
@@ -107,6 +127,10 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "resumeInFlightByChat.add(key);" in app_js
     assert "resumeAttemptedAtByChat.set(key, now);" in app_js
     assert "resumeCooldownUntilByChat.set(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);" in app_js
+    assert "const cooldownUntil = Number(resumeCooldownUntilByChat.get(key) || 0);" in app_js
+    assert "if (key > 0 && cooldownUntil > Date.now()) {" in app_js
+    assert "for (const [chatId, until] of resumeCooldownUntilByChat.entries()) {" in app_js
+    assert "chat.pending = false;" in app_js
     assert "resumeInFlightByChat.delete(key);" in app_js
     assert "blockReconnectResume(key);" in app_js
     assert "clearReconnectResumeBlock(chatId);" in app_js

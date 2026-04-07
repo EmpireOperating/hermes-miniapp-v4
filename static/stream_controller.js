@@ -395,13 +395,20 @@
       markStreamUpdate(chatId);
       const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, false);
       const patchedToolTrace = patchVisibleToolTrace(chatId);
+      const fallbackRender = !patchedAssistant || !patchedToolTrace;
       renderTraceLog("stream-done-patch", {
         chatId: Number(chatId),
         patchedAssistant,
         patchedToolTrace,
-        fallbackRender: !patchedAssistant || !patchedToolTrace,
+        fallbackRender,
       });
-      if (!patchedAssistant || !patchedToolTrace) {
+      // Finalizing a pending assistant message does not increase history length, so the
+      // normal active-chat reconcile cannot use append-only render and falls back to a full
+      // transcript pass. When the visible DOM patch already succeeded, doing that full pass
+      // immediately at terminal completion just adds latency before the final assistant text
+      // appears. Keep the in-place patch as the fast path and only force a full reconcile
+      // when the visible patch path could not safely update the active transcript.
+      if (fallbackRender) {
         syncActiveMessageView(chatId, { preserveViewport: true });
       }
       // Hydrate from persisted history so server-extracted metadata (e.g. file_refs/ref_id)
@@ -409,9 +416,14 @@
       // Force the local chat state to completed while hydrating so a slightly stale
       // history response cannot re-mark the chat as pending after the terminal `done`.
       void hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted: true });
-      setChatLatency(chatId, formatLatency(payload.latency_ms));
-      setStreamStatus(`Reply received in ${chatLabel(chatId)}`);
-      setActivityChip(streamChip, `stream: complete · ${compactChatLabel(chatId)}`);
+      const deliveredLatency = formatLatency(payload.latency_ms);
+      if (typeof deps.markStreamComplete === "function") {
+        deps.markStreamComplete(chatId, deliveredLatency);
+      } else {
+        setChatLatency(chatId, deliveredLatency);
+        setStreamStatus(`Reply received in ${chatLabel(chatId)}`);
+        setActivityChip(streamChip, `stream: complete · ${compactChatLabel(chatId)}`);
+      }
       renderTraceLog("stream-done-state", {
         chatId: Number(chatId),
         activeChatId: doneActiveChatId,
@@ -497,8 +509,12 @@
         if (!patchedToolTrace) {
           scheduleActiveMessageView(chatId);
         }
-        setStreamStatus(`Using tools in ${chatLabel(chatId)}`);
-        setActivityChip(streamChip, `stream: tools active · ${compactChatLabel(chatId)}`);
+        if (typeof deps.markToolActivity === "function") {
+          deps.markToolActivity(chatId);
+        } else {
+          setStreamStatus(`Using tools in ${chatLabel(chatId)}`);
+          setActivityChip(streamChip, `stream: tools active · ${compactChatLabel(chatId)}`);
+        }
         return false;
       }
 
@@ -713,6 +729,27 @@
       };
     }
 
+    function latestAssistantRenderSignature(history) {
+      const items = Array.isArray(history) ? history : [];
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        const role = String(item?.role || '').toLowerCase();
+        if (role !== 'hermes' && role !== 'assistant') continue;
+        const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
+        const fileRefSignature = fileRefs
+          .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
+          .join('|');
+        return [
+          String(item?.id || ''),
+          role,
+          String(item?.body || ''),
+          item?.pending ? 'pending' : 'final',
+          fileRefSignature,
+        ].join('::');
+      }
+      return '';
+    }
+
     async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {}) {
       const key = Number(chatId);
       if (!key || typeof loadChatHistory !== "function") return;
@@ -730,6 +767,7 @@
           upsertChat(hydratedChat);
         }
         const previousHistory = histories?.get?.(key) || [];
+        const previousAssistantSignature = latestAssistantRenderSignature(previousHistory);
         const nextHistory = typeof mergeHydratedHistory === "function"
           ? mergeHydratedHistory({
             previousHistory,
@@ -738,7 +776,18 @@
           })
           : (hydrated.history || []);
         histories?.set?.(key, nextHistory);
-        if (Number(getActiveChatId()) === key && typeof renderMessages === "function") {
+        const nextAssistantSignature = latestAssistantRenderSignature(nextHistory);
+        const shouldRenderActiveChat = Number(getActiveChatId()) === key
+          && typeof renderMessages === "function"
+          && previousAssistantSignature !== nextAssistantSignature;
+        renderTraceLog("stream-done-hydrate", {
+          chatId: key,
+          forceCompleted: Boolean(forceCompleted),
+          rendered: Boolean(shouldRenderActiveChat),
+          previousAssistantSignature,
+          nextAssistantSignature,
+        });
+        if (shouldRenderActiveChat) {
           renderMessages(key, { preserveViewport: true });
         }
       } catch {
