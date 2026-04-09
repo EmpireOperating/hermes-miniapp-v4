@@ -10,6 +10,8 @@
   --muted: #bda272;
   --danger: #ff7c5c;
   --shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+  --hermes-visual-viewport-height: 100vh;
+  --hermes-visual-viewport-top: 0px;
 }
 
 * { box-sizing: border-box; }
@@ -663,7 +665,7 @@ textarea:focus-visible {
   overflow-anchor: none;
   /* Desktop/web: keep short histories tight to the latency rail, cap long histories with internal scroll. */
   min-height: 140px;
-  max-height: min(52vh, 560px);
+  max-height: min(calc(var(--hermes-visual-viewport-height, 100vh) * 0.52), 560px);
 }
 /* Bottom-anchor short histories without breaking overflow scroll for long histories. */
 .messages::before {
@@ -1028,8 +1030,8 @@ textarea:disabled {
   }
   .messages {
     padding-bottom: 6px;
-    height: min(60vh, 640px);
-    max-height: min(60vh, 640px);
+    height: min(calc(var(--hermes-visual-viewport-height, 100vh) * 0.6), 640px);
+    max-height: min(calc(var(--hermes-visual-viewport-height, 100vh) * 0.6), 640px);
   }
   .activity-rail {
     min-height: 0;
@@ -1103,7 +1105,7 @@ textarea:disabled {
     padding: 14px;
     gap: 10px;
     min-height: 207px;
-    max-height: 72vh;
+    max-height: calc(var(--hermes-visual-viewport-height, 100vh) * 0.72);
   }
   .masthead {
     padding-right: 80px;
@@ -1145,7 +1147,7 @@ textarea:disabled {
   }
   .messages {
     min-height: 166px;
-    max-height: 62vh;
+    max-height: calc(var(--hermes-visual-viewport-height, 100vh) * 0.62);
   }
   .jump-latest,
   .jump-last-start {

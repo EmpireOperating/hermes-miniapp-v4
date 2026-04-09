@@ -215,6 +215,7 @@ def test_runtime_diagnostics_include_active_job_transport_transitions(monkeypatc
 
 def test_checkpoint_only_runtime_tracks_warm_owner_worker_events(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED", "checkpoint_only")
     server = load_server(monkeypatch, tmp_path)
     runtime = server.runtime
 

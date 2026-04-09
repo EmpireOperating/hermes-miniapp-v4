@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import os
 from types import SimpleNamespace
+
+
+def _explicit_env_overrides(monkeypatch, keys: tuple[str, ...]) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for mapping, key, _old_value in getattr(monkeypatch, "_setitem", []):
+        if mapping is os.environ and key in keys and key in os.environ:
+            overrides[key] = os.environ[key]
+    return overrides
 
 
 def load_server(
@@ -18,26 +27,37 @@ def load_server(
     monkeypatch.setenv("MAX_MESSAGE_LEN", str(max_message_len))
     monkeypatch.setenv("MAX_TITLE_LEN", str(max_title_len))
     monkeypatch.setenv("MAX_CONTENT_LENGTH", str(max_content_length))
+
     # Isolate tests from host/service hardening env (e.g. production origin allowlists).
     # Some tests can opt out to validate origin enforcement behavior.
     if isolate_security_env:
         monkeypatch.setenv("MINI_APP_ENFORCE_ORIGIN_CHECK", "0")
         monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "")
+
     # Isolate server reload/import tests from ambient host/service runtime env so
-    # persistent-session or warm-worker toggles do not silently change thread/process
-    # startup behavior under test.
-    for key in (
-        "MINI_APP_PERSISTENT_SESSIONS",
-        "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP",
-        "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED",
-        "MINI_APP_JOB_WORKER_LAUNCHER",
-        "MINI_APP_WARM_WORKER_REUSE",
-        "MINI_APP_WARM_WORKER_SAME_CHAT_ONLY",
-        "MINI_APP_WARM_WORKER_IDLE_TTL_SECONDS",
-        "MINI_APP_WARM_WORKER_MAX_IDLE",
-        "MINI_APP_WARM_WORKER_MAX_TOTAL",
-    ):
+    # persistent-session or warm-worker toggles do not silently change behavior under
+    # test. Preserve explicit per-test overrides set via monkeypatch.setenv(...).
+    runtime_defaults = {
+        "MINI_APP_PERSISTENT_SESSIONS": "0",
+        "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP": "auto",
+        "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED": "auto",
+        "MINI_APP_JOB_WORKER_LAUNCHER": "inline",
+        "MINI_APP_JOB_WORKER_SUBPROCESS_MEMORY_LIMIT_MB": "1024",
+        "MINI_APP_JOB_WORKER_SUBPROCESS_MAX_TASKS": "64",
+        "MINI_APP_JOB_WORKER_SUBPROCESS_MAX_OPEN_FILES": "256",
+        "MINI_APP_WARM_WORKER_REUSE": "0",
+        "MINI_APP_WARM_WORKER_SAME_CHAT_ONLY": "1",
+        "MINI_APP_WARM_WORKER_IDLE_TTL_SECONDS": "180",
+        "MINI_APP_WARM_WORKER_MAX_IDLE": "2",
+        "MINI_APP_WARM_WORKER_MAX_TOTAL": "4",
+    }
+    explicit_runtime_overrides = _explicit_env_overrides(monkeypatch, tuple(runtime_defaults.keys()))
+    for key, default_value in runtime_defaults.items():
         monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv(key, default_value)
+    for key, value in explicit_runtime_overrides.items():
+        monkeypatch.setenv(key, value)
+
     if isolate_dev_env:
         for key in (
             "MINIAPP_DEV_BYPASS",
@@ -50,11 +70,12 @@ def load_server(
         ):
             monkeypatch.delenv(key, raising=False)
 
+    session_store_path = tmp_path / "sessions.db"
+    monkeypatch.setenv("MINI_APP_SESSION_STORE_PATH", str(session_store_path))
+
     import server  # noqa: PLC0415
-    import store as store_mod  # noqa: PLC0415
 
     module = importlib.reload(server)
-    module.store = store_mod.SessionStore(tmp_path / "sessions.db")
     return module
 
 

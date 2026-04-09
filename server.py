@@ -37,6 +37,7 @@ from store import ChatThread, SessionStore
 from validators import parse_chat_id, validate_message, validate_title
 
 BASE_DIR = Path(__file__).resolve().parent
+SESSION_STORE_PATH = Path(os.environ.get("MINI_APP_SESSION_STORE_PATH") or (BASE_DIR / "sessions.db"))
 
 _previous_runtime = globals().get("runtime")
 if _previous_runtime is not None:
@@ -55,7 +56,7 @@ if callable(_previous_runtime_atexit):
         pass
 
 CONFIG = MiniAppConfig.from_env()
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 PORT = CONFIG.port
 DEBUG = CONFIG.debug
 DEV_RELOAD = CONFIG.dev_reload
@@ -197,7 +198,7 @@ def _create_client_with_resolved_ownership() -> HermesClient:
 
 
 client = _create_client_with_resolved_ownership()
-store = SessionStore(BASE_DIR / "sessions.db")
+store = SessionStore(SESSION_STORE_PATH)
 
 
 
