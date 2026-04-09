@@ -37,6 +37,7 @@ from store import ChatThread, SessionStore
 from validators import parse_chat_id, validate_message, validate_title
 
 BASE_DIR = Path(__file__).resolve().parent
+SESSION_STORE_PATH = Path(os.environ.get("MINI_APP_SESSION_STORE_PATH") or (BASE_DIR / "sessions.db"))
 
 _previous_runtime = globals().get("runtime")
 if _previous_runtime is not None:
@@ -70,6 +71,7 @@ ASSISTANT_HARD_LIMIT = CONFIG.assistant_hard_limit
 DEV_RELOAD_INTERVAL_MS = CONFIG.dev_reload_interval_ms
 JOB_MAX_ATTEMPTS = CONFIG.job_max_attempts
 JOB_RETRY_BASE_SECONDS = CONFIG.job_retry_base_seconds
+
 JOB_WORKER_CONCURRENCY = CONFIG.job_worker_concurrency
 JOB_WORKER_LAUNCHER = CONFIG.job_worker_launcher
 JOB_WORKER_SUBPROCESS_TIMEOUT_SECONDS = CONFIG.job_worker_subprocess_timeout_seconds
@@ -197,7 +199,7 @@ def _create_client_with_resolved_ownership() -> HermesClient:
 
 
 client = _create_client_with_resolved_ownership()
-store = SessionStore(BASE_DIR / "sessions.db")
+store = SessionStore(SESSION_STORE_PATH)
 
 
 

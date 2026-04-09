@@ -98,9 +98,17 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
       return 1;
     },
   };
+  const cssVarUpdates = [];
   const documentObject = {
     activeElement: null,
     visibilityState: 'visible',
+    documentElement: {
+      style: {
+        setProperty(name, value) {
+          cssVarUpdates.push([name, value]);
+        },
+      },
+    },
     querySelector(selector) {
       return queryTargets[selector] || null;
     },
@@ -151,6 +159,7 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
     clearTimeoutCalls,
     windowResizeListeners,
     telegramViewportHandlers,
+    cssVarUpdates,
     chatScrollTop,
     chatStickToBottom,
     jumpVisibilityUpdates,
@@ -196,7 +205,7 @@ test('installTapToDismissKeyboard skips touchstart on messages in mobile quote m
   assert.equal(harness.queryTargets['.masthead'].listeners('touchstart').length, 1);
 });
 
-test('installKeyboardViewportSync wires focus/viewport listeners and sync burst timers', () => {
+test('installKeyboardViewportSync wires focus/viewport listeners, sync burst timers, and viewport css vars', () => {
   const harness = buildHarness();
 
   harness.controller.installKeyboardViewportSync();
@@ -209,6 +218,10 @@ test('installKeyboardViewportSync wires focus/viewport listeners and sync burst 
   assert.equal(harness.visualViewport.listeners('scroll').length, 1);
   assert.equal(harness.windowResizeListeners.length, 1);
   assert.deepEqual(harness.telegramViewportHandlers.map((entry) => entry.name), ['viewportChanged']);
+  assert.deepEqual(harness.cssVarUpdates.slice(0, 2), [
+    ['--hermes-visual-viewport-height', '500px'],
+    ['--hermes-visual-viewport-top', '0px'],
+  ]);
 });
 
 test('installKeyboardViewportSync clears interval on blur', () => {

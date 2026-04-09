@@ -935,6 +935,7 @@ def test_stream_resume_and_graceful_completion_helpers_are_centralized() -> None
 def test_mobile_viewport_and_composer_zoom_guards_present() -> None:
     template = _read_repo_file("templates", "app.html")
     css = _read_repo_file("static", "app.css")
+    app_script = _read_repo_file("static", "app.js")
 
     assert "maximum-scale=1" in template
     assert "user-scalable=no" in template
@@ -945,6 +946,12 @@ def test_mobile_viewport_and_composer_zoom_guards_present() -> None:
     assert "text-size-adjust: none;" in css
     assert "margin-left: auto;" in css
     assert "margin-left: auto !important;" in css
+    assert "let focusComposerForNewChatRequestId = 0;" in app_script
+    assert "const shouldKeepRetryingFocus = () => {" in app_script
+    assert 'document.querySelector?.("dialog[open]")' in app_script
+    assert "if (mobileQuoteMode) {" in app_script
+    assert "promptEl.focus();" in app_script
+    assert "promptEl.focus({ preventScroll: true });" in app_script
 
 def test_quote_selection_sync_is_debounced_in_client_script() -> None:
     app_script = _read_repo_file("static", "app.js")

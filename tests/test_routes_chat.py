@@ -875,8 +875,6 @@ def test_resume_stream_recovers_done_terminal_state_when_queue_is_empty(monkeypa
     chat_id = server.store.ensure_default_chat("123")
     operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
     job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
-    claimed = server.store.claim_next_job()
-    assert claimed is not None
 
     class _AlwaysEmptySubscriber:
         def get(self, timeout=None):

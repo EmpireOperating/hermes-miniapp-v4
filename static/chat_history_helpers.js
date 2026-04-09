@@ -154,7 +154,7 @@
       scheduleTimeout,
       requestIdle,
       runAfterUiMutation,
-      getIsAuthenticated,
+      getIsAuthenticated = () => true,
       isNearBottomFn,
       messagesContainer,
       unseenStreamChats,

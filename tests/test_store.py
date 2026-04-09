@@ -440,6 +440,34 @@ def test_chat_job_queue_lifecycle(tmp_path) -> None:
     assert store.get_open_job(user_id, chat_id) is None
 
 
+def test_claim_next_job_retries_transient_database_locked_error(monkeypatch, tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u8-lock"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "retry claim")
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id)
+
+    import sqlite3
+    import store_jobs as store_jobs_module
+
+    original_dead_letter = store_jobs_module.dead_letter_exhausted_queued_jobs
+    calls = {"count": 0}
+
+    def flaky_dead_letter(conn, *, insert_dead_letter_if_missing):
+        if calls["count"] == 0:
+            calls["count"] += 1
+            raise sqlite3.OperationalError("database is locked")
+        return original_dead_letter(conn, insert_dead_letter_if_missing=insert_dead_letter_if_missing)
+
+    monkeypatch.setattr(store_jobs_module, "dead_letter_exhausted_queued_jobs", flaky_dead_letter)
+
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == job_id
+    assert calls["count"] == 1
+
+
+
 def test_claim_next_job_skips_same_chat_when_one_is_running(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u9"
