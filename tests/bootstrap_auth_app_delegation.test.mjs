@@ -18,10 +18,16 @@ test('app.js bootstrap/auth request wrappers keep delegating to bootstrapAuthCon
   const source = await readFile(appJsUrl, 'utf8');
 
   const delegateExpectations = [
+    ['normalizeHandle', 'bootstrapAuthController.normalizeHandle(value)'],
+    ['fallbackHandleFromDisplayName', 'bootstrapAuthController.fallbackHandleFromDisplayName(value)'],
+    ['refreshOperatorRoleLabels', 'bootstrapAuthController.refreshOperatorRoleLabels()'],
     ['authPayload', 'bootstrapAuthController.authPayload(extra)'],
     ['safeReadJson', 'bootstrapAuthController.safeReadJson(response)'],
     ['summarizeUiFailure', 'bootstrapAuthController.summarizeUiFailure(rawBody, { status, fallback })'],
     ['parseStreamErrorPayload', 'bootstrapAuthController.parseStreamErrorPayload(rawBody)'],
+    ['apiPost', 'bootstrapAuthController.apiPost(url, payload)'],
+    ['fetchAuthBootstrapWithRetry', 'bootstrapAuthController.fetchAuthBootstrapWithRetry()'],
+    ['maybeRefreshForBootstrapVersionMismatch', 'bootstrapAuthController.maybeRefreshForBootstrapVersionMismatch()'],
   ];
 
   for (const [fnName, delegatedCall] of delegateExpectations) {

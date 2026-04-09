@@ -12,6 +12,21 @@ from pathlib import Path
 import hermes_client
 import hermes_client_agent
 import hermes_client_cli
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_ambient_miniapp_env(monkeypatch) -> None:
+    for key in (
+        "MINI_APP_PERSISTENT_SESSIONS",
+        "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP",
+        "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED",
+        "MINI_APP_JOB_WORKER_LAUNCHER",
+        "MINI_APP_WARM_WORKER_REUSE",
+        "MINI_APP_WARM_WORKER_SAME_CHAT_ONLY",
+        "MINI_APP_DIRECT_AGENT",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 class _FakeAgent:
@@ -145,6 +160,7 @@ def test_isolated_worker_warm_registry_tracks_owner_records(monkeypatch) -> None
     assert record["chat_id"] == 55
     assert record["job_id"] == 991
     assert record["owner_pid"] == 44001
+    assert record["run_count"] == 1
     assert record["last_finished_monotonic_ms"] is None
     assert owner_state["reusable_candidate_count"] == 0
 
@@ -158,6 +174,7 @@ def test_isolated_worker_warm_registry_tracks_owner_records(monkeypatch) -> None
     assert record["lifecycle_phase"] == "post_attempt"
     assert record["reusable"] is True
     assert record["reusability_reason"] == "isolated_worker_warm_reuse_not_implemented"
+    assert record["run_count"] == 1
     assert record["last_outcome"] == "completed"
     assert record["last_finished_monotonic_ms"] is not None
     assert record["reusable_until_monotonic_ms"] is not None
@@ -383,10 +400,123 @@ def test_evaluate_warm_reuse_policy_defaults_disabled(monkeypatch) -> None:
     )
     assert policy["allowed"] is False
     assert policy["policy"] == "disabled_by_policy"
+    assert policy["detail"] == "warm worker reuse flag is disabled"
     assert policy["candidate_available"] is True
     assert policy["candidate"]["session_id"] == "miniapp-123-55"
     recent = client.warm_session_strategy()["recent_reuse_policy_checks"]
     assert recent[-1]["session_id"] == "miniapp-123-55"
+
+
+def test_evaluate_warm_reuse_policy_allows_same_chat_worker_attach_when_flag_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_REUSE", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_SAME_CHAT_ONLY", "1")
+    client = hermes_client.HermesClient()
+    client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    client.note_warm_session_worker_attach_ready(
+        session_id="miniapp-123-55",
+        owner_pid=44001,
+        transport_kind="unix_socket_jsonl",
+        worker_endpoint="/tmp/miniapp-attach.sock",
+        resume_token="token-123",
+        resume_deadline_ms=int(time.monotonic() * 1000) + 5000,
+    )
+    candidate = client.select_warm_session_candidate("miniapp-123-55")
+
+    policy = client.evaluate_warm_reuse_policy(
+        "miniapp-123-55",
+        reason="stream_start:agent-worker-isolated",
+        requested_path="agent-worker-isolated",
+        candidate=candidate,
+    )
+
+    assert policy["allowed"] is True
+    assert policy["policy"] == "same_chat_warm_worker_reuse"
+    assert policy["detail"] == "same-chat warm worker reuse allowed"
+    assert policy["warm_worker_reuse_enabled"] is True
+    assert policy["warm_worker_same_chat_only"] is True
+    assert policy["candidate"]["session_id"] == "miniapp-123-55"
+
+
+def test_evaluate_warm_reuse_policy_retires_candidate_over_thread_budget(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_REUSE", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_SAME_CHAT_ONLY", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_HEALTH_MAX_THREADS", "8")
+    client = hermes_client.HermesClient()
+    client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    client.note_warm_session_worker_attach_ready(
+        session_id="miniapp-123-55",
+        owner_pid=44001,
+        transport_kind="unix_socket_jsonl",
+        worker_endpoint="/tmp/miniapp-attach.sock",
+        resume_token="token-123",
+        resume_deadline_ms=int(time.monotonic() * 1000) + 5000,
+    )
+    monkeypatch.setattr(client, "_read_process_status", lambda pid: {"Threads": "12", "VmRSS": "512000 kB", "state_code": "S"})
+    candidate = client.select_warm_session_candidate("miniapp-123-55")
+
+    policy = client.evaluate_warm_reuse_policy(
+        "miniapp-123-55",
+        reason="stream_start:agent-worker-isolated",
+        requested_path="agent-worker-isolated",
+        candidate=candidate,
+    )
+
+    assert policy["allowed"] is False
+    assert policy["policy"] == "candidate_unavailable"
+    assert "retired_thread_limit" in str(policy["detail"])
+    owner_state = client.warm_session_owner_state()
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "evicted"
+    assert "retired_thread_limit" in str(record["reusability_reason"])
+    assert record["last_known_thread_count"] == 12
+    summary = owner_state["retirement_summary"]
+    assert summary["total"] == 1
+    assert summary["by_reason"]["thread_limit"] == 1
+    assert summary["recent"][0]["session_id"] == "miniapp-123-55"
+
+
+def test_probe_warm_session_candidate_retires_candidate_after_run_budget(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_REUSE", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_RETIRE_AFTER_RUNS", "2")
+    client = hermes_client.HermesClient()
+    for _ in range(3):
+        client.note_warm_session_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+        client.note_warm_session_worker_finished(session_id="miniapp-123-55", outcome="completed", chat_id=55, job_id=991, owner_pid=44001)
+
+    probe = client.probe_warm_session_candidate("miniapp-123-55", reason="stream_start:agent-worker-isolated")
+
+    assert probe["available"] is False
+    assert probe["unavailable_reason"] == "retired_after_run_budget"
+    owner_state = client.warm_session_owner_state()
+    record = owner_state["owner_records"][0]
+    assert record["state"] == "evicted"
+    assert "retired_after_run_budget" in str(record["reusability_reason"])
+    summary = client.warm_session_strategy()["retirement_summary"]
+    assert summary["total"] == 1
+    assert summary["by_reason"]["run_budget"] == 1
+
+
+def test_warm_session_strategy_surfaces_failure_signature_retirements(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_REUSE", "1")
+    client = hermes_client.HermesClient()
+    client.note_warm_session_worker_started(session_id="miniapp-123-99", chat_id=99, job_id=991, owner_pid=44001)
+    assert client.evict_session("miniapp-123-99", reason="failure_signature:direct_agent:memory_pressure") is True
+
+    summary = client.warm_session_strategy()["retirement_summary"]
+    assert summary["total"] == 1
+    assert summary["by_reason"]["failure_signature"] == 1
+    assert summary["recent"][0]["session_id"] == "miniapp-123-99"
+    assert "failure_signature:direct_agent:memory_pressure" in str(summary["recent"][0]["reason"])
 
 
 def test_record_warm_reuse_decision_available_policy_blocked(monkeypatch) -> None:
@@ -796,7 +926,7 @@ def test_execute_worker_attach_reports_owner_present_wrong_identity(monkeypatch)
     assert execution["owner_pid"] == 4242
 
 
-def test_execute_worker_attach_reports_owner_present_identity_verified_but_session_unverified(monkeypatch) -> None:
+def test_execute_worker_attach_reports_owner_present_identity_verified_via_contract_when_cmdline_session_is_missing(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
     monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
     client = hermes_client.HermesClient()
@@ -819,7 +949,7 @@ def test_execute_worker_attach_reports_owner_present_identity_verified_but_sessi
     }
 
     monkeypatch.setattr(hermes_client.os, "kill", lambda pid, sig: None)
-    monkeypatch.setattr(client, "_read_process_cmdline", lambda pid: "/usr/bin/python chat_worker_subprocess.py --session other-session")
+    monkeypatch.setattr(client, "_read_process_cmdline", lambda pid: "/usr/bin/python chat_worker_subprocess.py")
 
     execution = client.execute_worker_attach(
         session_id="miniapp-123-7",
@@ -827,8 +957,9 @@ def test_execute_worker_attach_reports_owner_present_identity_verified_but_sessi
         attach_plan=attach_plan,
     )
     assert execution["executed"] is False
-    assert execution["status"] == "attach_owner_identity_verified_session_unverified"
-    assert execution["session_binding"]["verified"] is False
+    assert execution["status"] == "attach_owner_identity_verified_session_verified"
+    assert execution["session_binding"]["verified"] is True
+    assert execution["session_binding"]["reason"] == "session_id_verified_by_contract"
     assert execution["owner_pid"] == 4242
 
 
@@ -886,13 +1017,26 @@ def test_decide_worker_attach_eligibility_reports_probe_only(monkeypatch) -> Non
     assert eligibility["eligible"] is True
 
 
-def test_execute_worker_attach_action_reports_handshake_unavailable_when_cmdline_missing(monkeypatch) -> None:
+def test_execute_worker_attach_action_attempts_handshake_without_cmdline_when_eligible(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
     monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
     client = hermes_client.HermesClient()
 
     eligibility = {"status": "attach_eligible_probe_only", "eligible": True, "reason": "attach_owner_identity_verified_session_verified"}
     attach_execution = {"status": "attach_owner_identity_verified_session_verified", "executed": False, "owner_pid": 4242, "cmdline": None}
+    monkeypatch.setattr(
+        client,
+        "_attempt_live_worker_attach_handshake",
+        lambda *, session_id, requested_path, attach_execution: {
+            "executed": True,
+            "status": "attach_action_handshake_succeeded",
+            "session_id": session_id,
+            "requested_path": requested_path,
+            "owner_pid": attach_execution.get("owner_pid"),
+            "reason": "handshake_proc_probe_succeeded",
+            "handshake_attempted": True,
+        },
+    )
 
     action = client.execute_worker_attach_action(
         session_id="miniapp-123-7",
@@ -900,13 +1044,13 @@ def test_execute_worker_attach_action_reports_handshake_unavailable_when_cmdline
         attach_eligibility=eligibility,
         attach_execution=attach_execution,
     )
-    assert action["executed"] is False
-    assert action["status"] == "attach_action_handshake_unavailable"
-    assert action["owner_pid"] == 4242
+    assert action["executed"] is True
+    assert action["status"] == "attach_action_handshake_succeeded"
+    assert action["reason"] == "handshake_proc_probe_succeeded"
 
 
-def test_attempt_live_worker_attach_handshake_succeeds_with_proc_metadata(monkeypatch) -> None:
-    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+def test_execute_worker_attach_action_merges_handshake_result(monkeypatch) -> None:
+
     monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
     client = hermes_client.HermesClient()
 
@@ -1596,6 +1740,77 @@ def test_persistent_agent_timeout_resets_on_progress_events(monkeypatch) -> None
     assert any(event.get("type") == "done" and event.get("reply") == "progress-ok" for event in events)
 
 
+def test_persistent_agent_supports_event_typed_tool_progress_callback(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    class _TypedProgressAgent:
+        def __init__(self, **kwargs):
+            self.tool_progress_callback = kwargs.get("tool_progress_callback")
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            assert self.tool_progress_callback is not None
+            self.tool_progress_callback("reasoning.available", "_thinking", "ignored", None)
+            self.tool_progress_callback("tool.started", "terminal", "date", {"command": "date"})
+            return {"final_response": "typed-progress-ok", "error": None, "messages": []}
+
+    class _TypedProgressRunAgentModule:
+        AIAgent = _TypedProgressAgent
+
+    monkeypatch.setitem(sys.modules, "run_agent", _TypedProgressRunAgentModule())
+
+    client = hermes_client.HermesClient()
+    events = list(
+        client._stream_via_persistent_agent(
+            user_id="123",
+            message="hello",
+            session_id="miniapp-123-persistent-typed-progress",
+            conversation_history=[{"role": "operator", "body": "old"}],
+        )
+    )
+
+    tool_event = next(event for event in events if event.get("type") == "tool")
+    assert tool_event.get("tool_name") == "terminal"
+    assert tool_event.get("preview") == "date"
+    assert tool_event.get("args") == {"command": "date"}
+    assert any(event.get("type") == "done" and event.get("reply") == "typed-progress-ok" for event in events)
+
+
+def test_direct_agent_timeout_resets_on_progress_events(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
+    monkeypatch.setenv("HERMES_TIMEOUT_SECONDS", "1")
+
+    client = hermes_client.HermesClient()
+    monkeypatch.setattr(os.path, "exists", lambda _path: True)
+    client.agent_python = sys.executable
+    client.agent_workdir = "/home/hermes-agent/workspace/active/hermes_miniapp_v4"
+    monkeypatch.setattr(
+        client,
+        "_agent_runner_script",
+        lambda: (
+            "import json, sys, time\n"
+            "json.loads(sys.stdin.read() or '{}')\n"
+            "for idx in range(3):\n"
+            "    time.sleep(0.35)\n"
+            "    print(json.dumps({'kind':'tool','tool_name':'search_files','preview':f'step-{idx}','args':{}}), flush=True)\n"
+            "print(json.dumps({'kind':'done','reply':'direct-progress-ok','source':'agent','latency_ms':1}), flush=True)\n"
+        ),
+    )
+
+    events = list(
+        client._stream_via_agent(
+            user_id="123",
+            message="hello",
+            session_id="miniapp-123-direct-progress",
+            conversation_history=[{"role": "operator", "body": "old"}],
+        )
+    )
+
+    assert any(event.get("type") == "tool" for event in events)
+    assert any(event.get("type") == "done" and event.get("reply") == "direct-progress-ok" for event in events)
+
+
 def test_persistent_agent_wraps_worker_exception_as_hermes_client_error(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
     monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
@@ -1715,6 +1930,7 @@ def test_warm_session_strategy_reports_worker_owned_continuity_for_subprocess_mo
     strategy_without_extras.pop("recent_reuse_policy_checks", None)
     strategy_without_extras.pop("recent_reuse_attempts", None)
     strategy_without_extras.pop("recent_reuse_decisions", None)
+    strategy_without_extras.pop("retirement_summary", None)
     assert strategy_without_extras == contract.as_dict()
 
 
@@ -1847,6 +2063,35 @@ def test_terminate_tracked_children_uses_killpg_for_chat_worker_subprocess(monke
     assert summary["killed"] == 1
     assert kill_calls == []
     assert killpg_calls == [(43099, int(hermes_client.signal.SIGKILL))]
+    client.clear_spawn_trace_context()
+
+
+def test_terminate_tracked_children_kills_observed_descendants_for_job(monkeypatch) -> None:
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
+    client.observe_descendant_spawn(
+        transport="cli-stream",
+        pid=53101,
+        command=["hermes", "chat"],
+        session_id="miniapp-123-88",
+        parent_transport="chat-worker-subprocess",
+        parent_pid=43001,
+    )
+
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(hermes_client.os, "kill", lambda pid, sig: kill_calls.append((int(pid), int(sig))))
+
+    summary = client.terminate_tracked_children(job_id=9100, reason="test_cleanup")
+
+    assert summary["targeted"] == 1
+    assert summary["killed"] == 1
+    assert kill_calls == [(53101, int(hermes_client.signal.SIGKILL))]
+    diagnostics = client.child_spawn_diagnostics()
+    assert diagnostics.get("descendant_active_total") == 0
+    assert any(
+        event.get("event") == "descendant_finish" and event.get("pid") == 53101 and event.get("outcome") == "cleanup_kill:test_cleanup"
+        for event in (diagnostics.get("recent_descendant_events") or [])
+    )
     client.clear_spawn_trace_context()
 
 
@@ -2215,6 +2460,43 @@ def test_stream_events_persistent_fallback_recovers_checkpoint_and_evicts_runtim
     assert client._session_manager.get_runtime(session_id) is None
 
 
+def test_stream_events_retires_warm_session_on_persistent_thread_failure(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_REUSE", "1")
+
+    client = hermes_client.HermesClient()
+    session_id = "miniapp-123-persistent-oom"
+    runtime = client._session_manager.get_or_create(
+        session_id=session_id,
+        model=client.model,
+        max_iterations=client.max_iterations,
+        create_agent=lambda: object(),
+    )
+    runtime.checkpoint_history = [{"role": "assistant", "content": "warm"}]
+    evictions: list[tuple[str, str]] = []
+    monkeypatch.setattr(client, "evict_session", lambda sid, *, reason="explicit_eviction": evictions.append((sid, reason)) or True)
+
+    def blow_up(**kwargs):
+        raise hermes_client.HermesClientError("can't start new thread")
+
+    monkeypatch.setattr(client, "_stream_via_persistent_agent", blow_up)
+    monkeypatch.setattr(
+        client,
+        "_stream_via_agent",
+        lambda **kwargs: iter([
+            {"type": "meta", "source": "agent"},
+            {"type": "done", "reply": "fallback-ok", "source": "agent", "latency_ms": 1},
+        ]),
+    )
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id=session_id))
+    assert any(event.get("type") == "done" and event.get("reply") == "fallback-ok" for event in events)
+    assert evictions
+    assert evictions[0][0] == session_id
+    assert "failure_signature:persistent_runtime:thread_exhaustion" in evictions[0][1]
+
+
 def test_stream_events_logs_when_persistent_path_falls_back(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
     monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
@@ -2294,6 +2576,39 @@ def test_stream_events_records_persistent_to_direct_transition(monkeypatch) -> N
         and int(item.get("job_id") or 0) == 9001
         for item in transitions
     )
+
+
+def test_stream_events_retires_warm_session_on_direct_memory_failure(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_REUSE", "1")
+
+    client = hermes_client.HermesClient()
+    evictions: list[tuple[str, str]] = []
+    monkeypatch.setattr(client, "evict_session", lambda sid, *, reason="explicit_eviction": evictions.append((sid, reason)) or True)
+
+    def direct_fail(**kwargs):
+        raise hermes_client.HermesClientError("API call failed after 3 retries: [Errno 12] Cannot allocate memory")
+
+    monkeypatch.setattr(client, "_stream_via_agent", direct_fail)
+    monkeypatch.setattr(
+        client,
+        "_stream_via_cli_progress",
+        lambda **kwargs: iter(
+            [
+                {"type": "meta", "source": "cli"},
+                {"type": "chunk", "text": "cli-ok"},
+                {"type": "done", "reply": "cli-ok", "source": "cli", "latency_ms": 1},
+            ]
+        ),
+    )
+
+    events = list(client.stream_events(user_id="123", message="hello", session_id="miniapp-123-cli-hop"))
+    assert any(event.get("type") == "done" and event.get("reply") == "cli-ok" and event.get("source") == "cli" for event in events)
+
+    assert evictions
+    assert evictions[0][0] == "miniapp-123-cli-hop"
+    assert "failure_signature:direct_agent:memory_pressure" in evictions[0][1]
 
 
 def test_stream_events_records_direct_to_cli_transition(monkeypatch) -> None:
@@ -2728,6 +3043,35 @@ def test_stream_via_cli_progress_supports_iterator_only_stdout(monkeypatch) -> N
     assert any(event.get("type") == "done" and event.get("reply") == "reply from iterator stdout" for event in events)
 
 
+def test_stream_via_cli_progress_detects_tool_lines_before_query_banner(monkeypatch) -> None:
+    client = hermes_client.HermesClient()
+
+    def fake_popen(*args, **kwargs):
+        return _FakeProcess(
+            stdout=_LineStream(
+                [
+                    "Initializing agent...\n",
+                    "┊ 💻 $         date '+%Y-%m-%d %H:%M:%S %Z'  0.3s\n",
+                    "⚕ Hermes\n",
+                    "tool demo reply\n",
+                    "Messages: 4\n",
+                ]
+            ),
+            stderr=_LineStream([]),
+            wait_return_code=0,
+        )
+
+    monkeypatch.setattr(hermes_client_cli.subprocess, "Popen", fake_popen)
+
+    events = list(client._stream_via_cli_progress("hello"))
+    assert any(
+        event.get("type") == "tool"
+        and event.get("display") == "💻 $ date '+%Y-%m-%d %H:%M:%S %Z'"
+        for event in events
+    )
+    assert any(event.get("type") == "done" and event.get("reply") == "tool demo reply" for event in events)
+
+
 def test_stream_via_cli_progress_strips_cli_response_box_frame(monkeypatch) -> None:
     client = hermes_client.HermesClient()
 
@@ -2752,6 +3096,35 @@ def test_stream_via_cli_progress_strips_cli_response_box_frame(monkeypatch) -> N
     events = list(client._stream_via_cli_progress("hello"))
     done_event = next(event for event in events if event.get("type") == "done")
     assert done_event.get("reply") == "Hi — how can I help?"
+
+
+def test_stream_via_cli_progress_surfaces_nonzero_exit_context(monkeypatch) -> None:
+    client = hermes_client.HermesClient()
+
+    def fake_popen(*args, **kwargs):
+        return _FakeProcess(
+            stdout=_LineStream(
+                [
+                    "ignored before query\n",
+                    "Query: hello\n",
+                    "⚙️ read_file (0.2s)\n",
+                    "Error: upstream provider unavailable\n",
+                    "Trace id: abc123\n",
+                ]
+            ),
+            stderr=_LineStream([]),
+            wait_return_code=7,
+        )
+
+    monkeypatch.setattr(hermes_client_cli.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(hermes_client.HermesClientError) as exc_info:
+        list(client._stream_via_cli_progress("hello"))
+
+    message = str(exc_info.value)
+    assert "Hermes CLI stream failed (rc=7)" in message
+    assert "upstream provider unavailable" in message
+    assert "Trace id: abc123" in message
 
 
 def test_stream_via_agent_runner_script_does_not_duplicate_tool_formatter_map() -> None:
@@ -2780,6 +3153,23 @@ def test_stream_via_agent_runner_script_uses_protocol_stdout_and_redirects_noise
     assert "_protocol_stdout.write(json.dumps(payload, ensure_ascii=False)" in script
     assert "_protocol_stdout.flush()" in script
     assert "with contextlib.redirect_stdout(io.StringIO()):" in script
+
+
+def test_stream_via_agent_runner_script_supports_event_typed_tool_progress_callbacks() -> None:
+    client = hermes_client.HermesClient()
+    script = client._agent_runner_script()
+
+    assert "def progress_callback(*callback_args):" in script
+    assert "event_type = 'tool.started'" in script
+    assert "if event_type != 'tool.started':" in script
+
+
+def test_stream_via_agent_runner_script_compiles_and_escapes_protocol_newline() -> None:
+    client = hermes_client.HermesClient()
+    script = client._agent_runner_script()
+
+    assert "\\n" in script
+    compile(script, "<miniapp-agent-runner>", "exec")
 
 
 def test_stream_via_agent_payload_includes_provider_and_base_url(monkeypatch) -> None:
@@ -2998,7 +3388,7 @@ def test_stream_via_agent_surfaces_stderr_on_nonzero_exit(monkeypatch) -> None:
         process_holder["process"] = process
         return process
 
-    monkeypatch.setattr(hermes_client_agent.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(client._stream_via_agent.__globals__["subprocess"], "Popen", fake_popen)
 
     try:
         list(client._stream_via_agent(user_id="123", message="hello", session_id="miniapp-123-stderr"))

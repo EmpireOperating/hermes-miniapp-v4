@@ -4,18 +4,23 @@ import { readFile } from 'node:fs/promises';
 
 const appJsUrl = new URL('../static/app.js', import.meta.url);
 
-function extractFunctionBody(source, functionName) {
+function assertThinDelegate(source, functionName, delegatedCall) {
+  const escapedCall = delegatedCall.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const fnPattern = new RegExp(
-    String.raw`(?:async\s+)?function\s+${functionName}\s*\([^)]*\)\s*\{([\s\S]*?)\n\}`,
+    String.raw`(?:async\s+)?function\s+${functionName}\s*\([^)]*\)\s*\{\s*return\s+${escapedCall}\s*;\s*\}`,
     'm',
   );
-  const match = source.match(fnPattern);
-  assert.ok(match, `${functionName} wrapper should exist in app.js`);
-  return match[1] || '';
+  assert.match(source, fnPattern, `${functionName} should delegate to controller`);
 }
 
 test('app.js file-preview wrappers keep delegating to filePreviewController', async () => {
   const source = await readFile(appJsUrl, 'utf8');
+
+  assert.match(
+    source,
+    /const\s+filePreviewController\s*=\s*filePreviewHelpers\.createController\(\{[\s\S]*?filePreviewClose,[\s\S]*?messagesEl,[\s\S]*?\}\);/m,
+    'app.js should build filePreviewController with helper-owned binding deps',
+  );
 
   const delegateExpectations = [
     ['cloneFilePreviewRequest', 'filePreviewController.cloneFilePreviewRequest(previewRequest)'],
@@ -41,11 +46,6 @@ test('app.js file-preview wrappers keep delegating to filePreviewController', as
   ];
 
   for (const [fnName, delegatedCall] of delegateExpectations) {
-    const body = extractFunctionBody(source, fnName);
-    assert.match(
-      body,
-      new RegExp(delegatedCall.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-      `${fnName} should delegate to controller`,
-    );
+    assertThinDelegate(source, fnName, delegatedCall);
   }
 });

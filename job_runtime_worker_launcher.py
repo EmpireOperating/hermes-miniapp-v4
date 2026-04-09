@@ -115,6 +115,24 @@ class SubprocessJobWorkerLauncher:
             "last_limit_breach_detail": self._last_limit_breach_detail,
         }
 
+    def _stderr_excerpt_suffix(self, stderr_excerpt: str | None) -> str:
+        excerpt = str(stderr_excerpt or "").strip()
+        if not excerpt:
+            return ""
+        if len(excerpt) > 280:
+            excerpt = excerpt[:277] + "..."
+        return f" stderr: {excerpt}"
+
+    def _subprocess_timeout_message(self, *, stderr_excerpt: str | None = None) -> str:
+        return (
+            f"Subprocess worker timed out after {self.timeout_seconds:.1f}s"
+            f"{self._stderr_excerpt_suffix(stderr_excerpt)}"
+        )
+
+    def _subprocess_exit_message(self, *, return_code: int | None, stderr_excerpt: str | None = None) -> str:
+        base = f"Subprocess worker exited rc={return_code}"
+        return f"{base}{self._stderr_excerpt_suffix(stderr_excerpt)}"
+
     def launch(
         self,
         *,
@@ -250,7 +268,9 @@ class SubprocessJobWorkerLauncher:
         timed_out = False
         detached_warm_worker = False
         saw_attach_ready = False
+        saw_post_run_attach_ready = False
         saw_done_event = False
+        saw_worker_terminal_success = False
         reply_chunks: list[str] = []
         last_done_payload: dict[str, object] | None = None
         return_code: int | None = None
@@ -325,6 +345,7 @@ class SubprocessJobWorkerLauncher:
                         terminal_outcome = str(event.get("outcome") or "").strip().lower() or None
                         terminal_error = str(event.get("error") or "").strip() or None
                         if terminal_outcome == "success" and saw_attach_ready:
+                            saw_worker_terminal_success = True
                             if not saw_done_event:
                                 synthetic_done = {
                                     "type": "done",
@@ -340,10 +361,6 @@ class SubprocessJobWorkerLauncher:
                                     yield synthetic_done
                                     saw_done_event = True
                                     last_done_payload = dict(synthetic_done)
-                            detached_warm_worker = True
-                            failure_kind = "detached_warm_worker"
-                            return_code = 0
-                            break
                         continue
                     if event_type == "child_spawn":
                         observe_descendant_spawn = getattr(runtime.client, "observe_descendant_spawn", None)
@@ -370,6 +387,8 @@ class SubprocessJobWorkerLauncher:
                             )
                         continue
                     if event_type == "attach_ready":
+                        if saw_attach_ready and (saw_done_event or saw_worker_terminal_success):
+                            saw_post_run_attach_ready = True
                         saw_attach_ready = True
                         note_attach_ready = getattr(runtime.client, "note_warm_session_worker_attach_ready", None)
                         if callable(note_attach_ready):
@@ -381,6 +400,11 @@ class SubprocessJobWorkerLauncher:
                                 resume_token=str(event.get("resume_token") or "") or None,
                                 resume_deadline_ms=event.get("resume_deadline_ms"),
                             )
+                        if saw_post_run_attach_ready:
+                            detached_warm_worker = True
+                            failure_kind = "detached_warm_worker"
+                            return_code = 0
+                            break
                         continue
                     if event_type == "chunk":
                         chunk_text = str(event.get("text") or "")
@@ -392,30 +416,26 @@ class SubprocessJobWorkerLauncher:
                     if event_type == "error":
                         saw_error_event = True
                     yield event
-                    if event_type == "done" and saw_attach_ready:
-                        detached_warm_worker = True
-                        failure_kind = "detached_warm_worker"
-                        return_code = 0
-                        break
 
             if timed_out:
-                if not saw_error_event:
-                    saw_error_event = True
-                    yield {
-                        "type": "error",
-                        "error": f"Subprocess worker timed out after {self.timeout_seconds:.1f}s",
-                    }
                 try:
                     _signal_process_tree(proc, signal.SIGTERM)
                 except Exception:
                     LOGGER.debug("subprocess_worker_terminate_failed", exc_info=True)
 
+                stderr_excerpt = _read_stderr_excerpt(stderr_file, self.stderr_excerpt_bytes)
+                if not saw_error_event:
+                    saw_error_event = True
+                    yield {
+                        "type": "error",
+                        "error": self._subprocess_timeout_message(stderr_excerpt=stderr_excerpt),
+                    }
+
             if detached_warm_worker:
-                try:
-                    if proc.stdout is not None:
-                        proc.stdout.close()
-                except Exception:
-                    LOGGER.debug("subprocess_worker_detach_close_stdout_failed", exc_info=True)
+                # Keep the parent's stdout pipe end open. Closing it here can race the child
+                # worker's post-run attach_ready refresh and kill the warm worker before it
+                # reaches its idle attach wait loop.
+                pass
             else:
                 try:
                     return_code = int(proc.wait(timeout=max(0.1, float(self.kill_grace_seconds))))
@@ -448,7 +468,7 @@ class SubprocessJobWorkerLauncher:
                 failure_kind = failure_kind or "nonzero_exit"
                 yield {
                     "type": "error",
-                    "error": f"Subprocess worker exited rc={return_code}",
+                    "error": self._subprocess_exit_message(return_code=return_code, stderr_excerpt=stderr_excerpt),
                 }
         finally:
             if proc.poll() is None and not detached_warm_worker:
@@ -494,9 +514,9 @@ class SubprocessJobWorkerLauncher:
                 else:
                     terminal_outcome = "retryable_failure"
             if terminal_error is None and timed_out:
-                terminal_error = f"Subprocess worker timed out after {self.timeout_seconds:.1f}s"
+                terminal_error = self._subprocess_timeout_message(stderr_excerpt=stderr_excerpt)
             if terminal_error is None and return_code not in (0, None) and not (saw_done_event and not saw_error_event):
-                terminal_error = f"Subprocess worker exited rc={return_code}"
+                terminal_error = self._subprocess_exit_message(return_code=return_code, stderr_excerpt=stderr_excerpt)
             self._last_terminal_outcome = terminal_outcome
             self._last_terminal_error = terminal_error
 

@@ -36,6 +36,7 @@ class FakeElement {
     this.clientHeight = 120;
     this.offsetHeight = 20;
     this.open = false;
+    this._listeners = new Map();
   }
 
   appendChild(child) {
@@ -106,6 +107,28 @@ class FakeElement {
     return null;
   }
 
+  addEventListener(eventName, handler, options = undefined) {
+    const key = String(eventName);
+    if (!this._listeners.has(key)) {
+      this._listeners.set(key, []);
+    }
+    this._listeners.get(key).push({ handler, options });
+  }
+
+  removeEventListener(eventName, handler) {
+    const key = String(eventName);
+    const current = this._listeners.get(key) || [];
+    this._listeners.set(key, current.filter((entry) => entry.handler !== handler));
+  }
+
+  listeners(eventName) {
+    return (this._listeners.get(String(eventName)) || []).slice();
+  }
+
+  dispatch(eventName, event = {}) {
+    this.listeners(eventName).forEach(({ handler }) => handler(event));
+  }
+
   showModal() {
     this.open = true;
   }
@@ -171,6 +194,8 @@ function buildHarness(overrides = {}) {
   const filePreviewExpandUp = new FakeElement('button');
   const filePreviewLoadFull = new FakeElement('button');
   const filePreviewExpandDown = new FakeElement('button');
+  const filePreviewClose = new FakeElement('button');
+  const messagesEl = new FakeElement('div');
   const apiCalls = [];
   let activeChatId = 7;
   let currentFilePreviewRequest = null;
@@ -186,6 +211,8 @@ function buildHarness(overrides = {}) {
     filePreviewExpandUp,
     filePreviewLoadFull,
     filePreviewExpandDown,
+    filePreviewClose,
+    messagesEl,
     apiPost: async (path, payload) => {
       apiCalls.push({ path, payload });
       return {
@@ -230,6 +257,8 @@ function buildHarness(overrides = {}) {
     filePreviewExpandUp,
     filePreviewLoadFull,
     filePreviewExpandDown,
+    filePreviewClose,
+    messagesEl,
     apiCalls,
     getCurrentFilePreviewRequest: () => currentFilePreviewRequest,
     setCurrentFilePreviewRequest: (value) => {
@@ -244,6 +273,32 @@ function buildHarness(overrides = {}) {
     },
   };
 }
+
+test('bindFilePreviewBindings reuses one listener install across message/file-preview controls', () => {
+  const harness = buildHarness();
+
+  const firstUnbind = harness.controller.bindFilePreviewBindings();
+  const secondUnbind = harness.controller.bindFilePreviewBindings();
+
+  assert.equal(typeof firstUnbind, 'function');
+  assert.equal(secondUnbind, firstUnbind);
+  assert.equal(harness.messagesEl.listeners('click').length, 1);
+  assert.equal(harness.messagesEl.listeners('touchstart').length, 1);
+  assert.equal(harness.messagesEl.listeners('touchmove').length, 1);
+  assert.equal(harness.messagesEl.listeners('touchend').length, 1);
+  assert.equal(harness.messagesEl.listeners('touchcancel').length, 1);
+  assert.equal(harness.messagesEl.listeners('scroll').length, 1);
+  assert.equal(harness.filePreviewExpandUp.listeners('click').length, 1);
+  assert.equal(harness.filePreviewLoadFull.listeners('click').length, 1);
+  assert.equal(harness.filePreviewExpandDown.listeners('click').length, 1);
+  assert.equal(harness.filePreviewClose.listeners('click').length, 1);
+  assert.equal(harness.filePreviewModal.listeners('cancel').length, 1);
+
+  firstUnbind();
+  assert.equal(harness.messagesEl.listeners('click').length, 0);
+  assert.equal(harness.filePreviewClose.listeners('click').length, 0);
+  assert.equal(harness.filePreviewModal.listeners('cancel').length, 0);
+});
 
 test('cloneFilePreviewRequest normalizes numeric fields and drops empty values', () => {
   const harness = buildHarness();

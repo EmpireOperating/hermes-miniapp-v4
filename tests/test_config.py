@@ -14,6 +14,21 @@ def _cfg() -> MiniAppConfig:
     return MiniAppConfig.from_env()
 
 
+@pytest.fixture(autouse=True)
+def _clear_ambient_miniapp_env(monkeypatch) -> None:
+    for key in (
+        "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP",
+        "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED",
+        "MINI_APP_JOB_WORKER_LAUNCHER",
+        "MINI_APP_WARM_WORKER_REUSE",
+        "MINI_APP_WARM_WORKER_SAME_CHAT_ONLY",
+        "MINI_APP_WARM_WORKER_RETIRE_AFTER_RUNS",
+        "MINI_APP_WARM_WORKER_HEALTH_MAX_RSS_MB",
+        "MINI_APP_WARM_WORKER_HEALTH_MAX_THREADS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_config_normalizes_allowed_origins(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", " https://APP.EXAMPLE.COM/ ,https://api.example.com ")
 
@@ -74,13 +89,13 @@ def test_config_rejects_invalid_persistent_runtime_ownership(monkeypatch) -> Non
         _cfg()
 
 
-def test_config_coerces_shared_persistent_ownership_with_subprocess_launcher(monkeypatch) -> None:
+def test_config_preserves_requested_shared_ownership_while_resolving_subprocess_launcher(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
     monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "shared")
 
     cfg = _cfg()
 
-    assert cfg.persistent_runtime_ownership == "checkpoint_only"
+    assert cfg.persistent_runtime_ownership == "shared"
     assert cfg.resolved_persistent_runtime_ownership() == "checkpoint_only"
 
 
@@ -130,6 +145,36 @@ def test_config_accepts_subprocess_worker_hardening_bounds(monkeypatch) -> None:
     assert cfg.job_worker_subprocess_memory_limit_mb == 1536
     assert cfg.job_worker_subprocess_max_tasks == 128
     assert cfg.job_worker_subprocess_max_open_files == 512
+
+
+def test_config_accepts_warm_worker_reuse_bounds(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_REUSE", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_SAME_CHAT_ONLY", "1")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_IDLE_TTL_SECONDS", "240")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_MAX_IDLE", "3")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_MAX_TOTAL", "5")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_RETIRE_AFTER_RUNS", "4")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_HEALTH_MAX_RSS_MB", "1200")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_HEALTH_MAX_THREADS", "32")
+
+    cfg = _cfg()
+
+    assert cfg.warm_worker_reuse_enabled is True
+    assert cfg.warm_worker_same_chat_only is True
+    assert cfg.warm_worker_idle_ttl_seconds == 240
+    assert cfg.warm_worker_max_idle == 3
+    assert cfg.warm_worker_max_total == 5
+    assert cfg.warm_worker_retire_after_runs == 4
+    assert cfg.warm_worker_health_max_rss_mb == 1200
+    assert cfg.warm_worker_health_max_threads == 32
+
+
+def test_config_rejects_invalid_warm_worker_caps(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_MAX_IDLE", "4")
+    monkeypatch.setenv("MINI_APP_WARM_WORKER_MAX_TOTAL", "3")
+
+    with pytest.raises(ValueError, match="MINI_APP_WARM_WORKER_MAX_TOTAL"):
+        _cfg()
 
 
 def test_config_rejects_invalid_rate_limit_window(monkeypatch) -> None:

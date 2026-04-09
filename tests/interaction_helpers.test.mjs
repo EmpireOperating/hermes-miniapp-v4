@@ -277,3 +277,73 @@ test('selection quote controller schedules desktop live sync and clears when lea
   controller.handleDocumentSelectionChange();
   assert.deepEqual(calls, ['cancel-sync', 'clear-state']);
 });
+
+test('interaction controller resolves active chat lazily for composer submit', () => {
+  const calls = [];
+  let activeChatId = 7;
+  const controller = interaction.createController({
+    mobileQuoteMode: false,
+    getActiveChatId: () => activeChatId,
+    focusMessagesPaneIfActiveChat: (chatId) => calls.push(`focus:${chatId}`),
+    submitPromptWithUiError: () => calls.push('submit'),
+  });
+  const event = {
+    isComposing: false,
+    key: 'Enter',
+    shiftKey: false,
+    preventDefault: () => calls.push('prevent'),
+  };
+
+  controller.handleComposerSubmitShortcut(event);
+  activeChatId = 12;
+  controller.handleComposerSubmitShortcut(event);
+
+  assert.deepEqual(calls, ['prevent', 'focus:7', 'submit', 'prevent', 'focus:12', 'submit']);
+});
+
+test('interaction controller binds selection quote handlers once and reuses controller instance', () => {
+  const messageListeners = [];
+  const documentListeners = [];
+  const buttonListeners = [];
+  const messagesEl = {
+    addEventListener: (type, handler) => messageListeners.push([type, handler]),
+    contains: () => false,
+  };
+  const documentObject = {
+    addEventListener: (type, handler) => documentListeners.push([type, handler]),
+    getSelection: () => null,
+    activeElement: null,
+  };
+  const selectionQuoteButton = {
+    addEventListener: (type, handler) => buttonListeners.push([type, handler]),
+  };
+  const selectionQuoteState = {
+    clearPlacement() {},
+    getText: () => '',
+  };
+  const controller = interaction.createController({
+    mobileQuoteMode: false,
+    windowObject: { getSelection: () => ({ removeAllRanges: () => {} }) },
+    documentObject,
+    promptEl: {},
+    messagesEl,
+    selectionQuoteButton,
+    selectionQuoteState,
+    activeSelectionQuote: () => null,
+    cancelSelectionQuoteSync: () => {},
+    cancelSelectionQuoteSettle: () => {},
+    cancelSelectionQuoteClear: () => {},
+    scheduleSelectionQuoteSync: () => {},
+    scheduleSelectionQuoteClear: () => {},
+    applyQuoteIntoPrompt: () => {},
+    clearSelectionQuoteState: () => {},
+  });
+
+  const first = controller.bindSelectionQuoteBindings();
+  const second = controller.bindSelectionQuoteBindings();
+
+  assert.equal(first, second);
+  assert.deepEqual(buttonListeners.map(([type]) => type), ['click']);
+  assert.deepEqual(messageListeners.map(([type]) => type), ['mouseup', 'touchstart', 'touchend', 'touchcancel']);
+  assert.deepEqual(documentListeners.map(([type]) => type), ['selectionchange', 'touchstart']);
+});

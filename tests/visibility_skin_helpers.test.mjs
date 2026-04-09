@@ -34,6 +34,8 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
   const syncActiveMessageViewCalls = [];
   const syncVisibleActiveChatCalls = [];
   const refreshChatsCalls = [];
+  const apiPostCalls = [];
+  const bootstrapRefreshCalls = [];
 
   const documentObject = createEventTarget({
     visibilityState,
@@ -117,11 +119,19 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
     setCurrentSkin: (value) => {
       currentSkin = String(value || '');
     },
+    apiPost: async (url, payload) => {
+      apiPostCalls.push({ url, payload });
+      return { skin: payload?.skin === 'terminal' ? 'obsidian' : payload?.skin };
+    },
     syncTelegramChromeForSkin: (skin) => {
       skinCalls.push(skin);
     },
     getIsAuthenticated: () => authenticated,
     getActiveChatId: () => 1,
+    maybeRefreshForBootstrapVersionMismatch: async () => {
+      bootstrapRefreshCalls.push('refresh');
+      return false;
+    },
     refreshChats: async () => {
       refreshChatsCalls.push('refresh');
     },
@@ -150,6 +160,8 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
     syncActiveMessageViewCalls,
     syncVisibleActiveChatCalls,
     refreshChatsCalls,
+    apiPostCalls,
+    bootstrapRefreshCalls,
     streamAbortControllers,
     getCurrentSkin: () => currentSkin,
   };
@@ -178,6 +190,21 @@ test('syncSkinFromStorage applies only changed valid skins', () => {
   assert.equal(harness.getCurrentSkin(), 'obsidian');
 });
 
+test('saveSkinPreference persists through apiPost and applies returned skin', async () => {
+  const harness = buildHarness();
+
+  const data = await harness.controller.saveSkinPreference('terminal');
+
+  assert.deepEqual(harness.apiPostCalls, [{
+    url: '/api/preferences/skin',
+    payload: { skin: 'terminal' },
+  }]);
+  assert.equal(harness.getCurrentSkin(), 'obsidian');
+  assert.equal(harness.body.dataset.skin, 'obsidian');
+  assert.deepEqual(harness.skinCalls, ['obsidian']);
+  assert.deepEqual(data, { skin: 'obsidian' });
+});
+
 test('installLifecycleListeners wires storage/focus/channel handlers', () => {
   const harness = buildHarness();
 
@@ -199,6 +226,7 @@ test('handleVisibilityChange refreshes lifecycle and delegates active-chat recon
 
   await harness.controller.handleVisibilityChange();
 
+  assert.deepEqual(harness.bootstrapRefreshCalls, ['refresh']);
   assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
   assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
   assert.equal(harness.syncVisibleActiveChatCalls.length, 1);
@@ -223,8 +251,52 @@ test('handleVisibilityChange is a no-op when unauthenticated', async () => {
 
   await harness.controller.handleVisibilityChange();
 
+  assert.deepEqual(harness.bootstrapRefreshCalls, ['refresh']);
   assert.deepEqual(harness.refreshChatsCalls, []);
   assert.deepEqual(harness.syncVisibleActiveChatCalls, []);
+});
+
+test('handleVisibilityChange stops normal sync when bootstrap refresh triggers reload', async () => {
+  const harness = buildHarness({ visibilityState: 'visible', authenticated: true });
+  harness.controller = visibilitySkin.createController({
+    windowObject: harness.windowObject,
+    documentObject: harness.documentObject,
+    localStorageRef: {
+      getItem() { return null; },
+      setItem() {},
+    },
+    fetchImpl: async () => ({ ok: true, async json() { return { version: 'v2' }; } }),
+    devConfig: {
+      enabled: true,
+      reloadStateUrl: '/dev/reload-state',
+      intervalMs: 1200,
+      version: 'v1',
+    },
+    pendingChats: new Set(),
+    skinStorageKey: 'hermes_skin',
+    allowedSkins: new Set(['terminal', 'oracle', 'obsidian']),
+    skinSyncChannel: harness.skinSyncChannel,
+    body: harness.body,
+    skinName: harness.skinName,
+    panelHint: harness.panelHint,
+    skinButtons: [
+      { dataset: { skin: 'terminal' }, classList: { toggle() {} } },
+      { dataset: { skin: 'oracle' }, classList: { toggle() {} } },
+    ],
+    getCurrentSkin: () => harness.getCurrentSkin(),
+    setCurrentSkin: () => {},
+    apiPost: async () => ({ skin: 'terminal' }),
+    syncTelegramChromeForSkin: () => {},
+    getIsAuthenticated: () => true,
+    getActiveChatId: () => 1,
+    maybeRefreshForBootstrapVersionMismatch: async () => true,
+    refreshChats: async () => { throw new Error('should not refresh chats after reload trigger'); },
+    syncVisibleActiveChat: async () => { throw new Error('should not sync visible chat after reload trigger'); },
+    syncActiveMessageView: () => { throw new Error('should not reconcile transcript after reload trigger'); },
+    getStreamAbortControllers: () => new Map(),
+  });
+
+  await harness.controller.handleVisibilityChange();
 });
 
 test('syncVisibleActiveChat delegates to injected controller method', async () => {

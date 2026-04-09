@@ -193,6 +193,24 @@ def register_stream_routes(
             next_state_refresh_at = 0.0
             segment_deadline = (time.monotonic() + segment_seconds) if segment_seconds > 0 else 0.0
 
+            def _emit_segment_rollover() -> Iterator[str]:
+                state = last_polled_state
+                if state is None:
+                    state = store.get_job_state(job_id)
+                job_status = str((state or {}).get("status") or "")
+                if is_terminal_job_status(job_status):
+                    return
+                rollover_payload: dict[str, object] = {
+                    "chat_id": chat_id,
+                    "source": "queue",
+                    "detail": "stream segment rollover",
+                    "stream_segment_end": True,
+                    "resume_recommended": True,
+                }
+                if job_status:
+                    rollover_payload["job_status"] = job_status
+                yield sse_event_fn("meta", _with_emit_timing(rollover_payload))
+
             try:
                 # SSE prelude comments help prevent intermediary buffering in some WebView/proxy paths.
                 yield ": stream-open\n"
@@ -296,6 +314,7 @@ def register_stream_routes(
                                         extra={"user_id": user_id, "segment_seconds": segment_seconds},
                                     )
                                 )
+                            yield from _emit_segment_rollover()
                             break
                         continue
 
@@ -320,6 +339,7 @@ def register_stream_routes(
                                     extra={"user_id": user_id, "segment_seconds": segment_seconds},
                                 )
                             )
+                        yield from _emit_segment_rollover()
                         break
             finally:
                 runtime.unsubscribe_job_events(job_id, subscriber)

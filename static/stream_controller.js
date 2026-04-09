@@ -1,15 +1,46 @@
 (function initHermesMiniappStreamController(globalScope) {
+  function createResumeRecoveryPolicy({
+    setTimeoutFn = (...args) => setTimeout(...args),
+    randomFn = () => Math.random(),
+  } = {}) {
+    const RESUME_RECOVERY_MAX_ATTEMPTS = 3;
+    const RESUME_RECOVERY_BASE_DELAY_MS = 900;
+    const RESUME_REATTACH_MIN_INTERVAL_MS = 1200;
+    const RESUME_COMPLETE_SETTLE_MS = 2500;
+    const RESUME_RECOVERY_TRANSIENT_ERROR_RE = /load failed|failed to fetch|network(?:error| failure| request failed)?|the network connection was lost|fetch failed|temporarily unavailable/i;
+
+    function delayMs(ms) {
+      return new Promise((resolve) => setTimeoutFn(resolve, Math.max(0, Number(ms) || 0)));
+    }
+
+    function isTransientResumeRecoveryError(error) {
+      const message = String(error?.message || error || "").trim();
+      return RESUME_RECOVERY_TRANSIENT_ERROR_RE.test(message);
+    }
+
+    function nextResumeRecoveryDelayMs(attempt) {
+      const normalizedAttempt = Math.max(1, Number(attempt) || 1);
+      const jitterMs = Math.floor(Math.max(0, Number(randomFn()) || 0) * 180);
+      return RESUME_RECOVERY_BASE_DELAY_MS * normalizedAttempt + jitterMs;
+    }
+
+    return {
+      RESUME_RECOVERY_MAX_ATTEMPTS,
+      RESUME_REATTACH_MIN_INTERVAL_MS,
+      RESUME_COMPLETE_SETTLE_MS,
+      delayMs,
+      isTransientResumeRecoveryError,
+      nextResumeRecoveryDelayMs,
+    };
+  }
+
   function createToolTraceController({
-    toolStreamEl,
-    toolStreamLinesEl,
     histories,
     cleanDisplayText,
-    documentObject = (typeof document !== "undefined" ? document : null),
+    persistPendingStreamSnapshot,
   }) {
     function resetToolStream() {
-      if (!toolStreamEl || !toolStreamLinesEl) return;
-      toolStreamLinesEl.innerHTML = "";
-      toolStreamEl.hidden = true;
+      return;
     }
 
     function findPendingToolTraceMessage(chatId) {
@@ -83,46 +114,6 @@
       return `${messageId}::${toolCallId}::${phase}`;
     }
 
-    function isNearElementBottom(element, threshold = 40) {
-      if (!element) return true;
-      const scrollHeight = Number(element.scrollHeight);
-      const clientHeight = Number(element.clientHeight);
-      const scrollTop = Number(element.scrollTop);
-      if (!Number.isFinite(scrollHeight) || !Number.isFinite(clientHeight) || !Number.isFinite(scrollTop)) {
-        return true;
-      }
-      return (scrollHeight - clientHeight - scrollTop) <= threshold;
-    }
-
-    function renderToolStreamLines(lines) {
-      if (!toolStreamEl || !toolStreamLinesEl) return;
-      const safeLines = Array.isArray(lines) ? lines.filter((line) => String(line || "").trim()) : [];
-      const shouldStickBottom = isNearElementBottom(toolStreamLinesEl, 40);
-      toolStreamLinesEl.innerHTML = "";
-      if (!safeLines.length) {
-        toolStreamEl.hidden = true;
-        return;
-      }
-      if (!documentObject || typeof toolStreamLinesEl.appendChild !== "function") {
-        toolStreamLinesEl.innerHTML = safeLines.join("\n");
-        toolStreamEl.hidden = false;
-        if (shouldStickBottom) {
-          toolStreamLinesEl.scrollTop = toolStreamLinesEl.scrollHeight;
-        }
-        return;
-      }
-      for (const line of safeLines) {
-        const row = documentObject.createElement("div");
-        row.className = "tool-stream__line";
-        row.textContent = String(line || "").trim();
-        toolStreamLinesEl.appendChild(row);
-      }
-      toolStreamEl.hidden = false;
-      if (shouldStickBottom) {
-        toolStreamLinesEl.scrollTop = toolStreamLinesEl.scrollHeight;
-      }
-    }
-
     function rebuildToolTraceBodyFromEntries(trace) {
       if (!trace || typeof trace !== "object") return;
       const order = Array.isArray(trace._toolTraceOrder) ? trace._toolTraceOrder : [];
@@ -137,7 +128,30 @@
         }
       }
       trace.body = lines.join("\n");
-      renderToolStreamLines(lines);
+    }
+
+    function seedToolTraceEntriesFromBody(trace) {
+      if (!trace || typeof trace !== "object") return;
+      if (Array.isArray(trace._toolTraceOrder) && trace._toolTraceOrder.length && trace._toolTraceLines && typeof trace._toolTraceLines === "object") {
+        return;
+      }
+      const existingLines = String(trace.body || "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      if (!existingLines.length) {
+        if (!Array.isArray(trace._toolTraceOrder)) {
+          trace._toolTraceOrder = [];
+        }
+        if (!trace._toolTraceLines || typeof trace._toolTraceLines !== "object") {
+          trace._toolTraceLines = {};
+        }
+        return;
+      }
+      trace._toolTraceOrder = existingLines.map((_, index) => `__restored__${index}`);
+      trace._toolTraceLines = Object.fromEntries(
+        existingLines.map((line, index) => [`__restored__${index}`, line]),
+      );
     }
 
     function appendInlineToolTrace(chatId, textOrPayload, explicitPayload = null) {
@@ -150,10 +164,11 @@
 
       if (!dedupeKey) {
         trace.body = trace.body ? `${trace.body}\n${line}` : line;
-        renderToolStreamLines(String(trace.body || "").split("\n"));
+        persistPendingStreamSnapshot?.(key);
         return;
       }
 
+      seedToolTraceEntriesFromBody(trace);
       if (!Array.isArray(trace._toolTraceOrder)) {
         trace._toolTraceOrder = [];
       }
@@ -165,6 +180,19 @@
       }
       trace._toolTraceLines[dedupeKey] = line;
       rebuildToolTraceBodyFromEntries(trace);
+      persistPendingStreamSnapshot?.(key);
+    }
+
+    function dropPendingToolTraceMessages(chatId) {
+      const key = Number(chatId);
+      const history = histories.get(key) || [];
+      const nextHistory = history.filter((item) => !(item?.role === "tool" && item?.pending));
+      if (nextHistory.length !== history.length) {
+        histories.set(key, nextHistory);
+        persistPendingStreamSnapshot?.(key);
+      }
+      resetToolStream();
+      return nextHistory.length !== history.length;
     }
 
     function finalizeInlineToolTrace(chatId) {
@@ -182,7 +210,7 @@
         } else {
           item.body = content;
           item.pending = false;
-          item.collapsed = true;
+          item.collapsed = typeof item.collapsed === "boolean" ? item.collapsed : false;
           delete item._toolTraceOrder;
           delete item._toolTraceLines;
         }
@@ -192,6 +220,7 @@
 
       if (changed) {
         histories.set(key, history);
+        persistPendingStreamSnapshot?.(key);
       }
       resetToolStream();
     }
@@ -201,6 +230,7 @@
       findPendingToolTraceMessage,
       ensurePendingToolTraceMessage,
       appendInlineToolTrace,
+      dropPendingToolTraceMessages,
       finalizeInlineToolTrace,
     };
   }
@@ -253,6 +283,37 @@
       persistStreamCursor,
       clearStreamCursor,
       clearPendingStreamSnapshot,
+      authPayload,
+      parseStreamErrorPayload,
+      summarizeUiFailure,
+      getIsAuthenticated,
+      setIsAuthenticated,
+      authStatusEl,
+      dropPendingToolTraceMessages,
+      addLocalMessage,
+      setDraft,
+      resetToolStream,
+      clearReconnectResumeBlock,
+      resetReconnectResumeBudget,
+      consumeReconnectResumeBudget,
+      suppressBlockedChatPending,
+      blockReconnectResume,
+      isReconnectResumeBlocked,
+      MAX_AUTO_RESUME_CYCLES_PER_CHAT = 6,
+      resumeAttemptedAtByChat,
+      resumeCooldownUntilByChat,
+      resumeInFlightByChat,
+      RESUME_RECOVERY_MAX_ATTEMPTS = 3,
+      RESUME_REATTACH_MIN_INTERVAL_MS = 1200,
+      RESUME_COMPLETE_SETTLE_MS = 2500,
+      isTransientResumeRecoveryError,
+      nextResumeRecoveryDelayMs,
+      delayMs,
+      markChatStreamPending,
+      getStoredStreamCursor,
+      isNearBottom,
+      fetchImpl = (...args) => fetch(...args),
+      setTimeoutFn = (...args) => setTimeout(...args),
     } = deps;
 
     const streamAbortControllers = new Map();
@@ -261,6 +322,34 @@
     const firstAssistantNotificationStateByChat = new Map();
     const immediateFinalizedChats = new Set();
     let nextAssistantNotificationId = 0;
+
+    function normalizeChatId(value) {
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    function isActiveChat(chatId) {
+      const key = normalizeChatId(chatId);
+      return key != null && key === normalizeChatId(getActiveChatId());
+    }
+
+    function setStreamStatusForVisibleChat(chatId, text) {
+      if (!isActiveChat(chatId)) return false;
+      setStreamStatus(text);
+      return true;
+    }
+
+    function setStreamChipForVisibleChat(chatId, text) {
+      if (!isActiveChat(chatId)) return false;
+      setActivityChip(streamChip, text);
+      return true;
+    }
+
+    function setLatencyChipForVisibleChat(chatId, text) {
+      if (!isActiveChat(chatId)) return false;
+      setActivityChip(latencyChip, text);
+      return true;
+    }
 
     function setFocusRestoreEligibility(chatId, eligible) {
       const key = Number(chatId);
@@ -368,6 +457,25 @@
       return true;
     }
 
+    function shouldForceImmediateTranscriptFallback(chatId) {
+      const key = Number(chatId);
+      if (!key) return false;
+      // In Telegram/WebView contexts, document.visibilityState can lag or report
+      // hidden during an actually visible active session. If inline stream patching
+      // misses, deferring the fallback reconcile behind that signal can suppress
+      // live tool/assistant transcript updates for the whole run. For the active
+      // chat, prefer immediate reconcile unconditionally.
+      return Number(getActiveChatId()) === key;
+    }
+
+    function reconcileVisibleTranscriptFallback(chatId) {
+      if (shouldForceImmediateTranscriptFallback(chatId)) {
+        syncActiveMessageView(chatId, { preserveViewport: true });
+        return;
+      }
+      scheduleActiveMessageView(chatId);
+    }
+
     function applyDonePayload(chatId, payload, builtReplyRef, { updateUnread = true } = {}) {
       builtReplyRef.value = payload.reply || builtReplyRef.value;
       finalizeInlineToolTrace(chatId);
@@ -423,8 +531,8 @@
         deps.markStreamComplete(chatId, deliveredLatency);
       } else {
         setChatLatency(chatId, deliveredLatency);
-        setStreamStatus(`Reply received in ${chatLabel(chatId)}`);
-        setActivityChip(streamChip, `stream: complete · ${compactChatLabel(chatId)}`);
+        setStreamStatusForVisibleChat(chatId, `Reply received in ${chatLabel(chatId)}`);
+        setStreamChipForVisibleChat(chatId, `stream: complete · ${compactChatLabel(chatId)}`);
       }
       renderTraceLog("stream-done-state", {
         chatId: Number(chatId),
@@ -472,9 +580,9 @@
       if (eventName === "meta" && payload.detail) {
         const detail = String(payload.detail || "").trim();
         if (detail) {
-          setStreamStatus(`Queue update (${chatLabel(chatId)}): ${detail}`);
+          setStreamStatusForVisibleChat(chatId, `Queue update (${chatLabel(chatId)}): ${detail}`);
           if (payload.source === "queue") {
-            setActivityChip(streamChip, `stream: ${detail} · ${compactChatLabel(chatId)}`);
+            setStreamChipForVisibleChat(chatId, `stream: ${detail} · ${compactChatLabel(chatId)}`);
             if (payload.job_status === "running") {
               const elapsedMs = Number(payload.elapsed_ms);
               if (typeof deps.markStreamActive === "function") {
@@ -484,10 +592,10 @@
               } else if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
                 const runningLatency = `${formatLatency(elapsedMs)} · live`;
                 setChatLatency(chatId, runningLatency);
-                setActivityChip(latencyChip, `latency: ${runningLatency}`);
+                setLatencyChipForVisibleChat(chatId, `latency: ${runningLatency}`);
               } else {
-                setChatLatency(chatId, "calculating...");
-                setActivityChip(latencyChip, "latency: calculating...");
+                setChatLatency(chatId, "--");
+                setLatencyChipForVisibleChat(chatId, "latency: --");
               }
             } else if (payload.job_status === "queued") {
               const queuedAhead = Number(payload.queued_ahead);
@@ -498,7 +606,7 @@
                   ? `queued · ahead: ${queuedAhead}`
                   : "queued...";
                 setChatLatency(chatId, queueLabel);
-                setActivityChip(latencyChip, `latency: ${queueLabel}`);
+                setLatencyChipForVisibleChat(chatId, `latency: ${queueLabel}`);
               }
             }
           }
@@ -510,7 +618,8 @@
         setStreamPhase(chatId, STREAM_PHASES.STREAMING_TOOL);
         const display = payload.display || payload.preview || payload.tool_name || "Tool running";
         deps.appendInlineToolTrace(chatId, display, payload);
-        markStreamUpdate(chatId);
+        // Tool journal updates extend the current pending tool card; they should not surface
+        // the chat-level unseen/new-below dot as if a fresh assistant message arrived.
         const patchedToolTrace = patchVisibleToolTrace(chatId);
         renderTraceLog("stream-tool-patch", {
           chatId: Number(chatId),
@@ -519,13 +628,13 @@
           fallbackRender: !patchedToolTrace,
         });
         if (!patchedToolTrace) {
-          scheduleActiveMessageView(chatId);
+          reconcileVisibleTranscriptFallback(chatId);
         }
         if (typeof deps.markToolActivity === "function") {
           deps.markToolActivity(chatId);
         } else {
-          setStreamStatus(`Using tools in ${chatLabel(chatId)}`);
-          setActivityChip(streamChip, `stream: tools active · ${compactChatLabel(chatId)}`);
+          setStreamStatusForVisibleChat(chatId, `Using tools in ${chatLabel(chatId)}`);
+          setStreamChipForVisibleChat(chatId, `stream: tools active · ${compactChatLabel(chatId)}`);
         }
         return false;
       }
@@ -550,7 +659,7 @@
           replyLength: builtReplyRef.value.length,
         });
         if (!patchedAssistant) {
-          scheduleActiveMessageView(chatId);
+          reconcileVisibleTranscriptFallback(chatId);
         }
         return false;
       }
@@ -567,8 +676,8 @@
           deps.markStreamError(chatId);
         } else {
           setChatLatency(chatId, "--");
-          setStreamStatus("Stream error");
-          setActivityChip(streamChip, "stream: error");
+          setStreamStatusForVisibleChat(chatId, "Stream error");
+          setStreamChipForVisibleChat(chatId, "stream: error");
         }
         return true;
       }
@@ -614,8 +723,8 @@
         deps.markStreamClosedEarly(chatId);
       } else {
         setChatLatency(chatId, "--");
-        setStreamStatus("Stream closed early");
-        setActivityChip(streamChip, "stream: closed early");
+        setStreamStatusForVisibleChat(chatId, "Stream closed early");
+        setStreamChipForVisibleChat(chatId, "stream: closed early");
       }
       if (!hadEarlyAssistantUnread && Number(getActiveChatId()) !== Number(chatId)) {
         incrementUnread(chatId);
@@ -635,6 +744,7 @@
       const decoder = new TextDecoder();
       let buffer = "";
       let terminalReceived = false;
+      let expectedSegmentEnd = false;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -680,6 +790,9 @@
           if (shouldSkipReplayedEvent(key, payload)) {
             continue;
           }
+          if (eventName === "meta" && payload?.stream_segment_end) {
+            expectedSegmentEnd = true;
+          }
           const handledAsTerminal = handleStreamEvent(chatId, eventName, payload, builtReplyRef);
           if (handledAsTerminal) {
             terminalReceived = true;
@@ -718,6 +831,9 @@
           tailLength: trimmedBuffer.length,
         });
         if (payload && !shouldSkipReplayedEvent(key, payload)) {
+          if (eventName === "meta" && payload?.stream_segment_end) {
+            expectedSegmentEnd = true;
+          }
           const handledAsTerminal = handleStreamEvent(chatId, eventName, payload, builtReplyRef);
           if (handledAsTerminal) {
             terminalReceived = true;
@@ -736,6 +852,7 @@
         chatId: Number(chatId),
         terminalReceived,
         earlyClosed,
+        expectedSegmentEnd,
         suppressEarlyCloseFallback: Boolean(suppressEarlyCloseFallback),
         replyLength: builtReplyRef.value.length,
       });
@@ -746,6 +863,7 @@
       return {
         terminalReceived,
         earlyClosed,
+        expectedSegmentEnd,
       };
     }
 
@@ -769,6 +887,30 @@
       return '';
     }
 
+    function transcriptRenderSignature(history) {
+      const items = Array.isArray(history) ? history : [];
+      return items
+        .filter((item) => {
+          const role = String(item?.role || '').toLowerCase();
+          return role === 'user' || role === 'tool' || role === 'hermes' || role === 'assistant';
+        })
+        .map((item) => {
+          const role = String(item?.role || '').toLowerCase();
+          const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
+          const fileRefSignature = fileRefs
+            .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
+            .join('|');
+          return [
+            role,
+            String(item?.body || ''),
+            item?.pending ? 'pending' : 'final',
+            item?.collapsed ? 'collapsed' : 'expanded',
+            fileRefSignature,
+          ].join('::');
+        })
+        .join('||');
+    }
+
     async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {}) {
       const key = Number(chatId);
       if (!key || typeof loadChatHistory !== "function") return;
@@ -787,24 +929,32 @@
         }
         const previousHistory = histories?.get?.(key) || [];
         const previousAssistantSignature = latestAssistantRenderSignature(previousHistory);
+        const previousTranscriptSignature = transcriptRenderSignature(previousHistory);
         const nextHistory = typeof mergeHydratedHistory === "function"
           ? mergeHydratedHistory({
             previousHistory,
             nextHistory: hydrated.history || [],
             chatPending: forceCompleted ? false : Boolean(hydratedChat?.pending),
+            preserveCompletedToolTrace: Boolean(forceCompleted),
           })
           : (hydrated.history || []);
         histories?.set?.(key, nextHistory);
         const nextAssistantSignature = latestAssistantRenderSignature(nextHistory);
+        const nextTranscriptSignature = transcriptRenderSignature(nextHistory);
         const shouldRenderActiveChat = Number(getActiveChatId()) === key
           && typeof renderMessages === "function"
-          && previousAssistantSignature !== nextAssistantSignature;
+          && (
+            previousAssistantSignature !== nextAssistantSignature
+            || previousTranscriptSignature !== nextTranscriptSignature
+          );
         renderTraceLog("stream-done-hydrate", {
           chatId: key,
           forceCompleted: Boolean(forceCompleted),
           rendered: Boolean(shouldRenderActiveChat),
           previousAssistantSignature,
           nextAssistantSignature,
+          previousTranscriptSignature,
+          nextTranscriptSignature,
         });
         if (shouldRenderActiveChat) {
           renderMessages(key, { preserveViewport: true });
@@ -834,10 +984,13 @@
       renderTraceLog("stream-reconnect-needed", {
         chatId: Number(chatId),
         terminalReceived: Boolean(consumeResult?.terminalReceived),
+        expectedSegmentEnd: Boolean(consumeResult?.expectedSegmentEnd),
         replyLength: builtReplyRef.value.length,
       });
       if (typeof onEarlyClose === "function") {
-        await onEarlyClose();
+        await onEarlyClose({
+          expectedSegmentEnd: Boolean(consumeResult?.expectedSegmentEnd),
+        });
       }
       return true;
     }
@@ -868,15 +1021,13 @@
         return;
       }
 
+      // Do not auto-focus the composer on stream completion/resume.
+      // On mobile/webview this can pull the viewport downward and reopen the keyboard
+      // while tool/activity updates are still settling, which feels like the stream is
+      // hijacking the user's reading position. Desktop can still restore non-scrolling
+      // focus to the transcript pane for keyboard continuity.
       if (!isMobileQuoteMode() && isDesktopViewport()) {
         focusMessagesPaneIfActiveChat(chatId);
-        return;
-      }
-
-      try {
-        promptEl.focus({ preventScroll: true });
-      } catch {
-        promptEl.focus();
       }
     }
 
@@ -901,6 +1052,9 @@
       clearStreamAbortController(key, streamController);
       if (!wasAborted) {
         consumeFirstAssistantNotification(key);
+        if (getStreamPhase(chatId) !== STREAM_PHASES.ERROR) {
+          resetReconnectResumeBudget?.(key);
+        }
       }
       if (wasAborted) {
         // Abort is commonly used for intentional stream handoff (send -> resume or
@@ -924,13 +1078,316 @@
           await refreshChats();
         }
       } catch (error) {
-        appendSystemMessage(`Failed to sync chat state: ${error.message}`);
+        appendSystemMessage(`Failed to sync chat state: ${error.message}`, key);
       }
 
       renderTabs();
       updateComposerState();
       if (shouldRestoreFocus) {
         focusPrimaryChatControlIfActiveChat(key);
+      }
+    }
+
+    async function sendPrompt(message) {
+      if (!getIsAuthenticated?.() || !getActiveChatId?.()) {
+        appendSystemMessage("Still signing you in. Try again in a moment.");
+        return;
+      }
+
+      const cleaned = String(message || "").trim();
+      if (!cleaned) return;
+
+      const chatId = Number(getActiveChatId());
+      if (isReconnectResumeBlocked?.(chatId)) {
+        clearReconnectResumeBlock?.(chatId);
+        suppressBlockedChatPending?.(chatId);
+      }
+      resetReconnectResumeBudget?.(chatId);
+      const serverPending = Boolean(chats.get(chatId)?.pending);
+      if (pendingChats.has(chatId) || serverPending) {
+        appendSystemMessage(`Still replying in '${chatLabel(chatId)}'.`);
+        return;
+      }
+
+      markChatStreamPending?.({
+        chatId,
+        pendingChats,
+        chats,
+        setStreamPhase,
+      });
+      syncClosingConfirmation();
+      renderTabs();
+      updateComposerState();
+
+      dropPendingToolTraceMessages?.(chatId);
+      addLocalMessage?.(chatId, { role: "operator", body: cleaned, created_at: new Date().toISOString() });
+      if (chatId === Number(getActiveChatId())) {
+        if (promptEl) {
+          promptEl.value = "";
+        }
+        setDraft?.(chatId, "");
+      }
+      syncActiveMessageView(chatId, { preserveViewport: true });
+      focusMessagesPaneIfActiveChat(chatId);
+
+      clearStreamCursor?.(chatId);
+      clearPendingStreamSnapshot?.(chatId);
+      resetToolStream?.();
+      deps.markStreamActive?.(chatId);
+
+      const builtReplyRef = { value: "" };
+      let wasAborted = false;
+      const streamController = new AbortController();
+      const shouldRestoreFocusOnComplete = Boolean(
+        Number(getActiveChatId()) === chatId
+        && typeof document !== "undefined"
+        && document.activeElement === promptEl
+        && isNearBottom?.(messagesEl, 40),
+      );
+      setFocusRestoreEligibility(chatId, shouldRestoreFocusOnComplete);
+      setStreamAbortController(chatId, streamController);
+
+      try {
+        const response = await fetchImpl("/api/chat/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(authPayload({ chat_id: chatId, message: cleaned })),
+          signal: streamController.signal,
+        });
+
+        if (!response.ok || !response.body) {
+          const fallback = await response.text();
+          const parsedError = parseStreamErrorPayload(fallback);
+          const alreadyWorking = response.status === 409;
+          const sanitizedFallbackMessage = summarizeUiFailure(parsedError.error || fallback, {
+            status: response.status,
+            fallback: "Hermes call failed.",
+          });
+          if (alreadyWorking) {
+            await resumePendingChatStream(chatId, { force: true });
+            return;
+          }
+
+          setStreamPhase(chatId, STREAM_PHASES.ERROR);
+          if (/Telegram init data is too old/i.test(parsedError.error || fallback || "")) {
+            setIsAuthenticated?.(false);
+            if (authStatusEl) {
+              authStatusEl.textContent = "Session expired";
+            }
+            updatePendingAssistant(chatId, "Telegram session expired. Close and reopen the mini app to refresh auth.", false);
+            updateComposerState();
+          } else {
+            updatePendingAssistant(chatId, sanitizedFallbackMessage, false);
+          }
+          syncActiveMessageView(chatId, { preserveViewport: true });
+          deps.markStreamError?.(chatId);
+          return;
+        }
+
+        const resumed = await consumeStreamWithReconnect(chatId, response, builtReplyRef, {
+          fallbackTraceEvent: "stream-fallback-patch",
+          resetReplayCursor: true,
+          onEarlyClose: async ({ expectedSegmentEnd = false } = {}) => {
+            if (expectedSegmentEnd) {
+              resetReconnectResumeBudget?.(chatId);
+            }
+            await resumePendingChatStream(chatId, { force: true });
+          },
+        });
+        if (resumed) return;
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          wasAborted = true;
+          return;
+        }
+        setStreamPhase(chatId, STREAM_PHASES.ERROR);
+        finalizeInlineToolTrace(chatId);
+        updatePendingAssistant(chatId, `Network failure: ${error.message}`, false);
+        markStreamUpdate(chatId);
+        syncActiveMessageView(chatId, { preserveViewport: true });
+        deps.markNetworkFailure?.(chatId);
+      } finally {
+        await finalizeStreamLifecycle(chatId, streamController, { wasAborted });
+      }
+    }
+
+    async function resumePendingChatStream(chatId, { force = false } = {}) {
+      const key = Number(chatId);
+      if (!key || !getIsAuthenticated?.()) return;
+      let shouldResumeAfterFinally = false;
+      try {
+        if (isReconnectResumeBlocked?.(key)) {
+          suppressBlockedChatPending?.(key);
+          renderTabs();
+          updateComposerState();
+          deps.syncActivePendingStatus?.();
+          return;
+        }
+        const now = Date.now();
+        const cooldownUntil = Number(resumeCooldownUntilByChat?.get?.(key) || 0);
+        if (cooldownUntil > now) {
+          return;
+        }
+        if (resumeInFlightByChat?.has?.(key)) {
+          return;
+        }
+        const hasLiveController = hasLiveStreamController(key);
+        if (hasLiveController && !force) return;
+        const lastAttemptAt = Number(resumeAttemptedAtByChat?.get?.(key) || 0);
+        if (lastAttemptAt > 0 && (now - lastAttemptAt) < RESUME_REATTACH_MIN_INTERVAL_MS) {
+          return;
+        }
+        const chatPending = Boolean(chats.get(key)?.pending);
+        if (!chatPending && !force) return;
+
+        const reconnectBudget = consumeReconnectResumeBudget?.(key) || {
+          allowed: true,
+          attempts: 1,
+          maxAttempts: MAX_AUTO_RESUME_CYCLES_PER_CHAT,
+        };
+        if (!reconnectBudget.allowed) {
+          blockReconnectResume?.(key);
+          setStreamPhase(key, STREAM_PHASES.ERROR);
+          finalizeInlineToolTrace(key);
+          appendSystemMessage(`Auto-reconnect paused in '${chatLabel(key)}' after ${reconnectBudget.maxAttempts} failed resume cycles.`, key);
+          appendSystemMessage(`Reconnect recovery is paused for '${chatLabel(key)}'. Send a new message to try again.`, key);
+          renderTabs();
+          updateComposerState();
+          deps.syncActivePendingStatus?.();
+          if (Number(getActiveChatId()) === key) {
+            deps.markReconnectFailed?.(key);
+          }
+          return;
+        }
+
+        resumeInFlightByChat?.add?.(key);
+        resumeAttemptedAtByChat?.set?.(key, now);
+
+        if (force && hasLiveController) {
+          abortStreamController(key);
+        }
+
+        markChatStreamPending?.({
+          chatId: key,
+          pendingChats,
+          chats,
+          setStreamPhase,
+        });
+        syncClosingConfirmation();
+        renderTabs();
+        updateComposerState();
+
+        if (Number(getActiveChatId()) === key) {
+          deps.markStreamReconnecting?.(key, {
+            attempt: 1,
+            maxAttempts: RESUME_RECOVERY_MAX_ATTEMPTS,
+          });
+        }
+
+        const builtReplyRef = { value: "" };
+
+        for (let attempt = 1; attempt <= RESUME_RECOVERY_MAX_ATTEMPTS; attempt += 1) {
+          let wasAborted = false;
+          const streamController = new AbortController();
+          setFocusRestoreEligibility(key, false);
+          setStreamAbortController(key, streamController);
+
+          try {
+            const response = await fetchImpl("/api/chat/stream/resume", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(authPayload({ chat_id: key, after_event_id: getStoredStreamCursor?.(key) })),
+              signal: streamController.signal,
+            });
+
+            if (!response.ok || !response.body) {
+              const fallback = await response.text();
+              const parsedResumeError = parseStreamErrorPayload(fallback);
+              const sanitizedResumeFailure = summarizeUiFailure(parsedResumeError.error || fallback, {
+                status: response.status,
+                fallback: `Resume failed: ${response.status}`,
+              });
+              const noActiveJob = response.status === 409
+                && /no active hermes job/i.test(parsedResumeError.error || fallback || "");
+              if (noActiveJob) {
+                resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
+                setStreamPhase(key, STREAM_PHASES.FINALIZED);
+                await hydrateChatAfterGracefulResumeCompletion(key);
+                triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
+                deps.markResumeAlreadyComplete?.(key);
+                return;
+              }
+              throw new Error(sanitizedResumeFailure);
+            }
+
+            const resumed = await consumeStreamWithReconnect(key, response, builtReplyRef, {
+              fallbackTraceEvent: "stream-resume-fallback-patch",
+              onEarlyClose: async ({ expectedSegmentEnd = false } = {}) => {
+                if (expectedSegmentEnd) {
+                  resetReconnectResumeBudget?.(key);
+                }
+                wasAborted = true;
+                shouldResumeAfterFinally = true;
+              },
+            });
+            if (resumed) return;
+            return;
+          } catch (error) {
+            if (error?.name === "AbortError") {
+              wasAborted = true;
+              return;
+            }
+            const transientReconnectFailure = isTransientResumeRecoveryError(error);
+            const hasAttemptsRemaining = transientReconnectFailure && attempt < RESUME_RECOVERY_MAX_ATTEMPTS;
+            if (hasAttemptsRemaining) {
+              console.warn(`[W_STREAM_RECONNECT_RETRY] chat=${key} attempt=${attempt}/${RESUME_RECOVERY_MAX_ATTEMPTS}`, error);
+              if (Number(getActiveChatId()) === key) {
+                deps.markStreamReconnecting?.(key, {
+                  attempt: attempt + 1,
+                  maxAttempts: RESUME_RECOVERY_MAX_ATTEMPTS,
+                });
+              }
+              await delayMs(nextResumeRecoveryDelayMs(attempt));
+              continue;
+            }
+
+            if (transientReconnectFailure) {
+              await hydrateChatAfterGracefulResumeCompletion(key);
+              const stillPending = Boolean(chats.get(key)?.pending) || pendingChats.has(key);
+              if (!stillPending) {
+                resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
+                setStreamPhase(key, STREAM_PHASES.FINALIZED);
+                triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
+                deps.markResumeAlreadyComplete?.(key);
+                return;
+              }
+            }
+
+            blockReconnectResume?.(key);
+            setStreamPhase(key, STREAM_PHASES.ERROR);
+            finalizeInlineToolTrace(key);
+            console.warn(`[E_STREAM_RECONNECT_FAILED] chat=${key}`, error);
+            appendSystemMessage(`Could not reconnect '${chatLabel(key)}': ${error.message}`, key);
+            appendSystemMessage(`Reconnect recovery is paused for '${chatLabel(key)}'. Send a new message to try again.`, key);
+            renderTabs();
+            updateComposerState();
+            deps.syncActivePendingStatus?.();
+            if (Number(getActiveChatId()) === key) {
+              deps.markReconnectFailed?.(key);
+            }
+            return;
+          } finally {
+            await finalizeStreamLifecycle(key, streamController, { wasAborted });
+          }
+        }
+      } finally {
+        resumeInFlightByChat?.delete?.(key);
+        if (shouldResumeAfterFinally) {
+          resumeAttemptedAtByChat?.delete?.(key);
+          setTimeoutFn(() => {
+            void resumePendingChatStream(key, { force: true });
+          }, 0);
+        }
       }
     }
 
@@ -948,10 +1405,12 @@
       hydrateChatAfterGracefulResumeCompletion,
       consumeStreamWithReconnect,
       finalizeStreamLifecycle,
+      sendPrompt,
+      resumePendingChatStream,
     };
   }
 
-  const api = { createController, createToolTraceController };
+  const api = { createController, createToolTraceController, createResumeRecoveryPolicy };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   }

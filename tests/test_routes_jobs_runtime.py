@@ -244,6 +244,86 @@ def test_checkpoint_only_runtime_tracks_warm_owner_worker_events(monkeypatch, tm
     assert owner_state["reusable_candidate_session_ids"] == ["miniapp-123-55"]
 
 
+def test_sweep_stale_running_jobs_clears_active_runner_record(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server.runtime
+
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
+    terminated: list[tuple[int, str]] = []
+    monkeypatch.setattr(runtime, "_terminate_job_children", lambda *, job_id, reason: terminated.append((int(job_id), str(reason))))
+    monkeypatch.setattr(
+        runtime.store,
+        "dead_letter_stale_running_jobs",
+        lambda timeout_seconds, error: [{"id": 991, "chat_id": 55, "user_id": "123"}],
+    )
+
+    runtime._sweep_stale_running_jobs()
+
+    assert terminated == [(991, "stale_timeout_dead")]
+    diagnostics = runtime.runtime_diagnostics()
+    assert diagnostics["incident_snapshot"]["workers"]["active_job_total"] == 0
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
+    runtime._finish_job_runner(991)
+
+
+def test_publish_job_event_refreshes_active_runner_progress_timestamp(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server.runtime
+
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
+    with runtime._active_job_runner_lock:
+        record = runtime._active_job_runner_records[991]
+        record["last_progress_at"] = 100
+    monkeypatch.setattr("job_runtime.time.time", lambda: 175)
+
+    runtime.publish_job_event(991, "meta", {"chat_id": 55, "source": "test"})
+
+    with runtime._active_job_runner_lock:
+        assert int(runtime._active_job_runner_records[991]["last_progress_at"]) == 175
+    runtime._finish_job_runner(991)
+
+
+def test_orphaned_runner_sweep_uses_last_progress_not_start_time(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server.runtime
+
+    job_id = 991
+    user_id = "123"
+    chat_id = 55
+    assert runtime._try_start_job_runner(job_id=job_id, user_id=user_id, chat_id=chat_id) is True
+
+    session_id = f"miniapp-{user_id}-{chat_id}"
+    runtime.client.note_warm_session_worker_attach_ready(
+        session_id=session_id,
+        owner_pid=999,
+        transport_kind="unix_socket_jsonl",
+        worker_endpoint="/tmp/attach.sock",
+        resume_token="tok",
+        resume_deadline_ms=1,
+    )
+
+    with runtime._active_job_runner_lock:
+        record = runtime._active_job_runner_records[job_id]
+        record["started_at"] = 100
+        record["last_progress_at"] = 460
+
+    monkeypatch.setattr("job_runtime.time.time", lambda: 500)
+    monkeypatch.setattr(runtime.client, "child_spawn_diagnostics", lambda: {"descendant_active_by_job": {str(job_id): 0}})
+    monkeypatch.setattr(runtime.store, "get_job_state", lambda requested_job_id: {"id": requested_job_id, "status": "running"})
+    retry_calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(runtime.store, "retry_or_dead_letter_job", lambda requested_job_id, error_text, retry_base_seconds=0: retry_calls.append((int(requested_job_id), str(error_text))) or False)
+    terminated: list[tuple[int, str]] = []
+    monkeypatch.setattr(runtime, "_terminate_job_children", lambda *, job_id, reason: terminated.append((int(job_id), str(reason))))
+
+    runtime._sweep_locally_orphaned_active_runners()
+
+    assert terminated == []
+    assert retry_calls == []
+    runtime._finish_job_runner(job_id)
+
+
 def test_runtime_can_be_configured_with_subprocess_worker_launcher(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
     monkeypatch.setenv("MINI_APP_JOB_WORKER_SUBPROCESS_MEMORY_LIMIT_MB", "2048")
@@ -686,6 +766,22 @@ def test_safe_add_system_message_records_failure_and_logs_warning(monkeypatch, t
     assert counts["touch_job_write"] == 0
     assert counts["system_message_write"] == 1
     assert any("best_effort_write_failure kind=system_message_write" in message for message in caplog.messages)
+
+
+def test_safe_add_system_message_emits_only_one_terminal_message_per_job(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    calls: list[dict[str, object]] = []
+
+    def record_add_message(*, user_id, chat_id, role, body):
+        calls.append({"user_id": user_id, "chat_id": chat_id, "role": role, "body": body})
+
+    monkeypatch.setattr(server.runtime.store, "add_message", record_add_message)
+
+    server.runtime._safe_add_system_message(user_id="dedupe-user", chat_id=1, text="first terminal failure", job_id=321)
+    server.runtime._safe_add_system_message(user_id="dedupe-user", chat_id=1, text="second terminal failure", job_id=321)
+
+    assert calls == [{"user_id": "dedupe-user", "chat_id": 1, "role": "system", "body": "first terminal failure"}]
 
 
 def test_bounded_attempts_for_display_caps_retry_count(monkeypatch, tmp_path) -> None:

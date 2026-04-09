@@ -10,6 +10,24 @@ function buildHarness(overrides = {}) {
   const messages = [];
   const timeouts = [];
   const fullscreenButton = { textContent: '', title: '' };
+  const devAuthControls = {
+    attributes: new Map(),
+    setAttribute(name, value) {
+      this.attributes.set(name, value);
+    },
+    removeAttribute(name) {
+      this.attributes.delete(name);
+    },
+  };
+  const devModeBadge = {
+    attributes: new Map(),
+    setAttribute(name, value) {
+      this.attributes.set(name, value);
+    },
+    removeAttribute(name) {
+      this.attributes.delete(name);
+    },
+  };
   const tg = {
     isVersionAtLeast: () => true,
     enableClosingConfirmationCalls: 0,
@@ -48,6 +66,10 @@ function buildHarness(overrides = {}) {
     tg,
     pendingChats,
     fullscreenAppTopButton: fullscreenButton,
+    devAuthControls,
+    devModeBadge,
+    devConfig: overrides.devConfig || {},
+    desktopTestingRequested: Boolean(overrides.desktopTestingRequested),
     appendSystemMessage: (text) => messages.push(String(text)),
     scheduleTimeout: (callback, delay) => {
       timeouts.push(delay);
@@ -61,10 +83,52 @@ function buildHarness(overrides = {}) {
     tg,
     pendingChats,
     fullscreenButton,
+    devAuthControls,
+    devModeBadge,
     messages,
     timeouts,
   };
 }
+
+test('setElementHidden toggles hidden attribute idempotently', () => {
+  const harness = buildHarness();
+
+  harness.controller.setElementHidden(harness.devAuthControls, true);
+  assert.equal(harness.devAuthControls.attributes.get('hidden'), 'hidden');
+
+  harness.controller.setElementHidden(harness.devAuthControls, false);
+  assert.equal(harness.devAuthControls.attributes.has('hidden'), false);
+});
+
+test('syncDebugOnlyPillVisibility shows dev pills only for requested desktop testing modes', () => {
+  const harness = buildHarness({
+    desktopTestingRequested: true,
+    devConfig: {
+      devAuthEnabled: true,
+      requestDebug: false,
+    },
+  });
+
+  harness.controller.syncDebugOnlyPillVisibility();
+
+  assert.equal(harness.devAuthControls.attributes.has('hidden'), false);
+  assert.equal(harness.devModeBadge.attributes.get('hidden'), 'hidden');
+});
+
+test('syncDebugOnlyPillVisibility hides debug pills outside desktop testing', () => {
+  const harness = buildHarness({
+    desktopTestingRequested: false,
+    devConfig: {
+      devAuthEnabled: true,
+      requestDebug: true,
+    },
+  });
+
+  harness.controller.syncDebugOnlyPillVisibility();
+
+  assert.equal(harness.devAuthControls.attributes.get('hidden'), 'hidden');
+  assert.equal(harness.devModeBadge.attributes.get('hidden'), 'hidden');
+});
 
 test('syncClosingConfirmation enables confirmation when chat work is pending', () => {
   const harness = buildHarness({ pendingChats: [5] });

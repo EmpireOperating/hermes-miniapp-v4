@@ -483,6 +483,77 @@
     };
   }
 
+  function createController({
+    mobileQuoteMode,
+    activeChatId,
+    getActiveChatId,
+    focusMessagesPaneIfActiveChat,
+    submitPromptWithUiError,
+    windowObject,
+    documentObject,
+    promptEl,
+    messagesEl,
+    selectionQuoteButton,
+    selectionQuoteState,
+    activeSelectionQuote,
+    cancelSelectionQuoteSync,
+    cancelSelectionQuoteSettle,
+    cancelSelectionQuoteClear,
+    scheduleSelectionQuoteSync,
+    scheduleSelectionQuoteClear,
+    applyQuoteIntoPrompt,
+    clearSelectionQuoteState,
+  } = {}) {
+    let selectionQuoteController = null;
+    let selectionQuoteBindingsInstalled = false;
+
+    return {
+      handleComposerSubmitShortcut(event) {
+        const resolvedActiveChatId = typeof getActiveChatId === "function" ? getActiveChatId() : activeChatId;
+        return handleComposerSubmitShortcut(event, {
+          mobileQuoteMode,
+          activeChatId: resolvedActiveChatId,
+          focusMessagesPaneIfActiveChat,
+          submitPromptWithUiError,
+        });
+      },
+
+      getSelectionQuoteController() {
+        if (selectionQuoteController) {
+          return selectionQuoteController;
+        }
+        selectionQuoteController = createSelectionQuoteController({
+          mobileQuoteMode,
+          windowObject,
+          documentObject,
+          promptEl,
+          messagesEl,
+          selectionQuoteButton,
+          selectionQuoteState,
+          activeSelectionQuote,
+          cancelSelectionQuoteSync,
+          cancelSelectionQuoteSettle,
+          cancelSelectionQuoteClear,
+          scheduleSelectionQuoteSync,
+          scheduleSelectionQuoteClear,
+          applyQuoteIntoPrompt,
+          clearSelectionQuoteState,
+        });
+        return selectionQuoteController;
+      },
+
+      bindSelectionQuoteBindings() {
+        if (selectionQuoteBindingsInstalled) {
+          return this.getSelectionQuoteController();
+        }
+        const controller = this.getSelectionQuoteController();
+        controller.bind();
+        selectionQuoteBindingsInstalled = true;
+        return controller;
+      },
+    };
+  }
+
   const api = {
     handleComposerSubmitShortcut,
     unwrapLegacyQuoteBlock,
@@ -504,6 +575,7 @@
     quoteSelectionTextForInsert,
     hasMessageSelection,
     createSelectionQuoteController,
+    createController,
   };
 
   if (typeof module !== "undefined" && module.exports) {

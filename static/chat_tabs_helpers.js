@@ -18,6 +18,8 @@
       renderedHistoryLength,
       renderedHistoryVirtualized,
       tabNodes,
+      tabTemplate,
+      tabsEl,
       clearChatStreamState,
       chatUiHelpers,
       pinnedChatsWrap,
@@ -26,11 +28,16 @@
       pinnedChatsToggleButton,
       pinChatButton,
       documentObject,
+      renderTraceLog,
       getActiveChatId,
       getPinnedChatsCollapsed,
       setPinnedChatsCollapsedState,
       getHasPinnedChatsCollapsePreference,
       setHasPinnedChatsCollapsePreference,
+      resumeCooldownUntilByChat,
+      reconnectResumeBlockedChats,
+      suppressBlockedChatPending,
+      nowFn = () => Date.now(),
     } = deps;
 
     function normalizeChat(chat, { forcePinned = null } = {}) {
@@ -43,6 +50,34 @@
       };
     }
 
+    function applyResumeCooldownPendingSuppression(chatId) {
+      const key = Number(chatId);
+      const cooldownUntil = Number(resumeCooldownUntilByChat?.get?.(key) || 0);
+      if (key > 0 && cooldownUntil > nowFn()) {
+        const synced = chats.get(key);
+        if (synced && typeof synced === 'object') {
+          synced.pending = false;
+        }
+      }
+      suppressBlockedChatPending?.(key);
+    }
+
+    function reapplyResumeCooldownPendingSuppression() {
+      const now = nowFn();
+      for (const [chatId, until] of resumeCooldownUntilByChat?.entries?.() || []) {
+        const key = Number(chatId);
+        const cooldownUntil = Number(until || 0);
+        if (!key || cooldownUntil <= now) continue;
+        const chat = chats.get(key);
+        if (chat && typeof chat === 'object') {
+          chat.pending = false;
+        }
+      }
+      for (const blockedChatId of reconnectResumeBlockedChats || []) {
+        suppressBlockedChatPending?.(blockedChatId);
+      }
+    }
+
     function upsertChat(chat) {
       const normalized = normalizeChat(chat);
       chats.set(Number(normalized.id), normalized);
@@ -51,6 +86,8 @@
       } else {
         pinnedChats.delete(Number(normalized.id));
       }
+      applyResumeCooldownPendingSuppression(normalized.id);
+      return normalized;
     }
 
     function syncPinnedChats(chatList) {
@@ -90,7 +127,102 @@
           tabNodes.delete(Number(chatId));
         }
       });
-      (chatList || []).forEach(upsertChat);
+      const nextChats = (chatList || []).map(upsertChat);
+      reapplyResumeCooldownPendingSuppression();
+      return nextChats;
+    }
+
+    function getOrCreateTabNode(chatId) {
+      return chatUiHelpers.getOrCreateTabNode({
+        tabNodes,
+        tabTemplate,
+        chatId,
+      });
+    }
+
+    function getTabBadgeState(chat) {
+      const badgeState = chatUiHelpers.getTabBadgeState({
+        chat,
+        pendingChats,
+        unseenStreamChats,
+      });
+      const chatId = Number(chat?.id || 0);
+      if (chatId > 0) {
+        const unread = Math.max(0, Number(chat?.unread_count || 0));
+        const pending = pendingChats.has(chatId) || Boolean(chat?.pending);
+        const unseen = unseenStreamChats.has(chatId);
+        if (pending || unread > 0 || unseen || chatId === Number(getActiveChatId())) {
+          renderTraceLog?.('tab-badge-state', {
+            chatId,
+            activeChatId: Number(getActiveChatId()),
+            pending,
+            unread,
+            unseen,
+            badgeText: String(badgeState?.text || ''),
+            badgeClasses: Array.isArray(badgeState?.classes) ? badgeState.classes.slice() : [],
+          });
+        }
+      }
+      return badgeState;
+    }
+
+    function applyTabBadgeState(badge, badgeState) {
+      chatUiHelpers.applyTabBadgeState({ badge, badgeState });
+    }
+
+    function applyTabNodeState(node, chat) {
+      chatUiHelpers.applyTabNodeState({
+        node,
+        chat,
+        activeChatId: getActiveChatId(),
+        pendingChats,
+        unseenStreamChats,
+        getTabBadgeState,
+        applyTabBadgeState,
+      });
+    }
+
+    function removeMissingTabNodes(nextIds) {
+      chatUiHelpers.removeMissingTabNodes({ tabNodes, nextIds });
+    }
+
+    function renderTabs() {
+      chatUiHelpers.renderTabs({
+        chats,
+        tabNodes,
+        tabTemplate,
+        tabsEl,
+        applyTabNodeState,
+      });
+    }
+
+    function refreshTabNode(chatId) {
+      const key = Number(chatId);
+      const chat = chats.get(key);
+      renderTraceLog?.('tab-refresh-request', {
+        chatId: key,
+        activeChatId: Number(getActiveChatId()),
+        pendingLocal: pendingChats.has(key),
+        pendingServer: Boolean(chat?.pending),
+        unread: Math.max(0, Number(chat?.unread_count || 0)),
+        unseen: unseenStreamChats.has(key),
+      });
+      chatUiHelpers.refreshTabNode({
+        chatId,
+        tabNodes,
+        chats,
+        applyTabNodeState,
+      });
+    }
+
+    function syncActiveTabSelection(previousChatId, nextChatId) {
+      chatUiHelpers.syncActiveTabSelection({
+        previousChatId,
+        nextChatId,
+        tabNodes,
+        renderTabs,
+        refreshTabNode,
+      });
     }
 
     function getStoredPinnedChatsCollapsed() {
@@ -183,6 +315,14 @@
       upsertChat,
       syncPinnedChats,
       syncChats,
+      getOrCreateTabNode,
+      getTabBadgeState,
+      applyTabBadgeState,
+      applyTabNodeState,
+      removeMissingTabNodes,
+      renderTabs,
+      refreshTabNode,
+      syncActiveTabSelection,
       getStoredPinnedChatsCollapsed,
       persistPinnedChatsCollapsed,
       syncPinnedChatsCollapseUi,

@@ -14,8 +14,9 @@ function buildHarness(overrides = {}) {
   const renderedMessages = [];
   const refreshedTabs = [];
   const resumedChats = [];
-  const systemMessages = [];
   const apiCalls = [];
+  const persistedSnapshots = [];
+  const clearedSnapshots = [];
   const markReadCalls = [];
   const statusSyncCalls = [];
   const pinnedStatusSyncCalls = [];
@@ -30,11 +31,37 @@ function buildHarness(overrides = {}) {
   const messagesContainer = {
     scrollTop: 0,
     clientHeight: 0,
+    appendedNodes: [],
+    appendChild(node) {
+      this.appendedNodes.push(node);
+      return node;
+    },
     querySelectorAll: (selector) => {
       if (selector === '.message[data-role="assistant"]:not(.message--pending), .message[data-role="hermes"]:not(.message--pending)') {
         return renderedAssistantNodes;
       }
       return [];
+    },
+  };
+  const roleNode = { textContent: '' };
+  const timeNode = { textContent: '' };
+  const bodyNode = {};
+  const systemMessageNode = {
+    classList: { add() {} },
+    querySelector(selector) {
+      if (selector === '.message__role') return roleNode;
+      if (selector === '.message__time') return timeNode;
+      if (selector === '.message__body') return bodyNode;
+      return null;
+    },
+  };
+  const template = {
+    content: {
+      firstElementChild: {
+        cloneNode() {
+          return systemMessageNode;
+        },
+      },
     },
   };
   const pendingChats = new Set([7]);
@@ -89,7 +116,12 @@ function buildHarness(overrides = {}) {
     refreshTabNode: (chatId) => refreshedTabs.push(Number(chatId)),
     getActiveChatId: () => activeChatId,
     resumePendingChatStream: (chatId, options = {}) => resumedChats.push({ chatId: Number(chatId), options }),
-    appendSystemMessage: (text) => systemMessages.push(String(text)),
+    messagesEl: messagesContainer,
+    template,
+    nowStamp: () => '10:45',
+    renderBody: (_container, text) => {
+      bodyNode.textContent = String(text);
+    },
     getLastOpenChatRequestId: () => lastOpenChatRequestId,
     setLastOpenChatRequestId: (value) => { lastOpenChatRequestId = Number(value); },
     scheduleTimeout: (callback) => callback(),
@@ -132,6 +164,15 @@ function buildHarness(overrides = {}) {
       restoredSnapshots.push(Number(chatId));
       return false;
     },
+    hasFreshPendingStreamSnapshot: () => false,
+    persistPendingStreamSnapshot: (chatId) => {
+      persistedSnapshots.push(Number(chatId));
+      return true;
+    },
+    clearPendingStreamSnapshot: (chatId) => {
+      clearedSnapshots.push(Number(chatId));
+      return true;
+    },
     shouldResumeOnVisibilityChange: (args) => {
       resumeVisibilityChecks.push(args);
       return false;
@@ -149,8 +190,9 @@ function buildHarness(overrides = {}) {
     renderedMessages,
     refreshedTabs,
     resumedChats,
-    systemMessages,
     apiCalls,
+    persistedSnapshots,
+    clearedSnapshots,
     markReadCalls,
     statusSyncCalls,
     pinnedStatusSyncCalls,
@@ -245,6 +287,65 @@ test('hydrateChatFromServer restores pending snapshot for pending chats before r
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: {} }]);
 });
 
+test('hydrateChatFromServer restores fresh pending snapshot even when server hydrate briefly says not pending', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      return {
+        chat: { id: Number(payload.chat_id), pending: false },
+        history: [{ id: 1, role: 'assistant', body: 'hello' }],
+      };
+    },
+    hasFreshPendingStreamSnapshot: (chatId) => Number(chatId) === 7,
+    restorePendingStreamSnapshot: (chatId) => {
+      harness.restoredSnapshots.push(Number(chatId));
+      harness.histories.set(Number(chatId), [
+        { id: 1, role: 'assistant', body: 'hello' },
+        { role: 'tool', body: 'missed tool', pending: true },
+      ]);
+      return true;
+    },
+  });
+
+  await harness.controller.hydrateChatFromServer(7, 0, false);
+
+  assert.deepEqual(harness.restoredSnapshots, [7]);
+  assert.deepEqual(harness.histories.get(7), [
+    { id: 1, role: 'assistant', body: 'hello' },
+    { role: 'tool', body: 'missed tool', pending: true },
+  ]);
+  assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
+});
+
+test('hydrateChatFromServer rerenders active chat when restoring a pending snapshot mutates local history after merge', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      return {
+        chat: { id: Number(payload.chat_id), pending: true },
+        history: [{ id: 1, role: 'operator', body: 'working' }],
+      };
+    },
+    restorePendingStreamSnapshot: (chatId) => {
+      harness.restoredSnapshots.push(Number(chatId));
+      harness.histories.set(Number(chatId), [
+        { id: 1, role: 'operator', body: 'working' },
+        { role: 'tool', body: 'missed tool', pending: true },
+      ]);
+      return true;
+    },
+  });
+
+  await harness.controller.hydrateChatFromServer(7, 0, true);
+
+  assert.deepEqual(harness.restoredSnapshots, [7]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.histories.get(7), [
+    { id: 1, role: 'operator', body: 'working' },
+    { role: 'tool', body: 'missed tool', pending: true },
+  ]);
+});
+
 
 test('openChat uses cached history path before background hydration', async () => {
   const harness = buildHarness();
@@ -257,6 +358,19 @@ test('openChat uses cached history path before background hydration', async () =
   assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), true);
 });
 
+test('openChat disables deferred cached-chat meta on mobile-style contexts', async () => {
+  const harness = buildHarness({
+    shouldDeferNonCriticalCachedOpen: () => false,
+  });
+  harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+
+  await harness.controller.openChat(7);
+
+  assert.deepEqual(harness.activeMeta.at(-1), { chatId: 7, options: { fullTabRender: false, deferNonCritical: false } });
+  assert.deepEqual(harness.renderedMessages.at(0), { chatId: 7, options: {} });
+  assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), true);
+});
+
 test('openChat keeps unread dot state while opening cached unread chat', async () => {
   const harness = buildHarness();
   harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
@@ -264,6 +378,117 @@ test('openChat keeps unread dot state while opening cached unread chat', async (
   await harness.controller.openChat(7);
 
   assert.equal(harness.chats.get(7).unread_count, 2);
+});
+
+test('openChat does not clear unread just by switching into an unread chat that is already bottom-pinned', async () => {
+  const harness = buildHarness();
+  harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+  harness.chats.get(7).unread_count = 1;
+  harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
+  harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
+
+  await harness.controller.openChat(7);
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, []);
+  assert.equal(harness.chats.get(7).unread_count, 1);
+
+  harness.setMessageViewport({ scrollTop: 120, clientHeight: 260 });
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.markReadCalls, []);
+
+  harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, [7]);
+});
+
+test('ensureActivationReadThreshold prevents bootstrap-resume mark-read from clearing unread before the operator re-hits bottom', async () => {
+  const harness = buildHarness();
+  harness.chats.get(7).unread_count = 1;
+  harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
+  harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
+
+  harness.controller.ensureActivationReadThreshold(7, 1);
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, []);
+  assert.equal(harness.chats.get(7).unread_count, 1);
+
+  harness.setMessageViewport({ scrollTop: 120, clientHeight: 260 });
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(harness.markReadCalls, []);
+
+  harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, [7]);
+});
+
+test('ensureActivationReadThreshold allows first bottom-hit to clear unread when activation started above the newest unread message bottom', async () => {
+  const harness = buildHarness();
+  harness.chats.get(7).unread_count = 1;
+  harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
+  harness.setMessageViewport({ scrollTop: 40, clientHeight: 260 });
+
+  harness.controller.ensureActivationReadThreshold(7, 1);
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, []);
+  assert.equal(harness.chats.get(7).unread_count, 1);
+
+  harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, [7]);
+});
+
+test('openChat preserves local unread when activated history hydrate reports unread_count 0 before bottom threshold is met', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+    upsertChat: (chat) => {
+      harness.upsertedChats.push(chat);
+      const current = harness.chats.get(Number(chat.id)) || {};
+      harness.chats.set(Number(chat.id), {
+        ...current,
+        ...chat,
+        id: Number(chat.id),
+        unread_count: Number(chat.unread_count || 0),
+        pending: Boolean(chat.pending),
+      });
+    },
+  });
+  harness.chats.set(7, { id: 7, unread_count: 1, pending: false });
+  harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
+  harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
+
+  await harness.controller.openChat(7);
+
+  assert.equal(harness.chats.get(7).unread_count, 1);
+  assert.deepEqual(harness.markReadCalls, []);
 });
 
 test('refreshChats syncs chat and pinned status with render/composer updates', async () => {
@@ -281,6 +506,37 @@ test('refreshChats syncs chat and pinned status with render/composer updates', a
   assert.equal(harness.getRenderPinnedChatsCalls(), 1);
   assert.equal(harness.getSyncActivePendingStatusCalls(), 1);
   assert.equal(harness.getUpdateComposerStateCalls(), 1);
+});
+
+test('refreshChats preserves local unread while activation threshold is still armed', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/status') {
+        return {
+          chats: [{ id: 7, unread_count: 0, pending: false }],
+          pinned_chats: [{ id: 7, unread_count: 0, pending: false }],
+        };
+      }
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.chats.set(7, { id: 7, unread_count: 2, pending: false });
+  harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+
+  await harness.controller.openChat(7);
+  await harness.controller.refreshChats();
+
+  assert.deepEqual(harness.statusSyncCalls, [[{ id: 7, unread_count: 2, pending: false }]]);
+  assert.deepEqual(harness.pinnedStatusSyncCalls, [[{ id: 7, unread_count: 2, pending: false }]]);
+  assert.equal(harness.chats.get(7).unread_count, 2);
+  assert.deepEqual(harness.markReadCalls, []);
 });
 
 test('refreshChats clears stale local pending state when server reports chat not pending and no live stream exists', async () => {
@@ -368,7 +624,7 @@ test('syncVisibleActiveChat hydrates active history and resumes pending streams 
     pendingChats: harness.pendingChats,
     streamAbortControllers,
   });
-  assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: false } }]);
+  assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: {} }]);
   assert.ok(harness.markReadCalls.includes(7));
 });
 
@@ -397,7 +653,7 @@ test('syncVisibleActiveChat resumes when server still reports pending and there 
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: false } }]);
+  assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: {} }]);
 });
 
 test('syncVisibleActiveChat forces resume when local pending traces exist without live stream', async () => {
@@ -420,6 +676,75 @@ test('syncVisibleActiveChat forces resume when local pending traces exist withou
   await harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
 
   assert.deepEqual(harness.restoredSnapshots, [7]);
+  assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
+});
+
+test('syncVisibleActiveChat restores fresh pending snapshot even when local history is empty and server says not pending', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    pendingChats: new Set(),
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+    hasFreshPendingStreamSnapshot: (chatId) => Number(chatId) === 7,
+    restorePendingStreamSnapshot: (chatId) => {
+      harness.restoredSnapshots.push(Number(chatId));
+      harness.histories.set(Number(chatId), [
+        { id: 1, role: 'assistant', body: 'hello' },
+        { role: 'tool', body: 'missed tool', pending: true },
+      ]);
+      return true;
+    },
+  });
+
+  await harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+
+  assert.deepEqual(harness.restoredSnapshots, [7]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
+});
+
+test('syncVisibleActiveChat rerenders active chat when restoring pending snapshot changes final visible history', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    pendingChats: new Set(),
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: 7, pending: false },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+    restorePendingStreamSnapshot: (chatId) => {
+      harness.restoredSnapshots.push(Number(chatId));
+      harness.histories.set(Number(chatId), [
+        { id: 1, role: 'assistant', body: 'hello' },
+        { role: 'tool', body: 'missed tool', pending: true },
+      ]);
+      return true;
+    },
+  });
+  harness.histories.set(7, [{ role: 'tool', body: 'read_file', pending: true }]);
+
+  await harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.restoredSnapshots, [7]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
 });
 
@@ -590,7 +915,7 @@ test('syncVisibleActiveChat ignores stale history responses when active chat cha
   assert.equal(harness.histories.has(7), false);
   assert.deepEqual(harness.renderedMessages, []);
   assert.deepEqual(harness.resumedChats, []);
-  assert.equal(harness.upsertedChats.some((chat) => Boolean(chat?.pending)), false);
+  assert.deepEqual(harness.upsertedChats, [{ id: 7, pending: true, unread_count: 0 }]);
   assert.ok(harness.markReadCalls.includes(7));
 });
 
@@ -645,6 +970,79 @@ test('updatePendingAssistant skips empty finalized writes without pending messag
   harness.controller.updatePendingAssistant(7, '   ', false);
 
   assert.equal((harness.histories.get(7) || []).length, 0);
+  assert.deepEqual(harness.persistedSnapshots, []);
+  assert.deepEqual(harness.clearedSnapshots, []);
+});
+
+test('updatePendingAssistant persists and clears pending stream snapshots inside helper ownership', () => {
+  const harness = buildHarness();
+
+  harness.controller.updatePendingAssistant(7, 'streaming', true);
+  harness.controller.updatePendingAssistant(7, 'completed', false);
+
+  assert.deepEqual(harness.persistedSnapshots, [7, 7]);
+  assert.deepEqual(harness.clearedSnapshots, [7]);
+});
+
+test('appendSystemMessage appends inline system card when no active chat is selected', () => {
+  const harness = buildHarness();
+  harness.setActiveChatId(0);
+
+  harness.controller.appendSystemMessage('Waiting for sign-in');
+
+  assert.equal(harness.messagesContainer.appendedNodes.length, 1);
+  assert.equal(harness.messagesContainer.appendedNodes[0].querySelector('.message__role').textContent, 'system');
+  assert.equal(harness.messagesContainer.appendedNodes[0].querySelector('.message__time').textContent, '10:45');
+  assert.equal(harness.messagesContainer.appendedNodes[0].querySelector('.message__body').textContent, 'Waiting for sign-in');
+});
+
+test('appendSystemMessage stores active-chat system notice in history and rerenders active chat', () => {
+  const harness = buildHarness();
+
+  harness.controller.appendSystemMessage('Resume failed');
+
+  const history = harness.histories.get(7) || [];
+  assert.equal(history.length, 1);
+  assert.equal(history[0].role, 'system');
+  assert.equal(history[0].body, 'Resume failed');
+  assert.equal(harness.renderedMessages.at(-1)?.chatId, 7);
+});
+
+test('appendSystemMessage can target a non-active chat without rerendering the active view', () => {
+  const harness = buildHarness();
+
+  harness.controller.appendSystemMessage('Refactor failed', 8);
+
+  const targetHistory = harness.histories.get(8) || [];
+  assert.equal(targetHistory.length, 1);
+  assert.equal(targetHistory[0].role, 'system');
+  assert.equal(targetHistory[0].body, 'Refactor failed');
+  assert.equal(harness.histories.get(7), undefined);
+  assert.equal(harness.renderedMessages.length, 0);
+});
+
+test('openChat failure stays attached to the requested chat instead of the newly active chat', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history' && Number(payload.chat_id) === 8) {
+        throw new Error('Failed to open chat 8');
+      }
+      return {
+        chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+        history: [],
+      };
+    },
+  });
+  harness.setActiveChatId(7);
+
+  await harness.controller.openChat(8);
+
+  const targetHistory = harness.histories.get(8) || [];
+  const activeHistory = harness.histories.get(7) || [];
+  assert.equal(targetHistory.at(-1)?.role, 'system');
+  assert.equal(targetHistory.at(-1)?.body, 'Failed to open chat 8');
+  assert.equal(activeHistory.length, 0);
 });
 
 test('sync and schedule active message view only render active chat', () => {
@@ -692,6 +1090,41 @@ test('markRead skips active-chat UI sync when target chat is inactive', async ()
   assert.equal(harness.getRenderTabsCalls(), 1);
   assert.equal(harness.getSyncActivePendingStatusCalls(), 0);
   assert.equal(harness.getUpdateComposerStateCalls(), 0);
+});
+
+test('syncVisibleActiveChat preserves local unread when active history sync reports unread_count 0 before bottom threshold is met', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          history: [{ id: 1, role: 'assistant', body: 'hello again' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+    upsertChat: (chat) => {
+      harness.upsertedChats.push(chat);
+      const current = harness.chats.get(Number(chat.id)) || {};
+      harness.chats.set(Number(chat.id), {
+        ...current,
+        ...chat,
+        id: Number(chat.id),
+        unread_count: Number(chat.unread_count || 0),
+        pending: Boolean(chat.pending),
+      });
+    },
+  });
+  harness.chats.set(7, { id: 7, unread_count: 1, pending: false });
+  harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
+  harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
+
+  await harness.controller.openChat(7);
+  await harness.controller.syncVisibleActiveChat();
+
+  assert.equal(harness.chats.get(7).unread_count, 1);
+  assert.deepEqual(harness.markReadCalls, []);
 });
 
 test('maybeMarkRead enforces active/auth/visibility gating before calling markRead', async () => {
@@ -843,6 +1276,30 @@ test('maybeMarkRead clears unread optimistically as soon as bottom-threshold rea
   assert.equal(harness.getRenderTabsCalls(), 2);
 });
 
+test('maybeMarkRead preserves local pending when mark-read response is stale during a live stream', async () => {
+  const harness = buildHarness({
+    hasLiveStreamController: (chatId) => Number(chatId) === 7,
+    apiPost: async (path, payload) => {
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  harness.chats.set(7, { id: 7, unread_count: 2, pending: true });
+  harness.pendingChats.add(7);
+  harness.controller.maybeMarkRead(7, { force: true });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, [7]);
+  assert.deepEqual(harness.upsertedChats, [{ id: 7, pending: true, unread_count: 0 }]);
+});
+
 test('maybeMarkRead retries once after in-flight call settles when a second intent arrived', async () => {
   let resolveFirstMarkRead;
   let markReadCallCount = 0;
@@ -939,6 +1396,7 @@ function buildMetaHarness() {
   const chats = new Map([
     [3, { id: 3, title: 'Current chat' }],
     [7, { id: 7, title: 'Target chat' }],
+    [8, { id: 8, title: 'Second target chat' }],
   ]);
   let activeChatId = 3;
   let renderedChatId = 3;
@@ -1075,11 +1533,48 @@ test('createMetaController defers non-critical active-chat updates and preserves
   assert.deepEqual(harness.calls.syncActiveTabSelection, [{ previousChatId: 3, nextChatId: 7 }]);
   assert.equal(harness.calls.scheduleTimeout.length, 1);
   assert.equal(harness.calls.syncLiveToolStreamForChat.length, 0);
+  assert.equal(harness.calls.syncActivePendingStatus, 1);
+  assert.equal(harness.calls.syncActiveLatencyChip, 1);
+  assert.equal(harness.calls.updateJumpLatestVisibility, 0);
 
   harness.calls.scheduleTimeout[0].callback();
   assert.deepEqual(harness.calls.syncLiveToolStreamForChat, [7]);
   assert.equal(harness.calls.syncActivePendingStatus, 1);
   assert.equal(harness.calls.syncActiveLatencyChip, 1);
+  assert.equal(harness.calls.updateJumpLatestVisibility, 1);
+});
+
+test('createMetaController ignores stale deferred finalize callbacks after a newer tab switch', () => {
+  const harness = buildMetaHarness();
+
+  harness.controller.setActiveChatMeta(7, { fullTabRender: false, deferNonCritical: true });
+  harness.controller.setActiveChatMeta(3, { fullTabRender: false, deferNonCritical: false });
+
+  assert.equal(harness.calls.scheduleTimeout.length, 1);
+  assert.deepEqual(harness.calls.syncLiveToolStreamForChat, [3]);
+  assert.equal(harness.calls.updateJumpLatestVisibility, 1);
+
+  harness.calls.scheduleTimeout[0].callback();
+
+  assert.deepEqual(harness.calls.syncLiveToolStreamForChat, [3]);
+  assert.equal(harness.calls.updateJumpLatestVisibility, 1);
+});
+
+test('createMetaController skips stale deferred non-critical updates after a later tab switch', () => {
+  const harness = buildMetaHarness();
+
+  harness.controller.setActiveChatMeta(7, { fullTabRender: false, deferNonCritical: true });
+  harness.controller.setActiveChatMeta(8, { fullTabRender: false, deferNonCritical: true });
+
+  assert.equal(harness.calls.scheduleTimeout.length, 2);
+  assert.equal(harness.getActiveChatId(), 8);
+
+  harness.calls.scheduleTimeout[0].callback();
+  assert.deepEqual(harness.calls.syncLiveToolStreamForChat, []);
+  assert.equal(harness.calls.updateJumpLatestVisibility, 0);
+
+  harness.calls.scheduleTimeout[1].callback();
+  assert.deepEqual(harness.calls.syncLiveToolStreamForChat, [8]);
   assert.equal(harness.calls.updateJumpLatestVisibility, 1);
 });
 

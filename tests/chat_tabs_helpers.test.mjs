@@ -33,7 +33,7 @@ function makeElement() {
   };
 }
 
-function createHarness({ activeChatId = 7 } = {}) {
+function createHarness({ activeChatId = 7, now = 1000 } = {}) {
   const chats = new Map();
   const pinnedChats = new Map();
   const histories = new Map();
@@ -48,10 +48,13 @@ function createHarness({ activeChatId = 7 } = {}) {
   const renderedHistoryLength = new Map();
   const renderedHistoryVirtualized = new Map();
   const tabNodes = new Map();
+  const resumeCooldownUntilByChat = new Map();
+  const reconnectResumeBlockedChats = new Set();
 
   const clearCalls = [];
   const renderPinnedChatsCalls = [];
   const localStorageWrites = [];
+  const suppressBlockedPendingCalls = [];
 
   const pinnedChatsWrap = makeElement();
   const pinnedChatsEl = makeElement();
@@ -110,6 +113,10 @@ function createHarness({ activeChatId = 7 } = {}) {
     setHasPinnedChatsCollapsePreference: (value) => {
       hasPreference = Boolean(value);
     },
+    resumeCooldownUntilByChat,
+    reconnectResumeBlockedChats,
+    suppressBlockedChatPending: (chatId) => suppressBlockedPendingCalls.push(Number(chatId)),
+    nowFn: () => now,
   });
 
   return {
@@ -128,9 +135,12 @@ function createHarness({ activeChatId = 7 } = {}) {
     renderedHistoryLength,
     renderedHistoryVirtualized,
     tabNodes,
+    resumeCooldownUntilByChat,
+    reconnectResumeBlockedChats,
     clearCalls,
     renderPinnedChatsCalls,
     localStorageWrites,
+    suppressBlockedPendingCalls,
     pinnedChatsWrap,
     pinnedChatsEl,
     pinnedChatsCountEl,
@@ -191,6 +201,18 @@ test('syncChats removes stale chat state and upserts next chats', () => {
   assert.equal(h.pinnedChats.get(2).is_pinned, true);
 });
 
+test('upsertChat suppresses pending during resume cooldown and blocked reconnect state', () => {
+  const h = createHarness({ now: 1500 });
+  h.resumeCooldownUntilByChat.set(9, 2000);
+  h.reconnectResumeBlockedChats.add(9);
+
+  const next = h.controller.upsertChat({ id: 9, pending: true, unread_count: 0, is_pinned: false });
+
+  assert.equal(next.pending, false);
+  assert.equal(h.chats.get(9).pending, false);
+  assert.deepEqual(h.suppressBlockedPendingCalls, [9]);
+});
+
 test('setPinnedChatsCollapsed updates UI and persists preference when requested', () => {
   const h = createHarness();
   h.pinnedChats.set(9, { id: 9, is_pinned: true });
@@ -232,6 +254,22 @@ test('renderPinnedChats delegates to chat ui helper and refreshes collapse UI', 
   assert.equal(h.renderPinnedChatsCalls[0].pinnedChats, h.pinnedChats);
   assert.equal(h.pinnedChatsToggleButton.hidden, false);
   assert.equal(h.pinnedChatsCountEl.textContent, '(1)');
+});
+
+test('syncChats reapplies cooldown suppression after syncing server chats', () => {
+  const h = createHarness({ now: 1500 });
+  h.resumeCooldownUntilByChat.set(7, 1800);
+  h.reconnectResumeBlockedChats.add(11);
+
+  const next = h.controller.syncChats([
+    { id: 7, pending: true, unread_count: 0, is_pinned: false },
+    { id: 11, pending: true, unread_count: 0, is_pinned: false },
+  ]);
+
+  assert.equal(Array.isArray(next), true);
+  assert.equal(h.chats.get(7).pending, false);
+  assert.equal(h.chats.get(11).pending, true);
+  assert.deepEqual(h.suppressBlockedPendingCalls, [7, 11, 11]);
 });
 
 test('syncPinChatButton reflects active chat pin state', () => {

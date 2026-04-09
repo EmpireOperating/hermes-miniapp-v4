@@ -55,6 +55,36 @@ test('applyComposerState updates control disabled flags and button labels', () =
   assert.equal(pinChatButton.disabled, true);
 });
 
+test('createController updateComposerState derives and applies control state', () => {
+  const pendingChats = new Set([5]);
+  const chats = new Map([[5, { pending: false }]]);
+  const sendButton = { disabled: false, textContent: '' };
+  const promptEl = { disabled: false };
+  const removeChatButton = { disabled: false };
+  const pinChatButton = { disabled: false };
+
+  const controller = composerStateHelpers.createController({
+    getActiveChatId: () => 5,
+    pendingChats,
+    chats,
+    getIsAuthenticated: () => true,
+    sendButton,
+    promptEl,
+    removeChatButton,
+    pinChatButton,
+  });
+
+  const state = controller.updateComposerState();
+
+  assert.equal(state.pending, true);
+  assert.equal(state.canSend, false);
+  assert.equal(sendButton.disabled, true);
+  assert.equal(sendButton.textContent, 'Sending…');
+  assert.equal(promptEl.disabled, false);
+  assert.equal(removeChatButton.disabled, true);
+  assert.equal(pinChatButton.disabled, true);
+});
+
 test('draft controller loads valid values and ignores malformed storage payloads', () => {
   const draftByChat = new Map();
   const localStorageRef = {

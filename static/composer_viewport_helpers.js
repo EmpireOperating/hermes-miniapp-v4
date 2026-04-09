@@ -8,7 +8,6 @@
       form,
       messagesEl,
       tabsEl,
-      toolStreamEl,
       mobileQuoteMode,
       isNearBottomFn,
       getActiveChatId,
@@ -18,6 +17,51 @@
     } = deps;
 
     let viewportMutationSeq = 0;
+
+    function syncViewportCssVars() {
+      const rootStyle = documentObject?.documentElement?.style;
+      if (!rootStyle?.setProperty) return;
+      const viewport = windowObject.visualViewport;
+      const viewportHeight = Math.max(0, Number(viewport?.height || windowObject.innerHeight || 0));
+      const viewportTop = Math.max(0, Number(viewport?.offsetTop || 0));
+      rootStyle.setProperty('--hermes-visual-viewport-height', `${Math.round(viewportHeight)}px`);
+      rootStyle.setProperty('--hermes-visual-viewport-top', `${Math.round(viewportTop)}px`);
+    }
+
+    function captureMessageViewportSnapshot() {
+      if (!messagesEl) return null;
+      const scrollTop = Math.max(0, Number(messagesEl.scrollTop) || 0);
+      const nodes = messagesEl.querySelectorAll?.('.message') || [];
+      for (const node of nodes) {
+        const nodeTop = Number(node?.offsetTop);
+        const nodeHeight = Number(node?.offsetHeight);
+        if (!Number.isFinite(nodeTop) || !Number.isFinite(nodeHeight)) continue;
+        if ((nodeTop + nodeHeight) <= scrollTop) continue;
+        const messageKey = String(node?.dataset?.messageKey || '');
+        if (!messageKey) break;
+        return {
+          scrollTop,
+          messageKey,
+          offsetWithinMessage: scrollTop - nodeTop,
+        };
+      }
+      return { scrollTop, messageKey: '', offsetWithinMessage: 0 };
+    }
+
+    function restoreMessageViewportSnapshot(snapshot) {
+      if (!messagesEl || !snapshot) return false;
+      const messageKey = String(snapshot?.messageKey || '');
+      if (messageKey) {
+        const anchorNode = messagesEl.querySelector?.(`.message[data-message-key="${messageKey}"]`);
+        const anchorTop = Number(anchorNode?.offsetTop);
+        if (anchorNode && Number.isFinite(anchorTop)) {
+          messagesEl.scrollTop = Math.max(0, anchorTop + (Number(snapshot?.offsetWithinMessage) || 0));
+          return true;
+        }
+      }
+      messagesEl.scrollTop = Math.max(0, Number(snapshot?.scrollTop) || 0);
+      return true;
+    }
 
     function ensureComposerVisible({ smooth = false } = {}) {
       if (!promptEl || !form) return;
@@ -73,14 +117,14 @@
     function preserveViewportDuringUiMutation(mutator) {
       const key = Number(getActiveChatId?.());
       const hasActiveChat = Number.isInteger(key) && key > 0;
-      const previousScrollTop = messagesEl ? messagesEl.scrollTop : null;
+      const previousViewport = captureMessageViewportSnapshot();
       const previousWindowScrollY = Number(windowObject.scrollY || 0);
       const wasNearBottom = Boolean(messagesEl && isNearBottomFn?.(messagesEl, 40));
       const mutationSeq = ++viewportMutationSeq;
 
       mutator();
 
-      if (!hasActiveChat || !messagesEl || previousScrollTop == null) {
+      if (!hasActiveChat || !messagesEl || !previousViewport) {
         return;
       }
 
@@ -88,8 +132,8 @@
         if (mutationSeq !== viewportMutationSeq) return;
         if (Number(getActiveChatId?.()) !== key) return;
 
-        const shouldStickBottom = Boolean(chatStickToBottom?.get?.(key));
-        if (shouldStickBottom || wasNearBottom) {
+        const shouldStickBottom = wasNearBottom;
+        if (shouldStickBottom) {
           messagesEl.scrollTop = messagesEl.scrollHeight;
           if (mobileQuoteMode) {
             // Mobile webviews can settle layout one more tick later; keep bottom lock stable.
@@ -105,7 +149,7 @@
           chatScrollTop?.set?.(key, messagesEl.scrollTop);
           chatStickToBottom?.set?.(key, true);
         } else {
-          messagesEl.scrollTop = Math.max(0, Number(previousScrollTop) || 0);
+          restoreMessageViewportSnapshot(previousViewport);
           chatScrollTop?.set?.(key, messagesEl.scrollTop);
           chatStickToBottom?.set?.(key, false);
         }
@@ -128,7 +172,6 @@
       const dismissTargets = [
         messagesEl,
         tabsEl,
-        toolStreamEl,
         documentObject.querySelector('.masthead'),
         documentObject.querySelector('.sidebar'),
       ].filter(Boolean);
@@ -143,6 +186,7 @@
     }
 
     function installKeyboardViewportSync() {
+      syncViewportCssVars();
       if (!promptEl) return;
 
       let focusSyncIntervalId = null;

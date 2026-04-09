@@ -66,3 +66,35 @@ test('set/reset copy button feedback updates icon and metadata', () => {
   assert.equal(button.classList.has('is-copied'), false);
   assert.equal(button.classList.has('is-error'), false);
 });
+
+test('createController reuses one copy state and binds at most once', () => {
+  const messagesEl = {
+    addEventListenerCalls: [],
+    removeEventListenerCalls: [],
+    addEventListener(eventName, handler) {
+      this.addEventListenerCalls.push([eventName, handler]);
+    },
+    removeEventListener(eventName, handler) {
+      this.removeEventListenerCalls.push([eventName, handler]);
+    },
+  };
+
+  const controller = actions.createController({
+    messagesEl,
+    normalizeText: (value) => value,
+    copyTextToClipboard: async () => true,
+  });
+
+  const firstUnbind = controller.bindMessageCopyBindings();
+  const secondUnbind = controller.bindMessageCopyBindings();
+
+  assert.equal(typeof firstUnbind, 'function');
+  assert.equal(secondUnbind, firstUnbind);
+  assert.equal(messagesEl.addEventListenerCalls.length, 1);
+  assert.equal(messagesEl.addEventListenerCalls[0][0], 'click');
+  assert.ok(controller.messageCopyState);
+
+  firstUnbind();
+  assert.equal(messagesEl.removeEventListenerCalls.length, 1);
+  assert.equal(messagesEl.removeEventListenerCalls[0][0], 'click');
+});

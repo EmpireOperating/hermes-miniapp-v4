@@ -121,14 +121,32 @@
     };
   }
 
-  function nextLatencyState({ latencyByChat, targetChatId, text, activeChatId }) {
+  function isLiveLatencyText(value) {
+    return /\s*·\s*live$/i.test(String(value || '').trim());
+  }
+
+  function isResolvedLatencyText(value) {
+    const text = String(value || '').trim();
+    if (!text || text === '--') return false;
+    if (isLiveLatencyText(text)) return false;
+    return /^(?:\d+s|\d+m\s+\d+s)$/i.test(text);
+  }
+
+  function shouldDisplayLatencyText(value, { isLiveActive = false } = {}) {
+    const text = String(value || '').trim();
+    if (!text) return false;
+    if (isLiveActive && isLiveLatencyText(text)) return true;
+    return isResolvedLatencyText(text);
+  }
+
+  function nextLatencyState({ latencyByChat, targetChatId, text, activeChatId, shouldDisplayChipText }) {
     const key = normalizeChatId(targetChatId);
     if (!key) {
       return { nextMap: latencyByChat, chipText: null };
     }
     const normalized = normalizeLatencyText(text);
     latencyByChat.set(key, normalized);
-    if (normalizeChatId(activeChatId) === key) {
+    if (normalizeChatId(activeChatId) === key && shouldDisplayChipText?.(normalized, key)) {
       return { nextMap: latencyByChat, chipText: `latency: ${normalized}` };
     }
     return { nextMap: latencyByChat, chipText: null };
@@ -229,22 +247,75 @@
     }
   }
 
+  function createLatencyPersistenceController({
+    localStorageRef,
+    storageKey,
+    latencyByChat,
+    maxEntries = 200,
+    maxAgeMs = 24 * 60 * 60 * 1000,
+    nowMs,
+  }) {
+    return {
+      loadLatencyByChatFromStorage() {
+        return loadLatencyByChatFromStorage({
+          localStorageRef,
+          storageKey,
+          latencyByChat,
+          maxEntries,
+          maxAgeMs,
+          nowMs: typeof nowMs === "function" ? nowMs() : nowMs,
+        });
+      },
+      persistLatencyByChatToStorage() {
+        return persistLatencyByChatToStorage({
+          localStorageRef,
+          storageKey,
+          latencyByChat,
+          maxEntries,
+          nowMs: typeof nowMs === "function" ? nowMs() : nowMs,
+        });
+      },
+    };
+  }
+
   function createLatencyController({
     latencyByChat,
     getActiveChatId,
+    hasLiveStreamController,
     setActivityChip,
     preserveViewportDuringUiMutation,
     latencyChip,
     streamDebugLog,
     onLatencyMapMutated,
+    renderTraceLog,
+    getDocumentVisibilityState,
   }) {
+    function shouldDisplayChipText(value, chatId) {
+      const key = normalizeChatId(chatId);
+      const isLiveActive = Boolean(key) && Boolean(hasLiveStreamController?.(key));
+      return shouldDisplayLatencyText(value, { isLiveActive });
+    }
+
+    function syncedLatencyChipText(chatId, { fallback = 'latency: --' } = {}) {
+      const key = normalizeChatId(chatId);
+      if (!key) return fallback;
+      const stored = String(latencyByChat.get(key) || '').trim();
+      if (shouldDisplayChipText(stored, key)) {
+        return `latency: ${stored}`;
+      }
+      return fallback;
+    }
+
     function setChatLatency(chatId, text) {
       const activeChatId = normalizeChatId(getActiveChatId?.());
+      const targetKey = normalizeChatId(chatId);
+      const normalized = String(text || "").trim() || "--";
       const result = nextLatencyState({
         latencyByChat,
         targetChatId: chatId,
         text,
         activeChatId,
+        shouldDisplayChipText,
       });
 
       onLatencyMapMutated?.(latencyByChat);
@@ -252,7 +323,7 @@
       streamDebugLog?.("latency-set", {
         chatId: Number(chatId),
         activeChatId: Number(activeChatId),
-        text: String(text || "").trim() || "--",
+        text: normalized,
         hasChipText: Boolean(result.chipText),
       });
 
@@ -260,15 +331,11 @@
         preserveViewportDuringUiMutation?.(() => {
           setActivityChip?.(latencyChip, result.chipText);
         });
-        return;
-      }
-
-      // Defensive fallback: when active chat bookkeeping lags behind a send/resume tick,
-      // still keep latency chip populated for the current stream chat.
-      const targetKey = normalizeChatId(chatId);
-      if (targetKey && activeChatId === targetKey) {
+      } else if (targetKey && activeChatId === targetKey && shouldDisplayChipText(normalized, targetKey)) {
+        // Defensive fallback: when active chat bookkeeping lags behind a send/resume tick,
+        // still keep latency chip populated for the current stream chat, but only with
+        // values that are valid for direct display in the latency pill.
         preserveViewportDuringUiMutation?.(() => {
-          const normalized = String(text || "--").trim() || "--";
           setActivityChip?.(latencyChip, `latency: ${normalized}`);
         });
         streamDebugLog?.("latency-fallback", {
@@ -276,16 +343,23 @@
           activeChatId: Number(activeChatId),
         });
       }
+
+      if (targetKey) {
+        renderTraceLog?.("latency-update", {
+          chatId: targetKey,
+          activeChatId: Number(activeChatId),
+          hidden: getDocumentVisibilityState?.() !== "visible",
+          latency: normalized,
+          chipText: String(latencyChip?.textContent || "").trim(),
+        });
+      }
+
+      return result;
     }
 
     function syncActiveLatencyChip() {
       const key = normalizeChatId(getActiveChatId?.());
-      if (!key) {
-        setActivityChip?.(latencyChip, "latency: --");
-        return;
-      }
-      const value = latencyByChat.get(key) || "--";
-      setActivityChip?.(latencyChip, `latency: ${value}`);
+      setActivityChip?.(latencyChip, syncedLatencyChipText(key));
     }
 
     return {
@@ -298,6 +372,7 @@
     chats,
     getActiveChatId,
     hasLiveStreamController,
+    getChatLatencyText,
     chatLabel,
     compactChatLabel,
     setStreamStatus,
@@ -313,6 +388,32 @@
     const liveLatencyStartedAtByChat = new Map();
     const reconnectDisplayTimerByChat = new Map();
     let liveLatencyIntervalId = null;
+
+    function isActiveChat(chatId) {
+      const key = normalizeChatId(chatId);
+      return Boolean(key) && key === normalizeChatId(getActiveChatId?.());
+    }
+
+    function setLatencyChipForActiveChat(chatId, text) {
+      const key = normalizeChatId(chatId);
+      if (!key || !isActiveChat(key)) return false;
+      setActivityChip?.(latencyChip, text);
+      return true;
+    }
+
+    function setStreamStatusForActiveChat(chatId, text) {
+      const key = normalizeChatId(chatId);
+      if (!key || !isActiveChat(key)) return false;
+      setStreamStatus?.(text);
+      return true;
+    }
+
+    function setStreamChipForActiveChat(chatId, text) {
+      const key = normalizeChatId(chatId);
+      if (!key || !isActiveChat(key)) return false;
+      setActivityChip?.(streamChip, text);
+      return true;
+    }
 
     function clearReconnectTimer(chatId) {
       const key = normalizeChatId(chatId);
@@ -354,10 +455,12 @@
         stopLiveLatencyLoopIfIdle();
         return;
       }
-      const activeChat = chats?.get?.(activeKey) || null;
-      const isStillLive = Boolean(activeChat?.pending) || Boolean(hasLiveStreamController?.(activeKey));
-      if (!isStillLive) {
+      const hasLiveController = typeof hasLiveStreamController === 'function'
+        ? Boolean(hasLiveStreamController(activeKey))
+        : liveLatencyStartedAtByChat.has(activeKey);
+      if (!hasLiveController) {
         clearLiveLatency(activeKey);
+        syncActiveLatencyChip?.();
         return;
       }
       const startedAt = Number(liveLatencyStartedAtByChat.get(activeKey) || 0);
@@ -368,7 +471,7 @@
       const elapsedMs = Math.max(0, Date.now() - startedAt);
       const fallbackSeconds = `${Math.max(0, Math.ceil(elapsedMs / 1000))}s`;
       const runningLatency = `${formatLatency?.(elapsedMs) || fallbackSeconds} · live`;
-      setActivityChip?.(latencyChip, `latency: ${runningLatency}`);
+      setLatencyChipForActiveChat(activeKey, `latency: ${runningLatency}`);
       setChatLatency?.(activeKey, runningLatency);
     }
 
@@ -402,8 +505,8 @@
     function ensureResumedLiveLatency(chatId) {
       const key = normalizeChatId(chatId);
       if (!key || liveLatencyStartedAtByChat.has(key)) return;
-      const currentLatencyText = String(latencyChip?.textContent || '').replace(/^latency:\s*/i, '').trim();
-      const resumedSeconds = parseLatencyDisplayToSeconds(currentLatencyText);
+      const storedLatencyText = String(getChatLatencyText?.(key) || '').trim();
+      const resumedSeconds = parseLatencyDisplayToSeconds(storedLatencyText);
       if (resumedSeconds != null) {
         beginLiveLatency(key, { elapsedMs: resumedSeconds * 1000 });
         return;
@@ -415,6 +518,13 @@
       const activeKey = normalizeChatId(getActiveChatId?.());
       const chat = activeKey ? chats.get(activeKey) : null;
       if (chat?.pending) {
+        const hasLiveController = activeKey && typeof hasLiveStreamController === 'function'
+          ? Boolean(hasLiveStreamController(activeKey))
+          : true;
+        if (activeKey && !hasLiveController) {
+          clearLiveLatency(activeKey);
+          syncActiveLatencyChip?.();
+        }
         setStreamStatus?.(`Waiting for Hermes in ${chatLabel?.(activeKey) || "Chat"}`);
         setActivityChip?.(streamChip, `stream: pending · ${compactChatLabel?.(activeKey) || "Chat"}`);
         return;
@@ -434,35 +544,38 @@
     }
 
     function markStreamActive(chatId, { elapsedMs = null } = {}) {
-      clearReconnectTimer(chatId);
-      setStreamStatus?.(`Hermes responding in ${chatLabel?.(chatId) || "Chat"}`);
-      setActivityChip?.(streamChip, `stream: active · ${compactChatLabel?.(chatId) || "Chat"}`);
-      beginLiveLatency(chatId, { elapsedMs });
+      const key = normalizeChatId(chatId);
+      clearReconnectTimer(key);
+      setStreamStatusForActiveChat(key, `Hermes responding in ${chatLabel?.(key) || "Chat"}`);
+      setStreamChipForActiveChat(key, `stream: active · ${compactChatLabel?.(key) || "Chat"}`);
+      beginLiveLatency(key, { elapsedMs });
     }
 
     function markStreamError(chatId = null) {
-      clearReconnectTimer(chatId);
-      clearLiveLatency(chatId || getActiveChatId?.());
-      setStreamStatus?.("Stream error");
-      setActivityChip?.(streamChip, "stream: error");
+      const key = normalizeChatId(chatId || getActiveChatId?.());
+      clearReconnectTimer(key);
+      clearLiveLatency(key);
+      setStreamStatusForActiveChat(key, "Stream error");
+      setStreamChipForActiveChat(key, "stream: error");
     }
 
     function markNetworkFailure(chatId = null) {
-      clearReconnectTimer(chatId);
-      clearLiveLatency(chatId || getActiveChatId?.());
-      setStreamStatus?.("Network failure");
-      setActivityChip?.(streamChip, "stream: network failure");
+      const key = normalizeChatId(chatId || getActiveChatId?.());
+      clearReconnectTimer(key);
+      clearLiveLatency(key);
+      setStreamStatusForActiveChat(key, "Network failure");
+      setStreamChipForActiveChat(key, "stream: network failure");
     }
 
     function markStreamClosedEarly(chatId = null) {
-      clearReconnectTimer(chatId);
-      clearLiveLatency(chatId || getActiveChatId?.());
       const key = normalizeChatId(chatId || getActiveChatId?.());
+      clearReconnectTimer(key);
+      clearLiveLatency(key);
       if (key) {
         setChatLatency?.(key, "--");
       }
-      setStreamStatus?.("Stream closed early");
-      setActivityChip?.(streamChip, "stream: closed early");
+      setStreamStatusForActiveChat(key, "Stream closed early");
+      setStreamChipForActiveChat(key, "stream: closed early");
     }
 
     function markStreamQueued(chatId, { queuedAhead = null } = {}) {
@@ -470,15 +583,20 @@
       const activeKey = normalizeChatId(getActiveChatId?.());
       if (!key || key !== activeKey) return;
       clearReconnectTimer(key);
-      clearLiveLatency(key);
+      const hasLiveLatency = liveLatencyStartedAtByChat.has(key);
       const normalizedQueuedAhead = Number(queuedAhead);
       const queueLabel = Number.isFinite(normalizedQueuedAhead) && normalizedQueuedAhead > 0
         ? `queued · ahead: ${normalizedQueuedAhead}`
         : "queued...";
       setStreamStatus?.(`Queue update (${chatLabel?.(key) || "Chat"}): queued`);
       setActivityChip?.(streamChip, `stream: queued · ${compactChatLabel?.(key) || "Chat"}`);
-      setActivityChip?.(latencyChip, `latency: ${queueLabel}`);
+      if (hasLiveLatency) {
+        tickLiveLatency();
+        return;
+      }
+      clearLiveLatency(key);
       setChatLatency?.(key, queueLabel);
+      syncActiveLatencyChip?.();
     }
 
     function markStreamReconnecting(chatId, { attempt = null, maxAttempts = null } = {}) {
@@ -495,8 +613,12 @@
         reconnectDisplayTimerByChat.delete(key);
         setStreamStatus?.(`Reconnecting stream in ${chatLabel?.(key) || "Chat"}${attemptSuffix}...`);
         setActivityChip?.(streamChip, `stream: reconnecting · ${compactChatLabel?.(key) || "Chat"}`);
-        setActivityChip?.(latencyChip, "latency: reconnecting...");
+        if (liveLatencyStartedAtByChat.has(key)) {
+          tickLiveLatency();
+          return;
+        }
         setChatLatency?.(key, "reconnecting...");
+        syncActiveLatencyChip?.();
       }, RECONNECT_PILL_DELAY_MS);
       timerId?.unref?.();
       reconnectDisplayTimerByChat.set(key, timerId);
@@ -519,7 +641,7 @@
         }
       }
       clearLiveLatency(key);
-      setActivityChip?.(latencyChip, `latency: ${resolvedLatency}`);
+      setLatencyChipForActiveChat(key, `latency: ${resolvedLatency}`);
       setChatLatency?.(key, resolvedLatency);
       if (activeKey === key) {
         setStreamStatus?.(`Reply received in ${chatLabel?.(key) || "Chat"}`);
@@ -535,7 +657,9 @@
       const existingLatency = String(latencyChip?.textContent || '').trim();
       const hasResolvedLatency = existingLatency.startsWith('latency: ') && existingLatency !== 'latency: --';
       if (!hasResolvedLatency) {
-        setActivityChip?.(latencyChip, "latency: --");
+        if (isActiveChat(key)) {
+          setActivityChip?.(latencyChip, "latency: --");
+        }
         setChatLatency?.(key, "--");
       }
       if (normalizeChatId(getActiveChatId?.()) === key) {
@@ -551,7 +675,7 @@
       clearLiveLatency(key);
       setStreamStatus?.("Reconnect recovery paused — action needed");
       setActivityChip?.(streamChip, "stream: recovery paused");
-      setActivityChip?.(latencyChip, "latency: --");
+      setLatencyChipForActiveChat(key, "latency: --");
       setChatLatency?.(key, "--");
     }
 
@@ -599,29 +723,127 @@
     ].join("|");
   }
 
-  function mergeHydratedHistory({ previousHistory, nextHistory, chatPending }) {
+  function applyPendingLocalUiState(incomingItem, localItem) {
+    if (!incomingItem || !localItem) return incomingItem;
+    const nextItem = { ...incomingItem };
+    const role = String(localItem?.role || '').toLowerCase();
+    if (role === 'tool' && typeof localItem?.collapsed === 'boolean') {
+      nextItem.collapsed = localItem.collapsed;
+    }
+    return nextItem;
+  }
+
+  function preserveCompletedLocalToolMessages(previousHistory, nextHistory) {
+    const previous = Array.isArray(previousHistory) ? previousHistory : [];
     const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
-    if (!chatPending) {
+    const localCompletedTools = previous.filter((item) => {
+      if (!item || typeof item !== "object") return false;
+      if (String(item.role || "").toLowerCase() !== "tool") return false;
+      if (Boolean(item.pending)) return false;
+      return Boolean(String(item.body || "").trim());
+    });
+    if (!localCompletedTools.length) {
       return incoming;
     }
 
+    const normalizedBody = (message) => String(message?.body || "").trim();
+    const relaxedIncomingMatchIndex = (message) => {
+      const targetRole = String(message?.role || "").toLowerCase();
+      const targetBody = normalizedBody(message);
+      if (!targetRole || !targetBody) {
+        return -1;
+      }
+      for (let index = 0; index < incoming.length; index += 1) {
+        const candidate = incoming[index];
+        if (String(candidate?.role || "").toLowerCase() !== targetRole) {
+          continue;
+        }
+        if (normalizedBody(candidate) !== targetBody) {
+          continue;
+        }
+        return index;
+      }
+      return -1;
+    };
+
+    const findIncomingIndexByFingerprint = (message) => {
+      const target = messageFingerprint(message);
+      const targetRole = String(message?.role || "").toLowerCase();
+      const targetCreatedAt = String(message?.created_at || "");
+      const targetBody = String(message?.body || "");
+      const targetPending = Boolean(message?.pending);
+      for (let index = 0; index < incoming.length; index += 1) {
+        const candidate = incoming[index];
+        if (messageFingerprint(candidate) === target) {
+          return index;
+        }
+        if (
+          String(candidate?.role || "").toLowerCase() === targetRole
+          && String(candidate?.created_at || "") === targetCreatedAt
+          && String(candidate?.body || "") === targetBody
+          && Boolean(candidate?.pending) === targetPending
+        ) {
+          return index;
+        }
+      }
+      return relaxedIncomingMatchIndex(message);
+    };
+
+    for (const toolMessage of localCompletedTools) {
+      if (findIncomingIndexByFingerprint(toolMessage) >= 0) {
+        continue;
+      }
+
+      const previousIndex = previous.indexOf(toolMessage);
+      let anchorIndex = -1;
+      for (let index = previousIndex + 1; index < previous.length; index += 1) {
+        const candidate = previous[index];
+        anchorIndex = findIncomingIndexByFingerprint(candidate);
+        if (anchorIndex >= 0) {
+          break;
+        }
+      }
+
+      if (anchorIndex >= 0) {
+        incoming.splice(anchorIndex, 0, { ...toolMessage });
+      } else {
+        incoming.push({ ...toolMessage });
+      }
+    }
+
+    return incoming;
+  }
+
+  function mergeHydratedHistory({ previousHistory, nextHistory, chatPending, preserveCompletedToolTrace = false }) {
+    const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
     const previous = Array.isArray(previousHistory) ? previousHistory : [];
+    if (!chatPending) {
+      return preserveCompletedToolTrace
+        ? preserveCompletedLocalToolMessages(previous, incoming)
+        : incoming;
+    }
+
     const localPending = previous.filter(shouldPreservePendingLocalMessage);
     if (!localPending.length) {
       return incoming;
     }
 
-    const existingCounts = new Map();
-    for (const item of incoming) {
+    const existingIndexes = new Map();
+    for (let index = 0; index < incoming.length; index += 1) {
+      const item = incoming[index];
       const key = messageFingerprint(item);
-      existingCounts.set(key, (existingCounts.get(key) || 0) + 1);
+      if (!existingIndexes.has(key)) {
+        existingIndexes.set(key, []);
+      }
+      existingIndexes.get(key).push(index);
     }
 
     for (const item of localPending) {
       const key = messageFingerprint(item);
-      const count = existingCounts.get(key) || 0;
-      if (count > 0) {
-        existingCounts.set(key, count - 1);
+      const indexes = existingIndexes.get(key) || [];
+      if (indexes.length > 0) {
+        const matchIndex = indexes.shift();
+        incoming[matchIndex] = applyPendingLocalUiState(incoming[matchIndex], item);
         continue;
       }
       incoming.push({ ...item });
@@ -685,6 +907,7 @@
     nextLatencyState,
     loadLatencyByChatFromStorage,
     persistLatencyByChatToStorage,
+    createLatencyPersistenceController,
     createLatencyController,
     createStreamActivityController,
     mergeHydratedHistory,

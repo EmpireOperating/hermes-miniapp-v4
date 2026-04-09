@@ -867,6 +867,111 @@ def test_stream_efficiency_mode_throttles_job_state_db_reads(monkeypatch, tmp_pa
     assert polls["count"] == 2
 
 
+def test_resume_stream_recovers_done_terminal_state_when_queue_is_empty(monkeypatch, tmp_path) -> None:
+    import routes_chat_stream
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+
+    class _AlwaysEmptySubscriber:
+        def get(self, timeout=None):
+            raise queue.Empty
+
+    monotonic_ticks = iter([0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0])
+    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 12.0))
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id, after_event_id=0: _AlwaysEmptySubscriber())
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+
+    polls = {"count": 0}
+
+    def _get_job_state(_job_id: int):
+        polls["count"] += 1
+        if polls["count"] < 2:
+            return {
+                "status": "running",
+                "error": None,
+                "queued_ahead": 0,
+                "running_total": 1,
+                "attempts": 1,
+                "max_attempts": 4,
+                "started_at": None,
+                "created_at": None,
+            }
+        return {
+            "status": "done",
+            "error": None,
+            "attempts": 1,
+            "max_attempts": 4,
+            "started_at": None,
+            "created_at": None,
+        }
+
+    monkeypatch.setattr(server.store, "get_job_state", _get_job_state)
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"synthetic": true' in body
+    assert polls["count"] == 2
+
+
+def test_resume_stream_emits_segment_rollover_meta_before_expected_mobile_reconnect(monkeypatch, tmp_path) -> None:
+    import routes_chat_stream
+
+    monkeypatch.setenv("MINI_APP_STREAM_SEGMENT_SECONDS_MOBILE", "8")
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume this")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+
+    class _AlwaysEmptySubscriber:
+        def get(self, timeout=None):
+            raise queue.Empty
+
+    monotonic_ticks = iter([0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0])
+    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 12.0))
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id, after_event_id=0: _AlwaysEmptySubscriber())
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+    monkeypatch.setattr(
+        server.store,
+        "get_job_state",
+        lambda _job_id: {
+            "status": "running",
+            "error": None,
+            "queued_ahead": 0,
+            "running_total": 1,
+            "attempts": 1,
+            "max_attempts": 4,
+            "started_at": None,
+            "created_at": None,
+        },
+    )
+
+    response = client.post(
+        "/api/chat/stream/resume",
+        json={"init_data": "ok", "chat_id": chat_id},
+        headers={"User-Agent": "Telegram iPhone"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: meta" in body
+    assert '"stream_segment_end": true' in body
+    assert '"resume_recommended": true' in body
+    assert '"detail": "stream segment rollover"' in body
+    assert "event: done" not in body
+
+
 def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 

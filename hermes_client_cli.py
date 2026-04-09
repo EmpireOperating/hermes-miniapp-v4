@@ -21,6 +21,7 @@ class HermesClientCLIMixin:
         emoji_match = re.search(r"(🔎|💻|⚙️|🌐|📖|✍️|🔧|👁️|📄|📋|🧠|⌨️|🚪)", line)
         cleaned = line[emoji_match.start():].strip() if emoji_match else line.strip()
         cleaned = re.sub(r"\s*\(\d+(?:\.\d+)?s\)$", "", cleaned).strip()
+        cleaned = re.sub(r"\s+\d+(?:\.\d+)?s$", "", cleaned).strip()
         cleaned = re.sub(r"\s{2,}", " ", cleaned)
         return cleaned or line.strip()
 
@@ -60,6 +61,17 @@ class HermesClientCLIMixin:
         if not stripped:
             return False
         return bool(re.fullmatch(r"[╭╮╰╯│┊├┤┌┐└┘─┄━\s]+", stripped))
+
+    def _summarize_cli_stream_failure(self, *, return_code: int | None, output_tail: list[str]) -> str:
+        tail = [str(line or "").strip() for line in output_tail if str(line or "").strip()]
+        if tail:
+            excerpt = " | ".join(tail[-3:])
+            if len(excerpt) > 300:
+                excerpt = excerpt[:297] + "..."
+            return f"Hermes CLI stream failed (rc={return_code}): {excerpt}"
+        if isinstance(return_code, int):
+            return f"Hermes CLI stream failed (rc={return_code})."
+        return "Hermes CLI stream failed."
 
     def _stream_via_cli_progress(self, message: str, *, session_id: str | None = None) -> Iterator[dict[str, Any]]:
         command = [self.cli_command, "chat", "--query", message]
@@ -110,16 +122,19 @@ class HermesClientCLIMixin:
             in_reply = False
             reply_lines: list[str] = []
             last_tool_line = ""
+            raw_output_tail: list[str] = []
             for raw_line in self._iter_cli_stdout_lines(process.stdout):
                 line = raw_line.strip()
                 if not line:
                     continue
+                raw_output_tail.append(line)
+                if len(raw_output_tail) > 12:
+                    raw_output_tail = raw_output_tail[-12:]
                 if line.startswith("Query:"):
                     in_query_section = True
                     continue
-                if not in_query_section:
-                    continue
                 if "⚕ Hermes" in line:
+                    in_query_section = True
                     in_reply = True
                     continue
                 if in_reply:
@@ -133,14 +148,23 @@ class HermesClientCLIMixin:
                 if any(symbol in line for symbol in ("🔎", "💻", "⚙️", "🌐", "📖", "✍️", "🔧", "👁️", "📄", "📋", "🧠", "⌨️", "🚪")):
                     normalized_line = self._normalize_cli_tool_line(line)
                     if normalized_line and normalized_line != last_tool_line:
+                        in_query_section = True
                         last_tool_line = normalized_line
                         yield {"type": "tool", "display": normalized_line}
+                    continue
+                if not in_query_section:
+                    continue
 
             return_code = process.wait(timeout=self.timeout_seconds)
             final_return_code = int(return_code)
             if return_code != 0:
                 spawn_outcome = "nonzero_exit"
-                raise HermesClientError("Hermes CLI stream failed.")
+                raise HermesClientError(
+                    self._summarize_cli_stream_failure(
+                        return_code=final_return_code,
+                        output_tail=raw_output_tail,
+                    )
+                )
 
             reply = "\n".join(line for line in reply_lines if line).strip()
             if not reply:

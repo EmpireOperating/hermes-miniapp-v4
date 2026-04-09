@@ -7,7 +7,7 @@ const sharedUtils = require('../static/app_shared_utils.js');
 const streamState = require('../static/stream_state_helpers.js');
 const streamController = require('../static/stream_controller.js');
 
-function buildControllerHarness() {
+function buildControllerHarness(overrides = {}) {
   const phases = new Map();
   const pendingAssistantUpdates = [];
   const streamStatuses = [];
@@ -30,7 +30,35 @@ function buildControllerHarness() {
   const markStreamActiveCalls = [];
   const markStreamErrorCalls = [];
   const markStreamClosedEarlyCalls = [];
+  const markNetworkFailureCalls = [];
+  const markStreamReconnectingCalls = [];
+  const markResumeAlreadyCompleteCalls = [];
+  const markReconnectFailedCalls = [];
+  const systemMessages = [];
+  const localMessages = [];
+  const draftUpdates = [];
+  const droppedPendingToolTraceChats = [];
+  const authPayloads = [];
+  const fetchCalls = [];
+  const pendingChatsMarked = [];
+  const clearedReconnectBlocks = [];
+  const suppressedBlockedChats = [];
+  const blockedReconnectChats = [];
+  const delayedMs = [];
+  const timeoutCalls = [];
+  const resumeAttemptedAtByChat = new Map();
+  const resumeCooldownUntilByChat = new Map();
+  const resumeInFlightByChat = new Set();
   const histories = new Map();
+  let isAuthenticated = true;
+  const authStatusEl = { textContent: '' };
+  let promptFocusCalls = 0;
+  const promptEl = {
+    value: '',
+    focus: () => {
+      promptFocusCalls += 1;
+    },
+  };
 
   const deps = {
     parseSseEvent: sharedUtils.parseSseEvent,
@@ -68,15 +96,18 @@ function buildControllerHarness() {
       incomingHaptics.push({ chatId: Number(chatId), options });
     },
     messagesEl: null,
-    promptEl: { focus: () => {} },
+    promptEl,
     isMobileQuoteMode: () => false,
     isDesktopViewport: () => true,
+    isNearBottom: () => true,
     maybeMarkRead: () => {},
     refreshChats: async () => {},
     renderTabs: () => { renderTabsCalls.push(true); },
     updateComposerState: () => {},
     syncClosingConfirmation: () => {},
-    appendSystemMessage: () => {},
+    appendSystemMessage: (message, chatId = null) => {
+      systemMessages.push({ message: String(message || ''), chatId: chatId == null ? null : Number(chatId) });
+    },
     streamDebugLog: (eventName, details = null) => {
       streamDebugEvents.push({ eventName: String(eventName || ''), details });
     },
@@ -132,6 +163,7 @@ function buildControllerHarness() {
       streamStatuses.push('Stream closed early');
       streamChipUpdates.push('stream: closed early');
     },
+    ...overrides,
   };
 
   const controller = streamController.createController(deps);
@@ -159,7 +191,9 @@ function buildControllerHarness() {
     markStreamActiveCalls,
     markStreamErrorCalls,
     markStreamClosedEarlyCalls,
+    systemMessages,
     histories,
+    getPromptFocusCalls: () => promptFocusCalls,
   };
 }
 
@@ -189,6 +223,43 @@ function makeSseResponse(rawFrame) {
     getCancelCalls: () => cancelCalls,
   };
 }
+
+test('createResumeRecoveryPolicy exposes reconnect defaults and transient error detection', async () => {
+  const timeoutCalls = [];
+  const policy = streamController.createResumeRecoveryPolicy({
+    setTimeoutFn: (callback, delay) => {
+      timeoutCalls.push(Number(delay));
+      callback();
+      return timeoutCalls.length;
+    },
+    randomFn: () => 0.5,
+  });
+
+  assert.equal(policy.RESUME_RECOVERY_MAX_ATTEMPTS, 3);
+  assert.equal(policy.RESUME_REATTACH_MIN_INTERVAL_MS, 1200);
+  assert.equal(policy.RESUME_COMPLETE_SETTLE_MS, 2500);
+  assert.equal(policy.nextResumeRecoveryDelayMs(2), 1890);
+  assert.equal(policy.isTransientResumeRecoveryError(new Error('Network request failed')), true);
+  assert.equal(policy.isTransientResumeRecoveryError(new Error('validation exploded')), false);
+
+  await policy.delayMs(25);
+  assert.deepEqual(timeoutCalls, [25]);
+});
+
+test('createResumeRecoveryPolicy clamps invalid delay input before scheduling', async () => {
+  const timeoutCalls = [];
+  const policy = streamController.createResumeRecoveryPolicy({
+    setTimeoutFn: (callback, delay) => {
+      timeoutCalls.push(Number(delay));
+      callback();
+    },
+    randomFn: () => 0,
+  });
+
+  await policy.delayMs(-50);
+  assert.deepEqual(timeoutCalls, [0]);
+  assert.equal(policy.nextResumeRecoveryDelayMs(0), 900);
+});
 
 test('consumeStreamResponse treats terminal error event as terminal and avoids early-close fallback', async () => {
   const harness = buildControllerHarness();
@@ -280,6 +351,29 @@ test('consumeStreamResponse routes tool activity through markToolActivity when a
   assert.deepEqual(harness.markToolActivityCalls, [42]);
 });
 
+test('consumeStreamResponse does not mark unseen/new-below for tool-only stream updates', async () => {
+  const markStreamUpdateCalls = [];
+  const harness = buildControllerHarness({
+    markStreamUpdate: (chatId) => markStreamUpdateCalls.push(Number(chatId)),
+  });
+  const payload = [
+    'event: tool',
+    'data: {"display":"running tool"}',
+    '',
+    'event: done',
+    'data: {"reply":"done","latency_ms":42,"turn_count":2}',
+    '',
+  ].join('\n');
+  const stream = makeSseResponse(payload);
+
+  const result = await harness.controller.consumeStreamResponse(42, stream.response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+  });
+
+  assert.equal(result.terminalReceived, true);
+  assert.deepEqual(markStreamUpdateCalls, [42]);
+});
+
 test('consumeStreamResponse routes queue running latency through markStreamActive when available', async () => {
   const harness = buildControllerHarness();
   const payload = [
@@ -298,6 +392,146 @@ test('consumeStreamResponse routes queue running latency through markStreamActiv
 
   assert.equal(result.terminalReceived, true);
   assert.deepEqual(harness.markStreamActiveCalls, [{ chatId: 42, options: { elapsedMs: 4200 } }]);
+});
+
+test('consumeStreamResponse does not repaint visible queue status for inactive chats during queue meta updates', async () => {
+  const harness = buildControllerHarness({
+    markStreamComplete: () => {},
+  });
+  const payload = [
+    'event: meta',
+    'data: {"detail":"running","source":"queue","job_status":"running","elapsed_ms":4200}',
+    '',
+  ].join('\n');
+  const { response } = makeSseResponse(payload);
+
+  const result = await harness.controller.consumeStreamResponse(42, response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+    suppressEarlyCloseFallback: true,
+  });
+
+  assert.equal(result.terminalReceived, false);
+  assert.deepEqual(harness.markStreamActiveCalls, [{ chatId: 42, options: { elapsedMs: 4200 } }]);
+  assert.deepEqual(harness.streamStatuses, []);
+  assert.deepEqual(harness.streamChipUpdates, []);
+});
+
+test('consumeStreamResponse tool fallback does not repaint visible stream pill for inactive chats', async () => {
+  const harness = buildControllerHarness({
+    markToolActivity: undefined,
+  });
+  const payload = [
+    'event: tool',
+    'data: {"display":"Running command"}',
+    '',
+  ].join('\n');
+  const { response } = makeSseResponse(payload);
+
+  const result = await harness.controller.consumeStreamResponse(42, response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+    suppressEarlyCloseFallback: true,
+  });
+
+  assert.equal(result.terminalReceived, false);
+  assert.deepEqual(harness.streamStatuses, []);
+  assert.deepEqual(harness.streamChipUpdates, []);
+});
+
+test('consumeStreamResponse falls back to placeholder latency instead of calculating text when queue running elapsed time is missing', async () => {
+  const harness = buildControllerHarness({
+    markStreamActive: undefined,
+  });
+  const payload = [
+    'event: meta',
+    'data: {"detail":"running","source":"queue","job_status":"running"}',
+    '',
+    'event: done',
+    'data: {"reply":"done","latency_ms":4200,"turn_count":2}',
+    '',
+  ].join('\n');
+  const { response } = makeSseResponse(payload);
+
+  await harness.controller.consumeStreamResponse(42, response, { persistFinalState: false });
+
+  assert.equal(harness.latencyUpdates[0]?.text, '--');
+  assert.equal(harness.latencyUpdates.some((entry) => /calculating/i.test(String(entry.text))), false);
+});
+
+test('consumeStreamResponse immediately reconciles active visible transcript when tool patching misses', async () => {
+  const harness = buildControllerHarness();
+  const payload = [
+    'event: tool',
+    'data: {"display":"running tool"}',
+    '',
+    'event: done',
+    'data: {"reply":"done","latency_ms":42,"turn_count":2}',
+    '',
+  ].join('\n');
+  const stream = makeSseResponse(payload);
+
+  const result = await harness.controller.consumeStreamResponse(9, stream.response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+  });
+
+  assert.equal(result.terminalReceived, true);
+  assert.deepEqual(harness.syncedActiveRenders, [9, 9]);
+  assert.deepEqual(harness.scheduledActiveRenders, []);
+});
+
+test('consumeStreamResponse immediately reconciles active visible transcript when assistant patching misses', async () => {
+  const harness = buildControllerHarness({
+    patchVisibleToolTrace: () => true,
+  });
+  const payload = [
+    'event: chunk',
+    'data: {"text":"hello"}',
+    '',
+    'event: done',
+    'data: {"reply":"hello","latency_ms":42,"turn_count":2}',
+    '',
+  ].join('\n');
+  const stream = makeSseResponse(payload);
+
+  const result = await harness.controller.consumeStreamResponse(9, stream.response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+  });
+
+  assert.equal(result.terminalReceived, true);
+  assert.deepEqual(harness.syncedActiveRenders, [9, 9]);
+  assert.deepEqual(harness.scheduledActiveRenders, []);
+});
+
+test('consumeStreamResponse still immediately reconciles active chat when document.visibilityState is hidden', async () => {
+  const originalDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'hidden' };
+  try {
+    const harness = buildControllerHarness({
+      patchVisibleToolTrace: () => true,
+    });
+    const payload = [
+      'event: chunk',
+      'data: {"text":"hello"}',
+      '',
+      'event: done',
+      'data: {"reply":"hello","latency_ms":42,"turn_count":2}',
+      '',
+    ].join('\n');
+    const stream = makeSseResponse(payload);
+
+    const result = await harness.controller.consumeStreamResponse(9, stream.response, { value: '' }, {
+      fallbackTraceEvent: 'stream-fallback-patch',
+    });
+
+    assert.equal(result.terminalReceived, true);
+    assert.deepEqual(harness.syncedActiveRenders, [9, 9]);
+    assert.deepEqual(harness.scheduledActiveRenders, []);
+  } finally {
+    if (typeof originalDocument === 'undefined') {
+      delete globalThis.document;
+    } else {
+      globalThis.document = originalDocument;
+    }
+  }
 });
 
 test('consumeStreamResponse skips immediate full reconcile on done when visible patching succeeds', async () => {
@@ -705,6 +939,79 @@ test('hydrateChatAfterGracefulResumeCompletion skips rerender when hydrated assi
   assert.deepEqual(histories.get(9), [{ id: 101, role: 'assistant', body: 'same reply', pending: false }]);
 });
 
+test('hydrateChatAfterGracefulResumeCompletion rerenders when hydrated transcript removes stale trailing tool activity after identical final assistant text', async () => {
+  const phases = new Map();
+  const renderedMessages = [];
+  const histories = new Map([[9, [
+    { role: 'tool', body: 'Preparing final answer', pending: false, collapsed: true },
+    { role: 'assistant', body: 'same reply', pending: false },
+    { role: 'tool', body: 'Finishing…', pending: false, collapsed: true },
+  ]]]);
+  const controller = streamController.createController({
+    parseSseEvent: sharedUtils.parseSseEvent,
+    formatLatency: sharedUtils.formatLatency,
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: (chatId) => phases.get(Number(chatId)) || streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: (chatId, phase) => phases.set(Number(chatId), phase),
+    isPatchPhaseAllowed: () => false,
+    chats: new Map([[9, { id: 9, pending: false }]]),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    finalizeInlineToolTrace: () => {},
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    patchVisiblePendingAssistant: () => false,
+    patchVisibleToolTrace: () => false,
+    renderTraceLog: () => {},
+    syncActiveMessageView: () => {},
+    scheduleActiveMessageView: () => {},
+    setChatLatency: () => {},
+    incrementUnread: () => {},
+    getActiveChatId: () => 9,
+    triggerIncomingMessageHaptic: () => {},
+    messagesEl: null,
+    promptEl: { focus: () => {} },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    streamDebugLog: () => {},
+    finalizeStreamPendingState: () => {},
+    appendInlineToolTrace: () => {},
+    loadChatHistory: async () => ({
+      chat: { id: 9, pending: false, title: 'chat-9' },
+      history: [
+        { role: 'tool', body: 'Preparing final answer', pending: false, collapsed: true },
+        { id: 101, role: 'assistant', body: 'same reply', pending: false },
+      ],
+    }),
+    upsertChat: () => {},
+    histories,
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    renderMessages: (chatId, options = {}) => renderedMessages.push({ chatId: Number(chatId), options }),
+    persistStreamCursor: () => {},
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+  });
+
+  await controller.hydrateChatAfterGracefulResumeCompletion(9);
+
+  assert.deepEqual(renderedMessages, [{ chatId: 9, options: { preserveViewport: true } }]);
+  assert.deepEqual(histories.get(9), [
+    { role: 'tool', body: 'Preparing final answer', pending: false, collapsed: true },
+    { id: 101, role: 'assistant', body: 'same reply', pending: false },
+  ]);
+});
+
 test('hydrateChatAfterGracefulResumeCompletion can force completed chat state during terminal reconciliation', async () => {
   const phases = new Map();
   const chatsUpserted = [];
@@ -774,17 +1081,36 @@ test('hydrateChatAfterGracefulResumeCompletion can force completed chat state du
 test('consumeStreamWithReconnect invokes reconnect callback only on early close', async () => {
   const harness = buildControllerHarness();
   let earlyCloseCalls = 0;
+  let earlyCloseDetails = null;
   const { response } = makeSseResponse('event: meta\ndata: {"detail":"running","source":"queue"}\n\n');
 
   const resumed = await harness.controller.consumeStreamWithReconnect(9, response, { value: '' }, {
     fallbackTraceEvent: 'stream-fallback-patch',
-    onEarlyClose: async () => {
+    onEarlyClose: async (details = null) => {
       earlyCloseCalls += 1;
+      earlyCloseDetails = details;
     },
   });
 
   assert.equal(resumed, true);
   assert.equal(earlyCloseCalls, 1);
+  assert.equal(Boolean(earlyCloseDetails?.expectedSegmentEnd), false);
+});
+
+test('consumeStreamWithReconnect reports expected segment rollovers to the reconnect callback', async () => {
+  const harness = buildControllerHarness();
+  let earlyCloseDetails = null;
+  const { response } = makeSseResponse('event: meta\ndata: {"detail":"stream segment rollover","source":"queue","stream_segment_end":true,"resume_recommended":true}\n\n');
+
+  const resumed = await harness.controller.consumeStreamWithReconnect(9, response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+    onEarlyClose: async (details = null) => {
+      earlyCloseDetails = details;
+    },
+  });
+
+  assert.equal(resumed, true);
+  assert.equal(Boolean(earlyCloseDetails?.expectedSegmentEnd), true);
 });
 
 test('consumeStreamResponse skips replayed events using monotonic _event_id across reconnects', async () => {
@@ -870,11 +1196,33 @@ test('finalizeStreamLifecycle finalizes pending state for owning non-aborted str
   assert.equal(harness.controller.hasLiveStreamController(9), false);
 });
 
+test('finalizeStreamLifecycle does not refocus the composer on completion', async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'visible' };
+  try {
+    const harness = buildControllerHarness({
+      isDesktopViewport: () => false,
+      messagesEl: {
+        scrollHeight: 100,
+        clientHeight: 100,
+        scrollTop: 0,
+      },
+    });
+    const owningController = new AbortController();
+
+    harness.controller.setFocusRestoreEligibility(9, true);
+    harness.controller.setStreamAbortController(9, owningController);
+    await harness.controller.finalizeStreamLifecycle(9, owningController, { wasAborted: false });
+
+    assert.equal(harness.getPromptFocusCalls(), 0);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test('createToolTraceController upserts tool deltas by message_id + tool_call_id + phase', () => {
   const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
   const toolTrace = streamController.createToolTraceController({
-    toolStreamEl: { hidden: false },
-    toolStreamLinesEl: { innerHTML: '' },
     histories,
     cleanDisplayText: (text) => String(text || '').trim(),
   });
@@ -906,14 +1254,10 @@ test('createToolTraceController upserts tool deltas by message_id + tool_call_id
   assert.equal('_toolTraceLines' in finalized, false);
 });
 
-test('createToolTraceController appends pending tool traces and finalizes collapsed state', () => {
+test('createToolTraceController appends pending tool traces and preserves open state across finalize', () => {
   const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
-  const toolStreamEl = { hidden: false };
-  const toolStreamLinesEl = { innerHTML: 'existing lines' };
 
   const toolTrace = streamController.createToolTraceController({
-    toolStreamEl,
-    toolStreamLinesEl,
     histories,
     cleanDisplayText: (text) => String(text || '').trim(),
   });
@@ -924,92 +1268,145 @@ test('createToolTraceController appends pending tool traces and finalizes collap
   const pending = toolTrace.findPendingToolTraceMessage(7);
   assert.equal(Boolean(pending), true);
   assert.equal(pending.body, 'read_file\nsearch_files');
-  assert.equal(toolStreamEl.hidden, false);
-  assert.equal(toolStreamLinesEl.innerHTML, 'read_file\nsearch_files');
+  assert.equal(pending.collapsed, false);
 
   toolTrace.finalizeInlineToolTrace(7);
   const finalized = histories.get(7)[0];
   assert.equal(finalized.role, 'tool');
   assert.equal(finalized.pending, false);
-  assert.equal(finalized.collapsed, true);
+  assert.equal(finalized.collapsed, false);
   assert.equal(finalized.body, 'read_file\nsearch_files');
-  assert.equal(toolStreamEl.hidden, true);
 });
 
-test('createToolTraceController keeps live tool stream position when user is reading older tool entries', () => {
-  const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
-  const toolStreamEl = { hidden: true };
-  const toolStreamLinesEl = {
-    innerHTML: '',
-    scrollTop: 120,
-    scrollHeight: 600,
-    clientHeight: 200,
-    children: [],
-    appendChild(node) {
-      this.children.push(node);
-      this.scrollHeight = 800;
-    },
-  };
-  const documentObject = {
-    createElement: () => ({ className: '', textContent: '' }),
-  };
+test('createToolTraceController preserves restored tool lines when resumed tool events gain dedupe ids', () => {
+  const histories = new Map([[7, [{ role: 'tool', body: 'read_file\nsearch_files', pending: true, collapsed: false }]]]);
 
   const toolTrace = streamController.createToolTraceController({
-    toolStreamEl,
-    toolStreamLinesEl,
     histories,
     cleanDisplayText: (text) => String(text || '').trim(),
-    documentObject,
+  });
+
+  toolTrace.appendInlineToolTrace(7, 'apply_patch', {
+    message_id: 'm-2',
+    tool_call_id: 'tc-3',
+    phase: 'started',
+  });
+
+  const pending = toolTrace.findPendingToolTraceMessage(7);
+  assert.equal(Boolean(pending), true);
+  assert.equal(pending.body, 'read_file\nsearch_files\napply_patch');
+  assert.deepEqual(pending._toolTraceOrder, ['__restored__0', '__restored__1', 'm-2::tc-3::started']);
+  assert.equal(pending._toolTraceLines['__restored__0'], 'read_file');
+  assert.equal(pending._toolTraceLines['__restored__1'], 'search_files');
+  assert.equal(pending._toolTraceLines['m-2::tc-3::started'], 'apply_patch');
+});
+
+test('createToolTraceController preserves repeated restored tool lines before resumed deduped events', () => {
+  const histories = new Map([[7, [{ role: 'tool', body: 'read_file\nsearch_files\nread_file', pending: true, collapsed: false }]]]);
+
+  const toolTrace = streamController.createToolTraceController({
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+  });
+
+  toolTrace.appendInlineToolTrace(7, 'apply_patch', {
+    message_id: 'm-2',
+    tool_call_id: 'tc-4',
+    phase: 'started',
+  });
+
+  const pending = toolTrace.findPendingToolTraceMessage(7);
+  assert.equal(Boolean(pending), true);
+  assert.equal(pending.body, 'read_file\nsearch_files\nread_file\napply_patch');
+});
+
+test('createToolTraceController preserves explicit collapsed state across finalize', () => {
+  const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
+
+  const toolTrace = streamController.createToolTraceController({
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+  });
+
+  toolTrace.appendInlineToolTrace(7, 'read_file');
+  const pending = toolTrace.findPendingToolTraceMessage(7);
+  pending.collapsed = true;
+
+  toolTrace.finalizeInlineToolTrace(7);
+  const finalized = histories.get(7)[0];
+  assert.equal(finalized.pending, false);
+  assert.equal(finalized.collapsed, true);
+});
+
+test('createToolTraceController tolerates detached tool stream UI removal', () => {
+  const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
+
+  const toolTrace = streamController.createToolTraceController({
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
   });
 
   toolTrace.appendInlineToolTrace(7, 'read_file');
   toolTrace.appendInlineToolTrace(7, 'search_files');
 
-  assert.equal(toolStreamEl.hidden, false);
-  assert.equal(toolStreamLinesEl.scrollTop, 120);
+  const pending = toolTrace.findPendingToolTraceMessage(7);
+  assert.equal(pending.body, 'read_file\nsearch_files');
+  assert.doesNotThrow(() => toolTrace.resetToolStream());
 });
 
-test('createToolTraceController keeps following live tool stream when already near the bottom', () => {
-  const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
-  const toolStreamEl = { hidden: true };
-  const toolStreamLinesEl = {
-    innerHTML: '',
-    scrollTop: 365,
-    scrollHeight: 600,
-    clientHeight: 200,
-    children: [],
-    appendChild(node) {
-      this.children.push(node);
-      this.scrollHeight = 800;
-    },
-  };
-  const documentObject = {
-    createElement: () => ({ className: '', textContent: '' }),
-  };
+test('createToolTraceController can drop stale pending tool traces before a new run starts', () => {
+  const histories = new Map([[7, [
+    { role: 'tool', body: 'old run tool A', pending: true, collapsed: false },
+    { role: 'tool', body: 'old run tool B', pending: true, collapsed: false },
+    { role: 'assistant', body: 'completed reply', pending: false },
+  ]]]);
+  const persisted = [];
 
   const toolTrace = streamController.createToolTraceController({
-    toolStreamEl,
-    toolStreamLinesEl,
     histories,
     cleanDisplayText: (text) => String(text || '').trim(),
-    documentObject,
+    persistPendingStreamSnapshot: (chatId) => persisted.push(Number(chatId)),
   });
 
-  toolTrace.appendInlineToolTrace(7, 'read_file');
-  toolTrace.appendInlineToolTrace(7, 'search_files');
+  const changed = toolTrace.dropPendingToolTraceMessages(7);
 
-  assert.equal(toolStreamEl.hidden, false);
-  assert.equal(toolStreamLinesEl.scrollTop, 800);
+  assert.equal(changed, true);
+  assert.deepEqual(histories.get(7), [
+    { role: 'assistant', body: 'completed reply', pending: false },
+  ]);
+  assert.equal(toolTrace.findPendingToolTraceMessage(7), null);
+  assert.deepEqual(persisted, [7]);
+
+  toolTrace.appendInlineToolTrace(7, 'new run tool');
+  const pending = toolTrace.findPendingToolTraceMessage(7);
+  assert.equal(Boolean(pending), true);
+  assert.equal(pending.body, 'new run tool');
+  assert.deepEqual(persisted, [7, 7]);
 });
 
-test('createToolTraceController drops empty finalized traces and resets tool stream UI', () => {
+test('createToolTraceController snapshots pending trace mutations inside the helper owner', () => {
+  const histories = new Map([[9, [{ role: 'assistant', body: 'pending', pending: true }]]]);
+  const persisted = [];
+
+  const toolTrace = streamController.createToolTraceController({
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+    persistPendingStreamSnapshot: (chatId) => persisted.push(Number(chatId)),
+  });
+
+  toolTrace.appendInlineToolTrace(9, 'read_file');
+  toolTrace.appendInlineToolTrace(9, 'search_files');
+  toolTrace.finalizeInlineToolTrace(9);
+
+  assert.deepEqual(persisted, [9, 9, 9]);
+  assert.equal(histories.get(9)[0].pending, false);
+  assert.equal(histories.get(9)[0].body, 'read_file\nsearch_files');
+});
+
+test('createToolTraceController drops empty finalized traces after detached tool stream removal', () => {
   const histories = new Map([[5, [{ role: 'tool', body: '   ', pending: true, collapsed: false }]]]);
-  const toolStreamEl = { hidden: false };
-  const toolStreamLinesEl = { innerHTML: 'line 1\nline 2' };
 
   const toolTrace = streamController.createToolTraceController({
-    toolStreamEl,
-    toolStreamLinesEl,
     histories,
     cleanDisplayText: (text) => String(text || '').trim(),
   });
@@ -1017,7 +1414,6 @@ test('createToolTraceController drops empty finalized traces and resets tool str
   toolTrace.finalizeInlineToolTrace(5);
   assert.equal(histories.get(5).length, 0);
 
-  toolTrace.resetToolStream();
-  assert.equal(toolStreamLinesEl.innerHTML, '');
-  assert.equal(toolStreamEl.hidden, true);
+  assert.doesNotThrow(() => toolTrace.resetToolStream());
 });
+

@@ -134,11 +134,6 @@
             </div>
           </div>
 
-          <div id="tool-stream" class="tool-stream" aria-live="polite" aria-label="Live tool activity" hidden>
-            <div class="tool-stream__header">Live tool activity</div>
-            <div id="tool-stream-lines" class="tool-stream__lines"></div>
-          </div>
-
           <div class="messages-wrap">
             <div id="messages" class="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-atomic="false" tabindex="-1"></div>
             <button type="button" class="jump-last-start" id="jump-last-start" hidden aria-label="Jump to start of final message">↑</button>
@@ -295,6 +290,11 @@
     <script defer src="/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}"></script>
     <script defer src="/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}"></script>
     <script defer src="/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}"></script>
+    <script defer src="/static/startup_metrics_helpers.js?v={{ startup_metrics_helpers_version }}"></script>
+    <script defer src="/static/render_trace_text_helpers.js?v={{ render_trace_text_helpers_version }}"></script>
+    <script defer src="/static/render_trace_debug_helpers.js?v={{ render_trace_debug_helpers_version }}"></script>
+    <script defer src="/static/render_trace_message_helpers.js?v={{ render_trace_message_helpers_version }}"></script>
+    <script defer src="/static/render_trace_history_helpers.js?v={{ render_trace_history_helpers_version }}"></script>
     <script defer src="/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}"></script>
     <script defer src="/static/file_preview_helpers.js?v={{ file_preview_helpers_version }}"></script>
     <script defer src="/static/app.js?v={{ app_js_version }}"></script>

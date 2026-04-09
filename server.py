@@ -44,14 +44,14 @@ if _previous_runtime is not None:
     if callable(shutdown_previous_runtime):
         try:
             shutdown_previous_runtime(reason="module_reload", join_timeout=2.0)
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log module-reload cleanup must never block startup
             pass
 
 _previous_runtime_atexit = globals().get("_shutdown_runtime_at_exit")
 if callable(_previous_runtime_atexit):
     try:
         atexit.unregister(_previous_runtime_atexit)
-    except Exception:
+    except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log module-reload cleanup must never block startup
         pass
 
 CONFIG = MiniAppConfig.from_env()
@@ -116,6 +116,11 @@ STATIC_NO_STORE_FILENAMES = {
     "composer_viewport_helpers.js",
     "visibility_skin_helpers.js",
     "startup_bindings_helpers.js",
+    "startup_metrics_helpers.js",
+    "render_trace_text_helpers.js",
+    "render_trace_debug_helpers.js",
+    "render_trace_message_helpers.js",
+    "render_trace_history_helpers.js",
     "render_trace_helpers.js",
     "file_preview_helpers.js",
 }
@@ -165,7 +170,7 @@ def _log_request_debug() -> None:
             request.host,
             request.headers.get("User-Agent", "")[:160],
         )
-    except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log debug instrumentation must never block requests
+    except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log module-reload cleanup must never block startup  # noqa: BLE001 - broad-except-policy: intentional-no-log debug instrumentation must never block requests
         pass
 
 
@@ -176,7 +181,7 @@ api_bp = create_api_blueprint()
 def _create_client_with_resolved_ownership() -> HermesClient:
     previous = os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP")
     previous_requested = os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED")
-    os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED"] = str(previous or "auto")
+    os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED"] = str(CONFIG.persistent_runtime_ownership or "auto")
     os.environ["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP"] = PERSISTENT_RUNTIME_OWNERSHIP
     try:
         return HermesClient()
@@ -232,7 +237,7 @@ def _cookie_secure() -> bool:
 
 
 def _dev_auth_enabled() -> bool:
-    return CONFIG.is_dev_auth_active()
+    return MiniAppConfig.from_env().is_dev_auth_active()
 
 
 def _ensure_csp_nonce() -> str:
@@ -553,6 +558,8 @@ register_meta_routes(
     api_bp,
     allowed_skins=ALLOWED_SKINS,
     bootstrap_version_fn=lambda: _dev_reload_version(),
+    runtime_status_fn=lambda: client.runtime_status(),
+    operator_token=str(os.environ.get("MINI_APP_OPERATOR_API_TOKEN") or "").strip(),
 )
 
 

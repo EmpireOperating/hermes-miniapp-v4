@@ -27,11 +27,11 @@ test('app.js chat-history wrappers keep delegating to chatHistoryController', as
     ['prefetchChatHistory', 'chatHistoryController.prefetchChatHistory(chatId)'],
     ['warmChatHistoryCache', 'chatHistoryController.warmChatHistoryCache()'],
     ['addLocalMessage', 'chatHistoryController.addLocalMessage(chatId, message)'],
+    ['appendSystemMessage', 'chatHistoryController.appendSystemMessage(text, chatIdOverride)'],
     ['updatePendingAssistant', 'chatHistoryController.updatePendingAssistant(chatId, nextBody, pendingState)'],
     ['syncActiveMessageView', 'chatHistoryController.syncActiveMessageView(chatId, options)'],
     ['scheduleActiveMessageView', 'chatHistoryController.scheduleActiveMessageView(chatId)'],
     ['refreshChats', 'chatHistoryController.refreshChats()'],
-    ['syncVisibleActiveChat', 'chatHistoryController.syncVisibleActiveChat(options)'],
   ];
 
   for (const [fnName, delegatedCall] of delegateExpectations) {

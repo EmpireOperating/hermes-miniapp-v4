@@ -80,7 +80,7 @@ class HermesClientDirectAgentMixin:
                 reply = str(event.get("reply") or reply)
                 source = str(event.get("source") or source)
         if not reply.strip():
-            raise HermesClientError("Hermes agent returned an empty reply.")
+            raise HermesClientError(f"Hermes agent returned an empty reply (source={source}).")
         return reply, source
 
     def _stream_via_agent(
@@ -141,13 +141,13 @@ class HermesClientDirectAgentMixin:
             process.kill()
             try:
                 process.wait(timeout=1)
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log direct-agent teardown must never mask the primary failure
                 pass
             for stream in (process.stdin, process.stdout, process.stderr):
                 try:
                     if stream is not None:
                         stream.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log direct-agent teardown must never mask the primary failure
                     pass
             raise
 
@@ -179,9 +179,14 @@ class HermesClientDirectAgentMixin:
         stderr_done = threading.Event()
         stderr_lines: deque[str] = deque(maxlen=200)
         started = time.monotonic()
+        last_event_at = started
+        first_progress_seen = False
+        initial_progress_grace_seconds = max(float(self.timeout_seconds), 5.0)
 
         def _build_timeout_message() -> str:
-            message = f"Hermes direct agent timed out after {self.timeout_seconds}s."
+            idle_for = max(0.0, time.monotonic() - last_event_at)
+            message = f"Hermes direct agent timed out after {self.timeout_seconds}s with no progress."
+            message += f" idle_for={idle_for:.1f}s"
             if stderr_lines:
                 tail = stderr_lines[-1]
                 if len(tail) > 300:
@@ -230,7 +235,11 @@ class HermesClientDirectAgentMixin:
             yield {"type": "meta", "source": "agent"}
 
             while True:
-                if (time.monotonic() - started) > float(self.timeout_seconds):
+                elapsed_since_progress = time.monotonic() - last_event_at
+                timeout_budget = float(self.timeout_seconds)
+                if not first_progress_seen:
+                    timeout_budget = max(timeout_budget, initial_progress_grace_seconds)
+                if elapsed_since_progress > timeout_budget:
                     spawn_outcome = "timeout_kill"
                     process.kill()
                     raise HermesClientError(_build_timeout_message())
@@ -242,6 +251,8 @@ class HermesClientDirectAgentMixin:
                         break
                     continue
 
+                last_event_at = time.monotonic()
+                first_progress_seen = True
                 kind = item.get("kind")
                 if kind == "tool":
                     tool_name = str(item.get("tool_name") or "")
@@ -269,7 +280,7 @@ class HermesClientDirectAgentMixin:
                     spawn_outcome = "stream_error"
                     raise HermesClientError(str(item.get("error") or "Hermes agent run failed."))
 
-            remaining = max(0.1, float(self.timeout_seconds) - (time.monotonic() - started))
+            remaining = max(0.1, float(self.timeout_seconds) - (time.monotonic() - last_event_at))
             try:
                 return_code = process.wait(timeout=remaining)
                 final_return_code = int(return_code)
@@ -295,7 +306,7 @@ class HermesClientDirectAgentMixin:
                 process.kill()
                 try:
                     process.wait(timeout=1)
-                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log teardown wait failures are non-fatal after kill
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log direct-agent teardown must never mask the primary failure  # noqa: BLE001 - broad-except-policy: intentional-no-log teardown wait failures are non-fatal after kill
                     pass
             polled_return_code = process.poll()
             if final_return_code is None and isinstance(polled_return_code, int):
@@ -363,7 +374,7 @@ class HermesClientDirectAgentMixin:
             _protocol_stdout = getattr(sys, '__stdout__', None) or sys.stdout
 
             def emit(payload):
-                _protocol_stdout.write(json.dumps(payload, ensure_ascii=False) + '\n')
+                _protocol_stdout.write(json.dumps(payload, ensure_ascii=False) + '\\n')
                 _protocol_stdout.flush()
 
             payload = json.loads(sys.stdin.read() or '{}')
@@ -378,8 +389,30 @@ class HermesClientDirectAgentMixin:
             last_tool = {'name': None}
             started = time.perf_counter()
 
-            def progress_callback(tool_name, preview=None, args=None):
+            def progress_callback(*callback_args):
                 if tool_progress_mode == 'off':
+                    return
+                if not callback_args:
+                    return
+
+                event_type = 'tool.started'
+                tool_name = None
+                preview = None
+                args = None
+                if len(callback_args) >= 4 and str(callback_args[0] or '').strip():
+                    event_type = str(callback_args[0] or '').strip()
+                    tool_name = callback_args[1]
+                    preview = callback_args[2]
+                    args = callback_args[3]
+                else:
+                    tool_name = callback_args[0]
+                    preview = callback_args[1] if len(callback_args) >= 2 else None
+                    args = callback_args[2] if len(callback_args) >= 3 else None
+
+                if event_type != 'tool.started':
+                    return
+                tool_name = str(tool_name or '').strip()
+                if not tool_name:
                     return
                 if tool_progress_mode == 'new' and tool_name == last_tool['name']:
                     return
@@ -388,7 +421,7 @@ class HermesClientDirectAgentMixin:
                     'kind': 'tool',
                     'tool_name': tool_name,
                     'preview': preview or '',
-                    'args': args or {},
+                    'args': args if isinstance(args, dict) else {},
                 })
 
             agent_kwargs = {
@@ -415,7 +448,7 @@ class HermesClientDirectAgentMixin:
                     )
                 reply = str(result.get('final_response') or '').strip()
                 if not reply:
-                    emit({'kind': 'error', 'error': str(result.get('error') or 'Hermes agent returned an empty reply.')})
+                    emit({'kind': 'error', 'error': str(result.get('error') or 'Hermes agent returned an empty reply (source=agent).')})
                     raise SystemExit(1)
                 emit({
                     'kind': 'done',

@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Callable, Iterable
 
 if TYPE_CHECKING:
     from job_runtime import JobRuntime
+
+
+_TOOL_DEMO_REQUEST_RE = re.compile(r"\btool\b.*\b(demo|activity|call)\b|\b(demo|activity|call)\b.*\btool\b", re.IGNORECASE)
+_TOOL_EXECUTION_CLAIM_RE = re.compile(
+    r"\b(i|we)\s+(just\s+)?(ran|used|invoked|called|executed|checked)\b"
+    r"|\blive\s+tool[ -]?call\s+demo\b"
+    r"|\bterminal\s+tool\b"
+    r"|\btool\s+activity\b",
+    re.IGNORECASE,
+)
+
+
+def _is_tool_demo_request(message: str) -> bool:
+    return bool(_TOOL_DEMO_REQUEST_RE.search(str(message or "")))
+
+
+def _reply_claims_tool_execution(reply_text: str) -> bool:
+    return bool(_TOOL_EXECUTION_CLAIM_RE.search(str(reply_text or "")))
 
 
 def execute_chat_job(
@@ -64,10 +83,6 @@ def execute_chat_job(
                 )
 
     started = time.perf_counter()
-    reply_text = ""
-    latency_ms = 0
-    tool_trace_lines: list[str] = []
-    runtime_checkpoint: list[dict[str, str]] = []
 
     runtime_stats = runtime.client.persistent_stats()
     runtime.publish_job_event(
@@ -85,90 +100,133 @@ def execute_chat_job(
 
     stream_events = stream_events_fn or runtime.client.stream_events
 
-    set_spawn_trace_context = getattr(runtime.client, "set_spawn_trace_context", None)
-    if callable(set_spawn_trace_context):
-        set_spawn_trace_context(
-            user_id=user_id,
-            chat_id=chat_id,
-            job_id=job_id,
-            session_id=session_id,
-        )
-    saw_terminal_done = False
-    event_iter = None
-    try:
-        event_iter = iter(
-            stream_events(
+    def _consume_stream(run_message: str) -> tuple[bool, str, int, list[str], list[dict[str, str]], str]:
+        reply_text = ""
+        latency_ms = 0
+        tool_trace_lines: list[str] = []
+        runtime_checkpoint: list[dict[str, str]] = []
+        last_event_source = ""
+        saw_terminal_done = False
+        event_iter = None
+        set_spawn_trace_context = getattr(runtime.client, "set_spawn_trace_context", None)
+        if callable(set_spawn_trace_context):
+            set_spawn_trace_context(
                 user_id=user_id,
-                message=message,
-                conversation_history=history,
+                chat_id=chat_id,
+                job_id=job_id,
                 session_id=session_id,
             )
-        )
-        for event in event_iter:
-            event_session_id = str(event.get("session_id") or "").strip()
-            if event_session_id and event_session_id != session_id:
-                raise client_error_cls(
-                    "Hermes stream session mismatch "
-                    f"(expected {session_id}, got {event_session_id})."
+        try:
+            event_iter = iter(
+                stream_events(
+                    user_id=user_id,
+                    message=run_message,
+                    conversation_history=history,
+                    session_id=session_id,
                 )
-
-            raw_event_chat_id = event.get("chat_id")
-            if raw_event_chat_id not in (None, ""):
-                try:
-                    event_chat_id = int(raw_event_chat_id)
-                except (TypeError, ValueError) as exc:
-                    raise client_error_cls(f"Hermes stream emitted invalid chat_id={raw_event_chat_id!r}.") from exc
-                if event_chat_id != chat_id:
+            )
+            for event in event_iter:
+                event_session_id = str(event.get("session_id") or "").strip()
+                if event_session_id and event_session_id != session_id:
                     raise client_error_cls(
-                        "Hermes stream chat mismatch "
-                        f"(expected {chat_id}, got {event_chat_id})."
+                        "Hermes stream session mismatch "
+                        f"(expected {session_id}, got {event_session_id})."
                     )
 
-            event_type = str(event.get("type") or "")
-            if event_type == "meta":
-                payload = {"chat_id": chat_id, **{k: v for k, v in event.items() if k != "type"}}
-                runtime.publish_job_event(job_id, "meta", payload)
-            elif event_type == "tool":
-                payload = {"chat_id": chat_id, **{k: v for k, v in event.items() if k != "type"}}
-                display = str(payload.get("display") or payload.get("preview") or payload.get("tool_name") or "Tool running").strip()
-                if display:
-                    tool_trace_lines.append(display)
-                runtime.publish_job_event(job_id, "tool", payload)
-            elif event_type == "chunk":
-                chunk = str(event.get("text") or "")
-                if chunk:
-                    reply_text += chunk
-                    runtime.publish_job_event(job_id, "chunk", {"text": chunk, "chat_id": chat_id})
-            elif event_type == "done":
-                saw_terminal_done = True
-                reply_text = str(event.get("reply") or reply_text).strip()
-                latency_ms = int(event.get("latency_ms") or 0)
-                checkpoint_payload = event.get("runtime_checkpoint")
-                if isinstance(checkpoint_payload, list):
-                    runtime_checkpoint = [item for item in checkpoint_payload if isinstance(item, dict)]
-                break
-            elif event_type == "error":
-                raise client_error_cls(str(event.get("error") or "Hermes stream failed."))
-    except client_error_cls as exc:
-        raise retryable_error_cls(str(exc)) from exc
-    finally:
-        if event_iter is not None:
-            close_iter = getattr(event_iter, "close", None)
-            if callable(close_iter):
-                close_iter()
-        clear_spawn_trace_context = getattr(runtime.client, "clear_spawn_trace_context", None)
-        if callable(clear_spawn_trace_context):
-            clear_spawn_trace_context()
+                raw_event_chat_id = event.get("chat_id")
+                if raw_event_chat_id not in (None, ""):
+                    try:
+                        event_chat_id = int(raw_event_chat_id)
+                    except (TypeError, ValueError) as exc:
+                        raise client_error_cls(f"Hermes stream emitted invalid chat_id={raw_event_chat_id!r}.") from exc
+                    if event_chat_id != chat_id:
+                        raise client_error_cls(
+                            "Hermes stream chat mismatch "
+                            f"(expected {chat_id}, got {event_chat_id})."
+                        )
+
+                event_type = str(event.get("type") or "")
+                if event_type == "meta":
+                    payload = {"chat_id": chat_id, **{k: v for k, v in event.items() if k != "type"}}
+                    last_event_source = str(payload.get("source") or last_event_source).strip()
+                    runtime.publish_job_event(job_id, "meta", payload)
+                elif event_type == "tool":
+                    payload = {"chat_id": chat_id, **{k: v for k, v in event.items() if k != "type"}}
+                    display = str(payload.get("display") or payload.get("preview") or payload.get("tool_name") or "Tool running").strip()
+                    if display:
+                        tool_trace_lines.append(display)
+                    runtime.publish_job_event(job_id, "tool", payload)
+                elif event_type == "chunk":
+                    chunk = str(event.get("text") or "")
+                    if chunk:
+                        reply_text += chunk
+                        runtime.publish_job_event(job_id, "chunk", {"text": chunk, "chat_id": chat_id})
+                elif event_type == "done":
+                    saw_terminal_done = True
+                    reply_text = str(event.get("reply") or reply_text).strip()
+                    latency_ms = int(event.get("latency_ms") or 0)
+                    checkpoint_payload = event.get("runtime_checkpoint")
+                    if isinstance(checkpoint_payload, list):
+                        runtime_checkpoint = [item for item in checkpoint_payload if isinstance(item, dict)]
+                    break
+                elif event_type == "error":
+                    raise client_error_cls(str(event.get("error") or "Hermes stream failed."))
+        except client_error_cls as exc:
+            raise retryable_error_cls(str(exc)) from exc
+        finally:
+            if event_iter is not None:
+                close_iter = getattr(event_iter, "close", None)
+                if callable(close_iter):
+                    close_iter()
+            clear_spawn_trace_context = getattr(runtime.client, "clear_spawn_trace_context", None)
+            if callable(clear_spawn_trace_context):
+                clear_spawn_trace_context()
+
+        return saw_terminal_done, reply_text, latency_ms, tool_trace_lines, runtime_checkpoint, last_event_source
+
+    saw_terminal_done, reply_text, latency_ms, tool_trace_lines, runtime_checkpoint, last_event_source = _consume_stream(message)
 
     state = runtime.store.get_job_state(job_id)
     if not state or state.get("status") != "running":
         return
 
+    suspicious_missing_tool_demo = (
+        _is_tool_demo_request(message)
+        and not tool_trace_lines
+        and _reply_claims_tool_execution(reply_text)
+    )
+    if suspicious_missing_tool_demo:
+        runtime.publish_job_event(
+            job_id,
+            "meta",
+            {
+                "chat_id": chat_id,
+                "source": "stream",
+                "detail": "Re-running with explicit tool-use instruction because the first reply claimed tool usage without emitting tool activity.",
+                "reason": "tool_demo_guard_retry",
+            },
+        )
+        evict_session = getattr(runtime.client, "evict_session", None)
+        if callable(evict_session):
+            evict_session(session_id)
+        forced_message = (
+            f"{message.rstrip()}\n\n"
+            "Important: the user is explicitly verifying visible tool activity in the mini app. "
+            "You must actually call at least one tool before replying. "
+            "Do not say you ran or checked anything unless a real tool call happened."
+        )
+        saw_terminal_done, reply_text, latency_ms, tool_trace_lines, runtime_checkpoint, last_event_source = _consume_stream(forced_message)
+
     if not saw_terminal_done:
         raise retryable_error_cls("Hermes stream ended without a terminal done event.")
 
     if not reply_text:
-        raise retryable_error_cls("Empty response from Hermes.")
+        source_hint = f" source={last_event_source}." if last_event_source else ""
+        tool_hint = f" tools_seen={len(tool_trace_lines)}." if tool_trace_lines else ""
+        raise retryable_error_cls(
+            "Empty response from Hermes after terminal done event."
+            f"{source_hint}{tool_hint}"
+        )
 
     was_hard_truncated = False
     if len(reply_text) > runtime.assistant_hard_limit:
