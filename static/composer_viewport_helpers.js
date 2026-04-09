@@ -252,6 +252,7 @@
       });
 
       const onViewportShift = () => {
+        syncViewportCssVars();
         if (!isPromptFocused()) return;
         if (!isWithinSyncWindow()) return;
         ensureComposerVisible({ smooth: false });
