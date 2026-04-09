@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from sqlite3 import Connection
 import threading
+import time
 from typing import Any
 
 from job_status import (
@@ -44,6 +46,14 @@ class StoreJobsMixin:
         self._job_queue_diag_lock = new_lock
         return new_lock
 
+    def _claim_lock(self) -> threading.Lock:
+        lock = getattr(self, "_job_claim_lock", None)
+        if lock is not None and hasattr(lock, "acquire") and hasattr(lock, "release"):
+            return lock
+        new_lock = threading.Lock()
+        self._job_claim_lock = new_lock
+        return new_lock
+
     def _record_preclaim_dead_letter_total(self, delta: int) -> None:
         increment = max(0, int(delta or 0))
         if increment <= 0:
@@ -63,13 +73,26 @@ class StoreJobsMixin:
         }
 
     def claim_next_job(self) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            preclaim_dead_lettered = dead_letter_exhausted_queued_jobs(
-                conn,
-                insert_dead_letter_if_missing=self._insert_dead_letter_if_missing,
-            )
-            self._record_preclaim_dead_letter_total(preclaim_dead_lettered)
-            return claim_next_job(conn)
+        lock_error_text = "database is locked"
+        max_attempts = 3
+        with self._claim_lock():
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    with self._connect() as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        preclaim_dead_lettered = dead_letter_exhausted_queued_jobs(
+                            conn,
+                            insert_dead_letter_if_missing=self._insert_dead_letter_if_missing,
+                        )
+                        self._record_preclaim_dead_letter_total(preclaim_dead_lettered)
+                        return claim_next_job(conn)
+                except sqlite3.OperationalError as exc:
+                    if lock_error_text not in str(exc).lower():
+                        raise
+                    if attempt >= max_attempts:
+                        raise
+                    time.sleep(0.05 * attempt)
+        return None
 
     def complete_job(self, job_id: int) -> None:
         with self._connect() as conn:

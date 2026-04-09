@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -722,7 +723,13 @@ class JobRuntime:
         self._sweep_stale_running_jobs()
 
         while not self._shutdown_event.is_set():
-            job = self.store.claim_next_job()
+            try:
+                job = self.store.claim_next_job()
+            except sqlite3.OperationalError as exc:
+                if "database is locked" not in str(exc).lower():
+                    raise
+                LOGGER.warning("job_claim_retry_exhausted error=%s", exc)
+                break
             if not job:
                 break
 

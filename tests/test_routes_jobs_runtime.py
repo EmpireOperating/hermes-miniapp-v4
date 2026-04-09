@@ -17,6 +17,16 @@ def _authed_client(monkeypatch, tmp_path, **load_kwargs):
     patch_verified_user(monkeypatch, server)
     return server, client
 
+
+def _claim_or_get_open_job(server, user_id: str, chat_id: int):
+    claimed = server.store.claim_next_job()
+    if claimed is not None:
+        return claimed
+    open_job = server.store.get_open_job(user_id, chat_id)
+    assert open_job is not None
+    return open_job
+
+
 def test_detects_stale_chat_job_errors(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
 
@@ -382,6 +392,7 @@ def test_subprocess_two_chat_session_mismatch_isolation_smoke(monkeypatch, tmp_p
     monkeypatch.setattr(SubprocessJobWorkerLauncher, "_stream_events_via_subprocess", fake_subprocess_stream)
 
     runtime._process_available_jobs_once()
+    runtime._process_available_jobs_once()
 
     state_a = server.store.get_job_state(job_a)
     state_b = server.store.get_job_state(job_b)
@@ -494,8 +505,7 @@ def test_run_chat_job_duplicate_runner_is_suppressed_not_nonretryable(monkeypatc
     chat_id = server.store.ensure_default_chat(user_id)
     operator_message_id = server.store.add_message(user_id, chat_id, "operator", "hello")
     job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    job = server.store.claim_next_job()
-    assert job is not None
+    job = _claim_or_get_open_job(server, user_id, chat_id)
     assert int(job.get("id") or 0) == job_id
 
     monkeypatch.setattr(server.runtime, "_try_start_job_runner", lambda **kwargs: False)
@@ -610,8 +620,7 @@ def test_publish_job_event_throttles_touch_job_frequency(monkeypatch, tmp_path) 
     chat_id = server.store.ensure_default_chat(user_id)
     operator_message_id = server.store.add_message(user_id, chat_id, "operator", "touch test")
     job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    claimed = server.store.claim_next_job()
-    assert claimed is not None
+    claimed = _claim_or_get_open_job(server, user_id, chat_id)
 
     server.runtime.job_touch_min_interval_seconds = 0.25
 
@@ -733,6 +742,25 @@ def test_run_chat_job_does_not_keepalive_touch_during_silent_upstream_wait(monke
     # One non-terminal meta event is published at job start; silent waits should not
     # continuously refresh updated_at via keepalive-only touches.
     assert len(touch_calls) == 1
+
+
+def test_process_available_jobs_once_survives_database_locked_claim(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server._RUNTIME_DEPS.bind_runtime()
+    runtime._shutdown_event.clear()
+    runtime._shutdown_started = False
+    calls = {"count": 0}
+
+    def locked_claim_next_job():
+        calls["count"] += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(runtime.store, "claim_next_job", locked_claim_next_job)
+
+    runtime._process_available_jobs_once()
+
+    assert calls["count"] >= 1
+
 
 
 def test_touch_job_best_effort_records_failure_and_logs_warning(monkeypatch, tmp_path, caplog) -> None:
