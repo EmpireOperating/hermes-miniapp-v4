@@ -223,7 +223,7 @@ def test_dev_auth_returns_404_when_bypass_has_expired(monkeypatch, tmp_path) -> 
 def test_dev_auth_rejects_wrong_secret(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
     monkeypatch.setenv("MINIAPP_DEV_SECRET", "expected-secret")
-    server = load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path, isolate_dev_env=False)
     client = server.app.test_client()
 
     response = client.post(
@@ -238,7 +238,7 @@ def test_dev_auth_rejects_wrong_secret(monkeypatch, tmp_path) -> None:
 def test_dev_auth_sets_cookie_and_reuses_authenticated_endpoints(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
     monkeypatch.setenv("MINIAPP_DEV_SECRET", "expected-secret")
-    server = load_server(monkeypatch, tmp_path)
+    server = load_server(monkeypatch, tmp_path, isolate_dev_env=False)
     client = server.app.test_client()
 
     auth_response = client.post(
