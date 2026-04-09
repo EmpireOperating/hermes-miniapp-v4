@@ -5,12 +5,14 @@ import os
 from types import SimpleNamespace
 
 
-def _explicit_env_overrides(monkeypatch, keys: tuple[str, ...]) -> dict[str, str]:
-    overrides: dict[str, str] = {}
-    for mapping, key, _old_value in getattr(monkeypatch, "_setitem", []):
-        if mapping is os.environ and key in keys and key in os.environ:
-            overrides[key] = os.environ[key]
-    return overrides
+def _env_was_explicitly_set(monkeypatch, key: str) -> bool:
+    notset = getattr(monkeypatch, "notset", object())
+    current = os.environ.get(key, notset)
+    for entry in reversed(getattr(monkeypatch, "_setitem", [])):
+        mapping, mapped_key, original = entry
+        if mapping is os.environ and mapped_key == key:
+            return original is notset or original != current
+    return False
 
 
 def load_server(
@@ -51,7 +53,11 @@ def load_server(
         "MINI_APP_WARM_WORKER_MAX_IDLE": "2",
         "MINI_APP_WARM_WORKER_MAX_TOTAL": "4",
     }
-    explicit_runtime_overrides = _explicit_env_overrides(monkeypatch, tuple(runtime_defaults.keys()))
+    explicit_runtime_overrides = {
+        key: os.environ[key]
+        for key in runtime_defaults
+        if _env_was_explicitly_set(monkeypatch, key) and key in os.environ
+    }
     for key, default_value in runtime_defaults.items():
         monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv(key, default_value)

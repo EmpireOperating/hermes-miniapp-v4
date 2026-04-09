@@ -56,7 +56,7 @@ if callable(_previous_runtime_atexit):
         pass
 
 CONFIG = MiniAppConfig.from_env()
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 PORT = CONFIG.port
 DEBUG = CONFIG.debug
 DEV_RELOAD = CONFIG.dev_reload
@@ -69,8 +69,7 @@ MAX_TITLE_LEN = CONFIG.max_title_len
 ASSISTANT_CHUNK_LEN = CONFIG.assistant_chunk_len
 ASSISTANT_HARD_LIMIT = CONFIG.assistant_hard_limit
 DEV_RELOAD_INTERVAL_MS = CONFIG.dev_reload_interval_ms
-JOB_MAX_ATTEMPTS = CONFIG.job_max_attempts
-JOB_RETRY_BASE_SECONDS = CONFIG.job_retry_base_seconds
+
 JOB_WORKER_CONCURRENCY = CONFIG.job_worker_concurrency
 JOB_WORKER_LAUNCHER = CONFIG.job_worker_launcher
 JOB_WORKER_SUBPROCESS_TIMEOUT_SECONDS = CONFIG.job_worker_subprocess_timeout_seconds
