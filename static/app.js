@@ -501,17 +501,43 @@ function preserveViewportDuringUiMutation(mutator) {
   return composerViewportController.preserveViewportDuringUiMutation(mutator);
 }
 
+let focusComposerForNewChatRequestId = 0;
+
 function focusComposerForNewChat(chatId) {
   if (!promptEl || promptEl.disabled) return;
   if (Number(activeChatId) !== Number(chatId)) return;
   if (document.visibilityState !== "visible") return;
 
-  const focusComposer = () => {
+  const requestId = ++focusComposerForNewChatRequestId;
+
+  const shouldKeepRetryingFocus = () => {
+    if (requestId !== focusComposerForNewChatRequestId) return false;
+    if (!promptEl || promptEl.disabled) return false;
+    if (Number(activeChatId) !== Number(chatId)) return false;
+    if (document.visibilityState !== "visible") return false;
+    if (document.querySelector?.("dialog[open]")) return false;
+
+    const activeEl = document.activeElement;
+    if (!activeEl) return true;
+    if (activeEl === promptEl) return true;
+    if (activeEl === document.body || activeEl === document.documentElement) return true;
+    return false;
+  };
+
+  const focusComposer = ({ allowForce = false } = {}) => {
+    if (!allowForce && !shouldKeepRetryingFocus()) return;
+
     composerViewportController?.ensureComposerVisible?.({ smooth: false });
-    try {
-      promptEl.focus({ preventScroll: true });
-    } catch {
+    if (mobileQuoteMode) {
+      // Mobile browsers/webviews more reliably raise the software keyboard
+      // when using plain focus() within the original user gesture.
       promptEl.focus();
+    } else {
+      try {
+        promptEl.focus({ preventScroll: true });
+      } catch {
+        promptEl.focus();
+      }
     }
     const caret = String(promptEl.value || "").length;
     try {
@@ -522,7 +548,7 @@ function focusComposerForNewChat(chatId) {
     composerViewportController?.ensureComposerVisible?.({ smooth: false });
   };
 
-  focusComposer();
+  focusComposer({ allowForce: true });
   const raf = window.requestAnimationFrame || globalThis.requestAnimationFrame;
   if (typeof raf === "function") {
     raf(() => focusComposer());
@@ -2140,9 +2166,13 @@ function installMessageActionBindings() {
   return messageActionsController.bindMessageCopyBindings();
 }
 
+function installFilePreviewBindings() {
+  return filePreviewController.bindFilePreviewBindings();
+}
+
 installSelectionQuoteBindings();
 installMessageActionBindings();
-filePreviewController.bindFilePreviewBindings();
+installFilePreviewBindings();
 
 const keyboardShortcutsController = keyboardShortcutsHelpers.createController({
   windowObject: window,

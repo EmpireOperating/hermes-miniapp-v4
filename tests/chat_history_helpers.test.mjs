@@ -348,12 +348,14 @@ test('hydrateChatFromServer rerenders active chat when restoring a pending snaps
 
 
 test('openChat uses cached history path before background hydration', async () => {
-  const harness = buildHarness();
+  const harness = buildHarness({
+    shouldDeferNonCriticalCachedOpen: () => true,
+  });
   harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
 
   await harness.controller.openChat(7);
 
-  assert.deepEqual(harness.activeMeta.at(-1), { chatId: 7, options: { fullTabRender: false, deferNonCritical: true } });
+  assert.deepEqual(harness.activeMeta[0], { chatId: 7, options: { fullTabRender: false, deferNonCritical: true } });
   assert.deepEqual(harness.renderedMessages.at(0), { chatId: 7, options: {} });
   assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), true);
 });
