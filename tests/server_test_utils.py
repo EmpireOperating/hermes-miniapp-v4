@@ -6,12 +6,9 @@ from types import SimpleNamespace
 
 
 def _env_was_explicitly_set(monkeypatch, key: str) -> bool:
-    notset = getattr(monkeypatch, "notset", object())
-    current = os.environ.get(key, notset)
-    for entry in reversed(getattr(monkeypatch, "_setitem", [])):
-        mapping, mapped_key, original = entry
+    for mapping, mapped_key, _old_value in getattr(monkeypatch, "_setitem", []):
         if mapping is os.environ and mapped_key == key:
-            return original is notset or original != current
+            return True
     return False
 
 
