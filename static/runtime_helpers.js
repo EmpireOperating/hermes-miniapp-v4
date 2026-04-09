@@ -78,6 +78,7 @@
     getActiveChatId,
     isDocumentHidden,
     nextUnreadCountFn = nextUnreadCount,
+    renderTraceLog,
   }) {
     function resolveLatestCompletedAssistantHapticKey(chatId) {
       return latestCompletedAssistantHapticKey({ chatId, histories });
@@ -106,11 +107,21 @@
       const key = normalizeChatId(chatId);
       if (!key || !chats?.has?.(key)) return;
       const chat = chats.get(key);
+      const beforeUnread = Math.max(0, Number(chat?.unread_count || 0));
       chat.unread_count = nextUnreadCountFn({
         currentUnreadCount: chat.unread_count,
         targetChatId: key,
         activeChatId: getActiveChatId?.(),
         hidden: Boolean(isDocumentHidden?.()),
+      });
+      const afterUnread = Math.max(0, Number(chat?.unread_count || 0));
+      renderTraceLog?.('unread-increment', {
+        chatId: key,
+        activeChatId: normalizeChatId(getActiveChatId?.()) || 0,
+        hidden: Boolean(isDocumentHidden?.()),
+        beforeUnread,
+        afterUnread,
+        incremented: afterUnread > beforeUnread,
       });
     }
 
@@ -727,6 +738,10 @@
     if (!incomingItem || !localItem) return incomingItem;
     const nextItem = { ...incomingItem };
     const role = String(localItem?.role || '').toLowerCase();
+    const localBody = String(localItem?.body || '');
+    if ((role === 'tool' || role === 'hermes' || role === 'assistant') && localBody.trim()) {
+      nextItem.body = localBody;
+    }
     if (role === 'tool' && typeof localItem?.collapsed === 'boolean') {
       nextItem.collapsed = localItem.collapsed;
     }
@@ -838,12 +853,44 @@
       existingIndexes.get(key).push(index);
     }
 
+    function findRelaxedPendingMatchIndex(localItem) {
+      const localRole = String(localItem?.role || '').toLowerCase();
+      const localCreatedAt = String(localItem?.created_at || '');
+      const localPendingState = Boolean(localItem?.pending);
+      const localId = Number(localItem?.id || 0);
+      for (let index = 0; index < incoming.length; index += 1) {
+        const candidate = incoming[index];
+        if (String(candidate?.role || '').toLowerCase() !== localRole) {
+          continue;
+        }
+        if (Boolean(candidate?.pending) !== localPendingState) {
+          continue;
+        }
+        const candidateId = Number(candidate?.id || 0);
+        if (localId > 0 && candidateId > 0) {
+          if (candidateId === localId) {
+            return index;
+          }
+          continue;
+        }
+        if (localCreatedAt && String(candidate?.created_at || '') === localCreatedAt) {
+          return index;
+        }
+      }
+      return -1;
+    }
+
     for (const item of localPending) {
       const key = messageFingerprint(item);
       const indexes = existingIndexes.get(key) || [];
       if (indexes.length > 0) {
         const matchIndex = indexes.shift();
         incoming[matchIndex] = applyPendingLocalUiState(incoming[matchIndex], item);
+        continue;
+      }
+      const relaxedMatchIndex = findRelaxedPendingMatchIndex(item);
+      if (relaxedMatchIndex >= 0) {
+        incoming[relaxedMatchIndex] = applyPendingLocalUiState(incoming[relaxedMatchIndex], item);
         continue;
       }
       incoming.push({ ...item });

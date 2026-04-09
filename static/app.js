@@ -275,7 +275,8 @@ const chatTabsController = chatTabsHelpers.createController({
   },
   resumeCooldownUntilByChat,
   reconnectResumeBlockedChats,
-  suppressBlockedChatPending,
+  resumeCycleCountByChat,
+  maxAutoResumeCyclesPerChat: MAX_AUTO_RESUME_CYCLES_PER_CHAT,
   nowFn: () => Date.now(),
 });
 
@@ -358,6 +359,16 @@ const streamPersistenceController = streamStateHelpers.createPersistenceControll
 
 const streamPhaseController = streamStateHelpers.createPhaseController({
   streamPhaseByChat,
+  renderTraceLog,
+});
+
+const streamLifecycleController = streamStateHelpers.createLifecycleController({
+  chats,
+  pendingChats,
+  unseenStreamChats,
+  getActiveChatId: () => Number(activeChatId),
+  setStreamPhase,
+  refreshTabNode,
   renderTraceLog,
 });
 
@@ -501,60 +512,8 @@ function preserveViewportDuringUiMutation(mutator) {
   return composerViewportController.preserveViewportDuringUiMutation(mutator);
 }
 
-let focusComposerForNewChatRequestId = 0;
-
 function focusComposerForNewChat(chatId) {
-  if (!promptEl || promptEl.disabled) return;
-  if (Number(activeChatId) !== Number(chatId)) return;
-  if (document.visibilityState !== "visible") return;
-
-  const requestId = ++focusComposerForNewChatRequestId;
-
-  const shouldKeepRetryingFocus = () => {
-    if (requestId !== focusComposerForNewChatRequestId) return false;
-    if (!promptEl || promptEl.disabled) return false;
-    if (Number(activeChatId) !== Number(chatId)) return false;
-    if (document.visibilityState !== "visible") return false;
-    if (document.querySelector?.("dialog[open]")) return false;
-
-    const activeEl = document.activeElement;
-    if (!activeEl) return true;
-    if (activeEl === promptEl) return true;
-    if (activeEl === document.body || activeEl === document.documentElement) return true;
-    return false;
-  };
-
-  const focusComposer = ({ allowForce = false } = {}) => {
-    if (!allowForce && !shouldKeepRetryingFocus()) return;
-
-    composerViewportController?.ensureComposerVisible?.({ smooth: false });
-    if (mobileQuoteMode) {
-      // Mobile browsers/webviews more reliably raise the software keyboard
-      // when using plain focus() within the original user gesture.
-      promptEl.focus();
-    } else {
-      try {
-        promptEl.focus({ preventScroll: true });
-      } catch {
-        promptEl.focus();
-      }
-    }
-    const caret = String(promptEl.value || "").length;
-    try {
-      promptEl.setSelectionRange?.(caret, caret);
-    } catch {
-      // Some mobile webviews reject setSelectionRange during keyboard transitions.
-    }
-    composerViewportController?.ensureComposerVisible?.({ smooth: false });
-  };
-
-  focusComposer({ allowForce: true });
-  const raf = window.requestAnimationFrame || globalThis.requestAnimationFrame;
-  if (typeof raf === "function") {
-    raf(() => focusComposer());
-  }
-  window.setTimeout(() => focusComposer(), 0);
-  window.setTimeout(() => focusComposer(), 180);
+  return composerViewportController.focusComposerForNewChat(chatId);
 }
 
 function setChatLatency(chatId, text) {
@@ -892,9 +851,9 @@ const hapticUnreadController = runtimeHelpers.createHapticUnreadController({
   histories,
   incomingMessageHapticKeys,
   chats,
-  getActiveChatId: () => Number(activeChatId),
-  isDocumentHidden: () => Boolean(document.hidden),
-  nextUnreadCountFn: runtimeHelpers.nextUnreadCount,
+  getActiveChatId: () => activeChatId,
+  isDocumentHidden: () => document.visibilityState !== "visible",
+  renderTraceLog,
 });
 
 function latestCompletedAssistantHapticKey(chatId) {
@@ -906,23 +865,7 @@ function triggerIncomingMessageHaptic(chatId, { messageKey = "", fallbackToLates
 }
 
 function incrementUnread(chatId) {
-  const key = Number(chatId);
-  const beforeChat = chats.get(key);
-  const beforeUnread = Math.max(0, Number(beforeChat?.unread_count || 0));
-  const result = hapticUnreadController.incrementUnread(chatId);
-  const afterChat = chats.get(key);
-  const afterUnread = Math.max(0, Number(afterChat?.unread_count || 0));
-  if (key > 0) {
-    renderTraceLog("unread-increment", {
-      chatId: key,
-      activeChatId: Number(activeChatId),
-      hidden: document.visibilityState !== "visible",
-      beforeUnread,
-      afterUnread,
-      incremented: afterUnread > beforeUnread,
-    });
-  }
-  return result;
+  return hapticUnreadController.incrementUnread(chatId);
 }
 
 function loadDraftsFromStorage() {
@@ -971,22 +914,7 @@ function finalizeInlineToolTrace(chatId) {
 }
 
 async function confirmAction(message) {
-  if (tg?.showPopup) {
-    return new Promise((resolve) => {
-      tg.showPopup(
-        {
-          title: "Confirm",
-          message,
-          buttons: [
-            { id: "cancel", type: "cancel" },
-            { id: "ok", type: "destructive", text: "Close" },
-          ],
-        },
-        (buttonId) => resolve(buttonId === "ok"),
-      );
-    });
-  }
-  return window.confirm(message);
+  return shellUiController.confirmAction(message);
 }
 
 function parseTaggedChatTitle(rawTitle) {
@@ -1287,46 +1215,27 @@ function normalizeChat(chat, { forcePinned = null } = {}) {
 }
 
 function suppressBlockedChatPending(chatId) {
-  const key = Number(chatId);
-  if (!key || !reconnectResumeBlockedChats.has(key)) return;
-  pendingChats.delete(key);
-  const chat = chats.get(key);
-  if (chat) {
-    chat.pending = false;
-  }
+  return chatTabsController.suppressBlockedChatPending(chatId);
 }
 
 function clearReconnectResumeBlock(chatId) {
-  const key = Number(chatId);
-  if (!key) return;
-  reconnectResumeBlockedChats.delete(key);
+  return chatTabsController.clearReconnectResumeBlock(chatId);
 }
 
 function resetReconnectResumeBudget(chatId) {
-  const key = Number(chatId);
-  if (!key) return;
-  resumeCycleCountByChat.delete(key);
+  return chatTabsController.resetReconnectResumeBudget(chatId);
 }
 
 function consumeReconnectResumeBudget(chatId) {
-  const key = Number(chatId);
-  if (!key) {
-    return { allowed: false, attempts: 0, maxAttempts: MAX_AUTO_RESUME_CYCLES_PER_CHAT };
-  }
-  const nextAttempts = Number(resumeCycleCountByChat.get(key) || 0) + 1;
-  resumeCycleCountByChat.set(key, nextAttempts);
-  return {
-    allowed: nextAttempts <= MAX_AUTO_RESUME_CYCLES_PER_CHAT,
-    attempts: nextAttempts,
-    maxAttempts: MAX_AUTO_RESUME_CYCLES_PER_CHAT,
-  };
+  return chatTabsController.consumeReconnectResumeBudget(chatId);
 }
 
 function blockReconnectResume(chatId) {
-  const key = Number(chatId);
-  if (!key) return;
-  reconnectResumeBlockedChats.add(key);
-  suppressBlockedChatPending(key);
+  return chatTabsController.blockReconnectResume(chatId);
+}
+
+function isReconnectResumeBlocked(chatId) {
+  return chatTabsController.isReconnectResumeBlocked(chatId);
 }
 
 function upsertChat(chat) {
@@ -1615,7 +1524,9 @@ const shellUiController = shellUiHelpers.createController({
   desktopTestingRequested,
   appendSystemMessage,
   scheduleTimeout: (callback, delay) => window.setTimeout(callback, delay),
+  windowObject: window,
 });
+
 
 const composerViewportController = composerViewportHelpers.createController({
   windowObject: window,
@@ -2001,7 +1912,7 @@ const streamController = streamControllerHelpers.createController({
   consumeReconnectResumeBudget,
   suppressBlockedChatPending,
   blockReconnectResume,
-  isReconnectResumeBlocked: (chatId) => reconnectResumeBlockedChats.has(Number(chatId)),
+  isReconnectResumeBlocked,
   MAX_AUTO_RESUME_CYCLES_PER_CHAT,
   resumeAttemptedAtByChat,
   resumeCooldownUntilByChat,
@@ -2018,35 +1929,7 @@ const streamController = streamControllerHelpers.createController({
 });
 
 function finalizeStreamPendingState(chatId, wasAborted) {
-  const key = Number(chatId);
-  const beforeChat = chats.get(key);
-  renderTraceLog("stream-pending-finalize-before", {
-    chatId: key,
-    wasAborted: Boolean(wasAborted),
-    activeChatId: Number(activeChatId),
-    pendingLocal: pendingChats.has(key),
-    pendingServer: Boolean(beforeChat?.pending),
-    unread: Math.max(0, Number(beforeChat?.unread_count || 0)),
-    unseen: unseenStreamChats.has(key),
-  });
-  finalizeChatStreamState({
-    chatId,
-    wasAborted,
-    pendingChats,
-    chats,
-    setStreamPhase,
-  });
-  const afterChat = chats.get(key);
-  renderTraceLog("stream-pending-finalize-after", {
-    chatId: key,
-    wasAborted: Boolean(wasAborted),
-    activeChatId: Number(activeChatId),
-    pendingLocal: pendingChats.has(key),
-    pendingServer: Boolean(afterChat?.pending),
-    unread: Math.max(0, Number(afterChat?.unread_count || 0)),
-    unseen: unseenStreamChats.has(key),
-  });
-  refreshTabNode(key);
+  return streamLifecycleController.finalizeStreamPendingState(chatId, wasAborted);
 }
 
 function applyDonePayload(chatId, payload, builtReplyRef, options = {}) {

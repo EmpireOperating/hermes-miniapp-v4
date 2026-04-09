@@ -235,87 +235,17 @@
     };
   }
 
-  function createController(deps) {
-    const {
-      parseSseEvent,
-      formatLatency,
-      STREAM_PHASES,
-      getStreamPhase,
-      setStreamPhase,
-      isPatchPhaseAllowed,
-      chats,
-      pendingChats,
-      chatLabel,
-      compactChatLabel,
-      setStreamStatus,
-      setActivityChip,
-      streamChip,
-      latencyChip,
-      finalizeInlineToolTrace,
-      updatePendingAssistant,
-      markStreamUpdate,
-      patchVisiblePendingAssistant,
-      patchVisibleToolTrace,
-      renderTraceLog,
-      syncActiveMessageView,
-      scheduleActiveMessageView,
-      setChatLatency,
-      incrementUnread,
-      getActiveChatId,
-      triggerIncomingMessageHaptic,
-      messagesEl,
-      promptEl,
-      isMobileQuoteMode,
-      isDesktopViewport,
-      maybeMarkRead,
-      refreshChats,
-      renderTabs,
-      updateComposerState,
-      syncClosingConfirmation,
-      appendSystemMessage,
-      streamDebugLog,
-      finalizeStreamPendingState,
-      loadChatHistory,
-      upsertChat,
-      histories,
-      mergeHydratedHistory,
-      renderMessages,
-      persistStreamCursor,
-      clearStreamCursor,
-      clearPendingStreamSnapshot,
-      authPayload,
-      parseStreamErrorPayload,
-      summarizeUiFailure,
-      getIsAuthenticated,
-      setIsAuthenticated,
-      authStatusEl,
-      dropPendingToolTraceMessages,
-      addLocalMessage,
-      setDraft,
-      resetToolStream,
-      clearReconnectResumeBlock,
-      resetReconnectResumeBudget,
-      consumeReconnectResumeBudget,
-      suppressBlockedChatPending,
-      blockReconnectResume,
-      isReconnectResumeBlocked,
-      MAX_AUTO_RESUME_CYCLES_PER_CHAT = 6,
-      resumeAttemptedAtByChat,
-      resumeCooldownUntilByChat,
-      resumeInFlightByChat,
-      RESUME_RECOVERY_MAX_ATTEMPTS = 3,
-      RESUME_REATTACH_MIN_INTERVAL_MS = 1200,
-      RESUME_COMPLETE_SETTLE_MS = 2500,
-      isTransientResumeRecoveryError,
-      nextResumeRecoveryDelayMs,
-      delayMs,
-      markChatStreamPending,
-      getStoredStreamCursor,
-      isNearBottom,
-      fetchImpl = (...args) => fetch(...args),
-      setTimeoutFn = (...args) => setTimeout(...args),
-    } = deps;
-
+  function createStreamSessionController({
+    getActiveChatId,
+    setStreamStatus,
+    setActivityChip,
+    streamChip,
+    latencyChip,
+    persistStreamCursor,
+    triggerIncomingMessageHaptic,
+    incrementUnread,
+    renderTabs,
+  }) {
     const streamAbortControllers = new Map();
     const lastStreamEventIdByChat = new Map();
     const focusRestoreEligibleByChat = new Map();
@@ -323,15 +253,19 @@
     const immediateFinalizedChats = new Set();
     let nextAssistantNotificationId = 0;
 
+
+
     function normalizeChatId(value) {
       const parsed = Number(value);
       return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
     }
 
+
     function isActiveChat(chatId) {
       const key = normalizeChatId(chatId);
       return key != null && key === normalizeChatId(getActiveChatId());
     }
+
 
     function setStreamStatusForVisibleChat(chatId, text) {
       if (!isActiveChat(chatId)) return false;
@@ -339,11 +273,13 @@
       return true;
     }
 
+
     function setStreamChipForVisibleChat(chatId, text) {
       if (!isActiveChat(chatId)) return false;
       setActivityChip(streamChip, text);
       return true;
     }
+
 
     function setLatencyChipForVisibleChat(chatId, text) {
       if (!isActiveChat(chatId)) return false;
@@ -351,11 +287,13 @@
       return true;
     }
 
+
     function setFocusRestoreEligibility(chatId, eligible) {
       const key = Number(chatId);
       if (!key) return;
       focusRestoreEligibleByChat.set(key, Boolean(eligible));
     }
+
 
     function parseStreamEventId(payload) {
       if (!payload || typeof payload !== "object") return null;
@@ -363,6 +301,7 @@
       if (!Number.isFinite(eventId) || eventId <= 0) return null;
       return Math.floor(eventId);
     }
+
 
     function shouldSkipReplayedEvent(chatId, payload) {
       const eventId = parseStreamEventId(payload);
@@ -379,6 +318,7 @@
       return false;
     }
 
+
     function setStreamAbortController(chatId, controller) {
       const key = Number(chatId);
       const existing = streamAbortControllers.get(key);
@@ -392,6 +332,7 @@
       streamAbortControllers.set(key, controller);
     }
 
+
     function clearStreamAbortController(chatId, controller) {
       const key = Number(chatId);
       const existing = streamAbortControllers.get(key);
@@ -401,12 +342,14 @@
       focusRestoreEligibleByChat.delete(key);
     }
 
+
     function hasLiveStreamController(chatId) {
       const key = Number(chatId);
       const controller = streamAbortControllers.get(key);
       if (!controller) return false;
       return !Boolean(controller.signal?.aborted);
     }
+
 
     function abortStreamController(chatId) {
       const key = Number(chatId);
@@ -421,9 +364,11 @@
       return true;
     }
 
+
     function getAbortControllers() {
       return streamAbortControllers;
     }
+
 
     function consumeFirstAssistantNotification(chatId) {
       const key = Number(chatId);
@@ -431,6 +376,7 @@
       firstAssistantNotificationStateByChat.delete(key);
       return notificationState;
     }
+
 
     function notifyFirstAssistantChunk(chatId) {
       const key = Number(chatId);
@@ -457,6 +403,76 @@
       return true;
     }
 
+    return {
+      streamAbortControllers,
+      lastStreamEventIdByChat,
+      focusRestoreEligibleByChat,
+      firstAssistantNotificationStateByChat,
+      immediateFinalizedChats,
+      normalizeChatId,
+      isActiveChat,
+      setStreamStatusForVisibleChat,
+      setStreamChipForVisibleChat,
+      setLatencyChipForVisibleChat,
+      setFocusRestoreEligibility,
+      parseStreamEventId,
+      shouldSkipReplayedEvent,
+      setStreamAbortController,
+      clearStreamAbortController,
+      hasLiveStreamController,
+      abortStreamController,
+      getAbortControllers,
+      consumeFirstAssistantNotification,
+      notifyFirstAssistantChunk,
+    };
+  }
+
+  function createStreamTranscriptController(deps, sessionController) {
+    const {
+      formatLatency,
+      STREAM_PHASES,
+      getStreamPhase,
+      setStreamPhase,
+      chats,
+      pendingChats,
+      chatLabel,
+      compactChatLabel,
+      finalizeInlineToolTrace,
+      updatePendingAssistant,
+      markStreamUpdate,
+      patchVisiblePendingAssistant,
+      patchVisibleToolTrace,
+      renderTraceLog,
+      syncActiveMessageView,
+      scheduleActiveMessageView,
+      setChatLatency,
+      incrementUnread,
+      getActiveChatId,
+      triggerIncomingMessageHaptic,
+      renderTabs,
+      loadChatHistory,
+      upsertChat,
+      histories,
+      mergeHydratedHistory,
+      renderMessages,
+      clearStreamCursor,
+      clearPendingStreamSnapshot,
+      finalizeStreamPendingState,
+      parseSseEvent,
+      streamDebugLog,
+    } = deps;
+    const {
+      immediateFinalizedChats,
+      lastStreamEventIdByChat,
+      consumeFirstAssistantNotification,
+      notifyFirstAssistantChunk,
+      shouldSkipReplayedEvent,
+      setStreamStatusForVisibleChat,
+      setStreamChipForVisibleChat,
+      setLatencyChipForVisibleChat,
+    } = sessionController;
+
+
     function shouldForceImmediateTranscriptFallback(chatId) {
       const key = Number(chatId);
       if (!key) return false;
@@ -468,6 +484,7 @@
       return Number(getActiveChatId()) === key;
     }
 
+
     function reconcileVisibleTranscriptFallback(chatId) {
       if (shouldForceImmediateTranscriptFallback(chatId)) {
         syncActiveMessageView(chatId, { preserveViewport: true });
@@ -475,6 +492,7 @@
       }
       scheduleActiveMessageView(chatId);
     }
+
 
     function applyDonePayload(chatId, payload, builtReplyRef, { updateUnread = true } = {}) {
       builtReplyRef.value = payload.reply || builtReplyRef.value;
@@ -556,6 +574,7 @@
       }
     }
 
+
     function handleStreamEvent(chatId, eventName, payload, builtReplyRef) {
       if (!payload) {
         return false;
@@ -593,9 +612,6 @@
                 const runningLatency = `${formatLatency(elapsedMs)} · live`;
                 setChatLatency(chatId, runningLatency);
                 setLatencyChipForVisibleChat(chatId, `latency: ${runningLatency}`);
-              } else {
-                setChatLatency(chatId, "--");
-                setLatencyChipForVisibleChat(chatId, "latency: --");
               }
             } else if (payload.job_status === "queued") {
               const queuedAhead = Number(payload.queued_ahead);
@@ -691,6 +707,7 @@
       return false;
     }
 
+
     function applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent) {
       setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
       const fallbackReply = builtReplyRef.value || "The response ended before completion.";
@@ -730,6 +747,7 @@
         incrementUnread(chatId);
       }
     }
+
 
     async function consumeStreamResponse(chatId, response, builtReplyRef, {
       fallbackTraceEvent,
@@ -867,6 +885,7 @@
       };
     }
 
+
     function latestAssistantRenderSignature(history) {
       const items = Array.isArray(history) ? history : [];
       for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -886,6 +905,7 @@
       }
       return '';
     }
+
 
     function transcriptRenderSignature(history) {
       const items = Array.isArray(history) ? history : [];
@@ -910,6 +930,7 @@
         })
         .join('||');
     }
+
 
     async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {}) {
       const key = Number(chatId);
@@ -964,6 +985,7 @@
       }
     }
 
+
     async function consumeStreamWithReconnect(chatId, response, builtReplyRef, {
       fallbackTraceEvent,
       onEarlyClose,
@@ -995,6 +1017,97 @@
       return true;
     }
 
+    return {
+      shouldForceImmediateTranscriptFallback,
+      reconcileVisibleTranscriptFallback,
+      applyDonePayload,
+      handleStreamEvent,
+      applyEarlyStreamCloseFallback,
+      consumeStreamResponse,
+      latestAssistantRenderSignature,
+      transcriptRenderSignature,
+      hydrateChatAfterGracefulResumeCompletion,
+      consumeStreamWithReconnect,
+    };
+  }
+
+  function createStreamLifecycleController(deps, sessionController, transcriptController) {
+    const {
+      STREAM_PHASES,
+      getStreamPhase,
+      setStreamPhase,
+      chats,
+      pendingChats,
+      chatLabel,
+      updatePendingAssistant,
+      markStreamUpdate,
+      syncActiveMessageView,
+      getActiveChatId,
+      messagesEl,
+      promptEl,
+      isMobileQuoteMode,
+      isDesktopViewport,
+      maybeMarkRead,
+      refreshChats,
+      renderTabs,
+      updateComposerState,
+      syncClosingConfirmation,
+      appendSystemMessage,
+      finalizeStreamPendingState,
+      renderTraceLog,
+      authPayload,
+      parseStreamErrorPayload,
+      summarizeUiFailure,
+      getIsAuthenticated,
+      setIsAuthenticated,
+      authStatusEl,
+      dropPendingToolTraceMessages,
+      addLocalMessage,
+      setDraft,
+      resetToolStream,
+      clearReconnectResumeBlock,
+      resetReconnectResumeBudget,
+      consumeReconnectResumeBudget,
+      suppressBlockedChatPending,
+      blockReconnectResume,
+      isReconnectResumeBlocked,
+      MAX_AUTO_RESUME_CYCLES_PER_CHAT = 6,
+      resumeAttemptedAtByChat,
+      resumeCooldownUntilByChat,
+      resumeInFlightByChat,
+      RESUME_RECOVERY_MAX_ATTEMPTS = 3,
+      RESUME_REATTACH_MIN_INTERVAL_MS = 1200,
+      RESUME_COMPLETE_SETTLE_MS = 2500,
+      isTransientResumeRecoveryError,
+      nextResumeRecoveryDelayMs,
+      delayMs,
+      markChatStreamPending,
+      getStoredStreamCursor,
+      clearStreamCursor,
+      clearPendingStreamSnapshot,
+      isNearBottom,
+      fetchImpl = (...args) => fetch(...args),
+      setTimeoutFn = (...args) => setTimeout(...args),
+      finalizeInlineToolTrace,
+      triggerIncomingMessageHaptic,
+    } = deps;
+    const {
+      streamAbortControllers,
+      focusRestoreEligibleByChat,
+      immediateFinalizedChats,
+      setFocusRestoreEligibility,
+      setStreamAbortController,
+      clearStreamAbortController,
+      hasLiveStreamController,
+      abortStreamController,
+      consumeFirstAssistantNotification,
+    } = sessionController;
+    const {
+      hydrateChatAfterGracefulResumeCompletion,
+      consumeStreamWithReconnect,
+    } = transcriptController;
+
+
     function focusMessagesPaneIfActiveChat(chatId) {
       if (!messagesEl) return;
       if (Number(getActiveChatId()) !== Number(chatId) || document.visibilityState !== "visible") {
@@ -1007,6 +1120,7 @@
         messagesEl.focus();
       }
     }
+
 
     function focusPrimaryChatControlIfActiveChat(chatId) {
       if (Number(getActiveChatId()) !== Number(chatId) || document.visibilityState !== "visible") {
@@ -1030,6 +1144,7 @@
         focusMessagesPaneIfActiveChat(chatId);
       }
     }
+
 
     async function finalizeStreamLifecycle(chatId, streamController, { wasAborted }) {
       const key = Number(chatId);
@@ -1088,6 +1203,7 @@
       }
     }
 
+
     async function sendPrompt(message) {
       if (!getIsAuthenticated?.() || !getActiveChatId?.()) {
         appendSystemMessage("Still signing you in. Try again in a moment.");
@@ -1137,6 +1253,7 @@
 
       const builtReplyRef = { value: "" };
       let wasAborted = false;
+      let shouldResumeAfterFinally = false;
       const streamController = new AbortController();
       const shouldRestoreFocusOnComplete = Boolean(
         Number(getActiveChatId()) === chatId
@@ -1191,13 +1308,18 @@
             if (expectedSegmentEnd) {
               resetReconnectResumeBudget?.(chatId);
             }
-            await resumePendingChatStream(chatId, { force: true });
+            wasAborted = true;
+            shouldResumeAfterFinally = true;
           },
         });
         if (resumed) return;
       } catch (error) {
         if (error?.name === "AbortError") {
           wasAborted = true;
+          return;
+        }
+
+        if (shouldResumeAfterFinally) {
           return;
         }
         setStreamPhase(chatId, STREAM_PHASES.ERROR);
@@ -1208,6 +1330,11 @@
         deps.markNetworkFailure?.(chatId);
       } finally {
         await finalizeStreamLifecycle(chatId, streamController, { wasAborted });
+        if (shouldResumeAfterFinally) {
+          setTimeoutFn(() => {
+            void resumePendingChatStream(chatId, { force: true });
+          }, 0);
+        }
       }
     }
 
@@ -1392,25 +1519,56 @@
     }
 
     return {
-      setStreamAbortController,
-      clearStreamAbortController,
-      setFocusRestoreEligibility,
-      hasLiveStreamController,
-      abortStreamController,
-      getAbortControllers,
-      applyDonePayload,
-      handleStreamEvent,
-      applyEarlyStreamCloseFallback,
-      consumeStreamResponse,
-      hydrateChatAfterGracefulResumeCompletion,
-      consumeStreamWithReconnect,
+      focusMessagesPaneIfActiveChat,
+      focusPrimaryChatControlIfActiveChat,
       finalizeStreamLifecycle,
       sendPrompt,
       resumePendingChatStream,
     };
   }
 
-  const api = { createController, createToolTraceController, createResumeRecoveryPolicy };
+  function createController(deps) {
+    const sessionController = createStreamSessionController({
+      getActiveChatId: deps.getActiveChatId,
+      setStreamStatus: deps.setStreamStatus,
+      setActivityChip: deps.setActivityChip,
+      streamChip: deps.streamChip,
+      latencyChip: deps.latencyChip,
+      persistStreamCursor: deps.persistStreamCursor,
+      triggerIncomingMessageHaptic: deps.triggerIncomingMessageHaptic,
+      incrementUnread: deps.incrementUnread,
+      renderTabs: deps.renderTabs,
+    });
+    const transcriptController = createStreamTranscriptController(deps, sessionController);
+    const lifecycleController = createStreamLifecycleController(deps, sessionController, transcriptController);
+
+    return {
+      setStreamAbortController: sessionController.setStreamAbortController,
+      clearStreamAbortController: sessionController.clearStreamAbortController,
+      setFocusRestoreEligibility: sessionController.setFocusRestoreEligibility,
+      hasLiveStreamController: sessionController.hasLiveStreamController,
+      abortStreamController: sessionController.abortStreamController,
+      getAbortControllers: sessionController.getAbortControllers,
+      applyDonePayload: transcriptController.applyDonePayload,
+      handleStreamEvent: transcriptController.handleStreamEvent,
+      applyEarlyStreamCloseFallback: transcriptController.applyEarlyStreamCloseFallback,
+      consumeStreamResponse: transcriptController.consumeStreamResponse,
+      hydrateChatAfterGracefulResumeCompletion: transcriptController.hydrateChatAfterGracefulResumeCompletion,
+      consumeStreamWithReconnect: transcriptController.consumeStreamWithReconnect,
+      finalizeStreamLifecycle: lifecycleController.finalizeStreamLifecycle,
+      sendPrompt: lifecycleController.sendPrompt,
+      resumePendingChatStream: lifecycleController.resumePendingChatStream,
+    };
+  }
+
+  const api = {
+    createController,
+    createToolTraceController,
+    createResumeRecoveryPolicy,
+    createStreamSessionController,
+    createStreamTranscriptController,
+    createStreamLifecycleController,
+  };
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;
   }

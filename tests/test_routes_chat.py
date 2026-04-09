@@ -9,6 +9,9 @@ from server_test_utils import load_server, patch_verified_user
 
 def _authed_client(monkeypatch, tmp_path, **load_kwargs):
     server = load_server(monkeypatch, tmp_path, **load_kwargs)
+    # Route tests manually enqueue/claim/publish jobs; stop background workers so
+    # inline runtime threads cannot race the test harness and consume jobs early.
+    server.runtime.shutdown(reason="route_test_setup")
     client = server.app.test_client()
     patch_verified_user(monkeypatch, server)
     return server, client
@@ -646,7 +649,7 @@ def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_pat
     job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
     claimed = server.store.claim_next_job()
     assert claimed is not None
-    assert claimed["id"] == job_id
+    assert int(claimed["id"]) == job_id
 
     server._publish_job_event(job_id, "tool", {"chat_id": chat_id, "display": "read_file: test"})
     server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
@@ -697,9 +700,18 @@ def test_stream_resume_can_request_only_events_after_last_seen_cursor(monkeypatc
     server._publish_job_event(job_id, "chunk", {"chat_id": chat_id, "text": "partial"})
     server._publish_job_event(job_id, "done", {"chat_id": chat_id, "reply": "ok", "latency_ms": 1})
 
+    with server.runtime._event_lock:
+        history = list(server.runtime._event_history.get(job_id) or [])
+    tool_event_id = next(
+        int(event.get("event_id") or 0)
+        for event in history
+        if str(event.get("event") or "") == "tool"
+        and str((event.get("payload") or {}).get("display") or "") == "tool call"
+    )
+
     response = client.post(
         "/api/chat/stream/resume",
-        json={"init_data": "ok", "chat_id": chat_id, "after_event_id": 1},
+        json={"init_data": "ok", "chat_id": chat_id, "after_event_id": tool_event_id},
     )
     assert response.status_code == 200
     body = response.get_data(as_text=True)
@@ -731,7 +743,7 @@ def test_stream_resume_can_reconnect_multiple_times_to_same_open_job(monkeypatch
 
 
 def test_stream_resume_emits_synthetic_terminal_when_queue_silent(monkeypatch, tmp_path) -> None:
-    import routes_chat_stream
+    import routes_chat_stream_generator
 
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -740,13 +752,14 @@ def test_stream_resume_emits_synthetic_terminal_when_queue_silent(monkeypatch, t
     job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
     claimed = server.store.claim_next_job()
     assert claimed is not None
+    assert int(claimed["id"]) == job_id
 
     class _AlwaysEmptySubscriber:
         def get(self, timeout=None):
             raise queue.Empty
 
     monotonic_ticks = iter([0.0, 5.0, 10.0, 15.0])
-    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 20.0))
+    monkeypatch.setattr(routes_chat_stream_generator.time, "monotonic", lambda: next(monotonic_ticks, 20.0))
     monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id, after_event_id=0: _AlwaysEmptySubscriber())
     monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
     monkeypatch.setattr(
@@ -765,7 +778,7 @@ def test_stream_resume_emits_synthetic_terminal_when_queue_silent(monkeypatch, t
 
 
 def test_stream_resume_emits_done_for_dead_job_with_live_warm_handoff(monkeypatch, tmp_path) -> None:
-    import routes_chat_stream
+    import routes_chat_stream_generator
 
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -774,13 +787,14 @@ def test_stream_resume_emits_done_for_dead_job_with_live_warm_handoff(monkeypatc
     _job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
     claimed = server.store.claim_next_job()
     assert claimed is not None
+    assert int(claimed["id"]) == _job_id
 
     class _AlwaysEmptySubscriber:
         def get(self, timeout=None):
             raise queue.Empty
 
     monotonic_ticks = iter([0.0, 5.0, 10.0, 15.0])
-    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 20.0))
+    monkeypatch.setattr(routes_chat_stream_generator.time, "monotonic", lambda: next(monotonic_ticks, 20.0))
     monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id, after_event_id=0: _AlwaysEmptySubscriber())
     monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
     monkeypatch.setattr(
@@ -811,7 +825,7 @@ def test_stream_resume_emits_done_for_dead_job_with_live_warm_handoff(monkeypatc
 
 
 def test_stream_efficiency_mode_throttles_job_state_db_reads(monkeypatch, tmp_path) -> None:
-    import routes_chat_stream
+    import routes_chat_stream_generator
 
     monkeypatch.setenv("MINI_APP_STREAM_EFFICIENCY_MODE", "1")
     monkeypatch.setenv("MINI_APP_STREAM_METRICS_REFRESH_SECONDS", "10")
@@ -822,13 +836,14 @@ def test_stream_efficiency_mode_throttles_job_state_db_reads(monkeypatch, tmp_pa
     job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
     claimed = server.store.claim_next_job()
     assert claimed is not None
+    assert int(claimed["id"]) == job_id
 
     class _AlwaysEmptySubscriber:
         def get(self, timeout=None):
             raise queue.Empty
 
     monotonic_ticks = iter([0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0])
-    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 12.0))
+    monkeypatch.setattr(routes_chat_stream_generator.time, "monotonic", lambda: next(monotonic_ticks, 12.0))
     monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id, after_event_id=0: _AlwaysEmptySubscriber())
     monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
 
@@ -868,7 +883,7 @@ def test_stream_efficiency_mode_throttles_job_state_db_reads(monkeypatch, tmp_pa
 
 
 def test_resume_stream_recovers_done_terminal_state_when_queue_is_empty(monkeypatch, tmp_path) -> None:
-    import routes_chat_stream
+    import routes_chat_stream_generator
 
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -881,7 +896,7 @@ def test_resume_stream_recovers_done_terminal_state_when_queue_is_empty(monkeypa
             raise queue.Empty
 
     monotonic_ticks = iter([0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0])
-    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 12.0))
+    monkeypatch.setattr(routes_chat_stream_generator.time, "monotonic", lambda: next(monotonic_ticks, 12.0))
     monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id, after_event_id=0: _AlwaysEmptySubscriber())
     monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
 
@@ -921,7 +936,7 @@ def test_resume_stream_recovers_done_terminal_state_when_queue_is_empty(monkeypa
 
 
 def test_resume_stream_emits_segment_rollover_meta_before_expected_mobile_reconnect(monkeypatch, tmp_path) -> None:
-    import routes_chat_stream
+    import routes_chat_stream_generator
 
     monkeypatch.setenv("MINI_APP_STREAM_SEGMENT_SECONDS_MOBILE", "8")
     server, client = _authed_client(monkeypatch, tmp_path)
@@ -931,13 +946,14 @@ def test_resume_stream_emits_segment_rollover_meta_before_expected_mobile_reconn
     job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
     claimed = server.store.claim_next_job()
     assert claimed is not None
+    assert int(claimed["id"]) == job_id
 
     class _AlwaysEmptySubscriber:
         def get(self, timeout=None):
             raise queue.Empty
 
     monotonic_ticks = iter([0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0])
-    monkeypatch.setattr(routes_chat_stream.time, "monotonic", lambda: next(monotonic_ticks, 12.0))
+    monkeypatch.setattr(routes_chat_stream_generator.time, "monotonic", lambda: next(monotonic_ticks, 12.0))
     monkeypatch.setattr(server.runtime, "subscribe_job_events", lambda _job_id, after_event_id=0: _AlwaysEmptySubscriber())
     monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
     monkeypatch.setattr(

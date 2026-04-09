@@ -18,6 +18,7 @@ test('app.js stream-state wrappers keep delegating to helper-owned controllers',
   const source = await readFile(appJsUrl, 'utf8');
 
   assert.match(source, /const streamPhaseController = streamStateHelpers\.createPhaseController\(\{/, 'app.js should compose streamPhaseController');
+  assert.match(source, /const streamLifecycleController = streamStateHelpers\.createLifecycleController\(\{/, 'app.js should compose streamLifecycleController');
   assert.doesNotMatch(source, /getStreamPhaseFromState/, 'app.js should not keep raw getStreamPhase helper aliases');
   assert.doesNotMatch(source, /setStreamPhaseInState/, 'app.js should not keep raw setStreamPhase helper aliases');
 
@@ -36,6 +37,7 @@ test('app.js stream-state wrappers keep delegating to helper-owned controllers',
   }
 
   const delegateExpectations = [
+    ['finalizeStreamPendingState', 'streamLifecycleController.finalizeStreamPendingState(chatId, wasAborted)'],
     ['readStreamResumeCursorMap', 'streamPersistenceController.readStreamResumeCursorMap()'],
     ['writeStreamResumeCursorMap', 'streamPersistenceController.writeStreamResumeCursorMap(nextMap)'],
     ['getStoredStreamCursor', 'streamPersistenceController.getStoredStreamCursor(chatId)'],

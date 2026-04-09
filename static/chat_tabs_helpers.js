@@ -36,9 +36,63 @@
       setHasPinnedChatsCollapsePreference,
       resumeCooldownUntilByChat,
       reconnectResumeBlockedChats,
-      suppressBlockedChatPending,
+      resumeCycleCountByChat,
+      maxAutoResumeCyclesPerChat = 6,
       nowFn = () => Date.now(),
     } = deps;
+
+    function toPositiveInt(value) {
+      const parsed = Number(value);
+      return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    function suppressBlockedChatPending(chatId) {
+      const key = toPositiveInt(chatId);
+      if (!key || !reconnectResumeBlockedChats?.has?.(key)) return;
+      pendingChats?.delete?.(key);
+      const chat = chats.get(key);
+      if (chat && typeof chat === 'object') {
+        chat.pending = false;
+      }
+    }
+
+    function clearReconnectResumeBlock(chatId) {
+      const key = toPositiveInt(chatId);
+      if (!key) return;
+      reconnectResumeBlockedChats?.delete?.(key);
+    }
+
+    function resetReconnectResumeBudget(chatId) {
+      const key = toPositiveInt(chatId);
+      if (!key) return;
+      resumeCycleCountByChat?.delete?.(key);
+    }
+
+    function consumeReconnectResumeBudget(chatId) {
+      const key = toPositiveInt(chatId);
+      if (!key) {
+        return { allowed: false, attempts: 0, maxAttempts: maxAutoResumeCyclesPerChat };
+      }
+      const nextAttempts = Number(resumeCycleCountByChat?.get?.(key) || 0) + 1;
+      resumeCycleCountByChat?.set?.(key, nextAttempts);
+      return {
+        allowed: nextAttempts <= maxAutoResumeCyclesPerChat,
+        attempts: nextAttempts,
+        maxAttempts: maxAutoResumeCyclesPerChat,
+      };
+    }
+
+    function blockReconnectResume(chatId) {
+      const key = toPositiveInt(chatId);
+      if (!key) return;
+      reconnectResumeBlockedChats?.add?.(key);
+      suppressBlockedChatPending(key);
+    }
+
+    function isReconnectResumeBlocked(chatId) {
+      const key = toPositiveInt(chatId);
+      return Boolean(key && reconnectResumeBlockedChats?.has?.(key));
+    }
 
     function normalizeChat(chat, { forcePinned = null } = {}) {
       return {
@@ -315,6 +369,12 @@
       upsertChat,
       syncPinnedChats,
       syncChats,
+      suppressBlockedChatPending,
+      clearReconnectResumeBlock,
+      resetReconnectResumeBudget,
+      consumeReconnectResumeBudget,
+      blockReconnectResume,
+      isReconnectResumeBlocked,
       getOrCreateTabNode,
       getTabBadgeState,
       applyTabBadgeState,

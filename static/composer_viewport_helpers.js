@@ -17,6 +17,7 @@
     } = deps;
 
     let viewportMutationSeq = 0;
+    let focusComposerForNewChatRequestId = 0;
 
     function syncViewportCssVars() {
       const rootStyle = documentObject?.documentElement?.style;
@@ -161,6 +162,58 @@
       });
     }
 
+    function focusComposerForNewChat(chatId) {
+      if (!promptEl || promptEl.disabled) return;
+      if (Number(getActiveChatId?.()) !== Number(chatId)) return;
+      if (documentObject.visibilityState !== 'visible') return;
+
+      const requestId = ++focusComposerForNewChatRequestId;
+
+      const shouldKeepRetryingFocus = () => {
+        if (requestId !== focusComposerForNewChatRequestId) return false;
+        if (!promptEl || promptEl.disabled) return false;
+        if (Number(getActiveChatId?.()) !== Number(chatId)) return false;
+        if (documentObject.visibilityState !== 'visible') return false;
+        if (documentObject.querySelector?.('dialog[open]')) return false;
+
+        const activeEl = documentObject.activeElement;
+        if (!activeEl) return true;
+        if (activeEl === promptEl) return true;
+        if (activeEl === documentObject.body || activeEl === documentObject.documentElement) return true;
+        return false;
+      };
+
+      const focusComposer = ({ allowForce = false } = {}) => {
+        if (!allowForce && !shouldKeepRetryingFocus()) return;
+
+        ensureComposerVisible({ smooth: false });
+        if (mobileQuoteMode) {
+          promptEl.focus();
+        } else {
+          try {
+            promptEl.focus({ preventScroll: true });
+          } catch {
+            promptEl.focus();
+          }
+        }
+        const caret = String(promptEl.value || '').length;
+        try {
+          promptEl.setSelectionRange?.(caret, caret);
+        } catch {
+          // Some mobile webviews reject setSelectionRange during keyboard transitions.
+        }
+        ensureComposerVisible({ smooth: false });
+      };
+
+      focusComposer({ allowForce: true });
+      const raf = windowObject.requestAnimationFrame || globalScope.requestAnimationFrame;
+      if (typeof raf === 'function') {
+        raf(() => focusComposer());
+      }
+      windowObject.setTimeout(() => focusComposer(), 0);
+      windowObject.setTimeout(() => focusComposer(), 180);
+    }
+
     function dismissKeyboard() {
       const activeEl = documentObject.activeElement;
       if (activeEl && (activeEl === promptEl || activeEl.tagName === 'TEXTAREA' || activeEl.tagName === 'INPUT')) {
@@ -271,6 +324,7 @@
       ensureComposerVisible,
       runAfterUiMutation,
       preserveViewportDuringUiMutation,
+      focusComposerForNewChat,
       dismissKeyboard,
       installTapToDismissKeyboard,
       installKeyboardViewportSync,

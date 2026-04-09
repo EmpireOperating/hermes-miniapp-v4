@@ -46,9 +46,20 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
   const tabsEl = createEventTarget({ name: 'tabs' });
   const promptEl = createEventTarget({
     tagName: 'TEXTAREA',
+    value: 'draft text',
+    disabled: false,
     blurCalls: 0,
+    focusCalls: [],
+    selectionRanges: [],
     blur() {
       this.blurCalls += 1;
+    },
+    focus(options) {
+      this.focusCalls.push(options ?? null);
+      documentObject.activeElement = this;
+    },
+    setSelectionRange(start, end) {
+      this.selectionRanges.push([start, end]);
     },
     getBoundingClientRect() {
       return { top: 470, bottom: 540 };
@@ -102,6 +113,7 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
   const documentObject = {
     activeElement: null,
     visibilityState: 'visible',
+    body: { nodeName: 'BODY' },
     documentElement: {
       style: {
         setProperty(name, value) {
@@ -183,6 +195,29 @@ test('ensureComposerVisible scrolls form into view and corrects viewport overflo
   assert.deepEqual(harness.scrollByCalls, [
     { top: 50, left: 0, behavior: 'auto' },
   ]);
+});
+
+test('focusComposerForNewChat retries focus for the active visible chat and keeps the caret at the end', () => {
+  const harness = buildHarness();
+  harness.documentObject.activeElement = harness.documentObject.body;
+
+  harness.controller.focusComposerForNewChat(7);
+
+  assert.deepEqual(harness.promptEl.focusCalls, [{ preventScroll: true }, { preventScroll: true }, { preventScroll: true }, { preventScroll: true }]);
+  assert.deepEqual(harness.promptEl.selectionRanges, [[10, 10], [10, 10], [10, 10], [10, 10]]);
+  assert.deepEqual(harness.timeoutCalls.slice(0, 2), [0, 180]);
+  assert.ok(harness.form.scrollIntoViewCalls.length >= 3);
+});
+
+test('focusComposerForNewChat skips retries when a dialog is open after the initial focus', () => {
+  const harness = buildHarness();
+  harness.documentObject.activeElement = harness.documentObject.body;
+  harness.queryTargets['dialog[open]'] = { nodeName: 'DIALOG' };
+
+  harness.controller.focusComposerForNewChat(7);
+
+  assert.deepEqual(harness.promptEl.focusCalls, [{ preventScroll: true }]);
+  assert.deepEqual(harness.timeoutCalls.slice(0, 2), [0, 180]);
 });
 
 test('dismissKeyboard blurs active text entry element', () => {

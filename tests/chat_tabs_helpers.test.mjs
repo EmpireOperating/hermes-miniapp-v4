@@ -50,11 +50,11 @@ function createHarness({ activeChatId = 7, now = 1000 } = {}) {
   const tabNodes = new Map();
   const resumeCooldownUntilByChat = new Map();
   const reconnectResumeBlockedChats = new Set();
+  const resumeCycleCountByChat = new Map();
 
   const clearCalls = [];
   const renderPinnedChatsCalls = [];
   const localStorageWrites = [];
-  const suppressBlockedPendingCalls = [];
 
   const pinnedChatsWrap = makeElement();
   const pinnedChatsEl = makeElement();
@@ -115,7 +115,8 @@ function createHarness({ activeChatId = 7, now = 1000 } = {}) {
     },
     resumeCooldownUntilByChat,
     reconnectResumeBlockedChats,
-    suppressBlockedChatPending: (chatId) => suppressBlockedPendingCalls.push(Number(chatId)),
+    resumeCycleCountByChat,
+    maxAutoResumeCyclesPerChat: 6,
     nowFn: () => now,
   });
 
@@ -137,10 +138,10 @@ function createHarness({ activeChatId = 7, now = 1000 } = {}) {
     tabNodes,
     resumeCooldownUntilByChat,
     reconnectResumeBlockedChats,
+    resumeCycleCountByChat,
     clearCalls,
     renderPinnedChatsCalls,
     localStorageWrites,
-    suppressBlockedPendingCalls,
     pinnedChatsWrap,
     pinnedChatsEl,
     pinnedChatsCountEl,
@@ -210,7 +211,32 @@ test('upsertChat suppresses pending during resume cooldown and blocked reconnect
 
   assert.equal(next.pending, false);
   assert.equal(h.chats.get(9).pending, false);
-  assert.deepEqual(h.suppressBlockedPendingCalls, [9]);
+});
+
+test('reconnect resume helpers track budget and blocked chat pending state inside chat tabs controller', () => {
+  const h = createHarness();
+  h.pendingChats.add(11);
+  h.chats.set(11, { id: 11, pending: true, unread_count: 2 });
+
+  assert.deepEqual(h.controller.consumeReconnectResumeBudget(11), {
+    allowed: true,
+    attempts: 1,
+    maxAttempts: 6,
+  });
+  assert.deepEqual(h.controller.consumeReconnectResumeBudget(11), {
+    allowed: true,
+    attempts: 2,
+    maxAttempts: 6,
+  });
+  h.controller.blockReconnectResume(11);
+  assert.equal(h.controller.isReconnectResumeBlocked(11), true);
+  assert.equal(h.pendingChats.has(11), false);
+  assert.equal(h.chats.get(11).pending, false);
+
+  h.controller.clearReconnectResumeBlock(11);
+  h.controller.resetReconnectResumeBudget(11);
+  assert.equal(h.controller.isReconnectResumeBlocked(11), false);
+  assert.equal(h.resumeCycleCountByChat.has(11), false);
 });
 
 test('setPinnedChatsCollapsed updates UI and persists preference when requested', () => {
@@ -268,8 +294,7 @@ test('syncChats reapplies cooldown suppression after syncing server chats', () =
 
   assert.equal(Array.isArray(next), true);
   assert.equal(h.chats.get(7).pending, false);
-  assert.equal(h.chats.get(11).pending, true);
-  assert.deepEqual(h.suppressBlockedPendingCalls, [7, 11, 11]);
+  assert.equal(h.chats.get(11).pending, false);
 });
 
 test('syncPinChatButton reflects active chat pin state', () => {

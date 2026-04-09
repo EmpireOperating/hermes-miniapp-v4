@@ -23,8 +23,10 @@ def test_app_wires_stream_state_helper_before_stream_lifecycle_calls():
     assert "function finalizeChatStreamState({ chatId, wasAborted, pendingChats, chats, setStreamPhase: setStreamPhaseFn })" in stream_state_js
     assert 'renderTraceLog?.(\'tab-badge-state\'' in chat_tabs_helper_js
     assert 'renderTraceLog?.(\'tab-refresh-request\'' in chat_tabs_helper_js
-    assert 'renderTraceLog("stream-pending-finalize-before"' in app_js
-    assert 'renderTraceLog("stream-pending-finalize-after"' in app_js
+    assert 'stream-pending-finalize-before' not in app_js
+    assert "renderTraceLog?.('stream-pending-finalize-before'" in stream_state_js
+    assert "renderTraceLog?.('stream-pending-finalize-after'" in stream_state_js
+    assert "function createLifecycleController({" in stream_state_js
     assert "clearChatStreamState({" in stream_state_js or "clearChatStreamState({" in chat_tabs_helper_js
 
 
@@ -36,6 +38,7 @@ def test_stream_state_helper_exports_phase_api_and_guardrails():
     assert "function getStreamPhase({ streamPhaseByChat, chatId })" in helper_js
     assert "function setStreamPhase({ streamPhaseByChat, chatId, phase })" in helper_js
     assert "function createPhaseController({" in helper_js
+    assert "function createLifecycleController({" in helper_js
     assert "renderTraceLog?.(\"stream-phase\", { chatId: key, phase: next });" in helper_js
     assert "function isPatchPhaseAllowed(phase)" in helper_js
     assert "function createController({" in _read_static("composer_state_helpers.js")
@@ -55,12 +58,18 @@ def test_stream_controller_module_exports_core_api():
 
     assert "HermesMiniappStreamController" in controller_js
     assert "function createToolTraceController({" in controller_js
+    assert "function createStreamSessionController({" in controller_js
+    assert "function createStreamTranscriptController(deps, sessionController)" in controller_js
+    assert "function createStreamLifecycleController(deps, sessionController, transcriptController)" in controller_js
     assert "function createController(deps)" in controller_js
+    assert "const sessionController = createStreamSessionController({" in controller_js
+    assert "const transcriptController = createStreamTranscriptController(deps, sessionController);" in controller_js
+    assert "const lifecycleController = createStreamLifecycleController(deps, sessionController, transcriptController);" in controller_js
     assert "function setStreamAbortController(chatId, controller)" in controller_js
     assert "function consumeStreamResponse(chatId, response, builtReplyRef" in controller_js
     assert "async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {})" in controller_js
     assert "async function consumeStreamWithReconnect(chatId, response, builtReplyRef" in controller_js
-    assert "function finalizeStreamLifecycle(chatId, streamController, { wasAborted })" in controller_js
+    assert "async function finalizeStreamLifecycle(chatId, streamController, { wasAborted })" in controller_js
     assert "if (typeof deps.markToolActivity === \"function\") {" in controller_js
     assert "if (typeof deps.markStreamComplete === \"function\") {" in controller_js
     assert 'renderTraceLog("stream-done-state"' in controller_js
@@ -225,14 +234,17 @@ def test_app_sanitizes_upstream_error_pages_before_rendering_ui_errors():
 
 def test_routes_chat_stream_supports_mobile_segment_rollover_controls():
     stream_routes = Path("routes_chat_stream.py").read_text(encoding="utf-8")
+    stream_service = Path("routes_chat_stream_service.py").read_text(encoding="utf-8")
+    stream_generator = Path("routes_chat_stream_generator.py").read_text(encoding="utf-8")
 
-    assert "MINI_APP_STREAM_SEGMENT_SECONDS" in stream_routes
-    assert "MINI_APP_STREAM_SEGMENT_SECONDS_MOBILE" in stream_routes
-    assert "stream_timing_debug = bool(context.stream_timing_debug)" in stream_routes
-    assert "event=\"stream_segment_rollover\"" in stream_routes
-    assert "segment_seconds=_stream_segment_seconds_for_request()" in stream_routes
-    assert "request_id = str(getattr(g, \"request_id\", \"\")) or None" in stream_routes
-    assert "event=\"stream_segment_rollover\",\n                                        request_id=request_id," in stream_routes
+    assert "build_stream_route_service(" in stream_routes
+    assert "stream_segment_seconds_for_headers(request.headers)" in stream_routes
+    assert "after_event_id_from_payload(payload)" in stream_routes
+    assert "MINI_APP_STREAM_SEGMENT_SECONDS" in stream_service
+    assert "MINI_APP_STREAM_SEGMENT_SECONDS_MOBILE" in stream_service
+    assert "class StreamResponseFactory:" in stream_generator
+    assert "event=\"stream_segment_rollover\"" in stream_generator
+    assert "request_id=request_id" in stream_generator
 
 
 def test_job_runtime_event_buffers_do_not_use_hardcoded_512_caps():

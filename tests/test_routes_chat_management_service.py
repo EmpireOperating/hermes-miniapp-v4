@@ -1,0 +1,86 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from routes_chat_management_service import build_chat_management_service
+from server_test_utils import load_server
+
+
+
+def _serialize_chat(chat) -> dict[str, object]:
+    return {
+        "id": chat.id,
+        "title": chat.title,
+        "parent_chat_id": chat.parent_chat_id,
+        "unread_count": chat.unread_count,
+        "pending": chat.pending,
+        "is_pinned": chat.is_pinned,
+        "updated_at": chat.updated_at,
+        "created_at": chat.created_at,
+    }
+
+
+
+def _build_service(server):
+    return build_chat_management_service(
+        store_getter=lambda: server.store,
+        client_getter=lambda: server.client,
+        runtime_getter=lambda: server.runtime,
+        serialize_chat_fn=_serialize_chat,
+        session_id_builder_fn=lambda user_id, chat_id: f"miniapp-{user_id}-{chat_id}",
+        json_error_fn=lambda message, status: ({"ok": False, "error": message}, status),
+    )
+
+
+
+def test_create_chat_response_sets_active_chat_and_returns_serialized_history(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    payload, status = service.create_chat_response(user_id="123", title="Feature")
+
+    assert status == 201
+    assert payload["ok"] is True
+    assert payload["chat"]["title"] == "Feature"
+    assert payload["history"] == []
+    assert server.store.get_active_chat("123") == payload["chat"]["id"]
+
+
+
+def test_branch_chat_response_returns_conflict_when_source_chat_has_open_job(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    source_chat = server.store.create_chat("123", "Busy")
+    operator_message_id = server.store.add_message("123", source_chat.id, "operator", "still working")
+    server.store.enqueue_chat_job("123", source_chat.id, operator_message_id)
+
+    payload, status = service.branch_chat_response(user_id="123", chat_id=source_chat.id, requested_title="Busy alt")
+
+    assert status == 409
+    assert payload == {"ok": False, "error": "Wait for Hermes to finish before branching this chat."}
+
+
+
+def test_remove_chat_response_evicts_runtime_and_can_leave_no_active_chat(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    only_chat_id = server.store.ensure_default_chat("123")
+    server.store.set_active_chat("123", only_chat_id)
+    evicted: list[tuple[str, str]] = []
+    deleted_checkpoints: list[str] = []
+    monkeypatch.setattr(server.client, "evict_session", lambda session_id, reason="explicit_eviction": evicted.append((session_id, reason)) or True)
+    monkeypatch.setattr(server.store, "delete_runtime_checkpoint", lambda session_id: deleted_checkpoints.append(session_id) or True)
+
+    payload, status = service.remove_chat_response(user_id="123", chat_id=only_chat_id, allow_empty=True)
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["removed_chat_id"] == only_chat_id
+    assert payload["active_chat_id"] is None
+    assert payload["active_chat"] is None
+    assert payload["history"] == []
+    assert payload["chats"] == []
+    assert evicted == [(f"miniapp-123-{only_chat_id}", "invalidated_by_remove")]
+    assert deleted_checkpoints == [f"miniapp-123-{only_chat_id}"]

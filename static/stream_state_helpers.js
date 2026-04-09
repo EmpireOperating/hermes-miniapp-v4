@@ -116,6 +116,51 @@
     };
   }
 
+  function createLifecycleController({
+    chats,
+    pendingChats,
+    unseenStreamChats,
+    getActiveChatId,
+    setStreamPhase,
+    refreshTabNode,
+    renderTraceLog,
+  }) {
+    function buildFinalizeTracePayload(chatId, wasAborted, chat) {
+      const key = toPositiveInt(chatId) || 0;
+      return {
+        chatId: key,
+        wasAborted: Boolean(wasAborted),
+        activeChatId: toPositiveInt(getActiveChatId?.()) || 0,
+        pendingLocal: Boolean(pendingChats?.has?.(key)),
+        pendingServer: Boolean(chat?.pending),
+        unread: Math.max(0, Number(chat?.unread_count || 0)),
+        unseen: Boolean(unseenStreamChats?.has?.(key)),
+      };
+    }
+
+    function finalizeStreamPendingState(chatId, wasAborted) {
+      const key = toPositiveInt(chatId);
+      if (!key) return null;
+      const beforeChat = chats?.get?.(key) || null;
+      renderTraceLog?.('stream-pending-finalize-before', buildFinalizeTracePayload(key, wasAborted, beforeChat));
+      finalizeChatStreamState({
+        chatId: key,
+        wasAborted,
+        pendingChats,
+        chats,
+        setStreamPhase,
+      });
+      const afterChat = chats?.get?.(key) || null;
+      renderTraceLog?.('stream-pending-finalize-after', buildFinalizeTracePayload(key, wasAborted, afterChat));
+      refreshTabNode?.(key);
+      return key;
+    }
+
+    return {
+      finalizeStreamPendingState,
+    };
+  }
+
   function createPersistenceController({
     localStorageRef,
     streamResumeCursorStorageKey,
@@ -402,6 +447,7 @@
     finalizeChatStreamState,
     clearChatStreamState,
     createPhaseController,
+    createLifecycleController,
     createPersistenceController,
   };
 

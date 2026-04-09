@@ -28,6 +28,15 @@ function buildHarness(overrides = {}) {
       this.attributes.delete(name);
     },
   };
+  const confirmCalls = [];
+  const windowObject = {
+    confirm: (message) => {
+      confirmCalls.push(String(message));
+      return true;
+    },
+    ...overrides.windowObject,
+  };
+  const popupCalls = [];
   const tg = {
     isVersionAtLeast: () => true,
     enableClosingConfirmationCalls: 0,
@@ -38,6 +47,10 @@ function buildHarness(overrides = {}) {
     exitFullscreenCalls: 0,
     closeCalls: 0,
     isFullscreen: false,
+    showPopup(config, callback) {
+      popupCalls.push(config);
+      callback('ok');
+    },
     enableClosingConfirmation() {
       this.enableClosingConfirmationCalls += 1;
     },
@@ -76,6 +89,7 @@ function buildHarness(overrides = {}) {
       callback();
       return timeouts.length;
     },
+    windowObject,
   });
 
   return {
@@ -87,6 +101,9 @@ function buildHarness(overrides = {}) {
     devModeBadge,
     messages,
     timeouts,
+    windowObject,
+    confirmCalls,
+    popupCalls,
   };
 }
 
@@ -206,6 +223,32 @@ test('handleFullscreenToggle reports unsupported clients', () => {
   assert.deepEqual(harness.messages, ['Fullscreen is not supported by this Telegram client.']);
 });
 
+test('confirmAction prefers Telegram popup confirmation when available', async () => {
+  const harness = buildHarness();
+
+  const confirmed = await harness.controller.confirmAction('Close this chat?');
+
+  assert.equal(confirmed, true);
+  assert.equal(harness.popupCalls.length, 1);
+  assert.equal(harness.popupCalls[0].title, 'Confirm');
+  assert.equal(harness.popupCalls[0].message, 'Close this chat?');
+  assert.deepEqual(harness.confirmCalls, []);
+});
+
+test('confirmAction falls back to window.confirm when Telegram popup is unavailable', async () => {
+  const harness = buildHarness({
+    tg: {
+      showPopup: null,
+    },
+  });
+
+  const confirmed = await harness.controller.confirmAction('Close this chat?');
+
+  assert.equal(confirmed, true);
+  assert.deepEqual(harness.confirmCalls, ['Close this chat?']);
+  assert.equal(harness.popupCalls.length, 0);
+});
+
 test('handleCloseApp closes the telegram web app when available', () => {
   const harness = buildHarness();
 
@@ -225,4 +268,51 @@ test('handleCloseApp reports unsupported clients', () => {
   harness.controller.handleCloseApp();
 
   assert.deepEqual(harness.messages, ['Close action is not available on this Telegram client.']);
+});
+
+test('confirmAction prefers Telegram popup flow when available', async () => {
+  const popupCalls = [];
+  const harness = buildHarness({
+    tg: {
+      showPopup(config, callback) {
+        popupCalls.push(config);
+        callback('ok');
+      },
+    },
+    windowObject: {
+      confirm: () => false,
+    },
+  });
+
+  const result = await harness.controller.confirmAction('Close this chat?');
+
+  assert.equal(result, true);
+  assert.equal(harness.confirmCalls.length, 0);
+  assert.deepEqual(popupCalls, [{
+    title: 'Confirm',
+    message: 'Close this chat?',
+    buttons: [
+      { id: 'cancel', type: 'cancel' },
+      { id: 'ok', type: 'destructive', text: 'Close' },
+    ],
+  }]);
+});
+
+test('confirmAction falls back to window.confirm when Telegram popup is unavailable', async () => {
+  const harness = buildHarness({
+    tg: {
+      showPopup: null,
+    },
+    windowObject: {
+      confirm: (message) => {
+        harness.confirmCalls.push(String(message));
+        return false;
+      },
+    },
+  });
+
+  const result = await harness.controller.confirmAction('Close this chat?');
+
+  assert.equal(result, false);
+  assert.deepEqual(harness.confirmCalls, ['Close this chat?']);
 });

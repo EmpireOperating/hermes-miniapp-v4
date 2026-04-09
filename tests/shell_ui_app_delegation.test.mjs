@@ -23,12 +23,20 @@ test('app.js shell-ui wrappers delegate through shellUiController', async () => 
     'app.js should build shellUiController from shellUiHelpers.createController',
   );
 
+  assert.match(
+    source,
+    /windowObject:\s*window/,
+    'app.js should inject window into shellUiController for confirm fallback ownership',
+  );
+
   const delegateExpectations = [
     ['setElementHidden', 'shellUiController.setElementHidden(element, hidden)'],
     ['syncDebugOnlyPillVisibility', 'shellUiController.syncDebugOnlyPillVisibility()'],
     ['syncClosingConfirmation', 'shellUiController.syncClosingConfirmation()'],
     ['syncTelegramChromeForSkin', 'shellUiController.syncTelegramChromeForSkin(skin)'],
+    ['confirmAction', 'shellUiController.confirmAction(message)'],
   ];
+
 
   for (const [fnName, delegatedCall] of delegateExpectations) {
     const body = extractFunctionBody(source, fnName);

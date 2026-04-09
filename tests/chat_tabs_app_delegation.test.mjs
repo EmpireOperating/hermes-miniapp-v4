@@ -17,6 +17,12 @@ function extractFunctionBody(source, functionName) {
 test('app.js chat tab wrappers delegate to chatTabsController', async () => {
   const source = await readFile(appJsUrl, 'utf8');
   const delegateExpectations = [
+    ['suppressBlockedChatPending', /return\s+chatTabsController\.suppressBlockedChatPending\(chatId\);/],
+    ['clearReconnectResumeBlock', /return\s+chatTabsController\.clearReconnectResumeBlock\(chatId\);/],
+    ['resetReconnectResumeBudget', /return\s+chatTabsController\.resetReconnectResumeBudget\(chatId\);/],
+    ['consumeReconnectResumeBudget', /return\s+chatTabsController\.consumeReconnectResumeBudget\(chatId\);/],
+    ['blockReconnectResume', /return\s+chatTabsController\.blockReconnectResume\(chatId\);/],
+    ['isReconnectResumeBlocked', /return\s+chatTabsController\.isReconnectResumeBlocked\(chatId\);/],
     ['upsertChat', /return\s+chatTabsController\.upsertChat\(chat\);/],
     ['syncPinnedChats', /return\s+chatTabsController\.syncPinnedChats\(chatList\);/],
     ['syncChats', /return\s+chatTabsController\.syncChats\(chatList\);/],

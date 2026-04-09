@@ -116,6 +116,36 @@ test('createPhaseController resolves safe defaults and emits render-trace update
   assert.equal(controller.setStreamPhase(null, 'error'), streamState.STREAM_PHASES.IDLE);
 });
 
+test('createLifecycleController finalizes pending state, refreshes tabs, and emits before/after trace payloads', () => {
+  const chats = new Map([[14, { id: 14, pending: true, unread_count: 3 }]]);
+  const pendingChats = new Set([14]);
+  const unseenStreamChats = new Set([14]);
+  const calls = [];
+  const refreshCalls = [];
+  const phaseCalls = [];
+  const controller = streamState.createLifecycleController({
+    chats,
+    pendingChats,
+    unseenStreamChats,
+    getActiveChatId: () => 14,
+    setStreamPhase: (chatId, phase) => phaseCalls.push({ chatId, phase }),
+    refreshTabNode: (chatId) => refreshCalls.push(chatId),
+    renderTraceLog: (eventName, details) => calls.push({ eventName, details }),
+  });
+
+  assert.equal(controller.finalizeStreamPendingState(14, false), 14);
+  assert.equal(pendingChats.has(14), false);
+  assert.equal(chats.get(14).pending, false);
+  assert.deepEqual(phaseCalls, [{ chatId: 14, phase: streamState.STREAM_PHASES.IDLE }]);
+  assert.deepEqual(refreshCalls, [14]);
+  assert.deepEqual(calls.map((entry) => entry.eventName), [
+    'stream-pending-finalize-before',
+    'stream-pending-finalize-after',
+  ]);
+  assert.equal(calls[0].details.pendingLocal, true);
+  assert.equal(calls[1].details.pendingLocal, false);
+});
+
 test('createPersistenceController stores monotonic resume cursors and clears them safely', () => {
   const storage = new Map();
   const localStorageRef = {
@@ -263,6 +293,44 @@ test('mergeSnapshotToolJournalLines preserves repeated identical tool lines in o
   const restored = controller.restorePendingStreamSnapshot(12);
   assert.equal(restored, true);
   assert.equal(histories.get(12)[0].body, 'read_file\nsearch_files\nread_file');
+});
+
+test('createPersistenceController restores the full tool journal over a partial pending tool trace after reopen', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const histories = new Map([[13, [
+    { role: 'tool', body: 'read_file\nsearch_files\napply_patch', pending: true, collapsed: false, created_at: '2026-04-02T00:00:00Z' },
+  ]]]);
+  const chats = new Map([[13, { id: 13, pending: true }]]);
+
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
+    histories,
+    chats,
+    nowFn: () => 3_000,
+    dateNowFn: () => 3_000,
+  });
+
+  const snapshot = controller.persistPendingStreamSnapshot(13);
+  assert.deepEqual(snapshot.tool_journal_lines, ['read_file', 'search_files', 'apply_patch']);
+
+  histories.set(13, [
+    { role: 'tool', body: 'apply_patch', pending: true, collapsed: false, created_at: '2026-04-02T00:00:00Z' },
+  ]);
+
+  const restored = controller.restorePendingStreamSnapshot(13);
+  assert.equal(restored, true);
+  assert.equal(histories.get(13)[0].body, 'read_file\nsearch_files\napply_patch');
 });
 
 test('createPersistenceController drops expired snapshots and clears storage when chat is no longer pending', () => {

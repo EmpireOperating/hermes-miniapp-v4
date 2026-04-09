@@ -60,3 +60,34 @@ test('app.js runtime latency wrappers delegate through runtime-owned controllers
     'persistLatencyByChatToStorage wrapper should no longer wire runtimeHelpers storage args inline',
   );
 });
+
+test('app.js haptic/unread wrappers delegate through hapticUnreadController', async () => {
+  const source = await readFile(appJsUrl, 'utf8');
+
+  assert.match(
+    source,
+    /const\s+hapticUnreadController\s*=\s*runtimeHelpers\.createHapticUnreadController\(\{[\s\S]*?renderTraceLog,/,
+    'app.js should build hapticUnreadController from runtimeHelpers.createHapticUnreadController with runtime trace logging injected',
+  );
+
+  const delegateExpectations = [
+    ['latestCompletedAssistantHapticKey', 'hapticUnreadController.latestCompletedAssistantHapticKey(chatId)'],
+    ['triggerIncomingMessageHaptic', 'hapticUnreadController.triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory })'],
+    ['incrementUnread', 'hapticUnreadController.incrementUnread(chatId)'],
+  ];
+
+  for (const [fnName, delegatedCall] of delegateExpectations) {
+    const body = extractFunctionBody(source, fnName);
+    assert.match(
+      body,
+      new RegExp(delegatedCall.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      `${fnName} should delegate through hapticUnreadController`,
+    );
+  }
+
+  assert.doesNotMatch(
+    extractFunctionBody(source, 'incrementUnread'),
+    /renderTraceLog\(/,
+    'incrementUnread wrapper should no longer own unread render-trace logging',
+  );
+});

@@ -936,6 +936,7 @@ def test_mobile_viewport_and_composer_zoom_guards_present() -> None:
     template = _read_repo_file("templates", "app.html")
     css = _read_repo_file("static", "app.css")
     app_script = _read_repo_file("static", "app.js")
+    composer_viewport_script = _read_repo_file("static", "composer_viewport_helpers.js")
 
     assert "maximum-scale=1" in template
     assert "user-scalable=no" in template
@@ -946,12 +947,13 @@ def test_mobile_viewport_and_composer_zoom_guards_present() -> None:
     assert "text-size-adjust: none;" in css
     assert "margin-left: auto;" in css
     assert "margin-left: auto !important;" in css
-    assert "let focusComposerForNewChatRequestId = 0;" in app_script
-    assert "const shouldKeepRetryingFocus = () => {" in app_script
-    assert 'document.querySelector?.("dialog[open]")' in app_script
-    assert "if (mobileQuoteMode) {" in app_script
-    assert "promptEl.focus();" in app_script
-    assert "promptEl.focus({ preventScroll: true });" in app_script
+    assert "function focusComposerForNewChat(chatId) {" in app_script
+    assert "return composerViewportController.focusComposerForNewChat(chatId);" in app_script
+    assert "let focusComposerForNewChatRequestId = 0;" in composer_viewport_script
+    assert "const shouldKeepRetryingFocus = () => {" in composer_viewport_script
+    assert 'documentObject.querySelector?.(\'dialog[open]\')' in composer_viewport_script
+    assert "promptEl.focus();" in composer_viewport_script
+    assert "promptEl.focus({ preventScroll: true });" in composer_viewport_script
 
 def test_quote_selection_sync_is_debounced_in_client_script() -> None:
     app_script = _read_repo_file("static", "app.js")

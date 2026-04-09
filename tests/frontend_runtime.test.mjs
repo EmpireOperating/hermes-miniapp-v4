@@ -165,6 +165,7 @@ test('createHapticUnreadController dedupes haptics and applies unread policy usi
   const hapticCalls = [];
   let activeChatId = 7;
   let hidden = false;
+  const traceLogs = [];
 
   const controller = runtime.createHapticUnreadController({
     tg: {
@@ -179,6 +180,7 @@ test('createHapticUnreadController dedupes haptics and applies unread policy usi
     chats,
     getActiveChatId: () => activeChatId,
     isDocumentHidden: () => hidden,
+    renderTraceLog: (eventName, payload) => traceLogs.push({ eventName, payload }),
   });
 
   controller.triggerIncomingMessageHaptic(7, { fallbackToLatestHistory: true });
@@ -197,6 +199,41 @@ test('createHapticUnreadController dedupes haptics and applies unread policy usi
   activeChatId = 99;
   controller.incrementUnread(7);
   assert.equal(chats.get(7).unread_count, 2);
+  assert.deepEqual(traceLogs, [
+    {
+      eventName: 'unread-increment',
+      payload: {
+        chatId: 7,
+        activeChatId: 7,
+        hidden: false,
+        beforeUnread: 0,
+        afterUnread: 0,
+        incremented: false,
+      },
+    },
+    {
+      eventName: 'unread-increment',
+      payload: {
+        chatId: 7,
+        activeChatId: 7,
+        hidden: true,
+        beforeUnread: 0,
+        afterUnread: 1,
+        incremented: true,
+      },
+    },
+    {
+      eventName: 'unread-increment',
+      payload: {
+        chatId: 7,
+        activeChatId: 99,
+        hidden: false,
+        beforeUnread: 1,
+        afterUnread: 2,
+        incremented: true,
+      },
+    },
+  ]);
 });
 
 test('latency chip only updates for active chat while preserving per-chat latency map', () => {
@@ -1385,6 +1422,34 @@ test('mergeHydratedHistory preserves local collapsed state for matching pending 
   });
 
   assert.equal(merged[1].collapsed, true);
+});
+
+test('mergeHydratedHistory prefers fuller local pending tool trace body over partial hydrated copy of the same pending message', () => {
+  const pendingTool = {
+    role: 'tool',
+    body: 'todo\nread_file\nsearch_files',
+    created_at: '2026-04-09T20:40:01Z',
+    pending: true,
+    collapsed: false,
+  };
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    pendingTool,
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    { role: 'tool', body: 'read_file\nsearch_files', created_at: '2026-04-09T20:40:01Z', pending: true },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    chatPending: true,
+  });
+
+  const toolRows = merged.filter((item) => item.role === 'tool');
+  assert.equal(toolRows.length, 1);
+  assert.equal(toolRows[0].body, 'todo\nread_file\nsearch_files');
 });
 
 test('shouldUseAppendOnlyRender returns false when new history inserts before current tail', () => {
