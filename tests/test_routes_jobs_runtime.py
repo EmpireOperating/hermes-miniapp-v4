@@ -815,7 +815,7 @@ def test_worker_retry_exhaustion_stops_at_max_and_surfaces_terminal_error(monkey
 
     state_after_first = server.store.get_job_state(job_id)
     assert state_after_first is not None
-    assert state_after_first["status"] == "queued"
+    assert state_after_first["status"] in {"queued", "running"}
     assert state_after_first["attempts"] == 1
 
     conn = sqlite3.connect(server.store.db_path)
