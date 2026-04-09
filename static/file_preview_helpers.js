@@ -10,6 +10,8 @@
       filePreviewExpandUp,
       filePreviewLoadFull,
       filePreviewExpandDown,
+      filePreviewClose,
+      messagesEl,
       apiPost,
       getActiveChatId,
       getCurrentFilePreviewRequest,
@@ -21,6 +23,7 @@
     const MOBILE_MESSAGE_FILE_REF_TAP_SLOP_PX = 14;
     let filePreviewRequestGeneration = 0;
     let pendingMessageFileRefTouch = null;
+    let unbindFilePreviewBindings = null;
 
     function nextFilePreviewRequestGeneration() {
       filePreviewRequestGeneration += 1;
@@ -463,6 +466,40 @@
       openFilePreviewByRef(refId);
     }
 
+    function bindFilePreviewBindings() {
+      if (unbindFilePreviewBindings) {
+        return unbindFilePreviewBindings;
+      }
+      const cleanup = [];
+      const bind = (target, eventName, handler, options) => {
+        if (!target?.addEventListener) return;
+        target.addEventListener(eventName, handler, options);
+        cleanup.push(() => target.removeEventListener?.(eventName, handler, options));
+      };
+      const handleModalCancel = (event) => {
+        event.preventDefault();
+        closeFilePreviewModal();
+      };
+
+      bind(messagesEl, 'click', handleMessageFileRefClick);
+      bind(messagesEl, 'touchstart', handleMessageFileRefTouchStart, { passive: true });
+      bind(messagesEl, 'touchmove', handleMessageFileRefTouchMove, { passive: true });
+      bind(messagesEl, 'touchend', handleMessageFileRefClick, { passive: false });
+      bind(messagesEl, 'touchcancel', cancelPendingMessageFileRefTouch);
+      bind(messagesEl, 'scroll', cancelPendingMessageFileRefTouch, { passive: true });
+      bind(filePreviewExpandUp, 'click', () => requestFilePreviewExpansion('up'));
+      bind(filePreviewLoadFull, 'click', requestFullFilePreview);
+      bind(filePreviewExpandDown, 'click', () => requestFilePreviewExpansion('down'));
+      bind(filePreviewClose, 'click', closeFilePreviewModal);
+      bind(filePreviewModal, 'cancel', handleModalCancel);
+
+      unbindFilePreviewBindings = () => {
+        cleanup.splice(0).reverse().forEach((unbind) => unbind());
+        unbindFilePreviewBindings = null;
+      };
+      return unbindFilePreviewBindings;
+    }
+
     return {
       cloneFilePreviewRequest,
       syncFilePreviewExpandControls,
@@ -480,6 +517,7 @@
       openFilePreviewByPath,
       requestFilePreviewExpansion,
       requestFullFilePreview,
+      bindFilePreviewBindings,
       handleMessageFileRefTouchStart,
       handleMessageFileRefTouchMove,
       cancelPendingMessageFileRefTouch,

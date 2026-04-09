@@ -32,6 +32,38 @@
     }
   }
 
+  function createController({
+    getActiveChatId,
+    pendingChats,
+    chats,
+    getIsAuthenticated,
+    sendButton,
+    promptEl,
+    removeChatButton,
+    pinChatButton,
+  }) {
+    function updateComposerState() {
+      const state = deriveComposerState({
+        activeChatId: typeof getActiveChatId === "function" ? getActiveChatId() : null,
+        pendingChats: pendingChats || new Set(),
+        chats: chats || new Map(),
+        isAuthenticated: typeof getIsAuthenticated === "function" ? getIsAuthenticated() : false,
+      });
+      applyComposerState({
+        state,
+        sendButton,
+        promptEl,
+        removeChatButton,
+        pinChatButton,
+      });
+      return state;
+    }
+
+    return {
+      updateComposerState,
+    };
+  }
+
   function createDraftController({ localStorageRef, draftStorageKey, draftByChat }) {
     function loadDraftsFromStorage() {
       try {
@@ -94,6 +126,7 @@
   const api = {
     deriveComposerState,
     applyComposerState,
+    createController,
     createDraftController,
   };
 

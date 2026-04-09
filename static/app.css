@@ -75,15 +75,6 @@ html[data-skin="obsidian"] body {
   padding-bottom: max(18px, env(safe-area-inset-bottom));
 }
 
-.tool-stream {
-  display: none !important;
-  margin: 14px 18px 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--panel) 90%, black 10%);
-  overflow: hidden;
-}
-
 .masthead {
   position: relative;
   padding: 16px;
@@ -654,37 +645,7 @@ textarea:focus-visible {
     animation: none;
   }
 }
-.tool-stream {
-  display: none !important;
-  margin: 14px 18px 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--panel) 90%, black 10%);
-  overflow: hidden;
-}
-.tool-stream__header {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
-  color: var(--accent-soft);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-}
-.tool-stream__lines {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  max-height: 164px;
-  overflow-y: auto;
-}
-.tool-stream__line {
-  color: var(--ink);
-  font-size: 12px;
-  line-height: 1.45;
-  word-break: break-word;
-  white-space: pre-wrap;
-}
+
 .messages-wrap {
   position: relative;
   min-height: 0;

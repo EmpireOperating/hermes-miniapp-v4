@@ -125,8 +125,6 @@ if (body && !body.dataset.skin) {
   body.dataset.skin = bootSkin;
 }
 const messagesEl = document.getElementById("messages");
-const toolStreamEl = document.getElementById("tool-stream");
-const toolStreamLinesEl = document.getElementById("tool-stream-lines");
 const tabsEl = document.getElementById("chat-tabs");
 const form = document.getElementById("chat-form");
 const promptEl = document.getElementById("prompt");
@@ -179,7 +177,7 @@ const filePreviewClose = document.getElementById("file-preview-close");
 const chatTabContextMenu = document.getElementById("chat-tab-context-menu");
 const chatTabContextFork = document.getElementById("chat-tab-context-fork");
 
-let initData = "";
+let initData = tg?.initData || "";
 let isAuthenticated = false;
 let currentSkin = bootSkin;
 let activeChatId = null;
@@ -193,6 +191,8 @@ let pinnedChatsCollapsed = false;
 let hasPinnedChatsCollapsePreference = false;
 const pendingChats = new Set();
 const reconnectResumeBlockedChats = new Set();
+const MAX_AUTO_RESUME_CYCLES_PER_CHAT = 6;
+const resumeCycleCountByChat = new Map();
 const resumeAttemptedAtByChat = new Map();
 const resumeCooldownUntilByChat = new Map();
 const resumeInFlightByChat = new Set();
@@ -229,8 +229,6 @@ let lastOpenChatRequestId = 0;
 const streamPhaseByChat = new Map();
 const {
   STREAM_PHASES,
-  getStreamPhase: getStreamPhaseFromState,
-  setStreamPhase: setStreamPhaseInState,
   isPatchPhaseAllowed,
   markChatStreamPending,
   finalizeChatStreamState,
@@ -255,6 +253,8 @@ const chatTabsController = chatTabsHelpers.createController({
   renderedHistoryLength,
   renderedHistoryVirtualized,
   tabNodes,
+  tabTemplate,
+  tabsEl,
   clearChatStreamState,
   chatUiHelpers,
   pinnedChatsWrap,
@@ -263,6 +263,7 @@ const chatTabsController = chatTabsHelpers.createController({
   pinnedChatsToggleButton,
   pinChatButton,
   documentObject: document,
+  renderTraceLog,
   getActiveChatId: () => Number(activeChatId),
   getPinnedChatsCollapsed: () => pinnedChatsCollapsed,
   setPinnedChatsCollapsedState: (value) => {
@@ -272,6 +273,10 @@ const chatTabsController = chatTabsHelpers.createController({
   setHasPinnedChatsCollapsePreference: (value) => {
     hasPinnedChatsCollapsePreference = Boolean(value);
   },
+  resumeCooldownUntilByChat,
+  reconnectResumeBlockedChats,
+  suppressBlockedChatPending,
+  nowFn: () => Date.now(),
 });
 
 const storedPinnedChatsCollapsed = chatTabsController.getStoredPinnedChatsCollapsed();
@@ -330,8 +335,16 @@ const STREAM_RESUME_CURSOR_STORAGE_KEY = "hermes_miniapp_stream_resume_cursor_v1
 const PENDING_STREAM_SNAPSHOT_STORAGE_KEY = "hermes_miniapp_pending_stream_snapshot_v1";
 const PENDING_STREAM_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1000;
 const LATENCY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const LATENCY_STORAGE_KEY = "hermes_miniapp_latency_by_chat_v1";
 let renderTraceDebugEnabled = false;
-loadLatencyByChatFromStorage();
+
+const latencyPersistenceController = runtimeHelpers.createLatencyPersistenceController({
+  localStorageRef: localStorage,
+  storageKey: LATENCY_STORAGE_KEY,
+  latencyByChat,
+  maxAgeMs: LATENCY_MAX_AGE_MS,
+});
+latencyPersistenceController.loadLatencyByChatFromStorage();
 
 const streamPersistenceController = streamStateHelpers.createPersistenceController({
   localStorageRef: localStorage,
@@ -340,6 +353,12 @@ const streamPersistenceController = streamStateHelpers.createPersistenceControll
   pendingStreamSnapshotMaxAgeMs: PENDING_STREAM_SNAPSHOT_MAX_AGE_MS,
   histories,
   chats,
+  nowFn: nowStamp,
+});
+
+const streamPhaseController = streamStateHelpers.createPhaseController({
+  streamPhaseByChat,
+  renderTraceLog,
 });
 
 const draftController = composerStateHelpers.createDraftController({
@@ -349,10 +368,9 @@ const draftController = composerStateHelpers.createDraftController({
 });
 
 const toolTraceController = streamControllerHelpers.createToolTraceController({
-  toolStreamEl,
-  toolStreamLinesEl,
   histories,
   cleanDisplayText,
+  persistPendingStreamSnapshot,
 });
 
 const renderTraceController = renderTraceHelpers.createController({
@@ -365,6 +383,24 @@ const renderTraceController = renderTraceHelpers.createController({
     renderTraceDebugEnabled = Boolean(value);
   },
   consoleRef: console,
+});
+
+const messageRenderController = renderTraceHelpers.createMessageRenderController({
+  cleanDisplayTextFn: cleanDisplayText,
+  escapeHtmlFn: escapeHtml,
+  getAllowedRoots: () => filePreviewAllowedRoots,
+  documentObject: document,
+  windowObject: window,
+  getOperatorDisplayName: () => operatorDisplayName,
+  formatMessageTimeFn: formatMessageTime,
+  templateElement: template,
+  getHistory: (chatId) => histories.get(Number(chatId)) || [],
+  getMessagesContainer: () => messagesEl,
+  getActiveChatId: () => activeChatId,
+  getStreamPhase,
+  isPatchPhaseAllowedFn: isPatchPhaseAllowed,
+  renderTraceLogFn: renderTraceLog,
+  preserveViewportDuringUiMutationFn: preserveViewportDuringUiMutation,
 });
 
 const historyRenderController = renderTraceHelpers.createHistoryRenderController({
@@ -408,6 +444,8 @@ const filePreviewController = filePreviewHelpers.createController({
   filePreviewExpandUp,
   filePreviewLoadFull,
   filePreviewExpandDown,
+  filePreviewClose,
+  messagesEl,
   apiPost,
   getActiveChatId: () => activeChatId,
   getCurrentFilePreviewRequest: () => currentFilePreviewRequest,
@@ -463,100 +501,55 @@ function preserveViewportDuringUiMutation(mutator) {
   return composerViewportController.preserveViewportDuringUiMutation(mutator);
 }
 
-function setChatLatency(chatId, text) {
-  const key = Number(chatId);
-  const normalized = String(text || "").trim() || "--";
-  const result = latencyViewController.setChatLatency(chatId, text);
-  persistLatencyByChatToStorage();
-  if (key > 0) {
-    renderTraceLog("latency-update", {
-      chatId: key,
-      activeChatId: Number(activeChatId),
-      hidden: document.visibilityState !== "visible",
-      latency: normalized,
-      chipText: String(latencyChip?.textContent || "").trim(),
-    });
+function focusComposerForNewChat(chatId) {
+  if (!promptEl || promptEl.disabled) return;
+  if (Number(activeChatId) !== Number(chatId)) return;
+  if (document.visibilityState !== "visible") return;
+
+  const focusComposer = () => {
+    composerViewportController?.ensureComposerVisible?.({ smooth: false });
+    try {
+      promptEl.focus({ preventScroll: true });
+    } catch {
+      promptEl.focus();
+    }
+    const caret = String(promptEl.value || "").length;
+    try {
+      promptEl.setSelectionRange?.(caret, caret);
+    } catch {
+      // Some mobile webviews reject setSelectionRange during keyboard transitions.
+    }
+    composerViewportController?.ensureComposerVisible?.({ smooth: false });
+  };
+
+  focusComposer();
+  const raf = window.requestAnimationFrame || globalThis.requestAnimationFrame;
+  if (typeof raf === "function") {
+    raf(() => focusComposer());
   }
-  return result;
+  window.setTimeout(() => focusComposer(), 0);
+  window.setTimeout(() => focusComposer(), 180);
+}
+
+function setChatLatency(chatId, text) {
+  return latencyViewController.setChatLatency(chatId, text);
 }
 
 function syncActiveLatencyChip() {
   return latencyViewController.syncActiveLatencyChip();
 }
 
-const bootMetrics = (() => {
-  const existing = window.__HERMES_BOOT_METRICS__;
-  if (existing && typeof existing === "object") {
-    return existing;
-  }
-  const next = {};
-  window.__HERMES_BOOT_METRICS__ = next;
-  return next;
-})();
-const bootPerf = typeof window.performance !== "undefined" ? window.performance : null;
-function bootNowMs() {
-  return bootPerf && typeof bootPerf.now === "function" ? bootPerf.now() : Date.now();
+const startupMetricsHelpers = window.HermesMiniappStartupMetrics;
+if (!startupMetricsHelpers?.createController) {
+  throw new Error("HermesMiniappStartupMetrics.createController is required before app bootstrap");
 }
-function recordBootMetric(name, value = bootNowMs()) {
-  const normalized = Math.max(0, Math.round(Number(value) || 0));
-  bootMetrics[name] = normalized;
-  return normalized;
-}
-function syncBootLatencyChip(stage = "") {
-  const startedAt = Number(bootMetrics.shellInlineStartMs || 0);
-  if (!startedAt || !latencyChip) {
-    return;
-  }
-  const elapsedMs = Math.max(0, Math.round(bootNowMs() - startedAt));
-  setActivityChip(latencyChip, `open: ${formatLatency(elapsedMs)}`);
-  if (stage) {
-    latencyChip.dataset.bootStage = stage;
-  }
-}
-function logBootStage(stage, extra = {}) {
-  const metricName = `${String(stage || "stage").replace(/[^a-z0-9]+/gi, "_")}Ms`;
-  const elapsedMs = recordBootMetric(metricName);
-  syncBootLatencyChip(stage);
-  console.info("[miniapp/boot]", {
-    stage,
-    elapsedMs,
-    ...extra,
-  });
-  return elapsedMs;
-}
-function readBootMetric(name) {
-  const value = Number(bootMetrics?.[name]);
-  return Number.isFinite(value) ? value : 0;
-}
-function bootDuration(startMetric, endMetric) {
-  const start = readBootMetric(startMetric);
-  const end = readBootMetric(endMetric);
-  if (!start || !end || end < start) {
-    return null;
-  }
-  return Math.max(0, end - start);
-}
-function summarizeBootMetrics(extra = {}) {
-  const summary = {
-    totalOpenMs: bootDuration("appScriptStartMs", "bootstrap_finishedMs"),
-    authWaitMs: bootDuration("auth_request_dispatchedMs", "auth_response_receivedMs"),
-    authApplyMs: bootDuration("auth_bootstrap_applied_startMs", "auth_bootstrap_applied_finishedMs"),
-    firstRenderMs: bootDuration("initial_render_startMs", "initial_render_finishedMs"),
-    emptyRenderMs: bootDuration("initial_empty_chat_render_startMs", "initial_empty_chat_render_finishedMs"),
-    shellRevealMs: bootDuration("appScriptStartMs", "shellRevealMs"),
-    ...extra,
-  };
-  console.info("[miniapp/boot-summary]", summary);
-  return summary;
-}
-recordBootMetric("appScriptStartMs");
-syncBootLatencyChip("app-script-start");
 
-function revealShell() {
-  document.documentElement?.setAttribute("data-shell-ready", "1");
-  recordBootMetric("shellRevealMs");
-  syncBootLatencyChip("shell-visible");
-}
+let bootMetrics = {};
+let recordBootMetric = () => 0;
+let syncBootLatencyChip = () => {};
+let logBootStage = () => 0;
+let summarizeBootMetrics = () => ({});
+let revealShell = () => {};
 
 function chatLabel(chatId) {
   const chat = chats.get(Number(chatId));
@@ -576,41 +569,42 @@ function setActivityChip(chip, text) {
   chip.title = compact;
 }
 
+const startupMetricsController = startupMetricsHelpers.createController({
+  windowObject: window,
+  documentObject: document,
+  latencyChip,
+  setActivityChip,
+  formatLatency,
+  consoleObject: console,
+});
+bootMetrics = startupMetricsController.bootMetrics;
+recordBootMetric = startupMetricsController.recordBootMetric;
+syncBootLatencyChip = startupMetricsController.syncBootLatencyChip;
+logBootStage = startupMetricsController.logBootStage;
+summarizeBootMetrics = startupMetricsController.summarizeBootMetrics;
+revealShell = startupMetricsController.revealShell;
+recordBootMetric("appScriptStartMs");
+syncBootLatencyChip("app-script-start");
+
 function setStreamStatus(text) {
   if (!streamStatus) return;
   streamStatus.textContent = String(text || "");
 }
 
 function setElementHidden(element, hidden) {
-  if (!element) return;
-  if (hidden) {
-    element.setAttribute("hidden", "hidden");
-    return;
-  }
-  element.removeAttribute("hidden");
+  return shellUiController.setElementHidden(element, hidden);
 }
 
 function syncDebugOnlyPillVisibility() {
-  const showDevAuthPill=Boolean(devConfig.devAuthEnabled && desktopTestingRequested);
-  const showDebugPills = Boolean(devConfig.requestDebug && desktopTestingRequested);
-  setElementHidden(devAuthControls, !showDevAuthPill);
-  setElementHidden(devModeBadge, !showDebugPills);
+  return shellUiController.syncDebugOnlyPillVisibility();
 }
 
 function loadLatencyByChatFromStorage() {
-  runtimeHelpers.loadLatencyByChatFromStorage?.({
-    localStorageRef: localStorage,
-    storageKey: "hermes_miniapp_latency_by_chat_v1",
-    latencyByChat,
-  });
+  return latencyPersistenceController.loadLatencyByChatFromStorage();
 }
 
 function persistLatencyByChatToStorage() {
-  runtimeHelpers.persistLatencyByChatToStorage?.({
-    localStorageRef: localStorage,
-    storageKey: "hermes_miniapp_latency_by_chat_v1",
-    latencyByChat,
-  });
+  return latencyPersistenceController.persistLatencyByChatToStorage();
 }
 
 function readStreamResumeCursorMap() {
@@ -645,6 +639,10 @@ function clearPendingStreamSnapshot(chatId) {
   return streamPersistenceController.clearPendingStreamSnapshot(chatId);
 }
 
+function hasFreshPendingStreamSnapshot(chatId) {
+  return streamPersistenceController.hasFreshPendingStreamSnapshot(chatId);
+}
+
 function normalizeSnapshotLines(value) {
   return streamPersistenceController.normalizeSnapshotLines(value);
 }
@@ -675,6 +673,10 @@ function summarizeUiFailure(rawBody, { status = 0, fallback = "Request failed." 
 
 function parseStreamErrorPayload(rawBody) {
   return bootstrapAuthController.parseStreamErrorPayload(rawBody);
+}
+
+async function apiPost(url, payload) {
+  return bootstrapAuthController.apiPost(url, payload);
 }
 
 function cloneFilePreviewRequest(previewRequest = {}) {
@@ -779,15 +781,14 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   authStatus,
   appendSystemMessage,
   fetchImpl: (...args) => fetch(...args),
-  normalizeHandle,
   initData,
   parseSseEvent,
-  fallbackHandleFromDisplayName,
   setOperatorDisplayName: (value) => {
     operatorDisplayName = String(value || "");
   },
+  getOperatorDisplayName: () => operatorDisplayName,
   operatorName,
-  refreshOperatorRoleLabels,
+  messagesEl,
   setSkin,
   syncChats,
   syncPinnedChats,
@@ -800,6 +801,18 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   pendingChats,
   resumePendingChatStream,
   addLocalMessage,
+  hasFreshPendingStreamSnapshot,
+  restorePendingStreamSnapshot,
+  ensureActivationReadThreshold: (chatId, unreadCount) => chatHistoryController.ensureActivationReadThreshold(chatId, unreadCount),
+  windowObject: window,
+  authBootstrapMaxAttempts: AUTH_BOOTSTRAP_MAX_ATTEMPTS,
+  authBootstrapBaseDelayMs: AUTH_BOOTSTRAP_BASE_DELAY_MS,
+  authBootstrapRetryableStatus: AUTH_BOOTSTRAP_RETRYABLE_STATUS,
+  bootBootstrapVersion,
+  bootstrapVersionReloadStorageKey: BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY,
+  recordBootMetric,
+  syncBootLatencyChip,
+  updateComposerState,
   onBootstrapStage: (stage, details = {}) => {
     logBootStage(stage, details);
   },
@@ -920,15 +933,15 @@ function ensurePendingToolTraceMessage(chatId) {
 }
 
 function appendInlineToolTrace(chatId, textOrPayload, payload = null) {
-  const result = toolTraceController.appendInlineToolTrace(chatId, textOrPayload, payload);
-  persistPendingStreamSnapshot(chatId);
-  return result;
+  return toolTraceController.appendInlineToolTrace(chatId, textOrPayload, payload);
+}
+
+function dropPendingToolTraceMessages(chatId) {
+  return toolTraceController.dropPendingToolTraceMessages(chatId);
 }
 
 function finalizeInlineToolTrace(chatId) {
-  const result = toolTraceController.finalizeInlineToolTrace(chatId);
-  persistPendingStreamSnapshot(chatId);
-  return result;
+  return toolTraceController.finalizeInlineToolTrace(chatId);
 }
 
 async function confirmAction(message) {
@@ -1092,98 +1105,59 @@ function syncSelectionQuoteAction() {
 }
 
 function renderBody(container, rawText, { fileRefs = null } = {}) {
-  renderTraceHelpers.renderBody(container, rawText, {
-    cleanDisplayTextFn: cleanDisplayText,
-    escapeHtmlFn: escapeHtml,
-    fileRefs,
-    allowedRoots: filePreviewAllowedRoots,
-  });
+  return messageRenderController.renderBody(container, rawText, { fileRefs });
 }
 
 function renderToolTraceBody(container, message) {
-  renderTraceHelpers.renderToolTraceBody(container, message, {
-    cleanDisplayTextFn: cleanDisplayText,
-    documentObject: document,
-  });
+  return messageRenderController.renderToolTraceBody(container, message);
 }
 
 function roleLabelForMessage(message) {
-  return renderTraceHelpers.roleLabelForMessage(message, { operatorDisplayName });
+  return messageRenderController.roleLabelForMessage(message);
 }
 
 function normalizeHandle(value) {
-  return String(value || "").trim().replace(/^@+/, "");
+  return bootstrapAuthController.normalizeHandle(value);
 }
 
 function fallbackHandleFromDisplayName(value) {
-  const cleaned = String(value || "").trim();
-  if (!cleaned) return "";
-  if (/^[\w .-]+$/.test(cleaned)) {
-    return cleaned.replace(/\s+/g, "");
-  }
-  return cleaned;
+  return bootstrapAuthController.fallbackHandleFromDisplayName(value);
 }
 
 function refreshOperatorRoleLabels() {
-  if (!messagesEl) return;
-  const label = operatorDisplayName || "Operator";
-  for (const roleNode of messagesEl.querySelectorAll('.message--operator .message__role, .message[data-role="operator"] .message__role, .message[data-role="user"] .message__role')) {
-    roleNode.textContent = label;
-  }
+  return bootstrapAuthController.refreshOperatorRoleLabels();
 }
 
 function messageVariantForRole(role) {
-  return renderTraceHelpers.messageVariantForRole(role);
+  return messageRenderController.messageVariantForRole(role);
 }
 
 function shouldSkipMessageRender({ role, renderedBody, pending }) {
-  return renderTraceHelpers.shouldSkipMessageRender({ role, renderedBody, pending });
+  return messageRenderController.shouldSkipMessageRender({ role, renderedBody, pending });
 }
 
-function applyMessageMeta(node, message, role, variant) {
-  renderTraceHelpers.applyMessageMeta(node, message, {
-    role,
-    variant,
-    roleLabelForMessageFn: roleLabelForMessage,
-    formatMessageTimeFn: formatMessageTime,
-  });
+function applyMessageMeta(node, message, options = {}) {
+  return messageRenderController.applyMessageMeta(node, message, options);
 }
 
 function renderMessageContent(node, message, renderedBody) {
-  renderTraceHelpers.renderMessageContent(node, message, renderedBody, {
-    renderToolTraceBodyFn: renderToolTraceBody,
-    renderBodyFn: renderBody,
-  });
+  return messageRenderController.renderMessageContent(node, message, renderedBody);
 }
 
 function messageStableKey(message, index = 0) {
-  return renderTraceHelpers.messageStableKey(message, index);
+  return messageRenderController.messageStableKey(message, index);
 }
 
 function upsertMessageNode(node, message) {
-  return renderTraceHelpers.upsertMessageNode(node, message, {
-    cleanDisplayTextFn: cleanDisplayText,
-    shouldSkipMessageRenderFn: shouldSkipMessageRender,
-    messageVariantForRoleFn: messageVariantForRole,
-    applyMessageMetaFn: applyMessageMeta,
-    renderMessageContentFn: renderMessageContent,
-  });
+  return messageRenderController.upsertMessageNode(node, message);
 }
 
 function createMessageNode(message, { index = 0 } = {}) {
-  return renderTraceHelpers.createMessageNode(message, {
-    index,
-    templateElement: template,
-    upsertMessageNodeFn: upsertMessageNode,
-    messageStableKeyFn: messageStableKey,
-  });
+  return messageRenderController.createMessageNode(message, { index });
 }
 
-function appendMessages(fragment, messages, startIndex = 0) {
-  renderTraceHelpers.appendMessages(fragment, messages, {
-    startIndex,
-    createMessageNodeFn: createMessageNode,
-  });
+function appendMessages(fragment, messages, options = {}) {
+  return messageRenderController.appendMessages(fragment, messages, options);
 }
 
 function isNearBottom(element, threshold = 24) {
@@ -1302,6 +1276,26 @@ function clearReconnectResumeBlock(chatId) {
   reconnectResumeBlockedChats.delete(key);
 }
 
+function resetReconnectResumeBudget(chatId) {
+  const key = Number(chatId);
+  if (!key) return;
+  resumeCycleCountByChat.delete(key);
+}
+
+function consumeReconnectResumeBudget(chatId) {
+  const key = Number(chatId);
+  if (!key) {
+    return { allowed: false, attempts: 0, maxAttempts: MAX_AUTO_RESUME_CYCLES_PER_CHAT };
+  }
+  const nextAttempts = Number(resumeCycleCountByChat.get(key) || 0) + 1;
+  resumeCycleCountByChat.set(key, nextAttempts);
+  return {
+    allowed: nextAttempts <= MAX_AUTO_RESUME_CYCLES_PER_CHAT,
+    attempts: nextAttempts,
+    maxAttempts: MAX_AUTO_RESUME_CYCLES_PER_CHAT,
+  };
+}
+
 function blockReconnectResume(chatId) {
   const key = Number(chatId);
   if (!key) return;
@@ -1310,18 +1304,7 @@ function blockReconnectResume(chatId) {
 }
 
 function upsertChat(chat) {
-  const next = chatTabsController.upsertChat(chat);
-  const chatIdValue = (next?.id ?? chat?.id ?? 0);
-  const key = Number(chatIdValue);
-  const cooldownUntil = Number(resumeCooldownUntilByChat.get(key) || 0);
-  if (key > 0 && cooldownUntil > Date.now()) {
-    const synced = chats.get(key);
-    if (synced && typeof synced === 'object') {
-      synced.pending = false;
-    }
-  }
-  suppressBlockedChatPending(next?.id ?? chat?.id);
-  return next;
+  return chatTabsController.upsertChat(chat);
 }
 
 function syncPinnedChats(chatList) {
@@ -1329,85 +1312,31 @@ function syncPinnedChats(chatList) {
 }
 
 function syncChats(chatList) {
-  const next = chatTabsController.syncChats(chatList);
-  const now = Date.now();
-  for (const [chatId, until] of resumeCooldownUntilByChat.entries()) {
-    const key = Number(chatId);
-    const cooldownUntil = Number(until || 0);
-    if (!key || cooldownUntil <= now) continue;
-    const chat = chats.get(key);
-    if (chat && typeof chat === 'object') {
-      chat.pending = false;
-    }
-  }
-  for (const blockedChatId of reconnectResumeBlockedChats) {
-    suppressBlockedChatPending(blockedChatId);
-  }
-  return next;
+  return chatTabsController.syncChats(chatList);
 }
 
 function getOrCreateTabNode(chatId) {
-  return chatUiHelpers.getOrCreateTabNode({
-    tabNodes,
-    tabTemplate,
-    chatId,
-  });
+  return chatTabsController.getOrCreateTabNode(chatId);
 }
 
 function getTabBadgeState(chat) {
-  const badgeState = chatUiHelpers.getTabBadgeState({
-    chat,
-    pendingChats,
-    unseenStreamChats,
-  });
-  const chatId = Number(chat?.id || 0);
-  if (chatId > 0) {
-    const unread = Math.max(0, Number(chat?.unread_count || 0));
-    const pending = pendingChats.has(chatId) || Boolean(chat?.pending);
-    const unseen = unseenStreamChats.has(chatId);
-    if (pending || unread > 0 || unseen || chatId === Number(activeChatId)) {
-      renderTraceLog("tab-badge-state", {
-        chatId,
-        activeChatId: Number(activeChatId),
-        pending,
-        unread,
-        unseen,
-        badgeText: String(badgeState?.text || ""),
-        badgeClasses: Array.isArray(badgeState?.classes) ? badgeState.classes.slice() : [],
-      });
-    }
-  }
-  return badgeState;
+  return chatTabsController.getTabBadgeState(chat);
 }
 
 function applyTabBadgeState(badge, badgeState) {
-  chatUiHelpers.applyTabBadgeState({ badge, badgeState });
+  return chatTabsController.applyTabBadgeState(badge, badgeState);
 }
 
 function applyTabNodeState(node, chat) {
-  chatUiHelpers.applyTabNodeState({
-    node,
-    chat,
-    activeChatId,
-    pendingChats,
-    unseenStreamChats,
-    getTabBadgeState,
-    applyTabBadgeState,
-  });
+  return chatTabsController.applyTabNodeState(node, chat);
 }
 
 function removeMissingTabNodes(nextIds) {
-  chatUiHelpers.removeMissingTabNodes({ tabNodes, nextIds });
+  return chatTabsController.removeMissingTabNodes(nextIds);
 }
 
 function renderTabs() {
-  chatUiHelpers.renderTabs({
-    chats,
-    tabNodes,
-    tabTemplate,
-    tabsEl,
-    applyTabNodeState,
-  });
+  return chatTabsController.renderTabs();
 }
 
 function getStoredPinnedChatsCollapsed() {
@@ -1443,32 +1372,11 @@ function syncPinChatButton() {
 }
 
 function refreshTabNode(chatId) {
-  const key = Number(chatId);
-  const chat = chats.get(key);
-  renderTraceLog("tab-refresh-request", {
-    chatId: key,
-    activeChatId: Number(activeChatId),
-    pendingLocal: pendingChats.has(key),
-    pendingServer: Boolean(chat?.pending),
-    unread: Math.max(0, Number(chat?.unread_count || 0)),
-    unseen: unseenStreamChats.has(key),
-  });
-  chatUiHelpers.refreshTabNode({
-    chatId,
-    tabNodes,
-    chats,
-    applyTabNodeState,
-  });
+  return chatTabsController.refreshTabNode(chatId);
 }
 
 function syncActiveTabSelection(previousChatId, nextChatId) {
-  chatUiHelpers.syncActiveTabSelection({
-    previousChatId,
-    nextChatId,
-    tabNodes,
-    renderTabs,
-    refreshTabNode,
-  });
+  return chatTabsController.syncActiveTabSelection(previousChatId, nextChatId);
 }
 
 function normalizeSkin(value) {
@@ -1533,20 +1441,19 @@ function setNoActiveChatMeta() {
   return activeChatMetaController.setNoActiveChatMeta();
 }
 
+const composerStateController = composerStateHelpers.createController({
+  getActiveChatId: () => activeChatId,
+  pendingChats,
+  chats,
+  getIsAuthenticated: () => isAuthenticated,
+  sendButton,
+  promptEl,
+  removeChatButton,
+  pinChatButton,
+});
+
 function updateComposerState() {
-  const state = composerStateHelpers.deriveComposerState({
-    activeChatId,
-    pendingChats,
-    chats,
-    isAuthenticated,
-  });
-  composerStateHelpers.applyComposerState({
-    state,
-    sendButton,
-    promptEl,
-    removeChatButton,
-    pinChatButton,
-  });
+  return composerStateController.updateComposerState();
 }
 
 function setStreamAbortController(chatId, controller) {
@@ -1573,33 +1480,6 @@ function getStreamAbortControllers() {
   return streamController.getAbortControllers();
 }
 
-async function apiPost(url, payload) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(authPayload(payload)),
-  });
-  const data = await safeReadJson(response);
-  if (!response.ok || !data?.ok) {
-    const fallbackText = data?.error || summarizeUiFailure("", {
-      status: response.status,
-      fallback: `Request failed: ${response.status}`,
-    });
-    const message = summarizeUiFailure(data?.error || "", {
-      status: response.status,
-      fallback: fallbackText,
-    });
-    if (/Telegram init data is too old/i.test(message)) {
-      isAuthenticated = false;
-      authStatus.textContent = "Session expired";
-      updateComposerState();
-      throw new Error("Telegram session expired. Close and reopen the mini app to refresh auth.");
-    }
-    throw new Error(message);
-  }
-  return data;
-}
-
 async function refreshChats() {
   return chatHistoryController.refreshChats();
 }
@@ -1618,7 +1498,10 @@ const chatHistoryController = chatHistoryHelpers.createController({
   refreshTabNode,
   getActiveChatId: () => Number(activeChatId),
   resumePendingChatStream,
-  appendSystemMessage,
+  messagesEl,
+  template,
+  nowStamp,
+  renderBody,
   getLastOpenChatRequestId: () => lastOpenChatRequestId,
   setLastOpenChatRequestId: (value) => {
     lastOpenChatRequestId = Number(value) || 0;
@@ -1644,12 +1527,16 @@ const chatHistoryController = chatHistoryHelpers.createController({
     finalizeStreamPendingState(chatId, false);
   },
   restorePendingStreamSnapshot,
+  hasFreshPendingStreamSnapshot,
+  persistPendingStreamSnapshot,
+  clearPendingStreamSnapshot,
   shouldResumeOnVisibilityChange: (args = {}) => {
     if (reconnectResumeBlockedChats.has(Number(args?.activeChatId))) {
       return false;
     }
     return runtimeHelpers.shouldResumeOnVisibilityChange(args);
   },
+  shouldDeferNonCriticalCachedOpen: () => !mobileQuoteMode && document.visibilityState === 'visible',
 });
 
 const chatAdminController = chatAdminHelpers.createController({
@@ -1689,12 +1576,17 @@ const chatAdminController = chatAdminHelpers.createController({
   getActiveChatId: () => Number(activeChatId),
   openChat,
   onLatencyByChatMutated: persistLatencyByChatToStorage,
+  focusComposerForNewChat,
 });
 
 const shellUiController = shellUiHelpers.createController({
   tg,
   pendingChats,
   fullscreenAppTopButton,
+  devAuthControls,
+  devModeBadge,
+  devConfig,
+  desktopTestingRequested,
   appendSystemMessage,
   scheduleTimeout: (callback, delay) => window.setTimeout(callback, delay),
 });
@@ -1707,7 +1599,6 @@ const composerViewportController = composerViewportHelpers.createController({
   form,
   messagesEl,
   tabsEl,
-  toolStreamEl,
   mobileQuoteMode,
   isNearBottomFn: isNearBottom,
   getActiveChatId: () => Number(activeChatId),
@@ -1719,16 +1610,21 @@ const composerViewportController = composerViewportHelpers.createController({
 const latencyViewController = runtimeHelpers.createLatencyController({
   latencyByChat,
   getActiveChatId: () => Number(activeChatId),
+  hasLiveStreamController,
   setActivityChip,
   preserveViewportDuringUiMutation,
   latencyChip,
   streamDebugLog,
+  onLatencyMapMutated: () => latencyPersistenceController.persistLatencyByChatToStorage(),
+  renderTraceLog,
+  getDocumentVisibilityState: () => document.visibilityState,
 });
 
 const streamActivityController = runtimeHelpers.createStreamActivityController({
   chats,
   getActiveChatId: () => Number(activeChatId),
   hasLiveStreamController,
+  getChatLatencyText: (chatId) => latencyByChat.get(Number(chatId)) || '',
   chatLabel,
   compactChatLabel,
   setStreamStatus,
@@ -1758,6 +1654,7 @@ const visibilitySkinController = visibilitySkinHelpers.createController({
   setCurrentSkin: (value) => {
     currentSkin = String(value || "");
   },
+  apiPost,
   syncTelegramChromeForSkin,
   getIsAuthenticated: () => isAuthenticated,
   getActiveChatId: () => Number(activeChatId),
@@ -1765,6 +1662,7 @@ const visibilitySkinController = visibilitySkinHelpers.createController({
   syncVisibleActiveChat,
   syncActiveMessageView,
   getStreamAbortControllers,
+  maybeRefreshForBootstrapVersionMismatch,
 });
 
 const startupBindingsController = startupBindingsHelpers.createController({
@@ -1789,6 +1687,12 @@ const startupBindingsController = startupBindingsHelpers.createController({
   settingsClose,
   settingsModal,
   authStatusEl: authStatus,
+  operatorNameEl: operatorName,
+  formEl: form,
+  promptEl,
+  sendButton,
+  templateEl: template,
+  tg,
   getActiveChatId: () => Number(activeChatId),
   getRenderedChatId: () => Number(renderedChatId),
   isNearBottomFn: isNearBottom,
@@ -1796,6 +1700,8 @@ const startupBindingsController = startupBindingsHelpers.createController({
   chatStickToBottom,
   unseenStreamChats,
   histories,
+  chats,
+  pendingChats,
   shouldVirtualizeHistoryFn: shouldVirtualizeHistory,
   scheduleActiveMessageView,
   refreshTabNode,
@@ -1831,6 +1737,36 @@ const startupBindingsController = startupBindingsHelpers.createController({
   renameActiveChat,
   toggleActiveChatPin,
   removeActiveChat,
+  syncRenderTraceBadge,
+  loadDraftsFromStorage,
+  syncClosingConfirmation,
+  syncFullscreenControlState,
+  setInitData: (value) => {
+    initData = String(value || "");
+  },
+  getInitData: () => initData,
+  getRenderTraceDebugEnabled: () => renderTraceDebugEnabled,
+  renderTraceLog,
+  maybeRefreshForBootstrapVersionMismatch,
+  logBootStage,
+  syncBootLatencyChip,
+  fetchAuthBootstrapWithRetry,
+  desktopTestingEnabled,
+  desktopTestingRequested,
+  devConfig,
+  applyAuthBootstrap,
+  hasFreshPendingStreamSnapshot,
+  restorePendingStreamSnapshot,
+  renderMessages,
+  updateComposerState,
+  revealShell,
+  recordBootMetric,
+  summarizeBootMetrics,
+  getChatsSize: () => chats.size,
+  isActiveChatPending: () => Boolean(activeChatId && chats.get(Number(activeChatId))?.pending),
+  refreshChats,
+  syncVisibleActiveChat,
+  getStreamAbortControllers: () => streamController.getAbortControllers(),
 });
 
 function historiesDiffer(currentHistory, incomingHistory) {
@@ -1850,76 +1786,35 @@ async function markRead(chatId) {
 }
 
 function getStreamPhase(chatId) {
-  return getStreamPhaseFromState({ streamPhaseByChat, chatId });
+  return streamPhaseController.getStreamPhase(chatId);
 }
 
 function setStreamPhase(chatId, phase) {
-  const key = Number(chatId);
-  if (!key) return STREAM_PHASES.IDLE;
-  const next = setStreamPhaseInState({ streamPhaseByChat, chatId: key, phase });
-  renderTraceLog("stream-phase", { chatId: key, phase: next });
-  return next;
+  return streamPhaseController.setStreamPhase(chatId, phase);
 }
 
 function messageStableKeyForPendingState(message, index = 0, pendingState = false) {
-  return renderTraceHelpers.messageStableKeyForPendingState(message, index, pendingState);
+  return messageRenderController.messageStableKeyForPendingState(message, index, pendingState);
 }
 
 function findLatestHistoryMessageByRole(chatId, role, { pendingOnly = null } = {}) {
-  return renderTraceHelpers.findLatestHistoryMessageByRole(histories.get(Number(chatId)) || [], role, {
-    pendingOnly,
-    messageStableKeyFn: messageStableKey,
-    messageStableKeyForPendingStateFn: messageStableKeyForPendingState,
-  });
+  return messageRenderController.findLatestHistoryMessageByRole(chatId, role, { pendingOnly });
 }
 
 function findLatestAssistantHistoryMessage(chatId, { pendingOnly = null } = {}) {
-  return renderTraceHelpers.findLatestAssistantHistoryMessage(histories.get(Number(chatId)) || [], {
-    pendingOnly,
-    messageStableKeyFn: messageStableKey,
-    messageStableKeyForPendingStateFn: messageStableKeyForPendingState,
-  });
+  return messageRenderController.findLatestAssistantHistoryMessage(chatId, { pendingOnly });
 }
 
 function findMessageNodeByKey(selector, messageKey, alternateMessageKey = "") {
-  return renderTraceHelpers.findMessageNodeByKey(messagesEl, selector, messageKey, alternateMessageKey);
+  return messageRenderController.findMessageNodeByKey(selector, messageKey, alternateMessageKey);
 }
 
 function patchVisiblePendingAssistant(chatId, nextBody, pendingState = true) {
-  return renderTraceHelpers.patchVisiblePendingAssistant({
-    chatId,
-    activeChatId,
-    phase: getStreamPhase(chatId),
-    nextBody,
-    pendingState,
-    messagesContainer: messagesEl,
-    history: histories.get(Number(chatId)) || [],
-  }, {
-    isPatchPhaseAllowedFn: isPatchPhaseAllowed,
-    findLatestAssistantHistoryMessageFn: renderTraceHelpers.findLatestAssistantHistoryMessage,
-    findMessageNodeByKeyFn: renderTraceHelpers.findMessageNodeByKey,
-    renderTraceLogFn: renderTraceLog,
-    preserveViewportDuringUiMutationFn: preserveViewportDuringUiMutation,
-    renderBodyFn: renderBody,
-  });
+  return messageRenderController.patchVisiblePendingAssistant(chatId, nextBody, pendingState);
 }
 
 function patchVisibleToolTrace(chatId) {
-  return renderTraceHelpers.patchVisibleToolTrace({
-    chatId,
-    activeChatId,
-    phase: getStreamPhase(chatId),
-    messagesContainer: messagesEl,
-    history: histories.get(Number(chatId)) || [],
-  }, {
-    isPatchPhaseAllowedFn: isPatchPhaseAllowed,
-    findLatestHistoryMessageByRoleFn: renderTraceHelpers.findLatestHistoryMessageByRole,
-    findMessageNodeByKeyFn: renderTraceHelpers.findMessageNodeByKey,
-    renderTraceLogFn: renderTraceLog,
-    preserveViewportDuringUiMutationFn: preserveViewportDuringUiMutation,
-    renderToolTraceBodyFn: renderToolTraceBody,
-    formatMessageTimeFn: formatMessageTime,
-  });
+  return messageRenderController.patchVisibleToolTrace(chatId);
 }
 
 function maybeMarkRead(chatId, options = {}) {
@@ -1958,26 +1853,11 @@ function addLocalMessage(chatId, message) {
 }
 
 function updatePendingAssistant(chatId, nextBody, pendingState = true) {
-  const result = chatHistoryController.updatePendingAssistant(chatId, nextBody, pendingState);
-  persistPendingStreamSnapshot(chatId);
-  if (!pendingState) {
-    clearPendingStreamSnapshot(chatId);
-  }
-  return result;
+  return chatHistoryController.updatePendingAssistant(chatId, nextBody, pendingState);
 }
 
-function appendSystemMessage(text) {
-  if (!activeChatId) {
-    const node = template.content.firstElementChild.cloneNode(true);
-    node.classList.add("message--system");
-    node.querySelector(".message__role").textContent = "system";
-    node.querySelector(".message__time").textContent = nowStamp();
-    renderBody(node.querySelector(".message__body"), text);
-    messagesEl.appendChild(node);
-    return;
-  }
-  addLocalMessage(activeChatId, { role: "system", body: text, created_at: new Date().toISOString() });
-  renderMessages(activeChatId);
+function appendSystemMessage(text, chatIdOverride = null) {
+  return chatHistoryController.appendSystemMessage(text, chatIdOverride);
 }
 
 function syncActiveMessageView(chatId, options = {}) {
@@ -2002,265 +1882,32 @@ function warmChatHistoryCache() {
 }
 
 function getMissingBootstrapBindings() {
-  const requiredBindings = [
-    ["status chip", authStatus, "#auth-status"],
-    ["operator name", operatorName, "#operator-name"],
-    ["chat tabs", tabsEl, "#chat-tabs"],
-    ["message log", messagesEl, "#messages"],
-    ["composer form", form, "#chat-form"],
-    ["composer input", promptEl, "#prompt"],
-    ["send button", sendButton, "#send-button"],
-    ["message template", template, "#message-template"],
-  ];
-  return requiredBindings
-    .filter(([, node]) => !node)
-    .map(([label, , selector]) => `${label} (${selector})`);
+  return startupBindingsController.getMissingBootstrapBindings();
 }
 
 function reportBootstrapMismatch(reason, details = []) {
-  const suffix = Array.isArray(details) && details.length ? ` Missing: ${details.join(", ")}.` : "";
-  const message = `${reason}.${suffix} Reload the mini app to refresh assets.`;
-  if (authStatus) {
-    authStatus.textContent = "Client bootstrap mismatch";
-    authStatus.title = message;
-  }
-  if (messagesEl && template) {
-    appendSystemMessage(message);
-    return;
-  }
-  console.error("[miniapp/bootstrap]", message);
+  return startupBindingsController.reportBootstrapMismatch(reason, details);
 }
 
-const RESUME_RECOVERY_MAX_ATTEMPTS = 3;
-const RESUME_RECOVERY_BASE_DELAY_MS = 900;
-const RESUME_REATTACH_MIN_INTERVAL_MS = 1200;
-const RESUME_COMPLETE_SETTLE_MS = 2500;
-const RESUME_RECOVERY_TRANSIENT_ERROR_RE = /load failed|failed to fetch|network(?:error| failure| request failed)?|the network connection was lost|fetch failed|temporarily unavailable/i;
+const resumeRecoveryPolicy = streamControllerHelpers.createResumeRecoveryPolicy({
+  setTimeoutFn: (callback, delay) => window.setTimeout(callback, delay),
+  randomFn: () => Math.random(),
+});
 
-function delayMs(ms) {
-  return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, Number(ms) || 0)));
-}
-
-function isTransientResumeRecoveryError(error) {
-  const message = String(error?.message || error || "").trim();
-  return RESUME_RECOVERY_TRANSIENT_ERROR_RE.test(message);
-}
-
-function nextResumeRecoveryDelayMs(attempt) {
-  const normalizedAttempt = Math.max(1, Number(attempt) || 1);
-  const jitterMs = Math.floor(Math.random() * 180);
-  return RESUME_RECOVERY_BASE_DELAY_MS * normalizedAttempt + jitterMs;
-}
-
-function isRetryableAuthBootstrapFailure(response, data) {
-  const status = Number(response?.status || 0);
-  if (!status) return true;
-  if (AUTH_BOOTSTRAP_RETRYABLE_STATUS.has(status)) return true;
-  const text = String(data?.error || "");
-  return /temporarily unavailable|try again|timeout/i.test(text);
-}
-
-async function fetchAuthBootstrapWithRetry() {
-  let lastResponse = null;
-  let lastData = null;
-  let lastError = null;
-
-  recordBootMetric("authBootstrapStartMs");
-  syncBootLatencyChip("auth-request");
-
-  for (let attempt = 1; attempt <= AUTH_BOOTSTRAP_MAX_ATTEMPTS; attempt += 1) {
-    try {
-      const response = await fetch("/api/auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ init_data: initData, allow_empty: true }),
-      });
-      const data = await safeReadJson(response);
-      if (response.ok && data?.ok) {
-        recordBootMetric("authBootstrapSuccessMs");
-        logBootStage("auth-bootstrap-ok", { attempt, status: response.status });
-        return { response, data };
-      }
-      lastResponse = response;
-      lastData = data;
-      if (!isRetryableAuthBootstrapFailure(response, data) || attempt >= AUTH_BOOTSTRAP_MAX_ATTEMPTS) {
-        recordBootMetric("authBootstrapFailureMs");
-        logBootStage("auth-bootstrap-failed", { attempt, status: response.status, retryable: false });
-        return { response, data };
-      }
-    } catch (error) {
-      lastError = error;
-      if (attempt >= AUTH_BOOTSTRAP_MAX_ATTEMPTS) {
-        break;
-      }
-    }
-
-    const jitterMs = Math.floor(Math.random() * 120);
-    const backoffMs = AUTH_BOOTSTRAP_BASE_DELAY_MS * attempt + jitterMs;
-    await delayMs(backoffMs);
-  }
-
-  if (lastResponse) {
-    return { response: lastResponse, data: lastData };
-  }
-  if (lastError) {
-    recordBootMetric("authBootstrapErrorMs");
-    throw lastError;
-  }
-  recordBootMetric("authBootstrapErrorMs");
-  throw new Error("Session bootstrap failed before response.");
+function fetchAuthBootstrapWithRetry() {
+  return bootstrapAuthController.fetchAuthBootstrapWithRetry();
 }
 
 async function maybeRefreshForBootstrapVersionMismatch() {
-  if (!bootBootstrapVersion) return false;
-
-  try {
-    const response = await fetch("/api/state", {
-      method: "GET",
-      cache: "no-store",
-      headers: { "Cache-Control": "no-cache" },
-    });
-    const data = await safeReadJson(response);
-    if (!response.ok || !data?.ok) {
-      return false;
-    }
-    const serverVersion = String(data?.bootstrap_version || "").trim();
-    if (!serverVersion || serverVersion === bootBootstrapVersion) {
-      if (window.sessionStorage) {
-        window.sessionStorage.removeItem(BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY);
-      }
-      return false;
-    }
-
-    const reloadMarker = `${bootBootstrapVersion}->${serverVersion}`;
-    const priorMarker = window.sessionStorage?.getItem(BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY) || "";
-    if (priorMarker === reloadMarker) {
-      return false;
-    }
-    window.sessionStorage?.setItem(BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY, reloadMarker);
-
-    if (authStatus) {
-      authStatus.textContent = "Refreshing app…";
-      authStatus.title = "Detected a newer app build. Reloading once to sync assets.";
-    }
-    const target = `${window.location.pathname}?v=${encodeURIComponent(serverVersion)}`;
-    window.location.replace(target);
-    return true;
-  } catch {
-    return false;
-  }
+  return bootstrapAuthController.maybeRefreshForBootstrapVersionMismatch();
 }
 
 async function bootstrap() {
-  logBootStage("bootstrap-start", { hasTelegram: Boolean(tg) });
-  if (authStatus) {
-    authStatus.textContent = tg ? "Opening Hermes…" : "Waiting for Telegram…";
-  }
-  syncBootLatencyChip("bootstrap-start");
-
-  if (tg) {
-    try {
-      tg.ready?.();
-      tg.expand?.();
-      logBootStage("telegram-webapp-ready");
-    } catch {
-      // Non-fatal: proceed with auth even when client WebApp helpers partially fail.
-    }
-  }
-
-  syncRenderTraceBadge();
-  loadDraftsFromStorage();
-  syncClosingConfirmation();
-  syncFullscreenControlState();
-  syncDevAuthUi();
-  try {
-    tg.onEvent?.("fullscreenChanged", syncFullscreenControlState);
-    tg.onEvent?.("fullscreenFailed", () => appendSystemMessage("Fullscreen request was denied by Telegram client."));
-  } catch {
-    // Optional event hooks vary across Telegram clients.
-  }
-  initData = tg?.initData || "";
-  renderTraceLog("debug-enabled", {
-    enabled: renderTraceDebugEnabled,
-    toggleHint: "Open Settings and tap Render Trace to toggle logging",
-  });
-
-  const missingBindings = getMissingBootstrapBindings();
-  if (missingBindings.length) {
-    reportBootstrapMismatch("Required startup bindings are missing", missingBindings);
-    syncDevAuthUi();
-    updateComposerState();
-    revealShell();
-    return;
-  }
-
-  if (await maybeRefreshForBootstrapVersionMismatch()) {
-    revealShell();
-    return;
-  }
-
-  try {
-    logBootStage("auth-request-dispatched", {
-      hasTelegramInitData: Boolean(initData),
-    });
-    const { response, data } = await fetchAuthBootstrapWithRetry();
-    logBootStage("auth-response-received", {
-      status: Number(response?.status || 0),
-      ok: Boolean(response?.ok && data?.ok),
-    });
-
-    if (!response.ok || !data?.ok) {
-      if (desktopTestingEnabled) {
-        const autoSignedIn = await signInWithDevAuth({ interactive: false });
-        if (autoSignedIn) {
-          return;
-        }
-        authStatus.textContent = "Desktop testing ready";
-        appendSystemMessage(data?.error || "Use /app#dev-auth to open Dev sign-in outside Telegram.");
-        return;
-      }
-      if (desktopTestingRequested && !Boolean(devConfig.devAuthEnabled)) {
-        authStatus.textContent = "Debug sign-in unavailable";
-        appendSystemMessage("Dev auth is currently disabled. Enable the bypass flag, then reload /app#dev-auth.");
-        return;
-      }
-      authStatus.textContent = "Sign-in failed";
-      appendSystemMessage(data?.error || (tg ? "Sign-in failed." : "Open this mini app from Telegram."));
-      return;
-    }
-
-    applyAuthBootstrap(data, { preferredUsername: tg?.initDataUnsafe?.user?.username || "" });
-    logBootStage("auth-bootstrap-applied", {
-      activeChatId: Number(data?.active_chat_id || 0),
-      chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
-    });
-    const restoredPendingSnapshot = Number(data?.active_chat_id || 0) > 0 && Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === Number(data.active_chat_id))?.pending)
-      ? restorePendingStreamSnapshot(Number(data.active_chat_id))
-      : false;
-    if (restoredPendingSnapshot && Number(data?.active_chat_id || 0) > 0) {
-      renderMessages(Number(data.active_chat_id), { preserveViewport: true });
-    }
-  } catch (error) {
-    recordBootMetric("bootstrapErrorMs");
-    authStatus.textContent = "Sign-in error";
-    appendSystemMessage(`Could not start the app: ${error.message}`);
-  } finally {
-    syncDevAuthUi();
-    updateComposerState();
-    revealShell();
-    logBootStage("bootstrap-finished", { authenticated: Boolean(isAuthenticated) });
-    summarizeBootMetrics({
-      authenticated: Boolean(isAuthenticated),
-      activeChatId: Number(activeChatId || 0),
-      chatCount: chats.size,
-      pendingActiveChat: Boolean(activeChatId && chats.get(Number(activeChatId))?.pending),
-    });
-  }
+  return startupBindingsController.bootstrap();
 }
 
 async function saveSkinPreference(skin) {
-  const data = await apiPost("/api/preferences/skin", { skin });
-  setSkin(data.skin);
+  return visibilitySkinController.saveSkinPreference(skin);
 }
 
 const streamController = streamControllerHelpers.createController({
@@ -2300,9 +1947,9 @@ const streamController = streamControllerHelpers.createController({
   updateComposerState,
   syncClosingConfirmation,
   appendSystemMessage,
-  appendInlineToolTrace,
   streamDebugLog,
   finalizeStreamPendingState,
+  appendInlineToolTrace,
   loadChatHistory,
   upsertChat,
   histories,
@@ -2311,12 +1958,37 @@ const streamController = streamControllerHelpers.createController({
   persistStreamCursor: setStoredStreamCursor,
   clearStreamCursor: clearStoredStreamCursor,
   clearPendingStreamSnapshot,
-  markStreamActive: (chatId, options = {}) => streamActivityController.markStreamActive(chatId, options),
-  markStreamQueued: (chatId, options = {}) => streamActivityController.markStreamQueued(chatId, options),
-  markStreamComplete: (chatId, latencyText) => streamActivityController.markStreamComplete(chatId, latencyText),
-  markToolActivity: (chatId) => streamActivityController.markToolActivity(chatId),
-  markStreamError: (chatId) => streamActivityController.markStreamError(chatId),
-  markStreamClosedEarly: (chatId) => streamActivityController.markStreamClosedEarly(chatId),
+  authPayload,
+  parseStreamErrorPayload,
+  summarizeUiFailure,
+  getIsAuthenticated: () => isAuthenticated,
+  setIsAuthenticated: (value) => {
+    isAuthenticated = Boolean(value);
+  },
+  authStatusEl: authStatus,
+  dropPendingToolTraceMessages,
+  addLocalMessage,
+  setDraft,
+  resetToolStream,
+  clearReconnectResumeBlock,
+  resetReconnectResumeBudget,
+  consumeReconnectResumeBudget,
+  suppressBlockedChatPending,
+  blockReconnectResume,
+  isReconnectResumeBlocked: (chatId) => reconnectResumeBlockedChats.has(Number(chatId)),
+  MAX_AUTO_RESUME_CYCLES_PER_CHAT,
+  resumeAttemptedAtByChat,
+  resumeCooldownUntilByChat,
+  resumeInFlightByChat,
+  RESUME_RECOVERY_MAX_ATTEMPTS: resumeRecoveryPolicy.RESUME_RECOVERY_MAX_ATTEMPTS,
+  RESUME_REATTACH_MIN_INTERVAL_MS: resumeRecoveryPolicy.RESUME_REATTACH_MIN_INTERVAL_MS,
+  RESUME_COMPLETE_SETTLE_MS: resumeRecoveryPolicy.RESUME_COMPLETE_SETTLE_MS,
+  isTransientResumeRecoveryError: resumeRecoveryPolicy.isTransientResumeRecoveryError,
+  nextResumeRecoveryDelayMs: resumeRecoveryPolicy.nextResumeRecoveryDelayMs,
+  delayMs: resumeRecoveryPolicy.delayMs,
+  markChatStreamPending,
+  getStoredStreamCursor,
+  isNearBottom,
 });
 
 function finalizeStreamPendingState(chatId, wasAborted) {
@@ -2371,8 +2043,8 @@ async function finalizeStreamLifecycle(chatId, controller, { wasAborted }) {
   return streamController.finalizeStreamLifecycle(chatId, controller, { wasAborted });
 }
 
-async function hydrateChatAfterGracefulResumeCompletion(chatId) {
-  return streamController.hydrateChatAfterGracefulResumeCompletion(chatId);
+async function hydrateChatAfterGracefulResumeCompletion(chatId, options = {}) {
+  return streamController.hydrateChatAfterGracefulResumeCompletion(chatId, options);
 }
 
 async function consumeStreamWithReconnect(chatId, response, builtReplyRef, options = {}) {
@@ -2393,265 +2065,11 @@ function focusMessagesPaneIfActiveChat(chatId) {
 }
 
 async function sendPrompt(message) {
-  if (!isAuthenticated || !activeChatId) {
-    appendSystemMessage("Still signing you in. Try again in a moment.");
-    return;
-  }
-
-  const cleaned = message.trim();
-  if (!cleaned) return;
-
-  const chatId = Number(activeChatId);
-  if (reconnectResumeBlockedChats.has(chatId)) {
-    clearReconnectResumeBlock(chatId);
-    suppressBlockedChatPending(chatId);
-  }
-  const serverPending = Boolean(chats.get(chatId)?.pending);
-  if (pendingChats.has(chatId) || serverPending) {
-    appendSystemMessage(`Still replying in '${chatLabel(chatId)}'.`);
-    return;
-  }
-
-  markChatStreamPending({
-    chatId,
-    pendingChats,
-    chats,
-    setStreamPhase,
-  });
-  syncClosingConfirmation();
-  renderTabs();
-  updateComposerState();
-
-  addLocalMessage(chatId, { role: "operator", body: cleaned, created_at: new Date().toISOString() });
-  if (chatId === Number(activeChatId)) {
-    promptEl.value = "";
-    setDraft(chatId, "");
-  }
-  syncActiveMessageView(chatId, { preserveViewport: true });
-  focusMessagesPaneIfActiveChat(chatId);
-
-  clearStoredStreamCursor(chatId);
-  clearPendingStreamSnapshot(chatId);
-  resetToolStream();
-  streamActivityController.markStreamActive(chatId);
-
-  const builtReplyRef = { value: "" };
-  let wasAborted = false;
-  const streamController = new AbortController();
-  const shouldRestoreFocusOnComplete = Boolean(
-    Number(activeChatId) === chatId
-    && document.activeElement === promptEl
-    && isNearBottom(messagesEl, 40),
-  );
-  setStreamFocusRestoreEligibility(chatId, shouldRestoreFocusOnComplete);
-  setStreamAbortController(chatId, streamController);
-
-  try {
-    const response = await fetch("/api/chat/stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(authPayload({ chat_id: chatId, message: cleaned })),
-      signal: streamController.signal,
-    });
-
-    if (!response.ok || !response.body) {
-      const fallback = await response.text();
-      const parsedError = parseStreamErrorPayload(fallback);
-      const alreadyWorking = response.status === 409;
-      const sanitizedFallbackMessage = summarizeUiFailure(parsedError.error || fallback, {
-        status: response.status,
-        fallback: "Hermes call failed.",
-      });
-      if (alreadyWorking) {
-        await resumePendingChatStream(chatId, { force: true });
-        return;
-      }
-
-      setStreamPhase(chatId, STREAM_PHASES.ERROR);
-      if (/Telegram init data is too old/i.test(parsedError.error || fallback || "")) {
-        isAuthenticated = false;
-        authStatus.textContent = "Session expired";
-        updatePendingAssistant(chatId, "Telegram session expired. Close and reopen the mini app to refresh auth.", false);
-        updateComposerState();
-      } else {
-        updatePendingAssistant(chatId, sanitizedFallbackMessage, false);
-      }
-      syncActiveMessageView(chatId, { preserveViewport: true });
-      streamActivityController.markStreamError();
-      return;
-    }
-
-    const resumed = await consumeStreamWithReconnect(chatId, response, builtReplyRef, {
-      fallbackTraceEvent: "stream-fallback-patch",
-      resetReplayCursor: true,
-      onEarlyClose: async () => {
-        await resumePendingChatStream(chatId, { force: true });
-      },
-    });
-    if (resumed) return;
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      wasAborted = true;
-      return;
-    }
-    setStreamPhase(chatId, STREAM_PHASES.ERROR);
-    finalizeInlineToolTrace(chatId);
-    updatePendingAssistant(chatId, `Network failure: ${error.message}`, false);
-    markStreamUpdate(chatId);
-    syncActiveMessageView(chatId, { preserveViewport: true });
-    streamActivityController.markNetworkFailure();
-  } finally {
-    await finalizeStreamLifecycle(chatId, streamController, { wasAborted });
-  }
+  return streamController.sendPrompt(message);
 }
 
-async function resumePendingChatStream(chatId, { force = false } = {}) {
-  const key = Number(chatId);
-  if (!key || !isAuthenticated) return;
-  try {
-  if (reconnectResumeBlockedChats.has(key)) {
-    suppressBlockedChatPending(key);
-    renderTabs();
-    updateComposerState();
-    syncActivePendingStatus();
-    return;
-  }
-  const now = Date.now();
-  const cooldownUntil = Number(resumeCooldownUntilByChat.get(key) || 0);
-  if (cooldownUntil > now) {
-    return;
-  }
-  if (resumeInFlightByChat.has(key)) {
-    return;
-  }
-  const hasLiveController = hasLiveStreamController(key);
-  if (hasLiveController && !force) return;
-  const lastAttemptAt = Number(resumeAttemptedAtByChat.get(key) || 0);
-  if (lastAttemptAt > 0 && (now - lastAttemptAt) < RESUME_REATTACH_MIN_INTERVAL_MS) {
-    return;
-  }
-  const chatPending = Boolean(chats.get(key)?.pending);
-  if (!chatPending && !force) return;
-
-  resumeInFlightByChat.add(key);
-  resumeAttemptedAtByChat.set(key, now);
-
-  if (force && hasLiveController) {
-    abortStreamController(key);
-  }
-
-  markChatStreamPending({
-    chatId: key,
-    pendingChats,
-    chats,
-    setStreamPhase,
-  });
-  syncClosingConfirmation();
-  renderTabs();
-  updateComposerState();
-
-  if (Number(activeChatId) === key) {
-    streamActivityController.markStreamReconnecting(key, {
-      attempt: 1,
-      maxAttempts: RESUME_RECOVERY_MAX_ATTEMPTS,
-    });
-  }
-
-  const builtReplyRef = { value: "" };
-
-  for (let attempt = 1; attempt <= RESUME_RECOVERY_MAX_ATTEMPTS; attempt += 1) {
-    let wasAborted = false;
-    const streamController = new AbortController();
-    setStreamFocusRestoreEligibility(key, false);
-    setStreamAbortController(key, streamController);
-
-    try {
-      const response = await fetch("/api/chat/stream/resume", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(authPayload({ chat_id: key, after_event_id: getStoredStreamCursor(key) })),
-        signal: streamController.signal,
-      });
-
-      if (!response.ok || !response.body) {
-        const fallback = await response.text();
-        const sanitizedResumeFailure = summarizeUiFailure(fallback, {
-          status: response.status,
-          fallback: `Resume failed: ${response.status}`,
-        });
-        const noActiveJob = response.status === 409;
-        if (noActiveJob) {
-          resumeCooldownUntilByChat.set(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
-          setStreamPhase(key, STREAM_PHASES.FINALIZED);
-          await hydrateChatAfterGracefulResumeCompletion(key);
-          triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
-          streamActivityController.markResumeAlreadyComplete(key);
-          return;
-        }
-        throw new Error(sanitizedResumeFailure);
-      }
-
-      const resumed = await consumeStreamWithReconnect(key, response, builtReplyRef, {
-        fallbackTraceEvent: "stream-resume-fallback-patch",
-        onEarlyClose: async () => {
-          // Resume stream segments can early-close without terminal state on mobile/WebView.
-          // Reconnect instead of finalizing local pending state.
-          await resumePendingChatStream(Number(key), { force: true });
-        },
-      });
-      if (resumed) return;
-      return;
-    } catch (error) {
-      if (error?.name === "AbortError") {
-        wasAborted = true;
-        return;
-      }
-      const transientReconnectFailure = isTransientResumeRecoveryError(error);
-      const hasAttemptsRemaining = transientReconnectFailure && attempt < RESUME_RECOVERY_MAX_ATTEMPTS;
-      if (hasAttemptsRemaining) {
-        console.warn(`[W_STREAM_RECONNECT_RETRY] chat=${key} attempt=${attempt}/${RESUME_RECOVERY_MAX_ATTEMPTS}`, error);
-        if (Number(activeChatId) === key) {
-          streamActivityController.markStreamReconnecting(key, {
-            attempt: attempt + 1,
-            maxAttempts: RESUME_RECOVERY_MAX_ATTEMPTS,
-          });
-        }
-        await delayMs(nextResumeRecoveryDelayMs(attempt));
-        continue;
-      }
-
-      if (transientReconnectFailure) {
-        await hydrateChatAfterGracefulResumeCompletion(key);
-        const stillPending = Boolean(chats.get(key)?.pending) || pendingChats.has(key);
-        if (!stillPending) {
-          resumeCooldownUntilByChat.set(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
-          setStreamPhase(key, STREAM_PHASES.FINALIZED);
-          triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
-          streamActivityController.markResumeAlreadyComplete(key);
-          return;
-        }
-      }
-
-      blockReconnectResume(key);
-      setStreamPhase(key, STREAM_PHASES.ERROR);
-      finalizeInlineToolTrace(key);
-      console.warn(`[E_STREAM_RECONNECT_FAILED] chat=${key}`, error);
-      appendSystemMessage(`Could not reconnect '${chatLabel(key)}': ${error.message}`);
-      appendSystemMessage(`Reconnect recovery is paused for '${chatLabel(key)}'. Send a new message to try again.`);
-      renderTabs();
-      updateComposerState();
-      syncActivePendingStatus();
-      if (Number(activeChatId) === key) {
-        streamActivityController.markReconnectFailed(key);
-      }
-      return;
-    } finally {
-      await finalizeStreamLifecycle(key, streamController, { wasAborted });
-    }
-  }
-  } finally {
-    resumeInFlightByChat.delete(key);
-  }
+async function resumePendingChatStream(chatId, options = {}) {
+  return streamController.resumePendingChatStream(chatId, options);
 }
 
 function reportUiError(error) {
@@ -2675,13 +2093,30 @@ form.addEventListener("submit", (event) => {
   void submitPromptWithUiError();
 });
 
+const interactionController = interactionHelpers.createController({
+  mobileQuoteMode,
+  activeChatId: Number(activeChatId),
+  getActiveChatId: () => Number(activeChatId),
+  focusMessagesPaneIfActiveChat,
+  submitPromptWithUiError,
+  windowObject: window,
+  documentObject: document,
+  promptEl,
+  messagesEl,
+  selectionQuoteButton,
+  selectionQuoteState,
+  activeSelectionQuote,
+  cancelSelectionQuoteSync,
+  cancelSelectionQuoteSettle,
+  cancelSelectionQuoteClear,
+  scheduleSelectionQuoteSync,
+  scheduleSelectionQuoteClear,
+  applyQuoteIntoPrompt,
+  clearSelectionQuoteState,
+});
+
 function handleComposerSubmitShortcut(event) {
-  interactionHelpers.handleComposerSubmitShortcut(event, {
-    mobileQuoteMode,
-    activeChatId,
-    focusMessagesPaneIfActiveChat,
-    submitPromptWithUiError,
-  });
+  return interactionController.handleComposerSubmitShortcut(event);
 }
 
 promptEl.addEventListener("keydown", handleComposerSubmitShortcut);
@@ -2691,54 +2126,23 @@ promptEl.addEventListener("input", () => {
   setDraft(activeChatId, promptEl.value || "");
 });
 
-function createSelectionQuoteController() {
-  return interactionHelpers.createSelectionQuoteController({
-    mobileQuoteMode,
-    windowObject: window,
-    documentObject: document,
-    promptEl,
-    messagesEl,
-    selectionQuoteButton,
-    selectionQuoteState,
-    activeSelectionQuote,
-    cancelSelectionQuoteSync,
-    cancelSelectionQuoteSettle,
-    cancelSelectionQuoteClear,
-    scheduleSelectionQuoteSync,
-    scheduleSelectionQuoteClear,
-    applyQuoteIntoPrompt,
-    clearSelectionQuoteState,
-  });
+function installSelectionQuoteBindings() {
+  return interactionController.bindSelectionQuoteBindings();
 }
 
-const selectionQuoteController = createSelectionQuoteController();
-
-const messageCopyState = messageActionsHelpers.createMessageCopyState();
-
-// Use click (not pointerdown) for clipboard writes.
-// Some Telegram WebView variants reject clipboard operations on pointerdown
-// but allow them on click as a trusted user activation.
-messageActionsHelpers.bindMessageCopyHandler({
+const messageActionsController = messageActionsHelpers.createController({
   messagesEl,
-  messageCopyState,
   normalizeText: normalizeQuoteSelection,
   copyTextToClipboard,
 });
-messagesEl?.addEventListener("click", handleMessageFileRefClick);
-messagesEl?.addEventListener("touchstart", handleMessageFileRefTouchStart, { passive: true });
-messagesEl?.addEventListener("touchmove", handleMessageFileRefTouchMove, { passive: true });
-messagesEl?.addEventListener("touchend", handleMessageFileRefClick, { passive: false });
-messagesEl?.addEventListener("touchcancel", cancelPendingMessageFileRefTouch);
-messagesEl?.addEventListener("scroll", cancelPendingMessageFileRefTouch, { passive: true });
-filePreviewExpandUp?.addEventListener("click", () => requestFilePreviewExpansion("up"));
-filePreviewLoadFull?.addEventListener("click", requestFullFilePreview);
-filePreviewExpandDown?.addEventListener("click", () => requestFilePreviewExpansion("down"));
-filePreviewClose?.addEventListener("click", closeFilePreviewModal);
-filePreviewModal?.addEventListener?.("cancel", (event) => {
-  event.preventDefault();
-  closeFilePreviewModal();
-});
-selectionQuoteController.bind();
+
+function installMessageActionBindings() {
+  return messageActionsController.bindMessageCopyBindings();
+}
+
+installSelectionQuoteBindings();
+installMessageActionBindings();
+filePreviewController.bindFilePreviewBindings();
 
 const keyboardShortcutsController = keyboardShortcutsHelpers.createController({
   windowObject: window,
@@ -2906,7 +2310,7 @@ function installShellModalBindings() {
 }
 
 async function syncVisibleActiveChat(options = {}) {
-  return chatHistoryController.syncVisibleActiveChat(options);
+  return visibilitySkinController.syncVisibleActiveChat(options);
 }
 
 async function handleVisibilityChange() {
@@ -2918,23 +2322,7 @@ function installVisibilitySkinLifecycle() {
 }
 
 function installPendingCompletionWatchdog() {
-  const intervalMs = 8000;
-  window.setInterval(() => {
-    if (!isAuthenticated || pendingChats.size === 0) return;
-    void (async () => {
-      try {
-        await refreshChats();
-        if (Number(activeChatId) > 0 && pendingChats.has(Number(activeChatId))) {
-          await syncVisibleActiveChat({
-            hidden: document.visibilityState !== "visible",
-            streamAbortControllers: streamController.getAbortControllers(),
-          });
-        }
-      } catch {
-        // Best-effort watchdog: healthy streams still finalize through normal SSE handling.
-      }
-    })();
-  }, intervalMs);
+  return startupBindingsController.installPendingCompletionWatchdog();
 }
 
 tabsEl?.addEventListener?.("click", handleTabOverflowTriggerClick, true);

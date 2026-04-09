@@ -4,6 +4,7 @@ import contextlib
 import io
 import signal
 import subprocess
+import time
 from types import SimpleNamespace
 
 import chat_worker_runner
@@ -55,6 +56,71 @@ def test_chat_worker_subprocess_stream_request_suppresses_stdout_noise() -> None
     assert captured.getvalue() == ""
     assert [event["type"] for event in events] == ["tool", "done"]
     assert events[-1]["session_id"] == "miniapp-123-55"
+
+
+def test_chat_worker_subprocess_skips_warm_attach_when_contract_disabled(monkeypatch) -> None:
+    class FakeClient:
+        def warm_session_contract(self):
+            return SimpleNamespace(enabled=False)
+
+    monkeypatch.setattr(chat_worker_subprocess, "HermesClient", FakeClient)
+    stream_calls: list[dict[str, object]] = []
+    attach_server_created = {"value": False}
+
+    def fake_stream_request(**kwargs):
+        stream_calls.append(dict(kwargs))
+        return 0
+
+    class UnexpectedAttachServer:
+        def __init__(self, *args, **kwargs):
+            attach_server_created["value"] = True
+            raise AssertionError("warm attach server should not start when contract disabled")
+
+    monkeypatch.setattr(chat_worker_subprocess, "_stream_request", fake_stream_request)
+    monkeypatch.setattr(chat_worker_subprocess, "_WarmAttachServer", UnexpectedAttachServer)
+    monkeypatch.setattr(chat_worker_subprocess.sys, "stdin", io.StringIO('{"user_id":"123","message":"hello","session_id":"miniapp-123-55"}'))
+
+    result = chat_worker_subprocess.main()
+
+    assert result == 0
+    assert attach_server_created["value"] is False
+    assert len(stream_calls) == 1
+    assert stream_calls[0]["emit_terminal"] is True
+
+
+def test_chat_worker_subprocess_stream_request_emits_heartbeat_during_silent_wait(monkeypatch) -> None:
+    events: list[dict[str, object]] = []
+    writer = chat_worker_subprocess._JsonlWriter(lambda event: events.append(dict(event)))
+
+    class FakeClient:
+        def stream_events(self, **_kwargs):
+            yield {"type": "done", "reply": "ok"}
+
+    original_get = chat_worker_subprocess.queue.Queue.get
+    call_count = {"value": 0}
+
+    def fake_get(self, *args, **kwargs):
+        if call_count["value"] == 0:
+            call_count["value"] += 1
+            raise chat_worker_subprocess.queue.Empty
+        return original_get(self, *args, **kwargs)
+
+    monkeypatch.setattr(chat_worker_subprocess.queue.Queue, "get", fake_get)
+    monkeypatch.setattr(chat_worker_subprocess, "STREAM_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+
+    result = chat_worker_subprocess._stream_request(
+        client=FakeClient(),
+        user_id="123",
+        message="hello",
+        history=[],
+        session_id="miniapp-123-55",
+        writer=writer,
+        emit_terminal=False,
+    )
+
+    assert result == 0
+    assert any(event.get("type") == "heartbeat" for event in events)
+    assert events[-1]["type"] == "done"
 
 
 def test_inline_worker_launcher_delegates_to_chat_worker_runner(monkeypatch) -> None:
@@ -127,9 +193,9 @@ def test_subprocess_worker_stream_parses_events_tracks_spawn_and_stderr(monkeypa
             self.stdout = io.StringIO(
                 '{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/attach.sock","resume_token":"token-123","resume_deadline_ms":123456}\n'
                 '{"type":"chunk","text":"hello"}\n'
-                '{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/attach.sock","resume_token":"token-456","resume_deadline_ms":123999}\n'
                 '{"type":"done","reply":"ok","latency_ms":1}\n'
                 '{"type":"worker_terminal","outcome":"success"}\n'
+                '{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/attach.sock","resume_token":"token-456","resume_deadline_ms":123999}\n'
             )
             self.returncode = 0
 
@@ -215,6 +281,7 @@ def test_subprocess_worker_stream_synthesizes_done_for_detached_warm_handoff(mon
                 '{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/attach.sock","resume_token":"token-123","resume_deadline_ms":123456}\n'
                 '{"type":"chunk","text":"hello"}\n'
                 '{"type":"worker_terminal","outcome":"success"}\n'
+                '{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/attach.sock","resume_token":"token-456","resume_deadline_ms":123999}\n'
             )
             self.returncode = 0
 
@@ -266,6 +333,8 @@ def test_subprocess_worker_stream_detaches_immediately_after_done_when_attach_re
                 '{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/attach.sock","resume_token":"token-123","resume_deadline_ms":123456}\n'
                 '{"type":"chunk","text":"hello"}\n'
                 '{"type":"done","reply":"hello","latency_ms":1}\n'
+                '{"type":"worker_terminal","outcome":"success"}\n'
+                '{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/attach.sock","resume_token":"token-456","resume_deadline_ms":123999}\n'
             )
             self.returncode = None
             self.wait_called = False
@@ -552,7 +621,8 @@ def test_subprocess_worker_timeout_forces_termination(monkeypatch, tmp_path) -> 
         )
     )
 
-    assert any("timed out" in str(evt.get("error", "")) for evt in events)
+    timeout_error = next(str(evt.get("error", "")) for evt in events if "timed out" in str(evt.get("error", "")))
+    assert "timed out stderr trail" in timeout_error
     assert fake_proc.terminated is True
     assert fake_proc.killed is True
     assert finishes == [(92345, f"{launcher.transport}:failed:timeout", -9)]
@@ -561,6 +631,7 @@ def test_subprocess_worker_timeout_forces_termination(monkeypatch, tmp_path) -> 
     assert info["last_return_code"] == -9
     assert "timed out stderr trail" in str(info["last_stderr_excerpt"])
     assert info["last_terminal_outcome"] == "timeout_killed"
+    assert "timed out stderr trail" in str(info["last_terminal_error"])
 
 
 def test_subprocess_worker_timeout_tracks_inactivity_not_total_elapsed_time(monkeypatch, tmp_path) -> None:
@@ -786,6 +857,61 @@ def test_subprocess_worker_stream_suppresses_late_nonzero_exit_after_done(monkey
     assert info["last_terminal_outcome"] == "success"
     assert info["last_terminal_error"] is None
     assert info["last_failure_kind"] == "completed"
+
+
+
+def test_subprocess_worker_stream_surfaces_stderr_on_nonzero_exit(monkeypatch, tmp_path) -> None:
+    script_path = tmp_path / "chat_worker_subprocess.py"
+    script_path.write_text("# synthetic test script placeholder\n", encoding="utf-8")
+
+    launcher = SubprocessJobWorkerLauncher(script_path=script_path, python_executable="python3")
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.pid = 91237
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO("")
+            self.returncode = 17
+
+        def wait(self, timeout=None) -> int:
+            self.returncode = 17
+            return 17
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    def fake_popen(*_args, **kwargs):
+        stderr_file = kwargs.get("stderr")
+        assert stderr_file is not None
+        stderr_file.write("fatal: provider credentials missing")
+        stderr_file.flush()
+        return FakeProcess()
+
+    monkeypatch.setattr("job_runtime_worker_launcher.subprocess.Popen", fake_popen)
+
+    runtime = SimpleNamespace(client=SimpleNamespace(register_child_spawn=lambda **_kwargs: None, deregister_child_spawn=lambda **_kwargs: None))
+
+    events = list(
+        launcher._stream_events_via_subprocess(
+            runtime=runtime,
+            user_id="123",
+            message="hello",
+            conversation_history=[],
+            session_id="miniapp-123-56",
+        )
+    )
+
+    error_message = next(str(event.get("error", "")) for event in events if event.get("type") == "error")
+    assert "Subprocess worker exited rc=17" in error_message
+    assert "provider credentials missing" in error_message
+    info = launcher.describe()
+    assert "provider credentials missing" in str(info["last_terminal_error"])
 
 
 

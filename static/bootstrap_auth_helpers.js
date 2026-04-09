@@ -21,13 +21,15 @@
       appendSystemMessage,
       safeReadJson: safeReadJsonOverride,
       fetchImpl,
-      normalizeHandle,
+      normalizeHandle: normalizeHandleOverride = null,
       initData = "",
       parseSseEvent = null,
-      fallbackHandleFromDisplayName,
+      fallbackHandleFromDisplayName: fallbackHandleFromDisplayNameOverride = null,
       setOperatorDisplayName,
+      getOperatorDisplayName = null,
       operatorName,
-      refreshOperatorRoleLabels,
+      messagesEl = null,
+      refreshOperatorRoleLabels: refreshOperatorRoleLabelsOverride = null,
       setSkin,
       syncChats,
       syncPinnedChats,
@@ -40,7 +42,19 @@
       pendingChats,
       resumePendingChatStream,
       addLocalMessage,
+      hasFreshPendingStreamSnapshot = null,
+      restorePendingStreamSnapshot = null,
+      ensureActivationReadThreshold = null,
       onBootstrapStage = null,
+      windowObject = globalScope.window || null,
+      authBootstrapMaxAttempts = 1,
+      authBootstrapBaseDelayMs = 0,
+      authBootstrapRetryableStatus = null,
+      bootBootstrapVersion = "",
+      bootstrapVersionReloadStorageKey = "",
+      recordBootMetric = null,
+      syncBootLatencyChip = null,
+      updateComposerState = null,
     } = deps;
 
     async function safeReadJson(response) {
@@ -51,6 +65,38 @@
         return await response.json();
       } catch {
         return null;
+      }
+    }
+
+    function normalizeHandle(value) {
+      if (typeof normalizeHandleOverride === "function") {
+        return normalizeHandleOverride(value);
+      }
+      return String(value || "").trim().replace(/^@+/, "");
+    }
+
+    function fallbackHandleFromDisplayName(value) {
+      if (typeof fallbackHandleFromDisplayNameOverride === "function") {
+        return fallbackHandleFromDisplayNameOverride(value);
+      }
+      const cleaned = String(value || "").trim();
+      if (!cleaned) return "";
+      if (/^[\w .-]+$/.test(cleaned)) {
+        return cleaned.replace(/\s+/g, "");
+      }
+      return cleaned;
+    }
+
+    function refreshOperatorRoleLabels() {
+      if (typeof refreshOperatorRoleLabelsOverride === "function") {
+        return refreshOperatorRoleLabelsOverride();
+      }
+      if (!messagesEl) return;
+      const label = typeof getOperatorDisplayName === "function"
+        ? String(getOperatorDisplayName() || "") || "Operator"
+        : "Operator";
+      for (const roleNode of messagesEl.querySelectorAll('.message--operator .message__role, .message[data-role="operator"] .message__role, .message[data-role="user"] .message__role')) {
+        roleNode.textContent = label;
       }
     }
 
@@ -87,6 +133,35 @@
         error,
         chatId: Number.isFinite(chatId) && chatId > 0 ? chatId : 0,
       };
+    }
+
+    async function apiPost(url, payload) {
+      const response = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(authPayload(payload)),
+      });
+      const data = await safeReadJson(response);
+      if (!response.ok || !data?.ok) {
+        const fallbackText = data?.error || summarizeUiFailure("", {
+          status: response.status,
+          fallback: `Request failed: ${response.status}`,
+        });
+        const message = summarizeUiFailure(data?.error || "", {
+          status: response.status,
+          fallback: fallbackText,
+        });
+        if (/Telegram init data is too old/i.test(message)) {
+          setIsAuthenticated(false);
+          if (authStatus) {
+            authStatus.textContent = "Session expired";
+          }
+          updateComposerState?.();
+          throw new Error("Telegram session expired. Close and reopen the mini app to refresh auth.");
+        }
+        throw new Error(message);
+      }
+      return data;
     }
 
     function syncDevAuthUi() {
@@ -158,6 +233,10 @@
         chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
       });
       const activeId = Number(data.active_chat_id || 0);
+      if (activeId > 0 && typeof ensureActivationReadThreshold === "function") {
+        const activeChat = chats?.get?.(activeId) || data?.chats?.find?.((chat) => Number(chat?.id) === activeId) || null;
+        ensureActivationReadThreshold(activeId, activeChat?.unread_count);
+      }
       if (!activeId) {
         setActiveChatMeta(null);
         renderPinnedChats();
@@ -171,27 +250,42 @@
       }
 
       histories.set(activeId, data.history || []);
+      const hasFreshPendingSnapshot = typeof hasFreshPendingStreamSnapshot === "function"
+        ? Boolean(hasFreshPendingStreamSnapshot(activeId))
+        : false;
+      const restoredPendingSnapshot = hasFreshPendingSnapshot && typeof restorePendingStreamSnapshot === "function"
+        ? Boolean(restorePendingStreamSnapshot(activeId))
+        : false;
+      if (restoredPendingSnapshot) {
+        const chat = chats.get(activeId);
+        if (chat && typeof chat === "object" && !chat.pending) {
+          chat.pending = true;
+        }
+      }
       setActiveChatMeta(activeId);
       renderPinnedChats();
       onBootstrapStage?.("initial-render-start", {
         activeChatId: activeId,
         historyCount: Array.isArray(data?.history) ? data.history.length : 0,
+        restoredPendingSnapshot,
       });
       renderMessages(activeId);
       onBootstrapStage?.("initial-render-finished", {
         activeChatId: activeId,
         historyCount: Array.isArray(data?.history) ? data.history.length : 0,
+        restoredPendingSnapshot,
       });
       onBootstrapStage?.("warm-history-cache-triggered", {
         activeChatId: activeId,
       });
       warmChatHistoryCache();
-      const shouldResumePending = Boolean(chats.get(activeId)?.pending) && !pendingChats.has(activeId);
+      const shouldResumePending = (Boolean(chats.get(activeId)?.pending) || restoredPendingSnapshot) && !pendingChats.has(activeId);
       if (shouldResumePending) {
         onBootstrapStage?.("pending-stream-resume-triggered", {
           activeChatId: activeId,
+          force: Boolean(restoredPendingSnapshot && !Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === activeId)?.pending)),
         });
-        void resumePendingChatStream(activeId);
+        void resumePendingChatStream(activeId, { force: restoredPendingSnapshot && !Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === activeId)?.pending) });
       }
       if (!(data.history || []).length) {
         addLocalMessage(activeId, {
@@ -321,17 +415,130 @@
       return true;
     }
 
+    function delayMs(ms) {
+      return new Promise((resolve) => {
+        const scheduleTimeout = typeof windowObject?.setTimeout === "function"
+          ? windowObject.setTimeout.bind(windowObject)
+          : globalScope.setTimeout;
+        scheduleTimeout(resolve, Math.max(0, Number(ms) || 0));
+      });
+    }
+
+    function isRetryableAuthBootstrapFailure(response, data) {
+      const status = Number(response?.status || 0);
+      if (!status) return true;
+      if (authBootstrapRetryableStatus?.has?.(status)) return true;
+      const text = String(data?.error || "");
+      return /temporarily unavailable|try again|timeout/i.test(text);
+    }
+
+    async function fetchAuthBootstrapWithRetry() {
+      let lastResponse = null;
+      let lastData = null;
+      let lastError = null;
+
+      recordBootMetric?.("authBootstrapStartMs");
+      syncBootLatencyChip?.("auth-request");
+
+      for (let attempt = 1; attempt <= Math.max(1, Number(authBootstrapMaxAttempts) || 1); attempt += 1) {
+        try {
+          const response = await fetchImpl("/api/auth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ init_data: initData, allow_empty: true }),
+          });
+          const data = await safeReadJson(response);
+          if (response.ok && data?.ok) {
+            recordBootMetric?.("authBootstrapSuccessMs");
+            onBootstrapStage?.("auth-bootstrap-ok", { attempt, status: response.status });
+            return { response, data };
+          }
+          lastResponse = response;
+          lastData = data;
+          if (!isRetryableAuthBootstrapFailure(response, data) || attempt >= Math.max(1, Number(authBootstrapMaxAttempts) || 1)) {
+            recordBootMetric?.("authBootstrapFailureMs");
+            onBootstrapStage?.("auth-bootstrap-failed", { attempt, status: response.status, retryable: false });
+            return { response, data };
+          }
+        } catch (error) {
+          lastError = error;
+          if (attempt >= Math.max(1, Number(authBootstrapMaxAttempts) || 1)) {
+            break;
+          }
+        }
+
+        const jitterMs = Math.floor(Math.random() * 120);
+        const backoffMs = Math.max(0, Number(authBootstrapBaseDelayMs) || 0) * attempt + jitterMs;
+        await delayMs(backoffMs);
+      }
+
+      if (lastResponse) {
+        return { response: lastResponse, data: lastData };
+      }
+      if (lastError) {
+        recordBootMetric?.("authBootstrapErrorMs");
+        throw lastError;
+      }
+      recordBootMetric?.("authBootstrapErrorMs");
+      throw new Error("Session bootstrap failed before response.");
+    }
+
+    async function maybeRefreshForBootstrapVersionMismatch() {
+      if (!bootBootstrapVersion) return false;
+
+      try {
+        const response = await fetchImpl("/api/state", {
+          method: "GET",
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" },
+        });
+        const data = await safeReadJson(response);
+        if (!response.ok || !data?.ok) {
+          return false;
+        }
+        const serverVersion = String(data?.bootstrap_version || "").trim();
+        if (!serverVersion || serverVersion === bootBootstrapVersion) {
+          sessionStorageRef?.removeItem?.(bootstrapVersionReloadStorageKey);
+          return false;
+        }
+
+        const reloadMarker = `${bootBootstrapVersion}->${serverVersion}`;
+        const priorMarker = sessionStorageRef?.getItem?.(bootstrapVersionReloadStorageKey) || "";
+        if (priorMarker === reloadMarker) {
+          return false;
+        }
+        sessionStorageRef?.setItem?.(bootstrapVersionReloadStorageKey, reloadMarker);
+
+        if (authStatus) {
+          authStatus.textContent = "Refreshing app…";
+          authStatus.title = "Detected a newer app build. Reloading once to sync assets.";
+        }
+        const pathName = String(windowObject?.location?.pathname || "");
+        const target = `${pathName}?v=${encodeURIComponent(serverVersion)}`;
+        windowObject?.location?.replace?.(target);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     return {
+      normalizeHandle,
+      fallbackHandleFromDisplayName,
+      refreshOperatorRoleLabels,
       authPayload,
       safeReadJson,
       summarizeUiFailure,
       parseStreamErrorPayload,
+      apiPost,
       syncDevAuthUi,
       readDevAuthDefaults,
       writeDevAuthDefaults,
       applyAuthBootstrap,
       askForDevAuth,
       signInWithDevAuth,
+      fetchAuthBootstrapWithRetry,
+      maybeRefreshForBootstrapVersionMismatch,
     };
   }
 

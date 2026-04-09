@@ -101,19 +101,42 @@ class HermesClientPersistentAgentMixin:
         request_started = time.perf_counter()
         last_tool_name = {"value": None}
 
-        def progress_callback(tool_name, preview=None, args=None):
+        def progress_callback(*callback_args):
             if self.tool_progress_mode == "off":
+                return
+            if not callback_args:
+                return
+
+            event_type = "tool.started"
+            tool_name = None
+            preview = None
+            args = None
+            if len(callback_args) >= 4 and str(callback_args[0] or "").strip():
+                event_type = str(callback_args[0] or "").strip()
+                tool_name = callback_args[1]
+                preview = callback_args[2]
+                args = callback_args[3]
+            else:
+                tool_name = callback_args[0]
+                preview = callback_args[1] if len(callback_args) >= 2 else None
+                args = callback_args[2] if len(callback_args) >= 3 else None
+
+            if event_type != "tool.started":
+                return
+            tool_name = str(tool_name or "").strip()
+            if not tool_name:
                 return
             if self.tool_progress_mode == "new" and tool_name == last_tool_name["value"]:
                 return
             last_tool_name["value"] = tool_name
+            normalized_args = args if isinstance(args, dict) else {}
             event_queue.put(
                 {
                     "kind": "tool",
                     "tool_name": tool_name,
                     "preview": preview or "",
-                    "args": args or {},
-                    "display": self._format_tool_progress(tool_name, preview=preview, args=args),
+                    "args": normalized_args,
+                    "display": self._format_tool_progress(tool_name, preview=preview, args=normalized_args),
                 }
             )
 
@@ -144,7 +167,12 @@ class HermesClientPersistentAgentMixin:
 
                     reply = str(result.get("final_response") or "").strip()
                     if not reply:
-                        raise HermesClientError(str(result.get("error") or "Hermes persistent runtime returned an empty reply."))
+                        raise HermesClientError(
+                            str(
+                                result.get("error")
+                                or f"Hermes persistent runtime returned an empty reply (session_id={effective_session_id})."
+                            )
+                        )
 
                     checkpoint_history: list[dict[str, str]] = []
                     for item in (result.get("messages") or []):

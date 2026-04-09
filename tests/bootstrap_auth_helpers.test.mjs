@@ -14,6 +14,13 @@ function buildHarness(overrides = {}) {
   let operatorDisplayName = '';
   const authStatus = { textContent: '' };
   const operatorName = { textContent: '' };
+  const roleNodes = [{ textContent: '' }, { textContent: '' }];
+  const messagesEl = {
+    querySelectorAll: (selector) => {
+      assert.equal(selector, '.message--operator .message__role, .message[data-role="operator"] .message__role, .message[data-role="user"] .message__role');
+      return roleNodes;
+    },
+  };
   const devAuthControls = { hidden: true };
   const devModeBadge = { hidden: true };
   const devSignInButton = { hidden: true, disabled: true };
@@ -33,6 +40,23 @@ function buildHarness(overrides = {}) {
   let appendedSystemMessages = [];
   let roleLabelsRefreshed = 0;
   let warmCalls = 0;
+  const armedActivationUnreadThresholds = [];
+  const bootMetrics = [];
+  const bootLatencyStages = [];
+  const bootStages = [];
+  const locationReplacements = [];
+  const windowObject = {
+    setTimeout: (callback, _delay) => {
+      callback();
+      return 1;
+    },
+    location: {
+      pathname: '/app',
+      replace: (target) => {
+        locationReplacements.push(String(target));
+      },
+    },
+  };
 
   const controller = bootstrapAuth.createController({
     desktopTestingEnabled,
@@ -77,7 +101,9 @@ function buildHarness(overrides = {}) {
     parseSseEvent: () => ({ eventName: '', payload: null }),
     fallbackHandleFromDisplayName: (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, '-'),
     setOperatorDisplayName: (value) => { operatorDisplayName = String(value); },
+    getOperatorDisplayName: () => operatorDisplayName,
     operatorName,
+    messagesEl,
     refreshOperatorRoleLabels: () => { roleLabelsRefreshed += 1; },
     setSkin: (value) => { skin = String(value); },
     syncChats: (chatList) => upsertedChats.push(...chatList),
@@ -89,8 +115,22 @@ function buildHarness(overrides = {}) {
     warmChatHistoryCache: () => { warmCalls += 1; },
     chats,
     pendingChats,
-    resumePendingChatStream: (chatId) => { resumeCalls.push(Number(chatId)); },
+    resumePendingChatStream: (chatId, options = {}) => { resumeCalls.push({ chatId: Number(chatId), options }); },
     addLocalMessage: (chatId, message) => localMessages.push({ chatId: Number(chatId), message }),
+    hasFreshPendingStreamSnapshot: () => false,
+    restorePendingStreamSnapshot: () => false,
+    ensureActivationReadThreshold: (chatId, unreadCount) => {
+      armedActivationUnreadThresholds.push({ chatId: Number(chatId), unreadCount: Number(unreadCount || 0) });
+    },
+    windowObject,
+    authBootstrapMaxAttempts: 3,
+    authBootstrapBaseDelayMs: 0,
+    authBootstrapRetryableStatus: new Set([408, 425, 429, 500, 502, 503, 504]),
+    bootBootstrapVersion: 'build-old',
+    bootstrapVersionReloadStorageKey: 'bootstrap-version-reload',
+    recordBootMetric: (name) => bootMetrics.push(String(name)),
+    syncBootLatencyChip: (stage) => bootLatencyStages.push(String(stage)),
+    onBootstrapStage: (stage, details = {}) => bootStages.push({ stage: String(stage), details }),
     ...controllerOverrides,
   });
 
@@ -113,8 +153,14 @@ function buildHarness(overrides = {}) {
     getSkin: () => skin,
     getActiveChatId: () => activeChatId,
     getRoleLabelsRefreshed: () => roleLabelsRefreshed,
+    getRoleNodeLabels: () => roleNodes.map((node) => node.textContent),
     getWarmCalls: () => warmCalls,
+    getArmedActivationUnreadThresholds: () => armedActivationUnreadThresholds,
     getResumeCalls: () => resumeCalls,
+    getBootMetrics: () => bootMetrics,
+    getBootLatencyStages: () => bootLatencyStages,
+    getBootStages: () => bootStages,
+    getLocationReplacements: () => locationReplacements,
     setAuthenticated: (value) => { isAuthenticated = Boolean(value); },
   };
 }
@@ -157,6 +203,33 @@ test('read/write dev auth defaults round-trip through session storage', () => {
   });
 });
 
+test('normalizeHandle, fallbackHandleFromDisplayName, and refreshOperatorRoleLabels keep bootstrap auth ownership defaults', () => {
+  const harness = buildHarness({
+    normalizeHandle: null,
+    fallbackHandleFromDisplayName: null,
+    refreshOperatorRoleLabels: null,
+  });
+
+  assert.equal(harness.controller.normalizeHandle(' @@Desk '), 'Desk');
+  assert.equal(harness.controller.fallbackHandleFromDisplayName('Desk Top'), 'DeskTop');
+  assert.equal(harness.controller.fallbackHandleFromDisplayName('Δ Hermes'), 'Δ Hermes');
+
+  harness.controller.refreshOperatorRoleLabels();
+  assert.deepEqual(harness.getRoleNodeLabels(), ['Operator', 'Operator']);
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: '', display_name: 'Desk Top' },
+    skin: 'terminal',
+    active_chat_id: null,
+    chats: [],
+    pinned_chats: [],
+    history: [],
+  }, { preferredUsername: '' });
+
+  assert.equal(harness.getOperatorDisplayName(), 'DeskTop');
+  assert.deepEqual(harness.getRoleNodeLabels(), ['DeskTop', 'DeskTop']);
+});
+
 test('applyAuthBootstrap updates auth-facing UI and history state', () => {
   const harness = buildHarness();
 
@@ -183,6 +256,23 @@ test('applyAuthBootstrap updates auth-facing UI and history state', () => {
   assert.deepEqual(harness.getResumeCalls(), []);
 });
 
+test('applyAuthBootstrap arms the active unread threshold for the bootstrap-selected chat', () => {
+  const harness = buildHarness({
+    chats: new Map([[5, { id: 5, pending: false, unread_count: 3 }]]),
+  });
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    skin: 'terminal',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: false, unread_count: 3 }],
+    pinned_chats: [],
+    history: [],
+  }, { preferredUsername: 'Desktop' });
+
+  assert.deepEqual(harness.getArmedActivationUnreadThresholds(), [{ chatId: 5, unreadCount: 3 }]);
+});
+
 test('applyAuthBootstrap supports explicit no-active-chat state', () => {
   const harness = buildHarness();
 
@@ -202,6 +292,31 @@ test('applyAuthBootstrap supports explicit no-active-chat state', () => {
   assert.deepEqual(harness.pinnedSyncs, [[{ id: 11 }]]);
 });
 
+test('applyAuthBootstrap restores fresh local pending snapshot and force-resumes when server bootstrap briefly says not pending', () => {
+  const harness = buildHarness({
+    hasFreshPendingStreamSnapshot: (chatId) => Number(chatId) === 5,
+    restorePendingStreamSnapshot: (chatId) => {
+      if (Number(chatId) === 5) {
+        harness.histories.set(5, [{ role: 'tool', body: 'missed tool', pending: true }]);
+        return true;
+      }
+      return false;
+    },
+  });
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    skin: 'terminal',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: false }],
+    pinned_chats: [],
+    history: [],
+  }, { preferredUsername: 'Desktop' });
+
+  assert.deepEqual(harness.histories.get(5), [{ role: 'tool', body: 'missed tool', pending: true }]);
+  assert.deepEqual(harness.getResumeCalls(), [{ chatId: 5, options: { force: true } }]);
+});
+
 test('request utility delegates cover auth payload + safe JSON fallback', async () => {
   const harness = buildHarness();
 
@@ -219,6 +334,36 @@ test('request utility delegates cover auth payload + safe JSON fallback', async 
     json: async () => { throw new Error('bad json'); },
   });
   assert.equal(invalid, null);
+});
+
+test('apiPost composes auth payloads and surfaces session expiry through auth UI state', async () => {
+  let composerStateUpdates = 0;
+  let seenOptions = null;
+  const harness = buildHarness({
+    updateComposerState: () => { composerStateUpdates += 1; },
+    fetchImpl: async (_url, options = {}) => {
+      seenOptions = options;
+      return {
+        ok: false,
+        status: 401,
+        json: async () => ({ ok: false, error: 'Telegram init data is too old' }),
+      };
+    },
+  });
+
+  await assert.rejects(
+    harness.controller.apiPost('/api/chats', { chat_id: 7 }),
+    /Telegram session expired\. Close and reopen the mini app to refresh auth\./,
+  );
+
+  assert.equal(seenOptions.method, 'POST');
+  assert.equal(seenOptions.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(seenOptions.body), {
+    init_data: 'init-data-token',
+    chat_id: 7,
+  });
+  assert.equal(harness.authStatus.textContent, 'Session expired');
+  assert.equal(composerStateUpdates, 1);
 });
 
 test('summarizeUiFailure and parseStreamErrorPayload sanitize noisy upstream payloads', () => {
@@ -247,4 +392,54 @@ test('summarizeUiFailure and parseStreamErrorPayload sanitize noisy upstream pay
     error: 'stream failed',
     chatId: 42,
   });
+});
+
+test('fetchAuthBootstrapWithRetry retries retryable auth bootstrap failures and records metrics', async () => {
+  const responses = [
+    {
+      ok: false,
+      status: 503,
+      json: async () => ({ ok: false, error: 'temporarily unavailable' }),
+    },
+    {
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, user: { username: 'desktop' } }),
+    },
+  ];
+  const harness = buildHarness({
+    fetchImpl: async (...args) => {
+      harness.fetchCalls.push(args);
+      return responses.shift();
+    },
+  });
+
+  const result = await harness.controller.fetchAuthBootstrapWithRetry();
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.data.ok, true);
+  assert.equal(harness.fetchCalls.length, 2);
+  assert.deepEqual(harness.getBootLatencyStages(), ['auth-request']);
+  assert.deepEqual(harness.getBootMetrics(), ['authBootstrapStartMs', 'authBootstrapSuccessMs']);
+  assert.deepEqual(harness.getBootStages().map((entry) => entry.stage), ['auth-bootstrap-ok']);
+});
+
+test('maybeRefreshForBootstrapVersionMismatch refreshes once when server version changes', async () => {
+  const harness = buildHarness({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, bootstrap_version: 'build-new' }),
+    }),
+  });
+
+  const refreshed = await harness.controller.maybeRefreshForBootstrapVersionMismatch();
+
+  assert.equal(refreshed, true);
+  assert.equal(harness.authStatus.textContent, 'Refreshing app…');
+  assert.equal(
+    harness.sessionStorageData.get('bootstrap-version-reload'),
+    'build-old->build-new',
+  );
+  assert.deepEqual(harness.getLocationReplacements(), ['/app?v=build-new']);
 });

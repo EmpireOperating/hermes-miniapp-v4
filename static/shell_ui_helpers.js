@@ -4,9 +4,29 @@
       tg,
       pendingChats,
       fullscreenAppTopButton,
+      devAuthControls,
+      devModeBadge,
+      devConfig,
+      desktopTestingRequested = false,
       appendSystemMessage,
       scheduleTimeout,
     } = deps;
+
+    function setElementHidden(element, hidden) {
+      if (!element) return;
+      if (hidden) {
+        element.setAttribute('hidden', 'hidden');
+        return;
+      }
+      element.removeAttribute('hidden');
+    }
+
+    function syncDebugOnlyPillVisibility() {
+      const showDevAuthPill = Boolean(devConfig?.devAuthEnabled && desktopTestingRequested);
+      const showDebugPills = Boolean(devConfig?.requestDebug && desktopTestingRequested);
+      setElementHidden(devAuthControls, !showDevAuthPill);
+      setElementHidden(devModeBadge, !showDebugPills);
+    }
 
     function syncClosingConfirmation() {
       if (!tg?.isVersionAtLeast?.('6.2')) return;
@@ -77,6 +97,8 @@
     }
 
     return {
+      setElementHidden,
+      syncDebugOnlyPillVisibility,
       syncClosingConfirmation,
       syncTelegramChromeForSkin,
       syncFullscreenControlState,

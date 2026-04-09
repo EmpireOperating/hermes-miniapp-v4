@@ -214,6 +214,69 @@ def test_execute_chat_job_raises_retryable_when_stream_emits_chunks_without_done
         )
 
 
+def test_execute_chat_job_raises_retryable_with_source_and_tool_count_on_empty_done_reply() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "meta", "source": "cli"},
+            {"type": "tool", "display": "📖 read_file"},
+            {"type": "done", "reply": "", "latency_ms": 5},
+        ]
+    )
+    job = {"id": 33, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    with pytest.raises(RetryableError) as exc_info:
+        execute_chat_job(
+            runtime,
+            job,
+            retryable_error_cls=RetryableError,
+            non_retryable_error_cls=NonRetryableError,
+            client_error_cls=ClientError,
+        )
+
+    message = str(exc_info.value)
+    assert "Empty response from Hermes after terminal done event." in message
+    assert "source=cli." in message
+    assert "tools_seen=1." in message
+
+
+def test_execute_chat_job_replays_tool_demo_when_first_reply_claims_tool_use_without_tool_events() -> None:
+    runtime = _FakeRuntime(events=[])
+    job = {"id": 34, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+    runtime.store.get_message = lambda **_kwargs: _Turn(body="Can you do a tool call demo please?")
+
+    calls: list[str] = []
+
+    def _events(**kwargs):
+        calls.append(str(kwargs.get("message") or ""))
+        if len(calls) == 1:
+            yield {"type": "meta", "source": "agent"}
+            yield {"type": "chunk", "text": "I just ran the terminal tool"}
+            yield {"type": "done", "reply": "I just ran the terminal tool and got the result.", "latency_ms": 5}
+            return
+        yield {"type": "meta", "source": "agent"}
+        yield {"type": "tool", "display": "💻 terminal: \"date\""}
+        yield {"type": "chunk", "text": "Here is the actual tool demo."}
+        yield {"type": "done", "reply": "Here is the actual tool demo.", "latency_ms": 7}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+        stream_events_fn=_events,
+    )
+
+    assert len(calls) == 2
+    assert calls[0] == "Can you do a tool call demo please?"
+    assert "must actually call at least one tool" in calls[1]
+    assert runtime.client.evicted_sessions[0] == "miniapp-u-9"
+    assert runtime.client.evicted_sessions[-1] == "miniapp-u-9"
+    assert any(role == "tool" and "terminal" in body for _, _, role, body in runtime.store.messages)
+    assert any(role == "hermes" and body == "Here is the actual tool demo." for _, _, role, body in runtime.store.messages)
+    assert any(name == "meta" and payload.get("reason") == "tool_demo_guard_retry" for _, name, payload in runtime.published)
+
+
 def test_execute_chat_job_preserves_evicted_warm_owner_state_on_completion() -> None:
     runtime = _FakeRuntime(
         events=[

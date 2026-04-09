@@ -6,6 +6,60 @@ const require = createRequire(import.meta.url);
 const runtime = require('../static/runtime_helpers.js');
 const sharedUtils = require('../static/app_shared_utils.js');
 const bootstrapAuth=require('../static/bootstrap_auth_helpers.js');
+const composerViewport = require('../static/composer_viewport_helpers.js');
+
+function createMessageNode(messageKey, offsetTop, offsetHeight = 100) {
+  return {
+    dataset: { messageKey },
+    offsetTop,
+    offsetHeight,
+  };
+}
+
+function createMessagesHarness(initialNodes = []) {
+  let nodes = [...initialNodes];
+  const messagesEl = {
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+    appendChild(child) {
+      if (Array.isArray(child?.children)) {
+        nodes.push(...child.children);
+        return child;
+      }
+      if (child) {
+        nodes.push(child);
+      }
+      return child;
+    },
+    querySelectorAll(selector) {
+      if (selector === '.message') return nodes;
+      return [];
+    },
+    querySelector(selector) {
+      const keyMatch = /\.message\[data-message-key="([^"]+)"\]/.exec(selector);
+      if (!keyMatch) return null;
+      return nodes.find((node) => String(node?.dataset?.messageKey || '') === keyMatch[1]) || null;
+    },
+  };
+  Object.defineProperty(messagesEl, 'innerHTML', {
+    get() {
+      return nodes.length ? '[messages]' : '';
+    },
+    set(value) {
+      if (value === '') {
+        nodes = [];
+      }
+    },
+  });
+  return {
+    messagesEl,
+    getNodes: () => nodes,
+    setNodes: (nextNodes) => {
+      nodes = [...nextNodes];
+    },
+  };
+}
 
 test('visibility resume only when pending chat has no active stream controller', () => {
   assert.equal(
@@ -162,6 +216,7 @@ test('latency chip only updates for active chat while preserving per-chat latenc
     targetChatId: 7,
     text: '120ms',
     activeChatId: 7,
+    shouldDisplayChipText: () => true,
   });
   assert.equal(activeUpdate.chipText, 'latency: 1s');
   assert.equal(latencyByChat.get(7), '1s');
@@ -171,34 +226,89 @@ test('createLatencyController updates active latency chip via viewport-preservin
   const latencyByChat = new Map();
   const chipUpdates = [];
   const debugEvents = [];
-  const preserveCalls = [];
+  const renderTraceEvents = [];
+  const mutationCallbacks = [];
+  const persistSnapshots = [];
   let activeChatId = 7;
-  const latencyChip = { id: 'latency-chip' };
+  const latencyChip = { id: 'latency-chip', textContent: '' };
 
   const controller = runtime.createLatencyController({
     latencyByChat,
     getActiveChatId: () => activeChatId,
     setActivityChip: (chip, text) => {
+      chip.textContent = text;
       chipUpdates.push({ chip, text });
     },
     preserveViewportDuringUiMutation: (mutator) => {
-      preserveCalls.push(true);
+      mutationCallbacks.push(true);
       mutator();
     },
     latencyChip,
     streamDebugLog: (eventName, details) => {
       debugEvents.push({ eventName, details });
     },
+    onLatencyMapMutated: (nextMap) => {
+      persistSnapshots.push(new Map(nextMap));
+    },
+    renderTraceLog: (eventName, details) => {
+      renderTraceEvents.push({ eventName, details });
+    },
+    getDocumentVisibilityState: () => 'hidden',
   });
 
-  controller.setChatLatency(7, '145ms');
+  const result = controller.setChatLatency(7, '145ms');
 
+  assert.equal(result.chipText, 'latency: 1s');
   assert.equal(latencyByChat.get(7), '1s');
-  assert.equal(preserveCalls.length, 1);
+  assert.equal(mutationCallbacks.length, 1);
   assert.deepEqual(chipUpdates, [{ chip: latencyChip, text: 'latency: 1s' }]);
   assert.equal(debugEvents.length, 1);
   assert.equal(debugEvents[0].eventName, 'latency-set');
   assert.equal(debugEvents[0].details.hasChipText, true);
+  assert.deepEqual([...persistSnapshots[0].entries()], [[7, '1s']]);
+  assert.deepEqual(renderTraceEvents, [{
+    eventName: 'latency-update',
+    details: {
+      chatId: 7,
+      activeChatId: 7,
+      hidden: true,
+      latency: '145ms',
+      chipText: 'latency: 1s',
+    },
+  }]);
+});
+
+test('createLatencyPersistenceController binds storage config for load/persist delegates', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem: (key) => storage.get(key) || null,
+    setItem: (key, value) => storage.set(key, String(value)),
+  };
+  const latencyByChat = new Map([
+    [7, '88ms'],
+    [19, '2.4s · live'],
+  ]);
+  let nowMs = 12_345;
+
+  const controller = runtime.createLatencyPersistenceController({
+    localStorageRef,
+    storageKey: 'latency-test',
+    latencyByChat,
+    maxAgeMs: 5_000,
+    nowMs: () => nowMs,
+  });
+
+  const storedCount = controller.persistLatencyByChatToStorage();
+  assert.equal(storedCount, 2);
+
+  latencyByChat.clear();
+  nowMs = 12_400;
+  const loadedCount = controller.loadLatencyByChatFromStorage();
+  assert.equal(loadedCount, 2);
+  assert.deepEqual([...latencyByChat.entries()], [
+    [7, '1s'],
+    [19, '3s · live'],
+  ]);
 });
 
 test('normalizeLatencyText removes millisecond displays and rolls large second counts into minutes', () => {
@@ -207,6 +317,65 @@ test('normalizeLatencyText removes millisecond displays and rolls large second c
   assert.equal(sharedUtils.normalizeLatencyText('321s · live'), '5m 21s · live');
   assert.equal(sharedUtils.normalizeLatencyText('reconnecting...'), 'reconnecting...');
 });
+
+test('preserveViewportDuringUiMutation keeps the same reading position when earlier content grows', () => {
+  const previousRaf = globalThis.requestAnimationFrame;
+  const previousCancelRaf = globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = (callback) => {
+    callback();
+    return 1;
+  };
+  globalThis.cancelAnimationFrame = () => {};
+
+  const harness = createMessagesHarness([
+    createMessageNode('a', 0, 100),
+    createMessageNode('b', 100, 100),
+    createMessageNode('c', 200, 100),
+  ]);
+  const { messagesEl, setNodes } = harness;
+  messagesEl.scrollTop = 150;
+  messagesEl.scrollHeight = 600;
+  messagesEl.clientHeight = 200;
+
+  const controller = composerViewport.createController({
+    windowObject: {
+      scrollY: 0,
+      setTimeout: () => 1,
+      clearTimeout: () => {},
+      scrollTo: () => {},
+      addEventListener: () => {},
+    },
+    documentObject: { visibilityState: 'visible' },
+    tg: null,
+    promptEl: null,
+    form: null,
+    messagesEl,
+    tabsEl: null,
+    mobileQuoteMode: false,
+    isNearBottomFn: (element, threshold = 24) => (Number(element.scrollHeight || 0) - Number(element.clientHeight || 0) - Number(element.scrollTop || 0)) <= threshold,
+    getActiveChatId: () => 7,
+    chatScrollTop: new Map(),
+    chatStickToBottom: new Map(),
+    updateJumpLatestVisibility: () => {},
+  });
+
+  try {
+    controller.preserveViewportDuringUiMutation(() => {
+      setNodes([
+        createMessageNode('a', 0, 150),
+        createMessageNode('b', 150, 100),
+        createMessageNode('c', 250, 100),
+      ]);
+      messagesEl.scrollHeight = 650;
+    });
+
+    assert.equal(messagesEl.scrollTop, 200);
+  } finally {
+    globalThis.requestAnimationFrame = previousRaf;
+    globalThis.cancelAnimationFrame = previousCancelRaf;
+  }
+});
+
 
 test('createLatencyController syncActiveLatencyChip resets to placeholder when active chat is missing', () => {
   const latencyByChat = new Map([[7, '1s']]);
@@ -217,6 +386,7 @@ test('createLatencyController syncActiveLatencyChip resets to placeholder when a
   const controller = runtime.createLatencyController({
     latencyByChat,
     getActiveChatId: () => activeChatId,
+    hasLiveStreamController: () => false,
     setActivityChip: (chip, text) => {
       chipUpdates.push({ chip, text });
     },
@@ -235,6 +405,80 @@ test('createLatencyController syncActiveLatencyChip resets to placeholder when a
     { chip: latencyChip, text: 'latency: --' },
     { chip: latencyChip, text: 'latency: 1s' },
   ]);
+});
+
+test('createLatencyController syncActiveLatencyChip hides queued and reconnecting latency placeholders', () => {
+  const latencyByChat = new Map([
+    [7, 'queued · ahead: 3'],
+    [8, 'reconnecting...'],
+    [9, '14s'],
+    [10, '22s · live'],
+  ]);
+  const chipUpdates = [];
+  let activeChatId = 7;
+  const activeLiveChats = new Set();
+  const latencyChip = { id: 'latency-chip' };
+
+  const controller = runtime.createLatencyController({
+    latencyByChat,
+    getActiveChatId: () => activeChatId,
+    hasLiveStreamController: (chatId) => activeLiveChats.has(Number(chatId)),
+    setActivityChip: (chip, text) => {
+      chipUpdates.push({ chip, text });
+    },
+    preserveViewportDuringUiMutation: (mutator) => {
+      mutator();
+    },
+    latencyChip,
+    streamDebugLog: () => {},
+  });
+
+  controller.syncActiveLatencyChip();
+  activeChatId = 8;
+  controller.syncActiveLatencyChip();
+  activeChatId = 9;
+  controller.syncActiveLatencyChip();
+  activeChatId = 10;
+  controller.syncActiveLatencyChip();
+  activeLiveChats.add(10);
+  controller.syncActiveLatencyChip();
+
+  assert.deepEqual(chipUpdates, [
+    { chip: latencyChip, text: 'latency: --' },
+    { chip: latencyChip, text: 'latency: --' },
+    { chip: latencyChip, text: 'latency: 14s' },
+    { chip: latencyChip, text: 'latency: --' },
+    { chip: latencyChip, text: 'latency: 22s · live' },
+  ]);
+});
+
+test('createLatencyController does not let calculating placeholders into the active latency pill', () => {
+  const latencyByChat = new Map();
+  const chipUpdates = [];
+  let activeChatId = 7;
+  const latencyChip = { id: 'latency-chip', textContent: 'latency: 14s' };
+
+  const controller = runtime.createLatencyController({
+    latencyByChat,
+    getActiveChatId: () => activeChatId,
+    hasLiveStreamController: () => false,
+    setActivityChip: (chip, text) => {
+      chip.textContent = text;
+      chipUpdates.push({ chip, text });
+    },
+    preserveViewportDuringUiMutation: (mutator) => {
+      mutator();
+    },
+    latencyChip,
+    streamDebugLog: () => {},
+  });
+
+  controller.setChatLatency(7, 'calculating...');
+  controller.setChatLatency(7, 'recalculating...');
+
+  assert.deepEqual(chipUpdates, []);
+  assert.equal(latencyChip.textContent, 'latency: 14s');
+  assert.equal(latencyByChat.get(7), 'recalculating...');
 });
 
 test('latency storage helpers persist and restore per-chat values', () => {
@@ -447,6 +691,7 @@ test('createStreamActivityController syncActivePendingStatus restarts live laten
       chats,
       getActiveChatId: () => 7,
       hasLiveStreamController: () => true,
+      getChatLatencyText: () => '59s · live',
       chatLabel: () => 'Project Helios',
       compactChatLabel: () => 'Project Helios',
       setStreamStatus: (text) => {
@@ -469,6 +714,47 @@ test('createStreamActivityController syncActivePendingStatus restarts live laten
     controller.markToolActivity(7);
     assert.equal(latencyChip.textContent, 'latency: 1m 2s · live');
     assert.ok(updates.some((entry) => entry.text === 'latency: 1m 2s · live'));
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('createStreamActivityController syncActivePendingStatus resumes live latency from per-chat state, not the visible chip text', () => {
+  const chats = new Map([[7, { pending: false, title: 'Project Helios' }]]);
+  const streamChip = { textContent: '', title: '' };
+  const latencyChip = { textContent: 'latency: 42s · live', title: '' };
+  const streamStatus = { textContent: '' };
+  const updates = [];
+  const setActivityChip = (chip, text) => {
+    chip.textContent = text;
+    updates.push({ chip, text });
+  };
+  const realNow = Date.now;
+  Date.now = () => 1_000_000;
+  try {
+    const controller = runtime.createStreamActivityController({
+      chats,
+      getActiveChatId: () => 7,
+      hasLiveStreamController: () => true,
+      getChatLatencyText: () => '5s',
+      chatLabel: () => 'Project Helios',
+      compactChatLabel: () => 'Project Helios',
+      setStreamStatus: (text) => {
+        streamStatus.textContent = text;
+      },
+      setActivityChip,
+      streamChip,
+      latencyChip,
+      setChatLatency: () => {},
+      syncActiveLatencyChip: () => {},
+      formatLatency: sharedUtils.formatLatency,
+    });
+
+    controller.syncActivePendingStatus();
+    assert.equal(streamStatus.textContent, 'Hermes responding in Project Helios');
+    assert.equal(streamChip.textContent, 'stream: active · Project Helios');
+    assert.equal(latencyChip.textContent, 'latency: 5s · live');
+    assert.ok(updates.some((entry) => entry.text === 'latency: 5s · live'));
   } finally {
     Date.now = realNow;
   }
@@ -498,6 +784,7 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
     chats,
     getActiveChatId: () => activeChatId,
     hasLiveStreamController: () => hasLive,
+    getChatLatencyText: () => '',
     chatLabel,
     compactChatLabel,
     setStreamStatus,
@@ -515,6 +802,7 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
   controller.syncActivePendingStatus();
   assert.equal(streamStatus.textContent, 'Waiting for Hermes in Project Helios');
   assert.equal(streamChip.textContent, 'stream: pending · Project Helios');
+  assert.equal(syncActiveLatencyChipCalls, 1);
 
   chats.set(7, { pending: false, title: 'Project Helios' });
   controller.syncActivePendingStatus();
@@ -524,7 +812,7 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
   controller.syncActivePendingStatus();
   assert.equal(streamStatus.textContent, 'Hermes responding in Project Helios');
   assert.equal(streamChip.textContent, 'stream: active · Project Helios');
-  assert.equal(syncActiveLatencyChipCalls, 1);
+  assert.equal(syncActiveLatencyChipCalls, 2);
 
   controller.markStreamActive(7);
   assert.equal(streamStatus.textContent, 'Hermes responding in Project Helios');
@@ -534,6 +822,76 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
   assert.equal(setChatLatencyCalls.at(-1).chatId, 7);
   assert.match(setChatLatencyCalls.at(-1).text, /^[01]s · live$/);
   assert.ok(updates.length >= 3);
+});
+
+test('createStreamActivityController clears stale live latency when switching to a pending tab without a live controller', () => {
+  const chats = new Map([
+    [7, { pending: false, title: 'Working Chat' }],
+    [8, { pending: true, title: 'Stuck Chat' }],
+  ]);
+  const streamChip = { textContent: '', title: '' };
+  const latencyChip = { textContent: '', title: '' };
+  const streamStatus = { textContent: '' };
+  const updates = [];
+  const setActivityChip = (chip, text) => {
+    chip.textContent = text;
+    updates.push({ chip, text });
+  };
+  const setChatLatencyCalls = [];
+  let activeChatId = 8;
+  let liveChatId = 8;
+  const realNow = Date.now;
+  const realSetInterval = globalThis.setInterval;
+  const realClearInterval = globalThis.clearInterval;
+  const intervalCallbacks = [];
+  Date.now = () => 1_000_000;
+  globalThis.setInterval = (callback) => {
+    intervalCallbacks.push(callback);
+    return { id: intervalCallbacks.length, unref() {} };
+  };
+  globalThis.clearInterval = () => {};
+  try {
+    const controller = runtime.createStreamActivityController({
+      chats,
+      getActiveChatId: () => activeChatId,
+      hasLiveStreamController: (chatId) => Number(chatId) === liveChatId,
+      getChatLatencyText: () => '9s · live',
+      chatLabel: (chatId) => chats.get(Number(chatId))?.title || 'Chat',
+      compactChatLabel: (chatId) => chats.get(Number(chatId))?.title || 'Chat',
+      setStreamStatus: (text) => {
+        streamStatus.textContent = text;
+      },
+      setActivityChip,
+      streamChip,
+      latencyChip,
+      setChatLatency: (chatId, text) => {
+        setChatLatencyCalls.push({ chatId, text });
+      },
+      syncActiveLatencyChip: () => {
+        latencyChip.textContent = 'latency: --';
+      },
+      formatLatency: sharedUtils.formatLatency,
+    });
+
+    controller.markStreamActive(8, { elapsedMs: 9000 });
+    assert.equal(latencyChip.textContent, 'latency: 9s · live');
+    assert.equal(intervalCallbacks.length, 1);
+
+    liveChatId = null;
+    controller.syncActivePendingStatus();
+    assert.equal(streamStatus.textContent, 'Waiting for Hermes in Stuck Chat');
+    assert.equal(streamChip.textContent, 'stream: pending · Stuck Chat');
+    assert.equal(latencyChip.textContent, 'latency: --');
+
+    Date.now = () => 1_005_000;
+    intervalCallbacks[0]();
+    assert.equal(latencyChip.textContent, 'latency: --');
+    assert.deepEqual(setChatLatencyCalls, [{ chatId: 8, text: '9s · live' }]);
+  } finally {
+    Date.now = realNow;
+    globalThis.setInterval = realSetInterval;
+    globalThis.clearInterval = realClearInterval;
+  }
 });
 
 test('createStreamActivityController keeps terminal latency monotonic against the live pill', () => {
@@ -580,7 +938,96 @@ test('createStreamActivityController keeps terminal latency monotonic against th
   }
 });
 
-test('createStreamActivityController queue markers gate on active chat', () => {
+test('createStreamActivityController ignores inactive chat stream/status updates while preserving active tab pills', () => {
+  const chats = new Map([
+    [7, { pending: false, title: 'Active Chat' }],
+    [8, { pending: true, title: 'Background Chat' }],
+  ]);
+  const streamChip = { textContent: 'stream: active · Active Chat', title: '' };
+  const latencyChip = { textContent: 'latency: 11s · live', title: '' };
+  const streamStatus = { textContent: 'Hermes responding in Active Chat' };
+  const updates = [];
+  const setChatLatencyCalls = [];
+
+  const controller = runtime.createStreamActivityController({
+    chats,
+    getActiveChatId: () => 7,
+    hasLiveStreamController: (chatId) => Number(chatId) === 7,
+    getChatLatencyText: (chatId) => (Number(chatId) === 7 ? '11s · live' : '4s · live'),
+    chatLabel: (chatId) => chats.get(Number(chatId))?.title || 'Chat',
+    compactChatLabel: (chatId) => chats.get(Number(chatId))?.title || 'Chat',
+    setStreamStatus: (text) => {
+      streamStatus.textContent = text;
+    },
+    setActivityChip: (chip, text) => {
+      chip.textContent = text;
+      updates.push({ chip, text });
+    },
+    streamChip,
+    latencyChip,
+    setChatLatency: (chatId, text) => {
+      setChatLatencyCalls.push({ chatId, text });
+    },
+    syncActiveLatencyChip: () => {},
+    formatLatency: sharedUtils.formatLatency,
+  });
+
+  controller.markStreamActive(8, { elapsedMs: 4000 });
+  controller.markStreamComplete(8, '4s');
+  controller.markStreamError(8);
+  controller.markNetworkFailure(8);
+  controller.markStreamClosedEarly(8);
+
+  assert.equal(streamChip.textContent, 'stream: active · Active Chat');
+  assert.equal(streamStatus.textContent, 'Hermes responding in Active Chat');
+  assert.equal(latencyChip.textContent, 'latency: 11s · live');
+  assert.deepEqual(setChatLatencyCalls, [
+    { chatId: 8, text: '4s' },
+    { chatId: 8, text: '--' },
+  ]);
+  assert.ok(!updates.some((entry) => entry.chip === latencyChip && entry.text === 'latency: 4s'));
+  assert.ok(!updates.some((entry) => entry.chip === streamChip && /Background Chat|stream: error|stream: network failure|stream: closed early/.test(entry.text)));
+});
+
+test('createStreamActivityController ignores inactive chat reconnect resets for the active latency pill', () => {
+  const chats = new Map([
+    [7, { pending: false, title: 'Active Chat' }],
+    [8, { pending: true, title: 'Background Chat' }],
+  ]);
+  const streamChip = { textContent: '', title: '' };
+  const latencyChip = { textContent: 'latency: 9s · live', title: '' };
+  const updates = [];
+  const setChatLatencyCalls = [];
+
+  const controller = runtime.createStreamActivityController({
+    chats,
+    getActiveChatId: () => 7,
+    hasLiveStreamController: (chatId) => Number(chatId) === 7,
+    getChatLatencyText: () => '9s · live',
+    chatLabel: (chatId) => chats.get(Number(chatId))?.title || 'Chat',
+    compactChatLabel: (chatId) => chats.get(Number(chatId))?.title || 'Chat',
+    setStreamStatus: () => {},
+    setActivityChip: (chip, text) => {
+      chip.textContent = text;
+      updates.push({ chip, text });
+    },
+    streamChip,
+    latencyChip,
+    setChatLatency: (chatId, text) => {
+      setChatLatencyCalls.push({ chatId, text });
+    },
+    syncActiveLatencyChip: () => {},
+    formatLatency: sharedUtils.formatLatency,
+  });
+
+  controller.markReconnectFailed(8);
+
+  assert.equal(latencyChip.textContent, 'latency: 9s · live');
+  assert.deepEqual(setChatLatencyCalls, []);
+  assert.ok(!updates.some((entry) => entry.chip === latencyChip && entry.text === 'latency: --'));
+});
+
+test('createStreamActivityController queue markers do not replace the latency pill with queue text', () => {
   const chats = new Map([[7, { pending: true, title: 'Project Helios' }]]);
   const streamChip = { textContent: '', title: '' };
   const latencyChip = { textContent: '', title: '' };
@@ -607,20 +1054,66 @@ test('createStreamActivityController queue markers gate on active chat', () => {
     setChatLatency: (chatId, text) => {
       setChatLatencyCalls.push({ chatId, text });
     },
-    syncActiveLatencyChip: () => {},
+    syncActiveLatencyChip: () => {
+      latencyChip.textContent = 'latency: --';
+    },
+    formatLatency: sharedUtils.formatLatency,
   });
 
   controller.markStreamQueued(7, { queuedAhead: 3 });
   assert.equal(streamStatus.textContent, 'Queue update (Project Helios): queued');
   assert.equal(streamChip.textContent, 'stream: queued · Project Helios');
-  assert.equal(latencyChip.textContent, 'latency: queued · ahead: 3');
+  assert.equal(latencyChip.textContent, 'latency: --');
   assert.deepEqual(setChatLatencyCalls, [{ chatId: 7, text: 'queued · ahead: 3' }]);
 
   activeChatId = 99;
   controller.markStreamQueued(7, { queuedAhead: 1 });
   assert.equal(streamChip.textContent, 'stream: queued · Project Helios');
   assert.deepEqual(setChatLatencyCalls, [{ chatId: 7, text: 'queued · ahead: 3' }]);
-  assert.ok(updates.length >= 2);
+  assert.deepEqual(updates, [{ chip: streamChip, text: 'stream: queued · Project Helios' }]);
+});
+
+test('createStreamActivityController preserves live latency across queued transitions during an active run', () => {
+  const chats = new Map([[7, { pending: true, title: 'Project Helios' }]]);
+  const streamChip = { textContent: '', title: '' };
+  const latencyChip = { textContent: '', title: '' };
+  const streamStatus = { textContent: '' };
+  const now = Date.now();
+  const realNow = Date.now;
+  Date.now = () => now;
+  const setChatLatencyCalls = [];
+  try {
+    const controller = runtime.createStreamActivityController({
+      chats,
+      getActiveChatId: () => 7,
+      chatLabel: () => 'Project Helios',
+      compactChatLabel: () => 'Project Helios',
+      setStreamStatus: (text) => {
+        streamStatus.textContent = text;
+      },
+      setActivityChip: (chip, text) => {
+        chip.textContent = text;
+      },
+      streamChip,
+      latencyChip,
+      setChatLatency: (chatId, text) => {
+        setChatLatencyCalls.push({ chatId, text });
+      },
+      syncActiveLatencyChip: () => {},
+      formatLatency: sharedUtils.formatLatency,
+    });
+
+    controller.markStreamActive(7, { elapsedMs: 12 * 60 * 1000 });
+    controller.markStreamQueued(7, { queuedAhead: 1 });
+
+    assert.equal(streamStatus.textContent, 'Queue update (Project Helios): queued');
+    assert.equal(streamChip.textContent, 'stream: queued · Project Helios');
+    assert.match(latencyChip.textContent, /^latency: 12m(?: 0s)? · live$/);
+    assert.match(setChatLatencyCalls.at(-1)?.text || '', /^12m(?: 0s)? · live$/);
+    assert.equal(setChatLatencyCalls.at(-1)?.chatId, 7);
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test('createStreamActivityController reconnect/complete/failure markers gate on active chat', () => {
@@ -674,23 +1167,26 @@ test('createStreamActivityController reconnect/complete/failure markers gate on 
       syncActiveLatencyChip: () => {
         syncActiveLatencyChipCalls.push(true);
       },
+      formatLatency: sharedUtils.formatLatency,
     });
 
+    controller.markStreamActive(7, { elapsedMs: 12 * 60 * 1000 });
     controller.markStreamReconnecting(7);
     assert.equal(streamStatus.textContent, 'Reconnecting stream in Project Helios...');
     assert.equal(streamChip.textContent, 'stream: reconnecting · Project Helios');
-    assert.equal(latencyChip.textContent, 'latency: reconnecting...');
-    assert.deepEqual(setChatLatencyCalls, [{ chatId: 7, text: 'reconnecting...' }]);
+    assert.match(latencyChip.textContent, /^latency: 12m [01]s · live$/);
+    assert.match(setChatLatencyCalls.at(-1)?.text || '', /^12m [01]s · live$/);
+    assert.equal(setChatLatencyCalls.at(-1)?.chatId, 7);
     assert.equal(syncActiveLatencyChipCalls.length, 0);
     assert.equal(scheduledTimers.length, 1);
 
-  controller.markResumeAlreadyComplete(7);
-  assert.equal(latencyChip.textContent, 'latency: reconnecting...');
-  assert.equal(streamStatus.textContent, 'Stream already complete in Project Helios');
-  assert.equal(streamChip.textContent, 'stream: complete · Project Helios');
-  assert.deepEqual(setChatLatencyCalls, [
-    { chatId: 7, text: 'reconnecting...' },
-  ]);
+    controller.markResumeAlreadyComplete(7);
+    assert.match(latencyChip.textContent, /^latency: 12m [01]s · live$/);
+    assert.equal(streamStatus.textContent, 'Stream already complete in Project Helios');
+    assert.equal(streamChip.textContent, 'stream: complete · Project Helios');
+    assert.ok(setChatLatencyCalls.length >= 1);
+    assert.equal(setChatLatencyCalls.at(-1).chatId, 7);
+    assert.match(setChatLatencyCalls.at(-1).text, /^12m [01]s · live$/);
 
     activeChatId = 99;
     controller.markReconnectFailed(7);
@@ -749,6 +1245,101 @@ test('mergeHydratedHistory does not preserve local pending traces after chat is 
   assert.deepEqual(merged, hydrated);
 });
 
+ test('mergeHydratedHistory preserves completed local tool trace on force-complete hydrate when server history lacks it', () => {
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    { role: 'tool', body: 'fetching quote', created_at: '2026-03-25T10:00:01Z', pending: false },
+    { role: 'hermes', body: 'done', created_at: '2026-03-25T10:00:04Z', pending: false },
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    { id: 2, role: 'hermes', body: 'done', created_at: '2026-03-25T10:00:04Z', pending: false },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    chatPending: false,
+    preserveCompletedToolTrace: true,
+  });
+
+  assert.equal(merged.length, 3);
+  assert.equal(merged[1].role, 'tool');
+  assert.equal(merged[1].body, 'fetching quote');
+  assert.equal(merged[2].role, 'hermes');
+});
+
+ test('mergeHydratedHistory does not duplicate completed local tool trace when server history already includes it', () => {
+  const completedTool = { role: 'tool', body: 'fetching quote', created_at: '2026-03-25T10:00:01Z', pending: false };
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    completedTool,
+    { role: 'hermes', body: 'done', created_at: '2026-03-25T10:00:04Z', pending: false },
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    { ...completedTool, id: 2 },
+    { id: 3, role: 'hermes', body: 'done', created_at: '2026-03-25T10:00:04Z', pending: false },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    chatPending: false,
+    preserveCompletedToolTrace: true,
+  });
+
+  assert.equal(merged.filter((item) => item.role === 'tool').length, 1);
+  assert.equal(merged[1].id, 2);
+});
+
+test('mergeHydratedHistory does not duplicate completed local tool trace when server copy has different timestamp', () => {
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    { role: 'tool', body: 'fetching quote', created_at: '2026-03-25T10:00:01Z', pending: false },
+    { role: 'hermes', body: 'done', created_at: '2026-03-25T10:00:03Z', pending: true },
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    { id: 9, role: 'tool', body: 'fetching quote', created_at: '2026-03-25T10:00:04Z', pending: false },
+    { id: 3, role: 'hermes', body: 'done', created_at: '2026-03-25T10:00:05Z', pending: false },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    chatPending: false,
+    preserveCompletedToolTrace: true,
+  });
+
+  assert.equal(merged.filter((item) => item.role === 'tool').length, 1);
+  assert.equal(merged[1].id, 9);
+  assert.equal(merged[2].role, 'hermes');
+});
+
+test('mergeHydratedHistory anchors preserved completed tool trace before final assistant when only pending assistant existed locally', () => {
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    { role: 'tool', body: 'fetching quote', created_at: '2026-03-25T10:00:01Z', pending: false },
+    { role: 'hermes', body: 'done', created_at: '2026-03-25T10:00:03Z', pending: true },
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    { id: 3, role: 'hermes', body: 'done', created_at: '2026-03-25T10:00:05Z', pending: false },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    chatPending: false,
+    preserveCompletedToolTrace: true,
+  });
+
+  assert.equal(merged.length, 3);
+  assert.equal(merged[1].role, 'tool');
+  assert.equal(merged[2].role, 'hermes');
+});
+
 test('mergeHydratedHistory avoids duplicating pending entries already present in hydrated history', () => {
   const pendingTool = { role: 'tool', body: 'fetching quote', created_at: '2026-03-25T10:00:01Z', pending: true };
   const previousHistory = [
@@ -768,6 +1359,32 @@ test('mergeHydratedHistory avoids duplicating pending entries already present in
 
   const toolRows = merged.filter((item) => item.role === 'tool');
   assert.equal(toolRows.length, 1);
+});
+
+test('mergeHydratedHistory preserves local collapsed state for matching pending tool traces', () => {
+  const pendingTool = {
+    role: 'tool',
+    body: 'fetching quote',
+    created_at: '2026-03-25T10:00:01Z',
+    pending: true,
+    collapsed: true,
+  };
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    pendingTool,
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
+    { role: 'tool', body: 'fetching quote', created_at: '2026-03-25T10:00:01Z', pending: true },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    chatPending: true,
+  });
+
+  assert.equal(merged[1].collapsed, true);
 });
 
 test('shouldUseAppendOnlyRender returns false when new history inserts before current tail', () => {

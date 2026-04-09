@@ -38,6 +38,7 @@
       openChat,
       onLatencyByChatMutated,
       chatTabContextMenu,
+      focusComposerForNewChat,
     } = deps;
 
     let chatTitleSelectedTag = 'none';
@@ -177,11 +178,9 @@
         chatTitleCancel.addEventListener('click', onCancel);
         chatTitleModal.addEventListener('cancel', onCancel);
         chatTitleModal.addEventListener('close', onClose);
-        chatTitleTagButtons.forEach((button) => {
-          button.addEventListener('click', onTagSelect);
-          button.addEventListener('mousedown', onTagMouseDown);
-          button.addEventListener('touchstart', onTagTouchStart, { passive: false });
-        });
+        chatTitleTagButtons.forEach((button) => button.addEventListener('click', onTagSelect));
+        chatTitleTagButtons.forEach((button) => button.addEventListener('mousedown', onTagMouseDown));
+        chatTitleTagButtons.forEach((button) => button.addEventListener('touchstart', onTagTouchStart, { passive: false }));
 
         const focusChatTitleInput = () => {
           // Mobile browsers are more reliable at raising the software keyboard
@@ -207,6 +206,7 @@
       histories.set(Number(data.chat.id), data.history || []);
       setActiveChatMeta(data.chat.id);
       renderMessages(data.chat.id);
+      focusComposerForNewChat?.(data.chat.id);
     }
 
     async function renameActiveChat() {

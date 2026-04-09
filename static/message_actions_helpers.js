@@ -114,6 +114,33 @@
     };
   }
 
+  function createController({
+    messagesEl,
+    normalizeText,
+    copyTextToClipboard,
+    messageCopyState = null,
+  } = {}) {
+    const state = messageCopyState || createMessageCopyState();
+    let unbindCopyHandler = null;
+
+    return {
+      messageCopyState: state,
+
+      bindMessageCopyBindings() {
+        if (unbindCopyHandler) {
+          return unbindCopyHandler;
+        }
+        unbindCopyHandler = bindMessageCopyHandler({
+          messagesEl,
+          messageCopyState: state,
+          normalizeText,
+          copyTextToClipboard,
+        });
+        return unbindCopyHandler;
+      },
+    };
+  }
+
   const api = {
     createMessageCopyState,
     copyTextFromMessageButton,
@@ -121,6 +148,7 @@
     resetCopyButtonFeedback,
     handleMessageCopy,
     bindMessageCopyHandler,
+    createController,
   };
 
   if (typeof module !== "undefined" && module.exports) {

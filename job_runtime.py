@@ -125,10 +125,16 @@ class JobRuntime:
         self._runtime_counter_timeline: deque[tuple[float, str, int]] = deque(maxlen=4096)
         self._active_job_runner_lock = threading.Lock()
         self._active_job_runner_records: dict[int, dict[str, object]] = {}
+        self._terminal_system_message_job_ids: set[int] = set()
+        self._terminal_system_message_lock = threading.Lock()
 
     def publish_job_event(self, job_id: int, event_name: str, payload: dict[str, object]) -> None:
         if event_name not in JOB_EVENT_TERMINAL:
             self._touch_job_best_effort(job_id)
+            with self._active_job_runner_lock:
+                record = self._active_job_runner_records.get(int(job_id))
+                if isinstance(record, dict):
+                    record["last_progress_at"] = int(time.time())
         else:
             self._clear_touch_tracking(job_id)
 
@@ -385,6 +391,7 @@ class JobRuntime:
                 "chat_id": int(chat_id),
                 "session_id": session_id,
                 "started_at": int(time.time()),
+                "last_progress_at": int(time.time()),
             }
             note_started = getattr(self.client, "note_warm_session_worker_started", None)
             if callable(note_started):
@@ -569,21 +576,32 @@ class JobRuntime:
         finally:
             self._finish_job_runner(job_id)
 
-    def _safe_add_system_message(self, user_id: str, chat_id: int, text: str) -> None:
+    def _safe_add_system_message(self, user_id: str, chat_id: int, text: str, *, job_id: int | None = None) -> None:
+        safe_job_id = int(job_id or 0)
+        if safe_job_id > 0:
+            with self._terminal_system_message_lock:
+                if safe_job_id in self._terminal_system_message_job_ids:
+                    return
+                self._terminal_system_message_job_ids.add(safe_job_id)
         try:
             self.store.add_message(user_id=user_id, chat_id=chat_id, role="system", body=text)
         except Exception as exc:  # noqa: BLE001 - broad-except-policy: best-effort UX status message should never crash worker
+            if safe_job_id > 0:
+                with self._terminal_system_message_lock:
+                    self._terminal_system_message_job_ids.discard(safe_job_id)
             self._record_best_effort_failure(
                 "system_message_write",
                 user_id=user_id,
                 chat_id=int(chat_id),
+                job_id=safe_job_id or None,
                 text_len=len(text),
                 error=type(exc).__name__,
             )
             LOGGER.debug(
-                "safe_add_system_message_exception user_id=%s chat_id=%s",
+                "safe_add_system_message_exception user_id=%s chat_id=%s job_id=%s",
                 user_id,
                 chat_id,
+                safe_job_id or None,
                 exc_info=exc,
             )
             return
@@ -599,6 +617,7 @@ class JobRuntime:
             stale_user_id = str(stale.get("user_id") or "")
             if stale_job_id:
                 self._terminate_job_children(job_id=stale_job_id, reason="stale_timeout_dead")
+                self._finish_job_runner(stale_job_id, outcome="stale_timeout_dead")
                 self._record_runtime_counter("stale_timeout_dead")
                 self.publish_job_event(
                     stale_job_id,
@@ -613,8 +632,76 @@ class JobRuntime:
                 self._safe_add_system_message(
                     user_id=stale_user_id,
                     chat_id=stale_chat_id,
+                    job_id=stale_job_id,
                     text=f"Hermes timed out after {self.job_stall_timeout_seconds}s with no progress. Please retry.",
                 )
+
+        self._sweep_locally_orphaned_active_runners()
+
+    def _sweep_locally_orphaned_active_runners(self) -> None:
+        now = int(time.time())
+        timeout = max(30, int(self.job_stall_timeout_seconds or 0))
+        with self._active_job_runner_lock:
+            active_records = [dict(record) for record in self._active_job_runner_records.values()]
+
+        child_diag_fn = getattr(self.client, "child_spawn_diagnostics", None)
+        child_diag = child_diag_fn() if callable(child_diag_fn) else {}
+        descendant_active_by_job = dict((child_diag.get("descendant_active_by_job") if isinstance(child_diag, dict) else None) or {})
+        warm_owner_state_fn = getattr(self.client, "warm_session_owner_state", None)
+        warm_owner_state = warm_owner_state_fn() if callable(warm_owner_state_fn) else {}
+        owner_records = {
+            str(item.get("session_id") or ""): dict(item)
+            for item in ((warm_owner_state.get("owner_records") if isinstance(warm_owner_state, dict) else None) or [])
+            if isinstance(item, dict)
+        }
+
+        for record in active_records:
+            job_id = int(record.get("job_id") or 0)
+            if job_id <= 0:
+                continue
+            last_progress_at = int(record.get("last_progress_at") or record.get("started_at") or 0)
+            if last_progress_at <= 0 or (now - last_progress_at) < timeout:
+                continue
+            session_id = str(record.get("session_id") or "")
+            owner_record = owner_records.get(session_id) or {}
+            owner_state = str(owner_record.get("state") or "")
+            if owner_state != "expired":
+                continue
+            if int(descendant_active_by_job.get(str(job_id), 0) or 0) > 0:
+                continue
+
+            state = self.store.get_job_state(job_id)
+            if not state or str(state.get("status") or "") != "running":
+                self._finish_job_runner(job_id, outcome="orphaned_runner_dead")
+                continue
+
+            error_text = (
+                f"Job timed out after {self.job_stall_timeout_seconds}s without progress "
+                f"(orphaned active runner after descendants exited)"
+            )
+            self._terminate_job_children(job_id=job_id, reason="orphaned_runner_dead")
+            self._finish_job_runner(job_id, outcome="orphaned_runner_dead")
+            retrying = self.store.retry_or_dead_letter_job(job_id, error_text, retry_base_seconds=0)
+            self._record_runtime_counter("orphaned_runner_dead")
+            if not retrying:
+                self.publish_job_event(
+                    job_id,
+                    JOB_EVENT_ERROR,
+                    {
+                        "chat_id": int(record.get("chat_id") or 0),
+                        "error": error_text,
+                        "retrying": False,
+                    },
+                )
+                user_id = str(record.get("user_id") or "")
+                chat_id = int(record.get("chat_id") or 0)
+                if user_id and chat_id:
+                    self._safe_add_system_message(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        job_id=job_id,
+                        text=f"Hermes failed after 1 attempts: {error_text}",
+                    )
 
     def _watchdog_loop(self) -> None:
         while not self._shutdown_event.wait(timeout=JOB_WATCHDOG_SLEEP_SECONDS):
@@ -689,7 +776,7 @@ class JobRuntime:
                     fd_limit_soft,
                     error_text,
                 )
-                self._safe_add_system_message(user_id=user_id, chat_id=chat_id, text=f"Hermes failed permanently: {error_text}")
+                self._safe_add_system_message(user_id=user_id, chat_id=chat_id, job_id=job_id, text=f"Hermes failed permanently: {error_text}")
                 self.publish_job_event(job_id, JOB_EVENT_ERROR, {"error": error_text, "chat_id": chat_id, "retrying": False})
             except JobRetryableError as exc:
                 error_text = str(exc)
@@ -736,7 +823,7 @@ class JobRuntime:
                         error_text,
                     )
                     display_attempts = self._bounded_attempts_for_display(attempts, max_attempts)
-                    self._safe_add_system_message(user_id=user_id, chat_id=chat_id, text=f"Hermes failed after {display_attempts} attempts: {error_text}")
+                    self._safe_add_system_message(user_id=user_id, chat_id=chat_id, job_id=job_id, text=f"Hermes failed after {display_attempts} attempts: {error_text}")
                     self.publish_job_event(job_id, JOB_EVENT_ERROR, {"error": error_text, "chat_id": chat_id, "retrying": False})
             except Exception as exc:  # noqa: BLE001 - broad-except-policy: worker loop must quarantine unexpected failures per job
                 if self.is_stale_chat_job_error(exc):
@@ -775,7 +862,7 @@ class JobRuntime:
                     fd_open,
                     fd_limit_soft,
                 )
-                self._safe_add_system_message(user_id=user_id, chat_id=chat_id, text=error_text)
+                self._safe_add_system_message(user_id=user_id, chat_id=chat_id, job_id=job_id, text=error_text)
                 self.publish_job_event(job_id, JOB_EVENT_ERROR, {"error": error_text, "chat_id": chat_id, "retrying": False})
 
     def _prune_event_history(self) -> None:

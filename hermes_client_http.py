@@ -32,12 +32,14 @@ class HermesClientHTTPMixin:
                 raise HermesClientError("Hermes HTTP endpoint returned invalid JSON.") from exc
             reply_text = (data.get("reply") or data.get("text") or data.get("content") or "").strip()
             if not reply_text:
-                raise HermesClientError("Hermes HTTP endpoint returned an empty reply.")
+                keys = ", ".join(sorted(str(key) for key in data.keys())) if isinstance(data, dict) else ""
+                suffix = f" keys={keys}" if keys else ""
+                raise HermesClientError(f"Hermes HTTP endpoint returned an empty reply (content-type=application/json).{suffix}")
             return reply_text, "http"
 
         reply_text = response.text.strip()
         if not reply_text:
-            raise HermesClientError("Hermes HTTP endpoint returned an empty reply.")
+            raise HermesClientError(f"Hermes HTTP endpoint returned an empty reply (content-type={content_type or 'unknown'}).")
         return reply_text, "http-text"
 
     def _stream_via_http(self, url: str, user_id: str, message: str) -> Iterator[str]:

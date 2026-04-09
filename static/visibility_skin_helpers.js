@@ -16,6 +16,7 @@
       skinButtons,
       getCurrentSkin,
       setCurrentSkin,
+      apiPost,
       syncTelegramChromeForSkin,
       getIsAuthenticated,
       getActiveChatId,
@@ -23,6 +24,7 @@
       syncVisibleActiveChat,
       syncActiveMessageView,
       getStreamAbortControllers,
+      maybeRefreshForBootstrapVersionMismatch = null,
     } = deps;
 
     function normalizeSkin(value) {
@@ -88,6 +90,12 @@
       setSkin(storedSkin, { persist: false, broadcast: false });
     }
 
+    async function saveSkinPreference(skin) {
+      const data = await apiPost('/api/preferences/skin', { skin });
+      setSkin(data?.skin ?? skin);
+      return data;
+    }
+
     function shouldApplyDevReload() {
       return documentObject.visibilityState === 'visible' && pendingChats.size === 0;
     }
@@ -137,6 +145,7 @@
 
     async function handleVisibilityChange() {
       if (documentObject.visibilityState !== 'visible') return;
+      if (await maybeRefreshForBootstrapVersionMismatch?.()) return;
       syncSkinFromStorage();
       if (!getIsAuthenticated()) return;
 
@@ -191,6 +200,7 @@
       getStoredSkin,
       setSkin,
       syncSkinFromStorage,
+      saveSkinPreference,
       shouldApplyDevReload,
       startDevAutoRefresh,
       syncVisibleActiveChat: syncVisibleActiveChatDelegate,

@@ -25,7 +25,7 @@ function createEventTarget(initial = {}) {
   };
 }
 
-function buildHarness({ mobileQuoteMode = false, withVisualViewport = true } = {}) {
+function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNearBottom = true } = {}) {
   const scrollByCalls = [];
   const timeoutCalls = [];
   const intervalCallbacks = [];
@@ -44,7 +44,6 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true } = {
     scrollHeight: 1200,
   });
   const tabsEl = createEventTarget({ name: 'tabs' });
-  const toolStreamEl = createEventTarget({ name: 'tool' });
   const promptEl = createEventTarget({
     tagName: 'TEXTAREA',
     blurCalls: 0,
@@ -124,9 +123,8 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true } = {
     form,
     messagesEl,
     tabsEl,
-    toolStreamEl,
     mobileQuoteMode,
-    isNearBottomFn: () => true,
+    isNearBottomFn: () => isNearBottom,
     getActiveChatId: () => activeChatId,
     chatScrollTop,
     chatStickToBottom,
@@ -144,7 +142,6 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true } = {
     form,
     messagesEl,
     tabsEl,
-    toolStreamEl,
     queryTargets,
     visualViewport,
     scrollByCalls,
@@ -253,4 +250,18 @@ test('preserveViewportDuringUiMutation keeps scroll pinned and updates chat view
   assert.equal(harness.chatScrollTop.get(7), 1500);
   assert.equal(harness.chatStickToBottom.get(7), true);
   assert.ok(harness.jumpVisibilityUpdates.length >= 1);
+});
+
+test('preserveViewportDuringUiMutation does not snap to bottom when cached stickiness is stale', () => {
+  const harness = buildHarness({ isNearBottom: false });
+  harness.messagesEl.scrollTop = 220;
+  harness.chatStickToBottom.set(7, true);
+
+  harness.controller.preserveViewportDuringUiMutation(() => {
+    harness.messagesEl.scrollHeight = 1500;
+  });
+
+  assert.equal(harness.messagesEl.scrollTop, 220);
+  assert.equal(harness.chatScrollTop.get(7), 220);
+  assert.equal(harness.chatStickToBottom.get(7), false);
 });

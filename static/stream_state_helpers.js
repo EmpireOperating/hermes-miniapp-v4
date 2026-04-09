@@ -98,6 +98,24 @@
     return true;
   }
 
+  function createPhaseController({
+    streamPhaseByChat,
+    renderTraceLog,
+  }) {
+    return {
+      getStreamPhase(chatId) {
+        return getStreamPhase({ streamPhaseByChat, chatId });
+      },
+      setStreamPhase(chatId, phase) {
+        const key = toPositiveInt(chatId);
+        if (!key) return STREAM_PHASES.IDLE;
+        const next = setStreamPhase({ streamPhaseByChat, chatId: key, phase });
+        renderTraceLog?.("stream-phase", { chatId: key, phase: next });
+        return next;
+      },
+    };
+  }
+
   function createPersistenceController({
     localStorageRef,
     streamResumeCursorStorageKey,
@@ -186,6 +204,21 @@
       return true;
     }
 
+    function hasFreshPendingStreamSnapshot(chatId) {
+      const key = toPositiveInt(chatId);
+      if (!key) return false;
+      const nextMap = readPendingStreamSnapshotMap();
+      const snapshot = nextMap[String(key)];
+      if (!snapshot || typeof snapshot !== "object") return false;
+      const snapshotTs = Number(snapshot.ts || 0);
+      if (!Number.isFinite(snapshotTs) || snapshotTs <= 0 || (currentTimeMs() - snapshotTs) > Number(pendingStreamSnapshotMaxAgeMs || 0)) {
+        delete nextMap[String(key)];
+        writePendingStreamSnapshotMap(nextMap);
+        return false;
+      }
+      return true;
+    }
+
     function normalizeSnapshotLines(value) {
       return Array.isArray(value)
         ? value.map((line) => String(line || "").trim()).filter(Boolean)
@@ -193,25 +226,47 @@
     }
 
     function mergeSnapshotToolJournalLines(existingLines, currentBody) {
-      const merged = [];
-      const seen = new Set();
-      const addLine = (line) => {
-        const normalized = String(line || "").trim();
-        if (!normalized || seen.has(normalized)) return;
-        seen.add(normalized);
-        merged.push(normalized);
-      };
-      for (const line of normalizeSnapshotLines(existingLines)) {
-        addLine(line);
-      }
+      const existing = normalizeSnapshotLines(existingLines);
       const bodyLines = String(currentBody || "")
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean);
-      for (const line of bodyLines) {
-        addLine(line);
+
+      if (!existing.length) {
+        return bodyLines;
       }
-      return merged;
+      if (!bodyLines.length) {
+        return existing;
+      }
+
+      const arraysEqual = existing.length === bodyLines.length
+        && existing.every((line, index) => line === bodyLines[index]);
+      if (arraysEqual) {
+        return existing;
+      }
+
+      const bodyExtendsExisting = existing.length <= bodyLines.length
+        && existing.every((line, index) => line === bodyLines[index]);
+      if (bodyExtendsExisting) {
+        return bodyLines;
+      }
+
+      const existingExtendsBody = bodyLines.length < existing.length
+        && bodyLines.every((line, index) => line === existing[index]);
+      if (existingExtendsBody) {
+        return existing;
+      }
+
+      let commonPrefixLength = 0;
+      const maxPrefixLength = Math.min(existing.length, bodyLines.length);
+      while (commonPrefixLength < maxPrefixLength && existing[commonPrefixLength] === bodyLines[commonPrefixLength]) {
+        commonPrefixLength += 1;
+      }
+      if (commonPrefixLength > 0) {
+        return existing.concat(bodyLines.slice(commonPrefixLength));
+      }
+
+      return existing.concat(bodyLines);
     }
 
     function persistPendingStreamSnapshot(chatId) {
@@ -242,6 +297,9 @@
         : {};
       const toolJournalLines = mergeSnapshotToolJournalLines(existingSnapshot.tool_journal_lines, pendingTool?.body || "");
       const timestampMs = currentTimeMs();
+      const toolCollapsed = typeof pendingTool?.collapsed === "boolean"
+        ? pendingTool.collapsed
+        : (typeof existingSnapshot?.tool?.collapsed === "boolean" ? existingSnapshot.tool.collapsed : false);
       const snapshot = {
         ts: timestampMs,
         tool_journal_lines: toolJournalLines,
@@ -250,7 +308,7 @@
           body: String((pendingTool?.body || toolJournalLines.join("\n")) || ""),
           created_at: String(pendingTool?.created_at || existingSnapshot?.tool?.created_at || new Date(timestampMs).toISOString()),
           pending: true,
-          collapsed: false,
+          collapsed: toolCollapsed,
         } : null,
         assistant: pendingAssistant ? {
           role: String(pendingAssistant.role || "hermes").toLowerCase() === "assistant" ? "assistant" : "hermes",
@@ -267,32 +325,35 @@
     function restorePendingStreamSnapshot(chatId) {
       const key = toPositiveInt(chatId);
       if (!key) return false;
+      if (!hasFreshPendingStreamSnapshot(key)) return false;
       const nextMap = readPendingStreamSnapshotMap();
       const snapshot = nextMap[String(key)];
       if (!snapshot || typeof snapshot !== "object") return false;
-      const snapshotTs = Number(snapshot.ts || 0);
-      if (!Number.isFinite(snapshotTs) || snapshotTs <= 0 || (currentTimeMs() - snapshotTs) > Number(pendingStreamSnapshotMaxAgeMs || 0)) {
-        delete nextMap[String(key)];
-        writePendingStreamSnapshotMap(nextMap);
-        return false;
-      }
 
       const history = Array.isArray(histories?.get?.(key)) ? [...histories.get(key)] : [];
       const journalLines = normalizeSnapshotLines(snapshot.tool_journal_lines);
       const journalBody = journalLines.join("\n");
       const pendingToolIndex = history.findIndex((item) => item?.pending && String(item?.role || "").toLowerCase() === "tool");
       const pendingAssistantIndex = history.findIndex((item) => item?.pending && ["hermes", "assistant"].includes(String(item?.role || "").toLowerCase()));
+      const restoredToolCollapsed = typeof snapshot?.tool?.collapsed === "boolean" ? snapshot.tool.collapsed : false;
       let changed = false;
       if (journalBody) {
         if (pendingToolIndex >= 0) {
-          const currentBody = String(history[pendingToolIndex]?.body || "");
-          if (currentBody !== journalBody && !currentBody.includes(journalBody)) {
-            history[pendingToolIndex] = {
-              ...history[pendingToolIndex],
-              body: journalBody,
-              pending: true,
-              collapsed: false,
-            };
+          const currentTool = history[pendingToolIndex] || {};
+          const currentBody = String(currentTool?.body || "");
+          const nextTool = {
+            ...currentTool,
+            body: journalBody,
+            pending: true,
+            collapsed: typeof currentTool?.collapsed === "boolean" ? currentTool.collapsed : restoredToolCollapsed,
+          };
+          if (
+            currentBody !== journalBody
+            || !currentBody.includes(journalBody)
+            || currentTool.pending !== true
+            || currentTool.collapsed !== nextTool.collapsed
+          ) {
+            history[pendingToolIndex] = nextTool;
             changed = true;
           }
         } else if (snapshot.tool) {
@@ -300,7 +361,7 @@
             ...snapshot.tool,
             body: journalBody,
             pending: true,
-            collapsed: false,
+            collapsed: restoredToolCollapsed,
           });
           changed = true;
         }
@@ -325,6 +386,7 @@
       clearPendingStreamSnapshot,
       normalizeSnapshotLines,
       mergeSnapshotToolJournalLines,
+      hasFreshPendingStreamSnapshot,
       persistPendingStreamSnapshot,
       restorePendingStreamSnapshot,
     };
@@ -339,6 +401,7 @@
     markChatStreamPending,
     finalizeChatStreamState,
     clearChatStreamState,
+    createPhaseController,
     createPersistenceController,
   };
 

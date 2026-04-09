@@ -14,8 +14,26 @@ function extractFunctionBody(source, functionName) {
   return match[1] || '';
 }
 
-test('app.js stream-state persistence wrappers keep delegating to streamPersistenceController', async () => {
+test('app.js stream-state wrappers keep delegating to helper-owned controllers', async () => {
   const source = await readFile(appJsUrl, 'utf8');
+
+  assert.match(source, /const streamPhaseController = streamStateHelpers\.createPhaseController\(\{/, 'app.js should compose streamPhaseController');
+  assert.doesNotMatch(source, /getStreamPhaseFromState/, 'app.js should not keep raw getStreamPhase helper aliases');
+  assert.doesNotMatch(source, /setStreamPhaseInState/, 'app.js should not keep raw setStreamPhase helper aliases');
+
+  const phaseDelegates = [
+    ['getStreamPhase', 'streamPhaseController.getStreamPhase(chatId)'],
+    ['setStreamPhase', 'streamPhaseController.setStreamPhase(chatId, phase)'],
+  ];
+
+  for (const [fnName, delegatedCall] of phaseDelegates) {
+    const body = extractFunctionBody(source, fnName);
+    assert.match(
+      body,
+      new RegExp(delegatedCall.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      `${fnName} should delegate to streamPhaseController`,
+    );
+  }
 
   const delegateExpectations = [
     ['readStreamResumeCursorMap', 'streamPersistenceController.readStreamResumeCursorMap()'],
@@ -26,6 +44,7 @@ test('app.js stream-state persistence wrappers keep delegating to streamPersiste
     ['readPendingStreamSnapshotMap', 'streamPersistenceController.readPendingStreamSnapshotMap()'],
     ['writePendingStreamSnapshotMap', 'streamPersistenceController.writePendingStreamSnapshotMap(nextMap)'],
     ['clearPendingStreamSnapshot', 'streamPersistenceController.clearPendingStreamSnapshot(chatId)'],
+    ['hasFreshPendingStreamSnapshot', 'streamPersistenceController.hasFreshPendingStreamSnapshot(chatId)'],
     ['normalizeSnapshotLines', 'streamPersistenceController.normalizeSnapshotLines(value)'],
     ['mergeSnapshotToolJournalLines', 'streamPersistenceController.mergeSnapshotToolJournalLines(existingLines, currentBody)'],
     ['persistPendingStreamSnapshot', 'streamPersistenceController.persistPendingStreamSnapshot(chatId)'],

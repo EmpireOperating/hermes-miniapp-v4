@@ -128,6 +128,7 @@ function buildHarness(overrides = {}) {
   const syncPinCalls = [];
   const promptCalls = [];
   const latencyMutationCalls = [];
+  const focusComposerCalls = [];
   let activeChatId = 7;
 
   const controller = chatAdmin.createController({
@@ -241,6 +242,9 @@ function buildHarness(overrides = {}) {
     onLatencyByChatMutated: (mapRef) => {
       latencyMutationCalls.push(new Map(mapRef));
     },
+    focusComposerForNewChat: (chatId) => {
+      focusComposerCalls.push(Number(chatId));
+    },
     ...overrides,
   });
 
@@ -274,6 +278,10 @@ function buildHarness(overrides = {}) {
     syncPinCalls,
     promptCalls,
     latencyMutationCalls,
+    focusComposerCalls,
+    get activeChatId() {
+      return activeChatId;
+    },
     setActiveChatId(value) {
       activeChatId = Number(value);
     },
@@ -384,6 +392,7 @@ test('createChat modal applies selected tag and hydrates the new active chat', a
   assert.deepEqual(harness.histories.get(13), [{ id: 5, body: 'new history' }]);
   assert.deepEqual(harness.setActiveCalls, [13]);
   assert.deepEqual(harness.renderedMessages, [13]);
+  assert.deepEqual(harness.focusComposerCalls, [13]);
 });
 
 test('createChat fallback prompt applies selected tag and hydrates the new active chat', async () => {
@@ -412,6 +421,7 @@ test('createChat fallback prompt applies selected tag and hydrates the new activ
   assert.deepEqual(harness.histories.get(13), [{ id: 5, body: 'new history' }]);
   assert.deepEqual(harness.setActiveCalls, [13]);
   assert.deepEqual(harness.renderedMessages, [13]);
+  assert.deepEqual(harness.focusComposerCalls, [13]);
 });
 
 test('removeActiveChat keeps silent-close semantics and preserves removed pinned chats for reopen', async () => {

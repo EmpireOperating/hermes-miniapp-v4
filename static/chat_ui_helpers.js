@@ -186,7 +186,118 @@
     refreshTabNode(nextKey);
   }
 
+  function createController(deps = {}) {
+    const {
+      chats,
+      pinnedChats,
+      pendingChats,
+      unseenStreamChats,
+      tabNodes,
+      tabTemplate,
+      tabsEl,
+      pinnedChatsWrap,
+      pinnedChatsEl,
+      documentObject = globalScope.document,
+      getActiveChatId = () => null,
+      getTabBadgeState: customGetTabBadgeState,
+      applyTabBadgeState: customApplyTabBadgeState,
+    } = deps;
+
+    function getOrCreateTabNodeForChat(chatId) {
+      return getOrCreateTabNode({
+        tabNodes,
+        tabTemplate,
+        chatId,
+      });
+    }
+
+    function getResolvedTabBadgeState(chat) {
+      if (typeof customGetTabBadgeState === "function") {
+        return customGetTabBadgeState(chat);
+      }
+      return getTabBadgeState({
+        chat,
+        pendingChats,
+        unseenStreamChats,
+      });
+    }
+
+    function applyResolvedTabBadgeState(badge, badgeState) {
+      if (typeof customApplyTabBadgeState === "function") {
+        return customApplyTabBadgeState(badge, badgeState);
+      }
+      return applyTabBadgeState({ badge, badgeState });
+    }
+
+    function applyTabNodeStateForChat(node, chat) {
+      return applyTabNodeState({
+        node,
+        chat,
+        activeChatId: getActiveChatId(),
+        pendingChats,
+        unseenStreamChats,
+        getTabBadgeState: getResolvedTabBadgeState,
+        applyTabBadgeState: applyResolvedTabBadgeState,
+      });
+    }
+
+    function removeMissingTabNodesForChats(nextIds) {
+      return removeMissingTabNodes({ tabNodes, nextIds });
+    }
+
+    function renderTabsForChats() {
+      return renderTabs({
+        chats,
+        tabNodes,
+        tabTemplate,
+        tabsEl,
+        applyTabNodeState: applyTabNodeStateForChat,
+      });
+    }
+
+    function renderPinnedChatsForList() {
+      return renderPinnedChats({
+        pinnedChatsWrap,
+        pinnedChatsEl,
+        pinnedChats,
+        doc: documentObject,
+      });
+    }
+
+    function refreshTabNodeForChat(chatId) {
+      return refreshTabNode({
+        chatId,
+        tabNodes,
+        chats,
+        applyTabNodeState: applyTabNodeStateForChat,
+      });
+    }
+
+    function syncActiveTabSelectionForChats(previousChatId, nextChatId) {
+      return syncActiveTabSelection({
+        previousChatId,
+        nextChatId,
+        tabNodes,
+        renderTabs: renderTabsForChats,
+        refreshTabNode: refreshTabNodeForChat,
+      });
+    }
+
+    return {
+      getOrCreateTabNode: getOrCreateTabNodeForChat,
+      getTabBadgeState: getResolvedTabBadgeState,
+      applyTabBadgeState: applyResolvedTabBadgeState,
+      applyTabNodeState: applyTabNodeStateForChat,
+      removeMissingTabNodes: removeMissingTabNodesForChats,
+      renderTabs: renderTabsForChats,
+      renderPinnedChats: renderPinnedChatsForList,
+      refreshTabNode: refreshTabNodeForChat,
+      syncActiveTabSelection: syncActiveTabSelectionForChats,
+    };
+  }
+
   const api = {
+    createController,
     getOrCreateTabNode,
     getTabBadgeState,
     applyTabBadgeState,

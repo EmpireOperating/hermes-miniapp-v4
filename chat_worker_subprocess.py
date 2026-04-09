@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import uuid
+import queue
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +21,7 @@ TERMINAL_RETRYABLE = "retryable_failure"
 TERMINAL_NON_RETRYABLE = "non_retryable_failure"
 WARM_ATTACH_TRANSPORT = "unix_socket_jsonl"
 WARM_ATTACH_TTL_MS = 60000
+STREAM_HEARTBEAT_INTERVAL_SECONDS = 20.0
 
 
 class _JsonlWriter:
@@ -183,6 +185,22 @@ def _normalize_history(history: Any) -> list[dict[str, Any]]:
     return [item for item in history if isinstance(item, dict)]
 
 
+def _warm_attach_enabled(client: HermesClient) -> bool:
+    contract_fn = getattr(client, "warm_session_contract", None)
+    if not callable(contract_fn):
+        return False
+    try:
+        contract = contract_fn()
+    except Exception:
+        return False
+    enabled = getattr(contract, "enabled", None)
+    if enabled is not None:
+        return bool(enabled)
+    if isinstance(contract, dict):
+        return bool(contract.get("enabled"))
+    return False
+
+
 def _stream_request(
     *,
     client: HermesClient,
@@ -196,29 +214,54 @@ def _stream_request(
 ) -> int:
     saw_done = False
     normalized_history = _normalize_history(history)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            for event in client.stream_events(
-                user_id=str(user_id or ""),
-                message=str(message or ""),
-                conversation_history=normalized_history,
-                session_id=str(session_id or ""),
-            ):
-                if not isinstance(event, dict):
-                    continue
-                payload = dict(event)
-                payload.setdefault("session_id", session_id)
-                if str(payload.get("type") or "") == "done":
-                    if callable(before_done):
-                        before_done()
-                    saw_done = True
-                writer.emit(payload)
-    except Exception as exc:  # noqa: BLE001
-        if emit_terminal:
-            _emit_terminal(writer, outcome=TERMINAL_RETRYABLE, error=f"Subprocess stream failure: {exc}")
-        else:
-            writer.emit({"type": "error", "error": f"Attached worker stream failure: {exc}"})
-        return 10
+    queue_done = object()
+    queue_error = object()
+    event_queue: queue.Queue[object] = queue.Queue()
+
+    def _reader() -> None:
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                for event in client.stream_events(
+                    user_id=str(user_id or ""),
+                    message=str(message or ""),
+                    conversation_history=normalized_history,
+                    session_id=str(session_id or ""),
+                ):
+                    event_queue.put(event)
+        except Exception as exc:  # noqa: BLE001
+            event_queue.put((queue_error, exc))
+        finally:
+            event_queue.put(queue_done)
+
+    reader_thread = threading.Thread(target=_reader, name="miniapp-subprocess-stream-reader", daemon=True)
+    reader_thread.start()
+    heartbeat_interval = max(1.0, float(STREAM_HEARTBEAT_INTERVAL_SECONDS))
+
+    while True:
+        try:
+            event = event_queue.get(timeout=heartbeat_interval)
+        except queue.Empty:
+            writer.emit({"type": "heartbeat", "session_id": session_id})
+            continue
+
+        if event is queue_done:
+            break
+        if isinstance(event, tuple) and len(event) == 2 and event[0] is queue_error:
+            exc = event[1]
+            if emit_terminal:
+                _emit_terminal(writer, outcome=TERMINAL_RETRYABLE, error=f"Subprocess stream failure: {exc}")
+            else:
+                writer.emit({"type": "error", "error": f"Attached worker stream failure: {exc}"})
+            return 10
+        if not isinstance(event, dict):
+            continue
+        payload = dict(event)
+        payload.setdefault("session_id", session_id)
+        if str(payload.get("type") or "") == "done":
+            if callable(before_done):
+                before_done()
+            saw_done = True
+        writer.emit(payload)
 
     if saw_done:
         if emit_terminal:
@@ -297,6 +340,17 @@ def main() -> int:
             return result
 
         client.deregister_child_spawn = _wrapped_deregister_child_spawn
+
+    if not _warm_attach_enabled(client):
+        return _stream_request(
+            client=client,
+            user_id=user_id,
+            message=message,
+            history=history,
+            session_id=session_id,
+            writer=stdout_writer,
+            emit_terminal=True,
+        )
 
     request_lock = threading.Lock()
     attach_server = _WarmAttachServer(session_id=session_id, client=client, request_lock=request_lock)

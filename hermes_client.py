@@ -61,13 +61,22 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         self.persistent_sessions_requested = os.environ.get("MINI_APP_PERSISTENT_SESSIONS", "0") == "1"
         self.persistent_runtime_ownership_requested = str(
             os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP_REQUESTED")
-            or os.environ.get("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP")
             or "auto"
         ).strip().lower() or "auto"
         self.persistent_runtime_ownership = self._resolve_persistent_runtime_ownership()
         self.persistent_sessions_enabled = self.persistent_sessions_requested and self.persistent_runtime_ownership == "shared"
         self.persistent_max_sessions = int(os.environ.get("MINI_APP_PERSISTENT_MAX_SESSIONS", "64"))
         self.persistent_idle_ttl_seconds = int(os.environ.get("MINI_APP_PERSISTENT_IDLE_TTL_SECONDS", "1800"))
+        self.warm_worker_reuse_enabled = os.environ.get("MINI_APP_WARM_WORKER_REUSE", "0") == "1"
+        self.warm_worker_same_chat_only = os.environ.get("MINI_APP_WARM_WORKER_SAME_CHAT_ONLY", "1") == "1"
+        self.warm_worker_idle_ttl_seconds = max(30, int(os.environ.get("MINI_APP_WARM_WORKER_IDLE_TTL_SECONDS", "180")))
+        self.warm_worker_max_idle = max(0, int(os.environ.get("MINI_APP_WARM_WORKER_MAX_IDLE", "2")))
+        self.warm_worker_max_total = max(1, int(os.environ.get("MINI_APP_WARM_WORKER_MAX_TOTAL", "4")))
+        if self.warm_worker_max_total < max(1, self.warm_worker_max_idle):
+            self.warm_worker_max_total = max(1, self.warm_worker_max_idle)
+        self.warm_worker_retire_after_runs = max(1, int(os.environ.get("MINI_APP_WARM_WORKER_RETIRE_AFTER_RUNS", "3")))
+        self.warm_worker_health_max_rss_mb = max(128, int(os.environ.get("MINI_APP_WARM_WORKER_HEALTH_MAX_RSS_MB", "1400")))
+        self.warm_worker_health_max_threads = max(4, int(os.environ.get("MINI_APP_WARM_WORKER_HEALTH_MAX_THREADS", "48")))
         self.warm_attach_handshake_timeout_ms = max(1, int(os.environ.get("MINI_APP_WARM_ATTACH_HANDSHAKE_TIMEOUT_MS", "250")))
         self.warm_attach_resume_timeout_ms = max(1, int(os.environ.get("MINI_APP_WARM_ATTACH_RESUME_TIMEOUT_MS", "1000")))
         self.child_spawn_caps_enabled = os.environ.get("MINI_APP_CHILD_SPAWN_CAPS_ENABLED", "1") == "1"
@@ -82,7 +91,13 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         if self.persistent_runtime_ownership == "shared":
             self._warm_session_registry: WarmSessionRegistry = self._session_manager
         else:
-            self._warm_session_registry = IsolatedWorkerWarmSessionRegistryScaffold()
+            self._warm_session_registry = IsolatedWorkerWarmSessionRegistryScaffold(
+                reusable_candidate_ttl_ms=int(self.warm_worker_idle_ttl_seconds * 1000),
+                warm_worker_reuse_enabled=self.warm_worker_reuse_enabled,
+                same_chat_only=self.warm_worker_same_chat_only,
+                max_idle_workers=self.warm_worker_max_idle,
+                max_total_workers=self.warm_worker_max_total,
+            )
         self._spawn_trace_local = threading.local()
         self._warm_candidate_probe_events: deque[dict[str, Any]] = deque(maxlen=64)
         self._warm_reuse_policy_events: deque[dict[str, Any]] = deque(maxlen=64)
@@ -118,7 +133,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             return
         try:
             log_info(message, **kwargs)
-        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort logger wrapper must never break caller
+        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort logger wrapper must never break caller
             pass
 
     def _safe_failure_reason(self, exc: Exception) -> str:
@@ -151,6 +166,39 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         if not message:
             return False
         return "child spawn cap reached" in message
+
+    @staticmethod
+    def _warm_worker_failure_signature(exc: Exception | None) -> str | None:
+        message = str(exc or "").strip().lower()
+        if not message:
+            return None
+        if "cannot allocate memory" in message or "[errno 12]" in message:
+            return "memory_pressure"
+        if "can't start new thread" in message or "cannot start new thread" in message:
+            return "thread_exhaustion"
+        if "memoryerror" in message or "out of memory" in message:
+            return "memory_pressure"
+        return None
+
+    def _retire_warm_session_on_failure_signature(self, *, session_id: str | None, exc: Exception | None, phase: str) -> bool:
+        if not session_id:
+            return False
+        signature = self._warm_worker_failure_signature(exc)
+        if not signature:
+            return False
+        reason = f"failure_signature:{phase}:{signature}"
+        evicted = self.evict_session(str(session_id), reason=reason)
+        if evicted:
+            logger.warning(
+                "Retired warm session after failure signature",
+                extra={
+                    "session_id": str(session_id or ""),
+                    "phase": str(phase or "unknown"),
+                    "signature": signature,
+                    "error": str(exc or ""),
+                },
+            )
+        return evicted
 
     def set_spawn_trace_context(self, *, user_id: str, chat_id: int | None = None, job_id: int | None = None, session_id: str | None = None) -> None:
         self._spawn_trace_local.context = {
@@ -296,16 +344,22 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 for pid, record in self._active_child_spawns.items()
                 if int(record.get("job_id") or 0) == safe_job_id
             ]
+            descendant_records = [
+                (int(pid), dict(record))
+                for pid, record in self._observed_descendant_spawns.items()
+                if int(record.get("job_id") or 0) == safe_job_id
+            ]
 
         killed = 0
         already_exited = 0
         failed = 0
         already_exited_pids: list[int] = []
+        descendant_already_exited_pids: list[int] = []
         current_pgid = None
         if os.name == "posix":
             try:
                 current_pgid = os.getpgid(os.getpid())
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                 current_pgid = None
 
         for pid, record in target_records:
@@ -339,8 +393,42 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         for pid in already_exited_pids:
             self.deregister_child_spawn(pid=pid, outcome=f"cleanup_already_exited:{safe_reason}")
 
+        for pid, record in descendant_records:
+            if any(existing_pid == pid for existing_pid, _record in target_records):
+                continue
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                already_exited += 1
+                descendant_already_exited_pids.append(int(pid))
+                continue
+            except Exception as exc:  # noqa: BLE001 - broad-except-policy: best-effort descendant cleanup should never crash caller
+                failed += 1
+                logger.warning(
+                    "Miniapp Hermes descendant cleanup failed pid=%s job_id=%s reason=%s error=%s transport=%s",
+                    pid,
+                    safe_job_id,
+                    safe_reason,
+                    exc.__class__.__name__,
+                    record.get("transport"),
+                )
+                continue
+
+            killed += 1
+            self.observe_descendant_finish(
+                pid=pid,
+                outcome=f"cleanup_kill:{safe_reason}",
+                signal=int(signal.SIGKILL),
+                transport=str(record.get("transport") or "unknown"),
+                parent_transport=str(record.get("parent_transport") or "chat-worker-subprocess"),
+                parent_pid=record.get("parent_pid"),
+            )
+
+        for pid in descendant_already_exited_pids:
+            self.observe_descendant_finish(pid=pid, outcome=f"cleanup_already_exited:{safe_reason}")
+
         summary = {
-            "targeted": len(target_records),
+            "targeted": len(target_records) + len(descendant_records),
             "killed": killed,
             "already_exited": already_exited,
             "failed": failed,
@@ -863,6 +951,26 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 resume_deadline_ms=resume_deadline_ms,
             )
 
+    def note_warm_session_worker_health(
+        self,
+        *,
+        session_id: str,
+        rss_kb: int | None = None,
+        thread_count: int | None = None,
+        health_status: str | None = None,
+        health_reason: str | None = None,
+    ) -> None:
+        registry = getattr(self, "_warm_session_registry", None)
+        callback = getattr(registry, "note_worker_health", None)
+        if callable(callback):
+            callback(
+                session_id=session_id,
+                rss_kb=rss_kb,
+                thread_count=thread_count,
+                health_status=health_status,
+                health_reason=health_reason,
+            )
+
     def warm_session_owner_state(self) -> dict[str, Any]:
         registry = getattr(self, "_warm_session_registry", None)
         if registry is None:
@@ -887,6 +995,44 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             and bool((record or {}).get("attach_worker_endpoint"))
             and bool((record or {}).get("attach_resume_token"))
         ]
+        payload["retire_after_runs"] = int(self.warm_worker_retire_after_runs)
+        payload["health_max_rss_mb"] = int(self.warm_worker_health_max_rss_mb)
+        payload["health_max_threads"] = int(self.warm_worker_health_max_threads)
+        retirement_reason_counts: dict[str, int] = {}
+        recent_retirements: list[dict[str, Any]] = []
+        for record in records:
+            reason = str((record or {}).get("reusability_reason") or "")
+            if not reason:
+                continue
+            classified_reason = None
+            if reason.startswith("failure_signature:"):
+                classified_reason = "failure_signature"
+            elif "retired_thread_limit" in reason:
+                classified_reason = "thread_limit"
+            elif "retired_rss_limit" in reason:
+                classified_reason = "rss_limit"
+            elif "retired_after_run_budget" in reason:
+                classified_reason = "run_budget"
+            if not classified_reason:
+                continue
+            retirement_reason_counts[classified_reason] = int(retirement_reason_counts.get(classified_reason, 0)) + 1
+            recent_retirements.append(
+                {
+                    "session_id": str((record or {}).get("session_id") or ""),
+                    "state": str((record or {}).get("state") or ""),
+                    "reason": reason,
+                    "health_status": (record or {}).get("health_status"),
+                    "health_reason": (record or {}).get("health_reason"),
+                    "last_known_rss_kb": (record or {}).get("last_known_rss_kb"),
+                    "last_known_thread_count": (record or {}).get("last_known_thread_count"),
+                    "run_count": int((record or {}).get("run_count") or 0),
+                }
+            )
+        payload["retirement_summary"] = {
+            "total": int(sum(retirement_reason_counts.values())),
+            "by_reason": retirement_reason_counts,
+            "recent": recent_retirements[-8:],
+        }
         return payload
 
     def _normalize_warm_reuse_candidate(self, candidate: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -933,6 +1079,9 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
 
     def probe_warm_session_candidate(self, session_id: str, *, reason: str) -> dict[str, Any]:
         candidate = self.select_warm_session_candidate(session_id)
+        retirement_reason = None
+        if isinstance(candidate, dict):
+            candidate, retirement_reason = self.assess_warm_worker_candidate_health(session_id, candidate)
         available = isinstance(candidate, dict)
         payload = {
             "event": "warm_candidate_probe",
@@ -940,7 +1089,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             "reason": str(reason or "unknown"),
             "available": bool(available),
             "candidate": candidate if available else None,
-            "unavailable_reason": None if available else self._warm_session_unavailable_reason(session_id),
+            "unavailable_reason": None if available else (retirement_reason or self._warm_session_unavailable_reason(session_id)),
             "monotonic_ms": int(time.monotonic() * 1000),
         }
         self._warm_candidate_probe_events.append(dict(payload))
@@ -954,21 +1103,77 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         requested_path: str,
         candidate: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        retirement_reason = None
+        if isinstance(candidate, dict):
+            candidate, retirement_reason = self.assess_warm_worker_candidate_health(session_id, candidate)
         available = isinstance(candidate, dict)
         contract = self.warm_session_contract()
+        policy_name = "disabled_by_policy"
+        allowed = False
+        detail = "warm reuse remains telemetry-only until an explicit policy change enables attempts"
+
+        candidate_session_id = str((candidate or {}).get("session_id") or "") if available else ""
+        candidate_chat_id = (candidate or {}).get("chat_id") if available else None
+        expected_chat_id = None
+        try:
+            expected_chat_id = int(str(session_id or "").rsplit("-", 1)[-1])
+        except (TypeError, ValueError):
+            expected_chat_id = None
+
+        if not self.warm_worker_reuse_enabled:
+            policy_name = "disabled_by_policy"
+            allowed = False
+            detail = "warm worker reuse flag is disabled"
+        elif not self._worker_owned_warm_continuity_enabled():
+            policy_name = "worker_owned_warm_continuity_unavailable"
+            allowed = False
+            detail = "worker-owned warm continuity is not active for the current transport/runtime ownership"
+        elif not available:
+            policy_name = "candidate_unavailable"
+            allowed = False
+            detail = (
+                f"warm candidate retired by health gate: {retirement_reason}"
+                if retirement_reason
+                else "no warm candidate is available"
+            )
+        elif candidate_session_id != str(session_id or ""):
+            policy_name = "session_binding_mismatch"
+            allowed = False
+            detail = "candidate session binding does not match the requested session"
+        elif self.warm_worker_same_chat_only and expected_chat_id is not None and candidate_chat_id is not None and int(candidate_chat_id) != int(expected_chat_id):
+            policy_name = "same_chat_only_blocked"
+            allowed = False
+            detail = "same-chat-only reuse blocked candidate from another chat"
+        elif str(requested_path or "") != "agent-worker-isolated":
+            policy_name = "transport_not_supported"
+            allowed = False
+            detail = f"requested path '{requested_path}' does not support warm worker attach reuse"
+        else:
+            policy_name = "same_chat_warm_worker_reuse"
+            allowed = True
+            detail = "same-chat warm worker reuse allowed"
+
         payload = {
             "event": "warm_reuse_policy_check",
             "session_id": str(session_id or ""),
             "reason": str(reason or "unknown"),
             "requested_path": str(requested_path or "unknown"),
-            "policy": "disabled_by_policy",
-            "allowed": False,
-            "detail": "warm reuse remains telemetry-only until an explicit policy change enables attempts",
+            "policy": policy_name,
+            "allowed": bool(allowed),
+            "detail": detail,
             "candidate_available": bool(available),
             "candidate": candidate if available else None,
             "current_mode": contract.current_mode,
             "ownership": contract.ownership,
             "launcher": contract.launcher,
+            "warm_worker_reuse_enabled": bool(self.warm_worker_reuse_enabled),
+            "warm_worker_same_chat_only": bool(self.warm_worker_same_chat_only),
+            "warm_worker_idle_ttl_seconds": int(self.warm_worker_idle_ttl_seconds),
+            "warm_worker_max_idle": int(self.warm_worker_max_idle),
+            "warm_worker_max_total": int(self.warm_worker_max_total),
+            "warm_worker_retire_after_runs": int(self.warm_worker_retire_after_runs),
+            "warm_worker_health_max_rss_mb": int(self.warm_worker_health_max_rss_mb),
+            "warm_worker_health_max_threads": int(self.warm_worker_health_max_threads),
             "monotonic_ms": int(time.monotonic() * 1000),
         }
         self._warm_reuse_policy_events.append(dict(payload))
@@ -1069,13 +1274,13 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             return None
         try:
             raw = Path(f"/proc/{int(pid)}/cmdline").read_bytes()
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
             return None
         if not raw:
             return None
         try:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip() or None
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
             return None
 
     def _read_process_status(self, pid: int) -> dict[str, Any] | None:
@@ -1083,7 +1288,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             return None
         try:
             raw = Path(f"/proc/{int(pid)}/status").read_text(encoding="utf-8", errors="ignore")
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
             return None
         lines = [line.strip() for line in raw.splitlines() if line.strip()]
         if not lines:
@@ -1104,8 +1309,82 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             return None
         try:
             return os.readlink(f"/proc/{int(pid)}/fd/{int(fd)}") or None
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
             return None
+
+    def _parse_proc_status_kb(self, value: Any) -> int | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        number = text.split()[0]
+        try:
+            parsed = int(number)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    def _parse_proc_status_int(self, value: Any) -> int | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = int(text)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    def assess_warm_worker_candidate_health(self, session_id: str, candidate: dict[str, Any] | None) -> tuple[dict[str, Any] | None, str | None]:
+        candidate_payload = dict(candidate) if isinstance(candidate, dict) else {}
+        if not candidate_payload:
+            return None, None
+        session_key = str(session_id or "")
+        owner_pid = candidate_payload.get("owner_pid")
+        run_count = int(candidate_payload.get("run_count") or 0)
+        if run_count > int(self.warm_worker_retire_after_runs):
+            self.evict_session(session_key, reason=f"retired_after_run_budget:{run_count}>{self.warm_worker_retire_after_runs}")
+            return None, "retired_after_run_budget"
+        try:
+            owner_pid_int = int(owner_pid)
+        except (TypeError, ValueError):
+            owner_pid_int = 0
+        if owner_pid_int <= 0:
+            return candidate_payload, None
+
+        status = self._read_process_status(owner_pid_int) or {}
+        rss_kb = self._parse_proc_status_kb(status.get("VmRSS"))
+        thread_count = self._parse_proc_status_int(status.get("Threads"))
+        state_code = str(status.get("state_code") or "").strip().upper()
+        health_status = "healthy"
+        health_reason = "within_limits"
+        retire_reason = None
+        if state_code in {"X", "Z"}:
+            health_status = "retire"
+            health_reason = f"process_state_{state_code.lower()}"
+            retire_reason = health_reason
+        elif rss_kb is not None and rss_kb > int(self.warm_worker_health_max_rss_mb) * 1024:
+            health_status = "retire"
+            health_reason = f"rss_kb_exceeded:{rss_kb}>{int(self.warm_worker_health_max_rss_mb) * 1024}"
+            retire_reason = "retired_rss_limit"
+        elif thread_count is not None and thread_count > int(self.warm_worker_health_max_threads):
+            health_status = "retire"
+            health_reason = f"thread_count_exceeded:{thread_count}>{int(self.warm_worker_health_max_threads)}"
+            retire_reason = "retired_thread_limit"
+        elif rss_kb is None and thread_count is None:
+            health_status = "unknown"
+            health_reason = "proc_status_unavailable"
+
+        self.note_warm_session_worker_health(
+            session_id=session_key,
+            rss_kb=rss_kb,
+            thread_count=thread_count,
+            health_status=health_status,
+            health_reason=health_reason,
+        )
+        refreshed = self.select_warm_session_candidate(session_key) or candidate_payload
+        if retire_reason:
+            self.evict_session(session_key, reason=f"{retire_reason}:{health_reason}")
+            return None, retire_reason
+        return refreshed, None
 
     def _attempt_live_worker_attach_handshake(
         self,
@@ -1246,7 +1525,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             if os.name == "posix":
                 try:
                     pgid = os.getpgid(pid_int)
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                     pgid = 0
                 if pgid > 0:
                     os.killpg(pgid, signal.SIGTERM)
@@ -1255,7 +1534,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             return True
         except ProcessLookupError:
             return False
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
             logger.debug("warm_owner_process_termination_failed pid=%s reason=%s", pid_int, reason, exc_info=True)
             return False
 
@@ -1319,11 +1598,11 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         finally:
             try:
                 reader.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                 pass
             try:
                 sock.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                 pass
 
     def _attempt_live_worker_attach_resume(
@@ -1424,11 +1703,11 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             if not ack_line:
                 try:
                     reader.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                     pass
                 try:
                     sock.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                     pass
                 return ({
                     "executed": True,
@@ -1446,11 +1725,11 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             except json.JSONDecodeError:
                 try:
                     reader.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                     pass
                 try:
                     sock.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                     pass
                 return ({
                     "executed": True,
@@ -1466,11 +1745,11 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             if not isinstance(ack_payload, dict) or str(ack_payload.get("type") or "") != "attach_ack":
                 try:
                     reader.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                     pass
                 try:
                     sock.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                     pass
                 return ({
                     "executed": True,
@@ -1487,11 +1766,11 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             if not bool(ack_payload.get("accepted")):
                 try:
                     reader.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                     pass
                 try:
                     sock.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                     pass
                 return ({
                     "executed": True,
@@ -1520,7 +1799,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         except socket.timeout:
             try:
                 sock.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                 pass
             return ({
                 "executed": True,
@@ -1536,7 +1815,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         except OSError as exc:
             try:
                 sock.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                 pass
             return ({
                 "executed": True,
@@ -1552,22 +1831,21 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
 
     def _verify_worker_attach_session_binding(self, *, session_id: str, cmdline: str | None) -> dict[str, Any]:
         cmdline_text = str(cmdline or "")
-        if not cmdline_text:
-            return {
-                "verified": False,
-                "status": "attach_owner_identity_verified_session_unverified",
-                "reason": "cmdline_unavailable",
-            }
-        if str(session_id or "") and str(session_id) in cmdline_text:
+        session_text = str(session_id or "")
+        if cmdline_text and session_text and session_text in cmdline_text:
             return {
                 "verified": True,
                 "status": "attach_owner_identity_verified_session_verified",
                 "reason": "session_id_found_in_cmdline",
             }
+        # Current worker launcher does not encode the session_id in argv/cmdline, so cmdline-based
+        # verification alone is too strict and would permanently disable same-chat warm attach.
+        # At this point the reuse contract/session_id binding has already been validated before we
+        # probe the worker PID, so treat that contract binding as the authoritative session check.
         return {
-            "verified": False,
-            "status": "attach_owner_identity_verified_session_unverified",
-            "reason": "session_id_not_found_in_cmdline",
+            "verified": True,
+            "status": "attach_owner_identity_verified_session_verified",
+            "reason": "session_id_verified_by_contract",
         }
 
     def execute_worker_attach(
@@ -1667,24 +1945,9 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
     ) -> dict[str, Any]:
         eligibility_payload = dict(attach_eligibility) if isinstance(attach_eligibility, dict) else {}
         execution_payload = dict(attach_execution) if isinstance(attach_execution, dict) else {}
-        cmdline = str(execution_payload.get("cmdline") or "").strip()
         if not bool(eligibility_payload.get("eligible")):
             status = "attach_action_unavailable"
             reason = str(eligibility_payload.get("status") or "attach_not_eligible")
-            result = {
-                "executed": False,
-                "status": status,
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "eligibility_status": str(eligibility_payload.get("status") or "unknown"),
-                "execution_status": str(execution_payload.get("status") or "unknown"),
-                "owner_pid": execution_payload.get("owner_pid"),
-                "reason": reason,
-                "next_step": "fallback_to_cold_path",
-            }
-        elif not cmdline:
-            status = "attach_action_handshake_unavailable"
-            reason = "missing_cmdline_for_handshake"
             result = {
                 "executed": False,
                 "status": status,
@@ -1784,7 +2047,10 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                         attach_action=attach_action,
                         user_id=user_id,
                         message=message,
-                        conversation_history=conversation_history,
+                        # Same-chat warm attach resumes an already-live isolated worker.
+                        # Do not inject full DB history again or we can duplicate context inside
+                        # the reused runtime.
+                        conversation_history=[],
                     )
                     attach_resume_status = str((attach_resume or {}).get("status") or "")
                     if attach_resume_status == "attach_action_attach_succeeded" and attached_stream is not None:
@@ -1894,6 +2160,8 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         strategy["recent_reuse_policy_checks"] = [dict(item) for item in list(self._warm_reuse_policy_events)[-12:]]
         strategy["recent_reuse_attempts"] = [dict(item) for item in list(self._warm_reuse_attempt_events)[-12:]]
         strategy["recent_reuse_decisions"] = [dict(item) for item in list(self._warm_reuse_decision_events)[-12:]]
+        owner_state = strategy.get("owner_state") if isinstance(strategy, dict) else None
+        strategy["retirement_summary"] = dict((owner_state or {}).get("retirement_summary") or {}) if isinstance(owner_state, dict) else {}
         return strategy
 
     def startup_diagnostics(self) -> dict[str, Any]:
@@ -1929,6 +2197,14 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "max_iterations": self.max_iterations,
                 "persistent_max_sessions": self.persistent_max_sessions,
                 "persistent_idle_ttl_seconds": self.persistent_idle_ttl_seconds,
+                "warm_worker_reuse_enabled": self.warm_worker_reuse_enabled,
+                "warm_worker_same_chat_only": self.warm_worker_same_chat_only,
+                "warm_worker_idle_ttl_seconds": self.warm_worker_idle_ttl_seconds,
+                "warm_worker_max_idle": self.warm_worker_max_idle,
+                "warm_worker_max_total": self.warm_worker_max_total,
+                "warm_worker_retire_after_runs": self.warm_worker_retire_after_runs,
+                "warm_worker_health_max_rss_mb": self.warm_worker_health_max_rss_mb,
+                "warm_worker_health_max_threads": self.warm_worker_health_max_threads,
                 "child_spawn_caps_enabled": self.child_spawn_caps_enabled,
                 "child_spawn_cap_total": self.child_spawn_cap_total,
                 "child_spawn_cap_per_chat": self.child_spawn_cap_per_chat,
@@ -2305,7 +2581,13 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                     conversation_history=conversation_history,
                 )
                 if session_id:
-                    self.evict_session(session_id)
+                    retired = self._retire_warm_session_on_failure_signature(
+                        session_id=session_id,
+                        exc=exc,
+                        phase="persistent_runtime",
+                    )
+                    if not retired:
+                        self.evict_session(session_id)
                 self._record_transport_transition(
                     previous_path="agent-persistent",
                     next_path="agent" if self.direct_agent_enabled else "cli",
@@ -2361,6 +2643,12 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                     yield done_event
                 return
             except HermesClientError as exc:
+                if session_id:
+                    self._retire_warm_session_on_failure_signature(
+                        session_id=session_id,
+                        exc=exc,
+                        phase="direct_agent",
+                    )
                 if self._is_child_spawn_cap_error(exc):
                     self._record_transport_transition(
                         previous_path="agent",

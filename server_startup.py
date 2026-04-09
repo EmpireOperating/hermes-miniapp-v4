@@ -33,6 +33,8 @@ def startup_diagnostics_payload(
     startup_routing = startup_routing if isinstance(startup_routing, dict) else {}
     startup_agent_runtime = startup.get("agent_runtime") if isinstance(startup, dict) else {}
     startup_agent_runtime = startup_agent_runtime if isinstance(startup_agent_runtime, dict) else {}
+    startup_limits = startup.get("limits") if isinstance(startup, dict) else {}
+    startup_limits = startup_limits if isinstance(startup_limits, dict) else {}
     persistent = runtime_status.get("persistent") if isinstance(runtime_status, dict) else {}
     persistent = persistent if isinstance(persistent, dict) else {}
 
@@ -54,6 +56,7 @@ def startup_diagnostics_payload(
             "persistent_runtime_ownership_requested": str(startup_routing.get("persistent_runtime_ownership_requested") or "unknown"),
             "persistent_runtime_ownership": str(startup_routing.get("persistent_runtime_ownership") or "unknown"),
             "persistent_sessions_enablement_reason": str(startup_routing.get("persistent_sessions_enablement_reason") or "unknown"),
+            "warm_worker_reuse_enabled": bool(startup_limits.get("warm_worker_reuse_enabled")),
             "session_db_available": bool(startup_agent_runtime.get("session_db_available")),
             "session_search_ready": bool(startup_agent_runtime.get("session_search_ready")),
             "agent_python_exists": bool(startup_agent_runtime.get("agent_python_exists")),

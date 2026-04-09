@@ -36,6 +36,14 @@ class MiniAppConfig:
     job_worker_subprocess_max_tasks: int
     job_worker_subprocess_max_open_files: int
     persistent_runtime_ownership: str
+    warm_worker_reuse_enabled: bool
+    warm_worker_same_chat_only: bool
+    warm_worker_idle_ttl_seconds: int
+    warm_worker_max_idle: int
+    warm_worker_max_total: int
+    warm_worker_retire_after_runs: int
+    warm_worker_health_max_rss_mb: int
+    warm_worker_health_max_threads: int
     job_stall_timeout_seconds: int
     telegram_init_data_max_age_seconds: int
     auth_session_max_age_seconds: int
@@ -109,8 +117,46 @@ class MiniAppConfig:
             ownership_mode=persistent_runtime_ownership,
             job_worker_launcher=job_worker_launcher,
         )
-        if job_worker_launcher == "subprocess" and resolved_ownership == "shared":
-            persistent_runtime_ownership = "checkpoint_only"
+        warm_worker_reuse_enabled = _as_bool("MINI_APP_WARM_WORKER_REUSE", default=False)
+        warm_worker_same_chat_only = _as_bool("MINI_APP_WARM_WORKER_SAME_CHAT_ONLY", default=True)
+        warm_worker_idle_ttl_seconds = _as_int_in_range(
+            "MINI_APP_WARM_WORKER_IDLE_TTL_SECONDS",
+            180,
+            min_value=30,
+            max_value=3600,
+        )
+        warm_worker_max_idle = _as_int_in_range(
+            "MINI_APP_WARM_WORKER_MAX_IDLE",
+            2,
+            min_value=0,
+            max_value=128,
+        )
+        warm_worker_max_total = _as_int_in_range(
+            "MINI_APP_WARM_WORKER_MAX_TOTAL",
+            4,
+            min_value=1,
+            max_value=256,
+        )
+        warm_worker_retire_after_runs = _as_int_in_range(
+            "MINI_APP_WARM_WORKER_RETIRE_AFTER_RUNS",
+            3,
+            min_value=1,
+            max_value=128,
+        )
+        warm_worker_health_max_rss_mb = _as_int_in_range(
+            "MINI_APP_WARM_WORKER_HEALTH_MAX_RSS_MB",
+            1400,
+            min_value=128,
+            max_value=32768,
+        )
+        warm_worker_health_max_threads = _as_int_in_range(
+            "MINI_APP_WARM_WORKER_HEALTH_MAX_THREADS",
+            48,
+            min_value=4,
+            max_value=2048,
+        )
+        if warm_worker_max_total < max(1, warm_worker_max_idle):
+            raise ValueError("MINI_APP_WARM_WORKER_MAX_TOTAL must be >= MINI_APP_WARM_WORKER_MAX_IDLE")
 
         return cls(
             port=_as_int("PORT", 8080),
@@ -163,6 +209,14 @@ class MiniAppConfig:
                 max_value=16384,
             ),
             persistent_runtime_ownership=persistent_runtime_ownership,
+            warm_worker_reuse_enabled=warm_worker_reuse_enabled,
+            warm_worker_same_chat_only=warm_worker_same_chat_only,
+            warm_worker_idle_ttl_seconds=warm_worker_idle_ttl_seconds,
+            warm_worker_max_idle=warm_worker_max_idle,
+            warm_worker_max_total=warm_worker_max_total,
+            warm_worker_retire_after_runs=warm_worker_retire_after_runs,
+            warm_worker_health_max_rss_mb=warm_worker_health_max_rss_mb,
+            warm_worker_health_max_threads=warm_worker_health_max_threads,
             job_stall_timeout_seconds=_as_int_in_range(
                 "MINI_APP_JOB_STALL_TIMEOUT_SECONDS",
                 240,
@@ -290,6 +344,9 @@ def _now_epoch_seconds() -> int:
 
 def _resolve_persistent_runtime_ownership(*, ownership_mode: str, job_worker_launcher: str) -> str:
     safe_mode = str(ownership_mode or "").strip().lower()
+    safe_launcher = str(job_worker_launcher or "").strip().lower()
+    if safe_launcher == "subprocess":
+        return "checkpoint_only"
     if safe_mode == "auto":
-        return "checkpoint_only" if str(job_worker_launcher or "").strip().lower() == "subprocess" else "shared"
+        return "shared"
     return safe_mode
