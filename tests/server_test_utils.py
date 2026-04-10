@@ -5,20 +5,27 @@ import os
 from types import SimpleNamespace
 
 
-def _env_was_explicitly_set(monkeypatch, key: str) -> bool:
-    notset = getattr(monkeypatch, "notset", object())
-    current = os.environ.get(key, notset)
-    for entry in reversed(getattr(monkeypatch, "_setitem", [])):
-        mapping, mapped_key, original = entry
-        if mapping is os.environ and mapped_key == key:
-            return original is notset or original != current
-    return False
+def _explicit_env_overrides(monkeypatch) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for mapping, mapped_key, _original in getattr(monkeypatch, "_setitem", []):
+        if mapping is not os.environ:
+            continue
+        current = os.environ.get(mapped_key)
+        if current is None:
+            continue
+        overrides[str(mapped_key)] = current
+    return overrides
 
 
 def _set_default_env(monkeypatch, key: str, value: str) -> None:
-    if _env_was_explicitly_set(monkeypatch, key):
+    if os.environ.get(key) is not None:
         return
     monkeypatch.setenv(key, value)
+
+
+def _clear_env_keys(monkeypatch, *keys: str) -> None:
+    for key in keys:
+        monkeypatch.delenv(key, raising=False)
 
 
 def load_server(
@@ -40,6 +47,8 @@ def load_server(
         monkeypatch.setenv("MINI_APP_ENFORCE_ORIGIN_CHECK", "0")
         monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "")
 
+    explicit_env = _explicit_env_overrides(monkeypatch)
+
     runtime_defaults = {
         "MINI_APP_PERSISTENT_SESSIONS": "0",
         "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP": "shared",
@@ -54,20 +63,36 @@ def load_server(
         "MINI_APP_WARM_WORKER_MAX_IDLE": "2",
         "MINI_APP_WARM_WORKER_MAX_TOTAL": "4",
     }
+    _clear_env_keys(monkeypatch, *runtime_defaults.keys())
     for key, value in runtime_defaults.items():
+        if key in explicit_env:
+            monkeypatch.setenv(key, explicit_env[key])
+            continue
         _set_default_env(monkeypatch, key, value)
 
+    dev_env_keys = (
+        "MINIAPP_DEV_BYPASS",
+        "MINI_APP_DEV_BYPASS",
+        "MINIAPP_DEV_BYPASS_EXPIRES_AT",
+        "MINI_APP_DEV_BYPASS_EXPIRES_AT",
+        "MINIAPP_DEV_SECRET",
+        "MINI_APP_DEV_SECRET",
+        "MINI_APP_DEV_AUTH_SECRET",
+    )
     if isolate_dev_env:
-        for key in (
-            "MINIAPP_DEV_BYPASS",
-            "MINI_APP_DEV_BYPASS",
+        _clear_env_keys(monkeypatch, *dev_env_keys)
+        for key in dev_env_keys:
+            if key in explicit_env:
+                monkeypatch.setenv(key, explicit_env[key])
+    else:
+        _clear_env_keys(
+            monkeypatch,
             "MINIAPP_DEV_BYPASS_EXPIRES_AT",
             "MINI_APP_DEV_BYPASS_EXPIRES_AT",
-            "MINIAPP_DEV_SECRET",
-            "MINI_APP_DEV_SECRET",
-            "MINI_APP_DEV_AUTH_SECRET",
-        ):
-            monkeypatch.delenv(key, raising=False)
+        )
+        for key in ("MINIAPP_DEV_BYPASS_EXPIRES_AT", "MINI_APP_DEV_BYPASS_EXPIRES_AT"):
+            if key in explicit_env:
+                monkeypatch.setenv(key, explicit_env[key])
 
     session_store_path = tmp_path / "sessions.db"
     monkeypatch.setenv("MINI_APP_SESSION_STORE_PATH", str(session_store_path))

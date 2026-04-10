@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const chatHistory = require('../static/chat_history_helpers.js');
+const runtimeHistory = require('../static/runtime_history_helpers.js');
 
 function buildHarness(overrides = {}) {
   const histories = new Map();
@@ -276,7 +277,7 @@ test('hydrateChatFromServer restores pending snapshot for pending chats before r
       harness.apiCalls.push({ path, payload });
       return {
         chat: { id: Number(payload.chat_id), pending: true },
-        history: [{ id: 1, role: 'operator', body: 'working' }],
+        history: [{ id: 1, role: 'assistant', body: 'hello' }],
       };
     },
   });
@@ -285,6 +286,36 @@ test('hydrateChatFromServer restores pending snapshot for pending chats before r
 
   assert.deepEqual(harness.restoredSnapshots, [7]);
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: {} }]);
+});
+
+test('hydrateChatFromServer treats completed hydrate as terminal when local history only has stale pending tool activity', async () => {
+  const harness = buildHarness({
+    mergeHydratedHistory: runtimeHistory.mergeHydratedHistory,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      return {
+        chat: { id: Number(payload.chat_id), pending: false },
+        history: [
+          { id: 10, role: 'tool', body: 'read_file\nsearch_files', created_at: '2026-04-09T18:15:00Z', pending: false },
+          { id: 11, role: 'assistant', body: 'final answer', created_at: '2026-04-09T18:16:00Z', pending: false },
+        ],
+      };
+    },
+  });
+  harness.histories.set(7, [
+    { role: 'tool', body: 'read_file\nsearch_files', created_at: '2026-04-09T18:15:00Z', pending: true, collapsed: true },
+  ]);
+  harness.chats.set(7, { id: 7, unread_count: 2, pending: true });
+  harness.pendingChats.add(7);
+
+  await harness.controller.hydrateChatFromServer(7, 0, false);
+
+  assert.deepEqual(harness.histories.get(7), [
+    { id: 10, role: 'tool', body: 'read_file\nsearch_files', created_at: '2026-04-09T18:15:00Z', pending: false },
+    { id: 11, role: 'assistant', body: 'final answer', created_at: '2026-04-09T18:16:00Z', pending: false },
+  ]);
+  assert.deepEqual(harness.finalizedHydratedPendingChats, [7]);
+  assert.deepEqual(harness.resumedChats, []);
 });
 
 test('hydrateChatFromServer restores fresh pending snapshot even when server hydrate briefly says not pending', async () => {
@@ -658,27 +689,36 @@ test('syncVisibleActiveChat resumes when server still reports pending and there 
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: {} }]);
 });
 
-test('syncVisibleActiveChat forces resume when local pending traces exist without live stream', async () => {
+test('syncVisibleActiveChat finalizes stale local pending tool traces when hydrate already includes the completed assistant reply', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,
     pendingChats: new Set(),
+    mergeHydratedHistory: runtimeHistory.mergeHydratedHistory,
     apiPost: async (path, payload) => {
       harness.apiCalls.push({ path, payload });
       if (path === '/api/chats/history') {
         return {
           chat: { id: 7, pending: false },
-          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+          history: [
+            { id: 10, role: 'tool', body: 'read_file', created_at: '2026-04-09T18:15:00Z', pending: false },
+            { id: 11, role: 'assistant', body: 'hello', created_at: '2026-04-09T18:16:00Z', pending: false },
+          ],
         };
       }
       throw new Error(`unexpected ${path}`);
     },
   });
-  harness.histories.set(7, [{ role: 'tool', body: 'read_file', pending: true }]);
+  harness.histories.set(7, [{ role: 'tool', body: 'read_file', created_at: '2026-04-09T18:15:00Z', pending: true }]);
 
   await harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
 
-  assert.deepEqual(harness.restoredSnapshots, [7]);
-  assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
+  assert.deepEqual(harness.restoredSnapshots, []);
+  assert.deepEqual(harness.finalizedHydratedPendingChats, [7]);
+  assert.deepEqual(harness.histories.get(7), [
+    { id: 10, role: 'tool', body: 'read_file', created_at: '2026-04-09T18:15:00Z', pending: false },
+    { id: 11, role: 'assistant', body: 'hello', created_at: '2026-04-09T18:16:00Z', pending: false },
+  ]);
+  assert.deepEqual(harness.resumedChats, []);
 });
 
 test('syncVisibleActiveChat restores fresh pending snapshot even when local history is empty and server says not pending', async () => {
@@ -717,16 +757,20 @@ test('syncVisibleActiveChat restores fresh pending snapshot even when local hist
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
 });
 
-test('syncVisibleActiveChat rerenders active chat when restoring pending snapshot changes final visible history', async () => {
+test('syncVisibleActiveChat rerenders active chat with completed transcript instead of restoring stale pending snapshot when hydrate already completed', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,
     pendingChats: new Set(),
+    mergeHydratedHistory: runtimeHistory.mergeHydratedHistory,
     apiPost: async (path, payload) => {
       harness.apiCalls.push({ path, payload });
       if (path === '/api/chats/history') {
         return {
           chat: { id: 7, pending: false },
-          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+          history: [
+            { id: 10, role: 'tool', body: 'read_file', created_at: '2026-04-09T18:15:00Z', pending: false },
+            { id: 11, role: 'assistant', body: 'hello', created_at: '2026-04-09T18:16:00Z', pending: false },
+          ],
         };
       }
       throw new Error(`unexpected ${path}`);
@@ -734,20 +778,25 @@ test('syncVisibleActiveChat rerenders active chat when restoring pending snapsho
     restorePendingStreamSnapshot: (chatId) => {
       harness.restoredSnapshots.push(Number(chatId));
       harness.histories.set(Number(chatId), [
-        { id: 1, role: 'assistant', body: 'hello' },
+        { id: 10, role: 'tool', body: 'read_file', created_at: '2026-04-09T18:15:00Z', pending: false },
+        { id: 11, role: 'assistant', body: 'hello', created_at: '2026-04-09T18:16:00Z', pending: false },
         { role: 'tool', body: 'missed tool', pending: true },
       ]);
       return true;
     },
   });
-  harness.histories.set(7, [{ role: 'tool', body: 'read_file', pending: true }]);
+  harness.histories.set(7, [{ role: 'tool', body: 'read_file', created_at: '2026-04-09T18:15:00Z', pending: true }]);
 
   await harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(harness.restoredSnapshots, [7]);
+  assert.deepEqual(harness.restoredSnapshots, []);
   assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
-  assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
+  assert.deepEqual(harness.histories.get(7), [
+    { id: 10, role: 'tool', body: 'read_file', created_at: '2026-04-09T18:15:00Z', pending: false },
+    { id: 11, role: 'assistant', body: 'hello', created_at: '2026-04-09T18:16:00Z', pending: false },
+  ]);
+  assert.deepEqual(harness.resumedChats, []);
 });
 
 test('syncVisibleActiveChat forces resume when local pending assistant traces exist without live stream', async () => {

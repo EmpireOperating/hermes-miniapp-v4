@@ -253,17 +253,28 @@
 
       const isWithinSyncWindow = () => Date.now() <= keyboardSyncUntil;
 
+      const shouldAutoMaintainComposerVisibility = () => {
+        if (!isPromptFocused()) return false;
+        if (!messagesEl) return true;
+        return Boolean(isNearBottomFn?.(messagesEl, 40));
+      };
+
+      const guardedEnsureComposerVisible = () => {
+        if (!shouldAutoMaintainComposerVisibility()) return;
+        ensureComposerVisible({ smooth: false });
+      };
+
       const runSyncBurst = () => {
         ensureComposerVisible({ smooth: false });
         const raf = windowObject.requestAnimationFrame || globalScope.requestAnimationFrame;
         if (typeof raf === 'function') {
-          raf(() => ensureComposerVisible({ smooth: false }));
+          raf(() => guardedEnsureComposerVisible());
         }
-        windowObject.setTimeout(() => ensureComposerVisible({ smooth: false }), 90);
-        windowObject.setTimeout(() => ensureComposerVisible({ smooth: false }), 220);
-        windowObject.setTimeout(() => ensureComposerVisible({ smooth: false }), 420);
-        windowObject.setTimeout(() => ensureComposerVisible({ smooth: false }), 700);
-        windowObject.setTimeout(() => ensureComposerVisible({ smooth: false }), 1000);
+        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 90);
+        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 220);
+        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 420);
+        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 700);
+        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 1000);
       };
 
       const stopFocusIntervalSync = () => {
@@ -275,7 +286,7 @@
       const startFocusIntervalSync = () => {
         if (focusSyncIntervalId) return;
         focusSyncIntervalId = windowObject.setInterval(() => {
-          if (!isPromptFocused() || !isWithinSyncWindow()) {
+          if (!isPromptFocused() || !isWithinSyncWindow() || !shouldAutoMaintainComposerVisibility()) {
             stopFocusIntervalSync();
             return;
           }
@@ -308,6 +319,7 @@
         syncViewportCssVars();
         if (!isPromptFocused()) return;
         if (!isWithinSyncWindow()) return;
+        if (!shouldAutoMaintainComposerVisibility()) return;
         ensureComposerVisible({ smooth: false });
       };
 

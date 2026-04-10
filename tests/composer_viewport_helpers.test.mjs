@@ -26,6 +26,7 @@ function createEventTarget(initial = {}) {
 }
 
 function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNearBottom = true } = {}) {
+  let nearBottom = Boolean(isNearBottom);
   const scrollByCalls = [];
   const timeoutCalls = [];
   const intervalCallbacks = [];
@@ -144,7 +145,7 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
     messagesEl,
     tabsEl,
     mobileQuoteMode,
-    isNearBottomFn: () => isNearBottom,
+    isNearBottomFn: () => nearBottom,
     getActiveChatId: () => activeChatId,
     chatScrollTop,
     chatStickToBottom,
@@ -180,6 +181,12 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
     },
     set activeChatId(value) {
       activeChatId = value;
+    },
+    get isNearBottom() {
+      return nearBottom;
+    },
+    setIsNearBottom(value) {
+      nearBottom = Boolean(value);
     },
   };
 }
@@ -268,6 +275,36 @@ test('installKeyboardViewportSync clears interval on blur', () => {
   harness.promptEl.dispatch('blur');
 
   assert.deepEqual(harness.clearIntervalCalls, [1]);
+});
+
+test('installKeyboardViewportSync stops interval sync when user is no longer near bottom', () => {
+  const harness = buildHarness();
+
+  harness.controller.installKeyboardViewportSync();
+  harness.documentObject.activeElement = harness.promptEl;
+  harness.promptEl.dispatch('focus');
+  harness.form.scrollIntoViewCalls.length = 0;
+  harness.scrollByCalls.length = 0;
+  harness.setIsNearBottom(false);
+
+  harness.intervalCallbacks[0].callback();
+
+  assert.equal(harness.form.scrollIntoViewCalls.length, 0);
+  assert.equal(harness.scrollByCalls.length, 0);
+  assert.deepEqual(harness.clearIntervalCalls, [1]);
+});
+
+test('installKeyboardViewportSync ignores viewport shifts while user is reading older messages', () => {
+  const harness = buildHarness({ isNearBottom: false });
+
+  harness.controller.installKeyboardViewportSync();
+  harness.documentObject.activeElement = harness.promptEl;
+  harness.telegramViewportHandlers[0].handler();
+  harness.visualViewport.dispatch('resize');
+  harness.windowResizeListeners[0]();
+
+  assert.equal(harness.form.scrollIntoViewCalls.length, 0);
+  assert.equal(harness.scrollByCalls.length, 0);
 });
 
 test('runAfterUiMutation schedules RAF + visibility timeout fallback', () => {

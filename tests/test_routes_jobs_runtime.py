@@ -537,14 +537,14 @@ def test_run_chat_job_duplicate_runner_is_suppressed_not_nonretryable(monkeypatc
 
 def test_run_chat_job_skips_db_history_when_runtime_already_bootstrapped(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
 
     user_id = "123"
     chat_id = server.store.ensure_default_chat(user_id)
     server.store.add_message(user_id, chat_id, "operator", "older context")
     operator_message_id = server.store.add_message(user_id, chat_id, "operator", "latest question")
     server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    job = server.store.claim_next_job()
-    assert job is not None
+    job = _claim_or_get_open_job(server, user_id, chat_id)
 
     captured = {"history": "unset"}
 
@@ -601,6 +601,7 @@ def test_run_chat_job_uses_runtime_checkpoint_when_bootstrapping(monkeypatch, tm
 
 def test_run_chat_job_persists_runtime_checkpoint_from_done_event(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
 
     user_id = "123"
     chat_id = server.store.ensure_default_chat(user_id)
@@ -608,8 +609,7 @@ def test_run_chat_job_persists_runtime_checkpoint_from_done_event(monkeypatch, t
     session_id = f"miniapp-{user_id}-{chat_id}"
 
     server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    job = server.store.claim_next_job()
-    assert job is not None
+    job = _claim_or_get_open_job(server, user_id, chat_id)
 
     monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: False)
 
@@ -670,9 +670,8 @@ def test_publish_job_event_delivers_done_when_subscriber_queue_is_full(monkeypat
     chat_id = server.store.ensure_default_chat(user_id)
     operator_message_id = server.store.add_message(user_id, chat_id, "operator", "overflow")
     job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    claimed = server.store.claim_next_job()
-    assert claimed is not None
-    assert claimed["id"] == job_id
+    claimed = _claim_or_get_open_job(server, user_id, chat_id)
+    assert int(claimed["id"]) == job_id
 
     saturated_subscriber: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
     saturated_subscriber.put_nowait({"event": "chunk", "payload": {"text": "old"}})
@@ -691,13 +690,13 @@ def test_job_event_buffers_follow_configured_cap(monkeypatch, tmp_path) -> None:
     configured_cap = 64
     monkeypatch.setenv("MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS", str(configured_cap))
     server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-event-buffer-manual-drive", join_timeout=0.2)
 
     user_id = "event-cap"
     chat_id = server.store.ensure_default_chat(user_id)
     operator_message_id = server.store.add_message(user_id, chat_id, "operator", "cap test")
     job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    claimed = server.store.claim_next_job()
-    assert claimed is not None
+    claimed = _claim_or_get_open_job(server, user_id, chat_id)
 
     for idx in range(configured_cap + 6):
         server._publish_job_event(job_id, "chunk", {"chat_id": chat_id, "index": idx})
@@ -729,14 +728,14 @@ def test_job_event_buffers_follow_configured_cap(monkeypatch, tmp_path) -> None:
 
 def test_run_chat_job_does_not_keepalive_touch_during_silent_upstream_wait(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
 
     user_id = "123"
     chat_id = server.store.ensure_default_chat(user_id)
     operator_message_id = server.store.add_message(user_id, chat_id, "operator", "wait")
 
     server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    job = server.store.claim_next_job()
-    assert job is not None
+    job = _claim_or_get_open_job(server, user_id, chat_id)
 
     monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: False)
 
@@ -842,6 +841,8 @@ def test_bounded_attempts_for_display_caps_retry_count(monkeypatch, tmp_path) ->
 def test_worker_retry_exhaustion_stops_at_max_and_surfaces_terminal_error(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
     runtime = server._RUNTIME_DEPS.bind_runtime()
+    runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
+    runtime._shutdown_event.clear()
 
     user_id = "retry-user"
     chat_id = server.store.ensure_default_chat(user_id)
@@ -902,6 +903,8 @@ def test_worker_retry_exhaustion_stops_at_max_and_surfaces_terminal_error(monkey
 def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
     runtime = server._RUNTIME_DEPS.bind_runtime()
+    runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
+    runtime._shutdown_event.clear()
 
     user_id = "diag-user"
     chat_id = server.store.ensure_default_chat(user_id)

@@ -339,11 +339,21 @@
     }
 
     function hydratedCompletionMatchesVisibleLocalPending(previousHistory, nextHistory) {
-      const pendingBody = latestAssistantLikeBody(previousHistory, { pending: true });
-      if (!pendingBody) return false;
       const completedBody = latestAssistantLikeBody(nextHistory, { pending: false });
       if (!completedBody) return false;
-      return completedBody === pendingBody;
+      const pendingBody = latestAssistantLikeBody(previousHistory, { pending: true });
+      if (pendingBody) {
+        return completedBody === pendingBody;
+      }
+      const hydratedPendingTranscript = Array.isArray(nextHistory) && nextHistory.some((item) => {
+        if (!item?.pending) return false;
+        const role = String(item?.role || '').toLowerCase();
+        return role === 'tool' || role === 'hermes' || role === 'assistant';
+      });
+      if (hydratedPendingTranscript) {
+        return false;
+      }
+      return hasLocalPendingTranscript(previousHistory);
     }
 
     function historiesDiffer(currentHistory, incomingHistory) {

@@ -720,6 +720,7 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     shell_ui_script = _read_repo_file("static", "shell_ui_helpers.js")
     composer_viewport_script = _read_repo_file("static", "composer_viewport_helpers.js")
     runtime_helpers_script = _read_repo_file("static", "runtime_helpers.js")
+    runtime_latency_script = _read_repo_file("static", "runtime_latency_helpers.js")
     visibility_skin_script = _read_repo_file("static", "visibility_skin_helpers.js")
     startup_bindings_script = _read_repo_file("static", "startup_bindings_helpers.js")
     startup_metrics_script = _read_repo_file("static", "startup_metrics_helpers.js")
@@ -825,8 +826,9 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "function ensureComposerVisible" in composer_viewport_script
     assert "composerViewportHelpers.createController({" in app_script
     assert 'throw new Error("HermesMiniappComposerViewport is required before app.js")' in app_script
-    assert "function createLatencyPersistenceController({" in runtime_helpers_script
-    assert "function createLatencyController({" in runtime_helpers_script
+    assert "function resolveRuntimeLatencyHelpers()" in runtime_helpers_script
+    assert "function createLatencyPersistenceController({" in runtime_latency_script
+    assert "function createLatencyController({" in runtime_latency_script
     assert "runtimeHelpers.createLatencyPersistenceController({" in app_script
     assert "latencyPersistenceController.loadLatencyByChatFromStorage()" in app_script
     assert "latencyPersistenceController.persistLatencyByChatToStorage()" in app_script
@@ -935,7 +937,7 @@ def test_stream_resume_and_graceful_completion_helpers_are_centralized() -> None
     assert "isTransientResumeRecoveryError: resumeRecoveryPolicy.isTransientResumeRecoveryError" in app_script
     assert "async function hydrateChatAfterGracefulResumeCompletion" in app_script
     assert "async function consumeStreamWithReconnect" in app_script
-    assert 'await hydrateChatAfterGracefulResumeCompletion(key);' in stream_controller_script
+    assert 'await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });' in stream_controller_script
     assert 'const resumed = await consumeStreamWithReconnect(chatId, response, builtReplyRef' in stream_controller_script
     assert 'const resumed = await consumeStreamWithReconnect(key, response, builtReplyRef' in stream_controller_script
 
@@ -1047,9 +1049,11 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     # Pinned chats should remain visible in the pinned section after close.
     assert 'const ok = await confirmAction(`Close chat' not in script
     assert "async function removeActiveChat()" in chat_admin_script
-    assert 'const data = await apiPost(\'/api/chats/remove\', { chat_id: activeChatId, allow_empty: true });' in chat_admin_script
+    assert "data = await apiPost('/api/chats/remove', {" in chat_admin_script
+    assert 'chat_id: activeChatId,' in chat_admin_script
+    assert 'allow_empty: true,' in chat_admin_script
     assert 'const removedChatSnapshot = chats.get(activeChatId) || pinnedChats.get(activeChatId) || null;' in chat_admin_script
-    assert 'if (removedWasPinned && !pinnedChats.has(activeChatId) && removedChatSnapshot) {' in chat_admin_script
+    assert 'if ((hasFullState || removedWasPinned) && !pinnedChats.has(activeChatId) && removedChatSnapshot) {' in chat_admin_script
 
 
 def test_message_action_copy_helpers_are_split_to_module() -> None:

@@ -54,7 +54,7 @@ def test_stream_controller_module_exports_core_api():
 
     assert "const totalSeconds = Math.max(0, Math.ceil(ms / 1000));" in shared_utils_js
     assert "if (totalSeconds < 60) return `${totalSeconds}s`;" in shared_utils_js
-    assert "const fallbackSeconds = `${Math.max(0, Math.ceil(elapsedMs / 1000))}s`;" in _read_static("runtime_helpers.js")
+    assert "const fallbackSeconds = `${Math.max(0, Math.ceil(elapsedMs / 1000))}s`;" in _read_static("runtime_latency_helpers.js")
 
     assert "HermesMiniappStreamController" in controller_js
     assert "function createToolTraceController({" in controller_js
@@ -91,6 +91,8 @@ def test_composer_state_helper_exports_state_api():
 def test_app_resume_handles_no_active_job_reconnect_gracefully():
     app_js = _read_static("app.js")
     runtime_helpers_js = _read_static("runtime_helpers.js")
+    runtime_latency_helpers_js = _read_static("runtime_latency_helpers.js")
+    runtime_unread_helpers_js = _read_static("runtime_unread_helpers.js")
     bootstrap_auth_js = _read_static("bootstrap_auth_helpers.js")
     stream_controller_js = _read_static("stream_controller.js")
     chat_tabs_helper_js = _read_static("chat_tabs_helpers.js")
@@ -109,7 +111,7 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "const parsedResumeError = parseStreamErrorPayload(fallback);" in stream_controller_js
     assert "const alreadyWorking = response.status === 409;" in stream_controller_js
     assert "await resumePendingChatStream(chatId, { force: true });" in stream_controller_js
-    assert "await hydrateChatAfterGracefulResumeCompletion(key);" in stream_controller_js
+    assert "await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });" in stream_controller_js
     assert "triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });" in stream_controller_js
     assert "deps.markResumeAlreadyComplete?.(key);" in stream_controller_js
     assert "const transientReconnectFailure = isTransientResumeRecoveryError(error);" in stream_controller_js
@@ -118,30 +120,32 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "const stillPending = Boolean(chats.get(key)?.pending) || pendingChats.has(key);" in stream_controller_js
     assert "Reconnect recovery is paused for '${chatLabel(key)}'. Send a new message to try again." in stream_controller_js
 
-    assert "const RECONNECT_PILL_DELAY_MS = 2200;" in runtime_helpers_js
-    assert "const LIVE_LATENCY_TICK_MS = 1000;" in runtime_helpers_js
-    assert "const liveLatencyStartedAtByChat = new Map();" in runtime_helpers_js
-    assert "const reconnectDisplayTimerByChat = new Map();" in runtime_helpers_js
-    assert "const chat = activeKey ? chats.get(activeKey) : null;" in runtime_helpers_js
-    assert "const hasLiveController = activeKey && typeof hasLiveStreamController === 'function'" in runtime_helpers_js
-    assert "if (activeKey && !hasLiveController) {" in runtime_helpers_js
-    assert "clearLiveLatency(activeKey);" in runtime_helpers_js
-    assert "function beginLiveLatency(chatId, { elapsedMs = null } = {})" in runtime_helpers_js
-    assert "function markToolActivity(chatId)" in runtime_helpers_js
-    assert "function markStreamComplete(chatId, latencyText = \"--\")" in runtime_helpers_js
-    assert "setActivityChip?.(latencyChip, \"latency: --\");" in runtime_helpers_js
-    assert "setChatLatency?.(key, \"--\");" in runtime_helpers_js
-    assert "const timerId = setTimeout(() => {" in runtime_helpers_js
-    assert "if (liveLatencyStartedAtByChat.has(key)) {" in runtime_helpers_js
-    assert "tickLiveLatency();" in runtime_helpers_js
-    assert "setChatLatency?.(key, \"reconnecting...\");" in runtime_helpers_js
-    assert "setStreamStatus?.(\"Reconnect recovery paused — action needed\");" in runtime_helpers_js
-    assert "setActivityChip?.(streamChip, \"stream: recovery paused\");" in runtime_helpers_js
-    assert "function createHapticUnreadController({" in runtime_helpers_js
+    assert "function resolveRuntimeLatencyHelpers()" in runtime_helpers_js
+    assert "function resolveRuntimeUnreadHelpers()" in runtime_helpers_js
+    assert "const RECONNECT_PILL_DELAY_MS = 2200;" in runtime_latency_helpers_js
+    assert "const LIVE_LATENCY_TICK_MS = 1000;" in runtime_latency_helpers_js
+    assert "const liveLatencyStartedAtByChat = new Map();" in runtime_latency_helpers_js
+    assert "const reconnectDisplayTimerByChat = new Map();" in runtime_latency_helpers_js
+    assert "const chat = activeKey ? chats.get(activeKey) : null;" in runtime_latency_helpers_js
+    assert "const hasLiveController = activeKey && typeof hasLiveStreamController === 'function'" in runtime_latency_helpers_js
+    assert "if (activeKey && !hasLiveController) {" in runtime_latency_helpers_js
+    assert "clearLiveLatency(activeKey);" in runtime_latency_helpers_js
+    assert "function beginLiveLatency(chatId, { elapsedMs = null } = {})" in runtime_latency_helpers_js
+    assert "function markToolActivity(chatId)" in runtime_latency_helpers_js
+    assert "function markStreamComplete(chatId, latencyText = \"--\")" in runtime_latency_helpers_js
+    assert "setActivityChip?.(latencyChip, \"latency: --\");" in runtime_latency_helpers_js
+    assert "setChatLatency?.(key, \"--\");" in runtime_latency_helpers_js
+    assert "const timerId = setTimeout(() => {" in runtime_latency_helpers_js
+    assert "if (liveLatencyStartedAtByChat.has(key)) {" in runtime_latency_helpers_js
+    assert "tickLiveLatency();" in runtime_latency_helpers_js
+    assert "setChatLatency?.(key, \"reconnecting...\");" in runtime_latency_helpers_js
+    assert "setStreamStatus?.(\"Reconnect recovery paused — action needed\");" in runtime_latency_helpers_js
+    assert "setActivityChip?.(streamChip, \"stream: recovery paused\");" in runtime_latency_helpers_js
+    assert "function createHapticUnreadController({" in runtime_unread_helpers_js
     assert "consumeStreamWithReconnect(key, response, builtReplyRef" in stream_controller_js
     assert "const queueLabel = Number.isFinite(queuedAhead) && queuedAhead > 0" in _read_static("stream_controller.js")
-    assert "const queueLabel = Number.isFinite(normalizedQueuedAhead) && normalizedQueuedAhead > 0" in runtime_helpers_js
-    assert "setChatLatency?.(key, queueLabel);" in runtime_helpers_js
+    assert "const queueLabel = Number.isFinite(normalizedQueuedAhead) && normalizedQueuedAhead > 0" in runtime_latency_helpers_js
+    assert "setChatLatency?.(key, queueLabel);" in runtime_latency_helpers_js
 
     assert "await resumePendingChatStream(key, { force: true });" not in app_js
     assert "const reconnectResumeBlockedChats = new Set();" in app_js
