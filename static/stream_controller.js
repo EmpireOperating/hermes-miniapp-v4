@@ -308,14 +308,19 @@
       if (eventId == null) return false;
       const key = Number(chatId);
       const lastEventId = Number(lastStreamEventIdByChat.get(key) || 0);
-      if (eventId <= lastEventId) {
-        return true;
-      }
+      return eventId <= lastEventId;
+    }
+
+
+    function commitProcessedStreamEvent(chatId, payload) {
+      const eventId = parseStreamEventId(payload);
+      if (eventId == null) return null;
+      const key = Number(chatId);
       lastStreamEventIdByChat.set(key, eventId);
       if (typeof persistStreamCursor === "function") {
         persistStreamCursor(key, eventId);
       }
-      return false;
+      return eventId;
     }
 
 
@@ -417,6 +422,7 @@
       setFocusRestoreEligibility,
       parseStreamEventId,
       shouldSkipReplayedEvent,
+      commitProcessedStreamEvent,
       setStreamAbortController,
       clearStreamAbortController,
       hasLiveStreamController,
@@ -467,6 +473,7 @@
       consumeFirstAssistantNotification,
       notifyFirstAssistantChunk,
       shouldSkipReplayedEvent,
+      commitProcessedStreamEvent,
       setStreamStatusForVisibleChat,
       setStreamChipForVisibleChat,
       setLatencyChipForVisibleChat,
@@ -812,6 +819,9 @@
             expectedSegmentEnd = true;
           }
           const handledAsTerminal = handleStreamEvent(chatId, eventName, payload, builtReplyRef);
+          if (!handledAsTerminal) {
+            commitProcessedStreamEvent(key, payload);
+          }
           if (handledAsTerminal) {
             terminalReceived = true;
             renderTraceLog("stream-terminal-event", {
@@ -853,6 +863,9 @@
             expectedSegmentEnd = true;
           }
           const handledAsTerminal = handleStreamEvent(chatId, eventName, payload, builtReplyRef);
+          if (!handledAsTerminal) {
+            commitProcessedStreamEvent(key, payload);
+          }
           if (handledAsTerminal) {
             terminalReceived = true;
             renderTraceLog("stream-terminal-buffer-tail", {
@@ -886,24 +899,62 @@
     }
 
 
-    function latestAssistantRenderSignature(history) {
+    function latestAssistantMessage(history) {
       const items = Array.isArray(history) ? history : [];
       for (let index = items.length - 1; index >= 0; index -= 1) {
         const item = items[index];
         const role = String(item?.role || '').toLowerCase();
         if (role !== 'hermes' && role !== 'assistant') continue;
-        const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
-        const fileRefSignature = fileRefs
-          .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
-          .join('|');
-        return [
-          role,
-          String(item?.body || ''),
-          item?.pending ? 'pending' : 'final',
-          fileRefSignature,
-        ].join('::');
+        return item;
       }
-      return '';
+      return null;
+    }
+
+
+    function latestAssistantRenderSignature(history) {
+      const item = latestAssistantMessage(history);
+      if (!item) {
+        return '';
+      }
+      const role = String(item?.role || '').toLowerCase();
+      const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
+      const fileRefSignature = fileRefs
+        .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
+        .join('|');
+      return [
+        role,
+        String(item?.body || ''),
+        item?.pending ? 'pending' : 'final',
+        fileRefSignature,
+      ].join('::');
+    }
+
+
+    function preserveLatestCompletedAssistantMessage(previousHistory, nextHistory) {
+      const previousAssistant = latestAssistantMessage(previousHistory);
+      const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
+      const previousBody = String(previousAssistant?.body || '').trim();
+      if (!previousAssistant || !previousBody) {
+        return incoming;
+      }
+      const matchingIncomingIndex = incoming.findIndex((item) => {
+        const role = String(item?.role || '').toLowerCase();
+        if (role !== 'hermes' && role !== 'assistant') return false;
+        return String(item?.body || '').trim() === previousBody;
+      });
+      if (matchingIncomingIndex >= 0) {
+        const candidate = incoming[matchingIncomingIndex] || {};
+        incoming[matchingIncomingIndex] = {
+          ...candidate,
+          pending: false,
+        };
+        return incoming;
+      }
+      incoming.push({
+        ...previousAssistant,
+        pending: false,
+      });
+      return incoming;
     }
 
 
@@ -951,7 +1002,7 @@
         const previousHistory = histories?.get?.(key) || [];
         const previousAssistantSignature = latestAssistantRenderSignature(previousHistory);
         const previousTranscriptSignature = transcriptRenderSignature(previousHistory);
-        const nextHistory = typeof mergeHydratedHistory === "function"
+        let nextHistory = typeof mergeHydratedHistory === "function"
           ? mergeHydratedHistory({
             previousHistory,
             nextHistory: hydrated.history || [],
@@ -959,6 +1010,9 @@
             preserveCompletedToolTrace: Boolean(forceCompleted),
           })
           : (hydrated.history || []);
+        if (forceCompleted) {
+          nextHistory = preserveLatestCompletedAssistantMessage(previousHistory, nextHistory);
+        }
         histories?.set?.(key, nextHistory);
         const nextAssistantSignature = latestAssistantRenderSignature(nextHistory);
         const nextTranscriptSignature = transcriptRenderSignature(nextHistory);
@@ -1439,7 +1493,7 @@
               if (noActiveJob) {
                 resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
                 setStreamPhase(key, STREAM_PHASES.FINALIZED);
-                await hydrateChatAfterGracefulResumeCompletion(key);
+                await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });
                 triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
                 deps.markResumeAlreadyComplete?.(key);
                 return;
@@ -1479,7 +1533,7 @@
             }
 
             if (transientReconnectFailure) {
-              await hydrateChatAfterGracefulResumeCompletion(key);
+              await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });
               const stillPending = Boolean(chats.get(key)?.pending) || pendingChats.has(key);
               if (!stillPending) {
                 resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);

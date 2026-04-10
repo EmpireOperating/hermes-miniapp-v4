@@ -238,10 +238,15 @@
         return chat;
       }
       const nextChat = { ...chat };
-      if (preserveActivationUnread && activationReadThresholdState.has(key)) {
+      if (preserveActivationUnread) {
         const localUnread = Math.max(0, Number(chats.get(key)?.unread_count || 0));
         const incomingUnread = Math.max(0, Number(nextChat.unread_count || 0));
-        if (localUnread > incomingUnread) {
+        const activeUnreadAboveNewestMessage = Boolean(
+          key === normalizeChatId(getActiveChatId())
+          && localUnread > incomingUnread
+          && !hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
+        );
+        if ((activationReadThresholdState.has(key) || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
           nextChat.unread_count = localUnread;
         }
       }
@@ -777,6 +782,7 @@
       const activeId = normalizeChatId(activeChatId);
       if (!activeId) return;
 
+      ensureActivationReadThreshold(activeId);
       maybeMarkRead(activeId);
       const data = await loadChatHistory(activeId, { activate: true });
       const latestActiveId = normalizeChatId(getActiveChatId());

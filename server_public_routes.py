@@ -45,6 +45,9 @@ def register_public_routes(
             render_template(
                 "app.html",
                 css_version=asset_version_fn("app.css"),
+                runtime_unread_helpers_version=asset_version_fn("runtime_unread_helpers.js"),
+                runtime_latency_helpers_version=asset_version_fn("runtime_latency_helpers.js"),
+                runtime_history_helpers_version=asset_version_fn("runtime_history_helpers.js"),
                 helpers_version=asset_version_fn("runtime_helpers.js"),
                 shared_utils_version=asset_version_fn("app_shared_utils.js"),
                 chat_ui_helpers_version=asset_version_fn("chat_ui_helpers.js"),

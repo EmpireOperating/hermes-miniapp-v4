@@ -91,6 +91,29 @@ def test_auth_reopens_last_active_chat(monkeypatch, tmp_path) -> None:
     assert any(chat["id"] == main_chat_id for chat in data["chats"])
     assert "hermes_skin=terminal" in response.headers.get("Set-Cookie", "")
 
+
+def test_auth_includes_runtime_pending_tool_and_assistant_state_for_active_pending_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    server.store.add_message("123", chat_id, "operator", "pending question")
+    server.store.set_active_chat("123", chat_id)
+    server.store.set_runtime_checkpoint(
+        session_id=f"miniapp-123-{chat_id}",
+        user_id="123",
+        chat_id=chat_id,
+        pending_tool_lines=["read_file", "search_files"],
+        pending_assistant="Still working",
+    )
+
+    response = client.post("/api/auth", json={"init_data": "ok"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    pending_entries = [item for item in data["history"] if item.get("pending")]
+    assert any(item["role"] == "tool" and "read_file\nsearch_files" == item["body"] for item in pending_entries)
+    assert any(item["role"] == "assistant" and item["body"] == "Still working" for item in pending_entries)
+
 def test_auth_allow_empty_preserves_zero_tab_state(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 

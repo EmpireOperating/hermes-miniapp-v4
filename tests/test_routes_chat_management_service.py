@@ -84,3 +84,63 @@ def test_remove_chat_response_evicts_runtime_and_can_leave_no_active_chat(monkey
     assert payload["chats"] == []
     assert evicted == [(f"miniapp-123-{only_chat_id}", "invalidated_by_remove")]
     assert deleted_checkpoints == [f"miniapp-123-{only_chat_id}"]
+
+
+
+def test_remove_chat_response_can_skip_full_state_payload(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+
+    first_chat_id = server.store.ensure_default_chat("123")
+    second_chat = server.store.create_chat("123", "Next")
+    server.store.set_active_chat("123", second_chat.id)
+
+    serialized_calls: list[int] = []
+
+    def serialize_chat(chat) -> dict[str, object]:
+        serialized_calls.append(chat.id)
+        return _serialize_chat(chat)
+
+    service = build_chat_management_service(
+        store_getter=lambda: server.store,
+        client_getter=lambda: server.client,
+        runtime_getter=lambda: server.runtime,
+        serialize_chat_fn=serialize_chat,
+        session_id_builder_fn=lambda user_id, chat_id: f"miniapp-{user_id}-{chat_id}",
+        json_error_fn=lambda message, status: ({"ok": False, "error": message}, status),
+    )
+
+    payload, status = service.remove_chat_response(
+        user_id="123",
+        chat_id=second_chat.id,
+        allow_empty=True,
+        include_full_state=False,
+    )
+
+    assert status == 200
+    assert payload == {
+        "ok": True,
+        "removed_chat_id": second_chat.id,
+        "active_chat_id": first_chat_id,
+    }
+    assert serialized_calls == []
+
+
+def test_chat_history_payload_includes_runtime_pending_checkpoint_state(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    chat_id = server.store.ensure_default_chat("123")
+    server.store.add_message("123", chat_id, "operator", "still working")
+    server.store.set_runtime_checkpoint(
+        session_id=f"miniapp-123-{chat_id}",
+        user_id="123",
+        chat_id=chat_id,
+        pending_tool_lines=["read_file", "search_files"],
+        pending_assistant="Thinking",
+    )
+
+    payload = service.chat_history_payload(user_id="123", chat_id=chat_id, activate=True)
+
+    pending_entries = [item for item in payload["history"] if item.get("pending")]
+    assert any(item["role"] == "tool" and item["body"] == "read_file\nsearch_files" for item in pending_entries)
+    assert any(item["role"] == "assistant" and item["body"] == "Thinking" for item in pending_entries)

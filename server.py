@@ -101,6 +101,9 @@ DEV_RELOAD_WATCH_PATHS = CONFIG.dev_reload_watch_paths
 STATIC_NO_STORE_FILENAMES = {
     "app.js",
     "app.css",
+    "runtime_unread_helpers.js",
+    "runtime_latency_helpers.js",
+    "runtime_history_helpers.js",
     "runtime_helpers.js",
     "app_shared_utils.js",
     "chat_ui_helpers.js",
@@ -502,6 +505,7 @@ register_auth_routes(
     request_payload_fn=_request_payload,
     verify_for_json_fn=_verify_for_json,
     serialize_chat_fn=_serialize_chat,
+    session_id_builder_fn=_session_id_for,
     cookie_secure_fn=_cookie_secure,
     create_auth_session_token_fn=_create_auth_session_token,
     allowed_skins=ALLOWED_SKINS,

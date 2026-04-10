@@ -978,9 +978,34 @@ def test_runtime_checkpoint_round_trip_and_delete(tmp_path) -> None:
         {"role": "assistant", "content": "Hi"},
     ]
 
-    store.set_runtime_checkpoint(session_id=session_id, user_id=user_id, chat_id=chat_id, history=history)
+    store.set_runtime_checkpoint(
+        session_id=session_id,
+        user_id=user_id,
+        chat_id=chat_id,
+        history=history,
+        pending_tool_lines=["read_file", "search_files"],
+        pending_assistant="Working on it",
+    )
     loaded = store.get_runtime_checkpoint(session_id)
+    state = store.get_runtime_checkpoint_state(session_id)
     assert loaded == history
+    assert state is not None
+    assert state["history"] == history
+    assert state["pending_tool_lines"] == ["read_file", "search_files"]
+    assert state["pending_assistant"] == "Working on it"
+
+    store.set_runtime_checkpoint(
+        session_id=session_id,
+        user_id=user_id,
+        chat_id=chat_id,
+        pending_tool_lines=[],
+        pending_assistant="",
+    )
+    updated_state = store.get_runtime_checkpoint_state(session_id)
+    assert updated_state is not None
+    assert updated_state["history"] == history
+    assert updated_state["pending_tool_lines"] == []
+    assert updated_state["pending_assistant"] == ""
 
     store.delete_runtime_checkpoint(session_id)
     assert store.get_runtime_checkpoint(session_id) is None

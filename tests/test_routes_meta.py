@@ -226,6 +226,9 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     def fake_asset_version(filename: str) -> str:
         return {
             "app.css": "css-v",
+            "runtime_unread_helpers.js": "runtime-unread-v",
+            "runtime_latency_helpers.js": "runtime-latency-v",
+            "runtime_history_helpers.js": "runtime-history-v",
             "runtime_helpers.js": "helpers-v",
             "app_shared_utils.js": "shared-v",
             "chat_ui_helpers.js": "chat-ui-v",
@@ -258,6 +261,9 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
 
     assert response.status_code == 200
     page = response.get_data(as_text=True)
+    runtime_unread_src = '/static/runtime_unread_helpers.js?v=runtime-unread-v'
+    runtime_latency_src = '/static/runtime_latency_helpers.js?v=runtime-latency-v'
+    runtime_history_src = '/static/runtime_history_helpers.js?v=runtime-history-v'
     runtime_src = '/static/runtime_helpers.js?v=helpers-v'
     shared_src = '/static/app_shared_utils.js?v=shared-v'
     chat_ui_src = '/static/chat_ui_helpers.js?v=chat-ui-v'
@@ -283,6 +289,9 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     render_trace_src = '/static/render_trace_helpers.js?v=render-trace-v'
     file_preview_src = '/static/file_preview_helpers.js?v=file-preview-v'
     app_src = '/static/app.js?v=app-v'
+    assert runtime_unread_src in page
+    assert runtime_latency_src in page
+    assert runtime_history_src in page
     assert runtime_src in page
     assert shared_src in page
     assert chat_ui_src in page
@@ -308,7 +317,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert render_trace_src in page
     assert file_preview_src in page
     assert app_src in page
-    assert page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(chat_tabs_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(keyboard_src) < page.index(interaction_src) < page.index(bootstrap_auth_src) < page.index(chat_history_src) < page.index(chat_admin_src) < page.index(shell_ui_src) < page.index(composer_viewport_src) < page.index(visibility_skin_src) < page.index(startup_bindings_src) < page.index(startup_metrics_src) < page.index(render_trace_text_src) < page.index(render_trace_debug_src) < page.index(render_trace_message_src) < page.index(render_trace_history_src) < page.index(render_trace_src) < page.index(file_preview_src) < page.index(app_src)
+    assert page.index(runtime_unread_src) < page.index(runtime_latency_src) < page.index(runtime_history_src) < page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(chat_tabs_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(keyboard_src) < page.index(interaction_src) < page.index(bootstrap_auth_src) < page.index(chat_history_src) < page.index(chat_admin_src) < page.index(shell_ui_src) < page.index(composer_viewport_src) < page.index(visibility_skin_src) < page.index(startup_bindings_src) < page.index(startup_metrics_src) < page.index(render_trace_text_src) < page.index(render_trace_debug_src) < page.index(render_trace_message_src) < page.index(render_trace_history_src) < page.index(render_trace_src) < page.index(file_preview_src) < page.index(app_src)
 
 
 def test_app_hides_dev_stream_and_source_pills_from_main_ui(monkeypatch, tmp_path) -> None:

@@ -19,6 +19,7 @@ def register_auth_routes(
     request_payload_fn: Callable[[], dict[str, object]],
     verify_for_json_fn: Callable[[dict[str, object]], tuple[Any | None, tuple[dict[str, object], int] | None]],
     serialize_chat_fn: Callable[[Any], dict[str, object]],
+    session_id_builder_fn: Callable[[str, int], str],
     cookie_secure_fn: Callable[[], bool],
     create_auth_session_token_fn: Callable[..., str],
     allowed_skins: set[str],
@@ -45,6 +46,41 @@ def register_auth_routes(
             return False, None
         return None, ({"ok": False, "error": "Invalid allow_empty flag. Expected boolean."}, 400)
 
+    def _augment_history_with_runtime_pending(*, user_id: str, chat_id: int, history: list[dict[str, object]]) -> list[dict[str, object]]:
+        store = store_getter()
+        try:
+            chat = store.get_chat(user_id=user_id, chat_id=chat_id)
+        except KeyError:
+            return history
+        if not bool(getattr(chat, 'pending', False)):
+            return history
+        checkpoint_state = store.get_runtime_checkpoint_state(session_id_builder_fn(user_id, chat_id))
+        if not checkpoint_state:
+            return history
+        next_history = list(history)
+        checkpoint_updated_at = str(checkpoint_state.get('updated_at') or '')
+        pending_tool_lines = [str(line).strip() for line in (checkpoint_state.get('pending_tool_lines') or []) if str(line).strip()]
+        pending_assistant = str(checkpoint_state.get('pending_assistant') or '').strip()
+        if pending_tool_lines and not any(item.get('pending') and str(item.get('role') or '').lower() == 'tool' for item in next_history):
+            next_history.append({
+                'id': 0,
+                'chat_id': int(chat_id),
+                'role': 'tool',
+                'body': '\n'.join(pending_tool_lines),
+                'created_at': checkpoint_updated_at,
+                'pending': True,
+            })
+        if pending_assistant and not any(item.get('pending') and str(item.get('role') or '').lower() in {'assistant', 'hermes'} for item in next_history):
+            next_history.append({
+                'id': 0,
+                'chat_id': int(chat_id),
+                'role': 'assistant',
+                'body': pending_assistant,
+                'created_at': checkpoint_updated_at,
+                'pending': True,
+            })
+        return next_history
+
     def build_auth_success_response(verified_user, *, auth_mode: str, allow_empty: bool = False) -> Response:
         store = store_getter()
         runtime = runtime_getter()
@@ -68,6 +104,7 @@ def register_auth_routes(
 
         if active_chat_id and int(active_chat_id) in visible_chat_ids:
             history = [_serialize_turn(turn) for turn in store.get_history(user_id=user_id, chat_id=active_chat_id, limit=120)]
+            history = _augment_history_with_runtime_pending(user_id=user_id, chat_id=int(active_chat_id), history=history)
             store.mark_chat_read(user_id=user_id, chat_id=active_chat_id)
             store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
         else:

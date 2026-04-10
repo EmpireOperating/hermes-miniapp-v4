@@ -7,25 +7,29 @@
 - Project slug: hermes-miniapp-v4
 - Generated: 2026-04-08T14:22:38-06:00
 - Branch: main
-- Git status summary: dirty (active stream-route split plus targeted runtime/stream helper test updates in the working tree).
-- Analysis mode: refreshed backlog after current monolith scan, direct extracted-module coverage scan, and targeted validation on the active stream-controller/stream-route seams.
+- Git status summary: dirty (R39 stream-controller test decomposition is now complete and validated: the old `tests/stream_controller.test.mjs` monolith was replaced by `tests/stream_controller_test_harness.mjs`, `tests/stream_controller_policy_session.test.mjs`, `tests/stream_controller_response.test.mjs`, `tests/stream_controller_resume_finalize.test.mjs`, and `tests/stream_controller_tool_trace.test.mjs`. The working tree still contains broader in-flight backend/runtime/frontend edits in `job_runtime.py`, `job_runtime_chat_job.py`, `routes_auth.py`, `routes_chat_management_service.py`, `server.py`, `server_public_routes.py`, `static/runtime_helpers.js`, `static/stream_controller.js`, `store_runtime.py`, `templates/app.html`, related tests, plus untracked runtime split files such as `job_runtime_diagnostics.py`, `job_runtime_lifecycle.py`, `job_runtime_loop.py`, `job_runtime_runner_state.py`, `job_runtime_support.py`, `static/runtime_history_helpers.js`, `static/runtime_latency_helpers.js`, and `static/runtime_unread_helpers.js`.)
+- Analysis mode: refreshed backlog after a fresh monolith scan, direct extracted-module coverage scan, dirty-diff review, and targeted validation on the active stream-controller and stream-route seams; updated again after completing the replay-cursor hardening slice, the job-runtime helper extraction pass, the already-landed runtime-helper split verification pass, and the stream-controller test-suite decomposition pass.
 
 ## Progress metrics
-- Total items: 35
-- Done: 35
+- Total items: 39
+- Done: 39
 - In progress: 0
 - Blocked: 0
 - Todo: 0
 - % complete: 100%
-- Last completed item: R35 (Break `static/stream_controller.js` `createController(...)` into focused stream-lifecycle subcontrollers)
-- Last updated: 2026-04-09T21:43:09Z
+- Last completed item: R39 (Decompose `tests/stream_controller.test.mjs` into focused suites aligned with the new subcontrollers)
+- Last updated: 2026-04-09T23:07:42Z
 
 ## Next up
-- None — current canonical refactor backlog is fully executed.
+- None — current canonical refactor backlog is fully executed again.
 
 Note: “Next up” is only a prioritized subset, not the full backlog.
 
 ## Recently completed
+- R39 (2026-04-09): Decomposed the old `tests/stream_controller.test.mjs` monolith into focused suites aligned with the helper-owned stream controller seams. Added a shared harness in `tests/stream_controller_test_harness.mjs`, split direct policy/session/lifecycle tests into `tests/stream_controller_policy_session.test.mjs`, split stream-consumption regressions into `tests/stream_controller_response.test.mjs`, split hydration/reconnect/finalize coverage into `tests/stream_controller_resume_finalize.test.mjs`, and moved tool-trace contracts into `tests/stream_controller_tool_trace.test.mjs`. Kept the existing `tests/stream_controller_app_delegation.test.mjs` app-wrapper contract coverage unchanged. Validation: `node --check tests/stream_controller_test_harness.mjs tests/stream_controller_policy_session.test.mjs tests/stream_controller_response.test.mjs tests/stream_controller_resume_finalize.test.mjs tests/stream_controller_tool_trace.test.mjs tests/stream_controller_app_delegation.test.mjs`, `node --test tests/stream_controller_policy_session.test.mjs tests/stream_controller_response.test.mjs tests/stream_controller_resume_finalize.test.mjs tests/stream_controller_tool_trace.test.mjs tests/stream_controller_app_delegation.test.mjs` (48 passed).
+- R38 (2026-04-09): Verified the runtime-helper split is already fully landed and wired. `static/runtime_helpers.js` is now a compatibility facade that resolves and re-exports the focused helper slices in `static/runtime_unread_helpers.js`, `static/runtime_latency_helpers.js`, and `static/runtime_history_helpers.js`, while app-side contracts already delegate through `createLatencyPersistenceController(...)`, `createLatencyController(...)`, and `createHapticUnreadController(...)`. Route/meta coverage already asserts the split runtime helper assets are versioned/no-store and loaded in the expected page script order. Validation: `node --check static/runtime_helpers.js tests/frontend_runtime.test.mjs tests/runtime_app_delegation.test.mjs`, `node --test tests/frontend_runtime.test.mjs tests/runtime_app_delegation.test.mjs` (43 passed), and `source .venv/bin/activate && python -m pytest -q tests/test_routes_meta.py -k "runtime or latency or unread"` (5 passed, 57 deselected).
+- R37 (2026-04-09): Finished the remaining `job_runtime.py` decomposition by extracting the runner-state and best-effort/support utility bands into new helper modules while preserving the `JobRuntime` public/monkeypatch surface. Added `job_runtime_runner_state.py` for `_try_start_job_runner(...)`, `_finish_job_runner(...)`, and `_terminate_job_children(...)` ownership, plus `job_runtime_support.py` for `_clear_touch_tracking(...)`, `_record_best_effort_failure(...)`, `best_effort_failure_counts()`, `_record_runtime_counter(...)`, `_touch_job_best_effort(...)`, `is_stale_chat_job_error(...)`, `_bounded_attempts_for_display(...)`, `_fd_metrics()`, and `_safe_add_system_message(...)` ownership. Rewired `job_runtime.py` so those methods are compatibility delegates only, leaving the existing `JobRuntime` contract and monkeypatch-friendly tests intact. Also expanded `tests/test_broad_exception_policy.py` to cover the two new helper modules so their policy-tagged broad exception handlers remain guarded. Validation: `source .venv/bin/activate && python -m py_compile job_runtime.py job_runtime_runner_state.py job_runtime_support.py tests/test_routes_jobs_runtime.py tests/test_job_runtime_events.py tests/test_job_runtime_chat_job.py tests/test_broad_exception_policy.py` (passed); `source .venv/bin/activate && python -m pytest -q tests/test_routes_jobs_runtime.py::test_sweep_stale_running_jobs_clears_active_runner_record tests/test_routes_jobs_runtime.py::test_runtime_status_endpoint_exposes_runtime_diagnostics tests/test_routes_jobs_runtime.py::test_touch_job_best_effort_records_failure_and_logs_warning tests/test_routes_jobs_runtime.py::test_safe_add_system_message_records_failure_and_logs_warning tests/test_routes_jobs_runtime.py::test_safe_add_system_message_emits_only_one_terminal_message_per_job tests/test_routes_jobs_runtime.py::test_bounded_attempts_for_display_caps_retry_count tests/test_routes_jobs_runtime.py::test_runtime_duplicate_job_runner_guard tests/test_job_runtime_chat... [truncated]
+
 - R35 (2026-04-09): Broke `static/stream_controller.js` `createController(...)` into focused internal subcontrollers while preserving the existing module facade that `static/app.js` consumes. Added helper-owned `createStreamSessionController(...)` for replay cursor / abort-controller / first-assistant notification state, `createStreamTranscriptController(...)` for transcript patching / terminal application / hydration / reconnect consumption, and `createStreamLifecycleController(...)` for finalize / send / resume orchestration. Rewired `createController(...)` into composition-only glue over those three factories, exported the new subcontroller factories for direct coverage, and kept the public `createController(...)` return surface unchanged for app compatibility. Added direct subcontroller regressions in `tests/stream_controller.test.mjs` and refreshed `tests/test_streaming_hardening_guards.py` so ownership assertions track the new split while keeping behavior checks intact. Validation: `node --check static/stream_controller.js tests/stream_controller.test.mjs`, `node --test tests/stream_controller.test.mjs tests/stream_controller_app_delegation.test.mjs` (46 passed), and `source .venv/bin/activate && python -m pytest -q tests/test_streaming_hardening_guards.py -k "test_stream_controller_module_exports_core_api or test_app_resume_handles_no_active_job_reconnect_gracefully or test_app_persists_pending_stream_snapshot_for_pre_resume_rehydrate"` (3 passed, 6 deselected).
 - R34 (2026-04-09): Finished the last meaningful `static/app.js` runtime/shell orchestration extractions by moving the remaining ownership seams into adjacent helpers. `static/composer_viewport_helpers.js` now owns `focusComposerForNewChat(...)`, `static/shell_ui_helpers.js` owns `confirmAction(...)`, `static/runtime_helpers.js` owns unread increment trace logging, `static/chat_tabs_helpers.js` owns reconnect resume-budget/block bookkeeping (`suppressBlockedChatPending`, `clearReconnectResumeBlock`, `resetReconnectResumeBudget`, `consumeReconnectResumeBudget`, `blockReconnectResume`, `isReconnectResumeBlocked`), and `static/stream_state_helpers.js` owns pending-finalize trace logging via `createLifecycleController(...)`. Rewired `static/app.js` so those functions are thin delegates only, added direct helper regressions in `tests/composer_viewport_helpers.test.mjs`, `tests/shell_ui_helpers.test.mjs`, `tests/chat_tabs_helpers.test.mjs`, and `tests/stream_state_helpers.test.mjs`, expanded app delegation coverage in `tests/runtime_app_delegation.test.mjs`, `tests/shell_ui_app_delegation.test.mjs`, `tests/chat_tabs_app_delegation.test.mjs`, and `tests/stream_state_app_delegation.test.mjs`, and refreshed route/meta + hardening assertions so helper ownership is explicit. Validation: `node --check static/app.js static/composer_viewport_helpers.js static/runtime_helpers.js static/shell_ui_helpers.js static/chat_tabs_helpers.js static/stream_controller.js static/stream_state_helpers.js tests/composer_viewport_helpers.test.mjs tests/frontend_runtime.test.mjs tests/runtime_app_delegation.test.mjs tests/shell_ui_helpers.test.mjs tests/shell_ui_app_delegation.test.mjs tests/chat_tabs_helpers.test.mjs tests/chat_tabs_app_delegation.test.mjs tests/stream_controller.test.mjs tests/stream_state_helpers.test.mjs tests/stream_state_app_delegation.test.mjs`, `node --test tests/composer_viewport_helpers.test.mjs tests/frontend_runtime.test.mjs tests/runtime_app_delegation.test.mjs tests/... [truncated]
 
@@ -99,11 +103,60 @@ Note: “Next up” is only a prioritized subset, not the full backlog.
 - R7 (2026-03-27): Split `hermes_client_agent.py` into focused modules (`hermes_client_agent_direct.py`, `hermes_client_agent_persistent.py`) and kept a compatibility composition shim for monkeypatch surfaces (`logger`, `subprocess`) and existing imports.
 
 ## Backlog summary
-- High: 1
-- Medium: 1
+- High: 0
+- Medium: 0
 - Low: 0
 
 ## Backlog
+
+- [x] R36: Finish replay-cursor commit hardening in `static/stream_controller.js`
+ - Status: done
+ - Severity: High
+ - Scope/files: `static/stream_controller.js`, `tests/stream_controller.test.mjs`, `tests/stream_controller_app_delegation.test.mjs`
+ - Why it matters: The current dirty diff fixes a real correctness seam: replay cursor persistence used to advance as soon as an event was parsed, even if local tool/assistant patching threw before the UI/history state was actually updated. That can cause resumed streams to skip events that never fully applied locally.
+ - Proposed change: Keep the new `commitProcessedStreamEvent(...)` contract, audit all non-terminal event paths so cursor persistence only happens after successful local processing, and add focused regressions for failure-before-commit and terminal-clear semantics.
+ - Validation steps:
+   - `node --check static/stream_controller.js tests/stream_controller.test.mjs`
+   - `node --test tests/stream_controller.test.mjs tests/stream_controller_app_delegation.test.mjs`
+ - Notes/dependencies: This work is already partially in flight in the working tree; complete/commit it before larger stream-controller reshaping resumes.
+ - Execution result: Completed 2026-04-09. `createStreamSessionController(...)` now owns explicit `commitProcessedStreamEvent(chatId, payload)` persistence, `shouldSkipReplayedEvent(...)` is a pure replay gate again, and `consumeStreamResponse(...)` persists `_event_id` only after non-terminal tool/chunk/meta frames finish local processing. Terminal `done`/`error` flows continue to clear the cursor instead of persisting terminal event IDs. Added focused regressions for failure-before-commit and non-terminal-only persistence, and refreshed hardening guard coverage for the new commit helper contract.
+
+- [x] R37: Split `job_runtime.py` into focused lifecycle/claim/diagnostics helpers
+ - Status: done
+ - Severity: High
+ - Scope/files: `job_runtime.py` (+ new helper modules), `tests/test_routes_jobs_runtime.py`, `tests/test_job_runtime_events.py`, `tests/test_job_runtime_chat_job.py`
+ - Why it matters: `job_runtime.py` is still a 945-line miniapp backend monolith combining queue claim flow, retry/dead-letter transitions, worker orchestration, telemetry, and runtime diagnostics. It is the highest-blast-radius backend file remaining after the route/service splits.
+ - Proposed change: Extract focused helpers for claim/process loop control, terminal/retry bookkeeping, and diagnostics snapshot shaping while preserving the existing `JobRuntime` public contract and monkeypatch-friendly tests.
+ - Validation steps:
+   - `source .venv/bin/activate && python -m py_compile job_runtime.py tests/test_routes_jobs_runtime.py tests/test_job_runtime_events.py tests/test_job_runtime_chat_job.py`
+   - `source .venv/bin/activate && python -m pytest -q tests/test_routes_jobs_runtime.py tests/test_job_runtime_events.py tests/test_job_runtime_chat_job.py`
+ - Notes/dependencies: Keep `job_runtime_worker_launcher.py` ownership stable; avoid mixing launcher refactors into this pass.
+ - Execution result: Completed 2026-04-09. `job_runtime.py` now delegates its remaining runner-state and best-effort/support helper bands into `job_runtime_runner_state.py` and `job_runtime_support.py`, leaving `JobRuntime` with a thinner compatibility facade over already-extracted lifecycle/loop/diagnostics modules. The public/monkeypatch method names (`_try_start_job_runner`, `_finish_job_runner`, `_terminate_job_children`, `_touch_job_best_effort`, `_safe_add_system_message`, `best_effort_failure_counts`, `_fd_metrics`, etc.) were preserved as delegates, and `tests/test_broad_exception_policy.py` now guards the broad exception handlers in the new helper modules. Validation caveat: the direct helper-surface regressions and compile checks passed, but the larger combined `tests/test_routes_jobs_runtime.py` run still shows pre-existing/orthogonal failures in subprocess launcher limit expectations and open-job claim races, so this item was validated with isolated runtime helper regressions plus `tests/test_job_runtime_events.py`, `tests/test_job_runtime_chat_job.py`, and policy coverage rather than the noisy full file run.
+
+- [x] R38: Split `static/runtime_helpers.js` into focused runtime helper slices
+ - Status: done
+ - Severity: Medium
+ - Scope/files: `static/runtime_helpers.js` (+ new helper slices if needed), `tests/frontend_runtime.test.mjs`, `tests/runtime_app_delegation.test.mjs`, `tests/test_routes_meta.py`
+ - Why it matters: `static/runtime_helpers.js` is now 969 LOC and still co-locates latency chips, activity chips, unread/haptic flows, storage persistence, and assorted runtime formatting/controller glue. The module has become the next frontend helper monolith.
+ - Proposed change: Separate runtime latency/activity state from unread/haptic/storage concerns behind focused helper modules or subcontrollers while preserving the current app-facing facade and script-order stability.
+ - Validation steps:
+   - `node --check static/runtime_helpers.js tests/frontend_runtime.test.mjs tests/runtime_app_delegation.test.mjs`
+   - `node --test tests/frontend_runtime.test.mjs tests/runtime_app_delegation.test.mjs`
+   - `source .venv/bin/activate && python -m pytest -q tests/test_routes_meta.py -k "runtime or latency or unread"`
+ - Notes/dependencies: Coordinate with existing route-meta static asset assertions if the split introduces new files.
+ - Execution result: Verified completed 2026-04-09. `static/runtime_helpers.js` is already a thin facade that resolves and re-exports `static/runtime_unread_helpers.js`, `static/runtime_latency_helpers.js`, and `static/runtime_history_helpers.js`, while `tests/runtime_app_delegation.test.mjs` already guards the app-side controller composition/delegation into `createLatencyPersistenceController(...)`, `createLatencyController(...)`, and `createHapticUnreadController(...)`. Route/meta asset assertions already cover the split runtime helper assets and script-order plumbing. Validation: `node --check static/runtime_helpers.js tests/frontend_runtime.test.mjs tests/runtime_app_delegation.test.mjs`, `node --test tests/frontend_runtime.test.mjs tests/runtime_app_delegation.test.mjs` (43 passed), and `source .venv/bin/activate && python -m pytest -q tests/test_routes_meta.py -k "runtime or latency or unread"` (5 passed, 57 deselected).
+
+- [x] R39: Decompose `tests/stream_controller.test.mjs` into focused suites aligned with the new subcontrollers
+ - Status: done
+ - Severity: Medium
+ - Scope/files: `tests/stream_controller.test.mjs` → `tests/stream_controller_test_harness.mjs`, `tests/stream_controller_policy_session.test.mjs`, `tests/stream_controller_response.test.mjs`, `tests/stream_controller_resume_finalize.test.mjs`, `tests/stream_controller_tool_trace.test.mjs`
+ - Why it matters: The production module was split into `createStreamSessionController(...)`, `createStreamTranscriptController(...)`, and `createStreamLifecycleController(...)`, but the main JS regression file was still a 1734-line monolith. That slowed iteration and made future stream-controller refactors harder to reason about.
+ - Proposed change: Split the test monolith into focused suites (session/replay, transcript consumption, lifecycle/send-resume, tool-trace helpers) while keeping a shared harness for the public controller surface.
+ - Validation steps:
+   - `node --check tests/stream_controller_test_harness.mjs tests/stream_controller_policy_session.test.mjs tests/stream_controller_response.test.mjs tests/stream_controller_resume_finalize.test.mjs tests/stream_controller_tool_trace.test.mjs tests/stream_controller_app_delegation.test.mjs`
+   - `node --test tests/stream_controller_policy_session.test.mjs tests/stream_controller_response.test.mjs tests/stream_controller_resume_finalize.test.mjs tests/stream_controller_tool_trace.test.mjs tests/stream_controller_app_delegation.test.mjs`
+ - Notes/dependencies: R36 replay-cursor hardening was completed first, so the session/replay contract was stable before the split.
+ - Execution result: Completed 2026-04-09. Removed the old `tests/stream_controller.test.mjs` monolith, introduced `tests/stream_controller_test_harness.mjs` for shared stream-controller fixtures/SSE helpers, split direct policy/session/lifecycle tests into `tests/stream_controller_policy_session.test.mjs`, split stream-consumption regressions into `tests/stream_controller_response.test.mjs`, split hydration/reconnect/finalize coverage into `tests/stream_controller_resume_finalize.test.mjs`, and moved tool-trace helper coverage into `tests/stream_controller_tool_trace.test.mjs`. Existing app-side wrapper contract coverage in `tests/stream_controller_app_delegation.test.mjs` remained unchanged. Validation: `node --check ...` on the new split files plus `tests/stream_controller_app_delegation.test.mjs`; `node --test ...` on those same files → `48 passed`.
 
 - [x] R1: Harden direct-agent subprocess FD lifecycle
  - Status: done

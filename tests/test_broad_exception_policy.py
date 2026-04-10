@@ -10,6 +10,8 @@ TARGET_FILES = (
     "hermes_client_agent_direct.py",
     "hermes_client_agent_persistent.py",
     "job_runtime.py",
+    "job_runtime_runner_state.py",
+    "job_runtime_support.py",
     "server.py",
 )
 POLICY_TAG = "broad-except-policy:"

@@ -7,6 +7,8 @@ import sqlite3
 import time
 
 from job_runtime import JobDuplicateRunnerSuppressed, JobRetryableError
+from job_runtime_diagnostics import build_runtime_diagnostics
+from job_runtime_loop import process_available_jobs_once as helper_process_available_jobs_once
 from job_runtime_worker_launcher import SubprocessJobWorkerLauncher
 from server_test_utils import load_server, patch_verified_user
 
@@ -219,6 +221,22 @@ def test_runtime_diagnostics_include_active_job_transport_transitions(monkeypatc
     active_jobs = diagnostics["incident_snapshot"]["workers"]["active_jobs"]
     assert len(active_jobs) == 1
     assert [item["next_path"] for item in active_jobs[0]["recent_transport_transitions"]] == ["agent", "cli"]
+
+    runtime._finish_job_runner(991)
+
+
+def test_runtime_diagnostics_helper_matches_wrapper(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server.runtime
+
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
+    direct = build_runtime_diagnostics(runtime)
+    wrapped = runtime.runtime_diagnostics()
+
+    assert direct["incident_snapshot"]["workers"]["active_job_total"] == 1
+    assert direct["incident_snapshot"]["workers"] == wrapped["incident_snapshot"]["workers"]
+    assert direct["counters"] == wrapped["counters"]
+    assert direct["best_effort_failures"] == wrapped["best_effort_failures"]
 
     runtime._finish_job_runner(991)
 

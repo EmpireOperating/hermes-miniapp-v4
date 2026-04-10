@@ -70,14 +70,14 @@ function createButton(tag = null) {
 
 function buildHarness(overrides = {}) {
   const apiCalls = [];
-  const chats = new Map([
+  const chats = new Map(overrides.initialChats || [
     [7, { id: 7, title: '[bug]Current', is_pinned: true }],
   ]);
-  const pinnedChats = new Map([
+  const pinnedChats = new Map(overrides.initialPinnedChats || [
     [7, { id: 7, title: '[bug]Current', is_pinned: true }],
     [11, { id: 11, title: 'Pinned only', is_pinned: true }],
   ]);
-  const histories = new Map([[7, [{ id: 1, body: 'old' }]]]);
+  const histories = new Map(overrides.initialHistories || [[7, [{ id: 1, body: 'old' }]]]);
   const pendingChats = new Set();
   const latencyByChat = new Map([[7, '123ms']]);
   const streamPhaseByChat = new Map([[7, 'streaming']]);
@@ -431,7 +431,7 @@ test('removeActiveChat keeps silent-close semantics and preserves removed pinned
 
   assert.deepEqual(harness.apiCalls[0], {
     path: '/api/chats/remove',
-    payload: { chat_id: 7, allow_empty: true },
+    payload: { chat_id: 7, allow_empty: true, include_full_state: false },
   });
   assert.equal(harness.histories.has(7), false);
   assert.deepEqual(harness.histories.get(9), [{ id: 99, body: 'fresh' }]);
@@ -468,12 +468,84 @@ test('removeActiveChat restores removed pinned snapshot when backend payload omi
 
   assert.deepEqual(customApiCalls[0], {
     path: '/api/chats/remove',
-    payload: { chat_id: 7, allow_empty: true },
+    payload: { chat_id: 7, allow_empty: true, include_full_state: false },
   });
   assert.equal(harness.pinnedChats.has(7), true);
   assert.deepEqual(harness.setActiveCalls, [9]);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
   assert.deepEqual(harness.renderedMessages, [9]);
+});
+
+test('removeActiveChat switches away from the closing tab before the backend responds', async () => {
+  let resolveRemove;
+  const removePromise = new Promise((resolve) => {
+    resolveRemove = resolve;
+  });
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true }],
+      [9, { id: 9, title: 'Next chat', is_pinned: false }],
+    ],
+    initialHistories: [
+      [7, [{ id: 1, body: 'old' }]],
+      [9, [{ id: 2, body: 'cached next' }]],
+    ],
+    apiPost: async (path, payload) => {
+      if (path !== '/api/chats/remove') {
+        throw new Error(`unexpected api path ${path}`);
+      }
+      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false });
+      return removePromise;
+    },
+  });
+
+  const pendingRemoval = harness.controller.removeActiveChat();
+
+  assert.equal(harness.chats.has(7), false);
+  assert.equal(harness.activeChatId, 9);
+  assert.deepEqual(harness.setActiveCalls, [9]);
+  assert.deepEqual(harness.renderedTabs, ['tabs']);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
+  assert.deepEqual(harness.renderedMessages, [9]);
+
+  resolveRemove({
+    removed_chat_id: 7,
+    active_chat_id: 9,
+    active_chat: { id: 9, title: 'Next chat' },
+    chats: [{ id: 9, title: 'Next chat' }],
+    pinned_chats: [{ id: 7, title: '[bug]Current', is_pinned: true }],
+    history: [{ id: 99, body: 'fresh' }],
+  });
+
+  await pendingRemoval;
+  assert.deepEqual(harness.renderedMessages, [9, 9]);
+});
+
+test('removeActiveChat rolls back the optimistic close if the backend request fails', async () => {
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true }],
+      [9, { id: 9, title: 'Next chat', is_pinned: false }],
+    ],
+    initialHistories: [
+      [7, [{ id: 1, body: 'old' }]],
+      [9, [{ id: 2, body: 'cached next' }]],
+    ],
+    apiPost: async (path) => {
+      if (path !== '/api/chats/remove') {
+        throw new Error(`unexpected api path ${path}`);
+      }
+      throw new Error('remove failed');
+    },
+  });
+
+  await assert.rejects(harness.controller.removeActiveChat(), /remove failed/);
+
+  assert.equal(harness.chats.has(7), true);
+  assert.equal(harness.activeChatId, 7);
+  assert.deepEqual(harness.setActiveCalls, [9, 7]);
+  assert.deepEqual(harness.renderedMessages, [9, 7]);
+  assert.equal(harness.histories.has(7), true);
 });
 
 test('removeActiveChat can transition to explicit no-active-chat state', async () => {
@@ -499,12 +571,39 @@ test('removeActiveChat can transition to explicit no-active-chat state', async (
 
   assert.deepEqual(customApiCalls[0], {
     path: '/api/chats/remove',
-    payload: { chat_id: 7, allow_empty: true },
+    payload: { chat_id: 7, allow_empty: true, include_full_state: false },
   });
   assert.deepEqual(harness.setNoActiveCalls, ['none']);
   assert.deepEqual(harness.setActiveCalls, []);
   assert.deepEqual(harness.renderedMessages, []);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
+});
+
+test('removeActiveChat reopens the server-selected next chat when the remove response is lightweight', async () => {
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true }],
+      [9, { id: 9, title: 'Next chat', is_pinned: false }],
+    ],
+    initialHistories: [
+      [7, [{ id: 1, body: 'old' }]],
+    ],
+    apiPost: async (path, payload) => {
+      if (path !== '/api/chats/remove') {
+        throw new Error(`unexpected api path ${path}`);
+      }
+      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false });
+      return {
+        removed_chat_id: 7,
+        active_chat_id: 9,
+      };
+    },
+  });
+
+  await harness.controller.removeActiveChat();
+
+  assert.deepEqual(harness.openChatCalls, [9]);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned', 'pinned']);
 });
 
 test('forkChatFrom clones chat history into a new active branch', async () => {

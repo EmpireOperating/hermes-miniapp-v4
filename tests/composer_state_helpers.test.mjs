@@ -15,6 +15,7 @@ test('deriveComposerState reflects pending/auth combinations', () => {
 
   assert.equal(pendingState.pending, true);
   assert.equal(pendingState.canSend, false);
+  assert.equal(pendingState.canPin, true);
   assert.equal(pendingState.sendLabel, 'Sending…');
 
   const idleState = composerStateHelpers.deriveComposerState({
@@ -78,11 +79,12 @@ test('createController updateComposerState derives and applies control state', (
 
   assert.equal(state.pending, true);
   assert.equal(state.canSend, false);
+  assert.equal(state.canPin, true);
   assert.equal(sendButton.disabled, true);
   assert.equal(sendButton.textContent, 'Sending…');
   assert.equal(promptEl.disabled, false);
   assert.equal(removeChatButton.disabled, true);
-  assert.equal(pinChatButton.disabled, true);
+  assert.equal(pinChatButton.disabled, false);
 });
 
 test('draft controller loads valid values and ignores malformed storage payloads', () => {

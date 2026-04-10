@@ -279,7 +279,20 @@ def register_chat_management_routes(
         allow_empty, allow_empty_error = _parse_allow_empty_flag(payload)
         if allow_empty_error:
             return allow_empty_error
-        return service.remove_chat_response(user_id=user_id, chat_id=chat_id, allow_empty=bool(allow_empty))
+        include_full_state, include_full_state_error = _parse_bool_flag(
+            payload,
+            "include_full_state",
+            default=True,
+            error_message="Invalid include_full_state flag. Expected boolean.",
+        )
+        if include_full_state_error:
+            return include_full_state_error
+        return service.remove_chat_response(
+            user_id=user_id,
+            chat_id=chat_id,
+            allow_empty=bool(allow_empty),
+            include_full_state=bool(include_full_state),
+        )
 
     @api_bp.post("/chats/status")
     @guard_json_payload_user_route(

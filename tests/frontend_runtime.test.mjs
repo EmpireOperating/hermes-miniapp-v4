@@ -1452,6 +1452,28 @@ test('mergeHydratedHistory prefers fuller local pending tool trace body over par
   assert.equal(toolRows[0].body, 'todo\nread_file\nsearch_files');
 });
 
+test('mergeHydratedHistory does not duplicate singleton pending tool trace when hydrated and local created_at differ', () => {
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    { role: 'tool', body: 'read_file\nsearch_files', created_at: '2026-04-09T20:40:04Z', pending: true, collapsed: true },
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    { role: 'tool', body: 'read_file\nsearch_files', created_at: '2026-04-09 20:40:05', pending: true },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    chatPending: true,
+  });
+
+  const toolRows = merged.filter((item) => item.role === 'tool');
+  assert.equal(toolRows.length, 1);
+  assert.equal(toolRows[0].body, 'read_file\nsearch_files');
+  assert.equal(toolRows[0].collapsed, true);
+});
+
 test('shouldUseAppendOnlyRender returns false when new history inserts before current tail', () => {
   const previousTail = {
     role: 'hermes',

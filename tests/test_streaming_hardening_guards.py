@@ -66,6 +66,7 @@ def test_stream_controller_module_exports_core_api():
     assert "const transcriptController = createStreamTranscriptController(deps, sessionController);" in controller_js
     assert "const lifecycleController = createStreamLifecycleController(deps, sessionController, transcriptController);" in controller_js
     assert "function setStreamAbortController(chatId, controller)" in controller_js
+    assert "function commitProcessedStreamEvent(chatId, payload)" in controller_js
     assert "function consumeStreamResponse(chatId, response, builtReplyRef" in controller_js
     assert "async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {})" in controller_js
     assert "async function consumeStreamWithReconnect(chatId, response, builtReplyRef" in controller_js

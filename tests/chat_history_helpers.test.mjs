@@ -627,7 +627,7 @@ test('syncVisibleActiveChat hydrates active history and resumes pending streams 
     streamAbortControllers,
   });
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: {} }]);
-  assert.ok(harness.markReadCalls.includes(7));
+  assert.deepEqual(harness.markReadCalls, []);
 });
 
 test('syncVisibleActiveChat resumes when server still reports pending and there is no live stream', async () => {
@@ -917,8 +917,8 @@ test('syncVisibleActiveChat ignores stale history responses when active chat cha
   assert.equal(harness.histories.has(7), false);
   assert.deepEqual(harness.renderedMessages, []);
   assert.deepEqual(harness.resumedChats, []);
-  assert.deepEqual(harness.upsertedChats, [{ id: 7, pending: true, unread_count: 0 }]);
-  assert.ok(harness.markReadCalls.includes(7));
+  assert.deepEqual(harness.upsertedChats, []);
+  assert.deepEqual(harness.markReadCalls, []);
 });
 
 test('syncVisibleActiveChat is a no-op when there is no active chat', async () => {
@@ -1123,6 +1123,40 @@ test('syncVisibleActiveChat preserves local unread when active history sync repo
   harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
 
   await harness.controller.openChat(7);
+  await harness.controller.syncVisibleActiveChat();
+
+  assert.equal(harness.chats.get(7).unread_count, 1);
+  assert.deepEqual(harness.markReadCalls, []);
+});
+
+test('syncVisibleActiveChat preserves local unread for the active chat even if activation threshold state was lost but newest unread message is still below viewport', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          history: [{ id: 1, role: 'assistant', body: 'hello again' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+    upsertChat: (chat) => {
+      harness.upsertedChats.push(chat);
+      const current = harness.chats.get(Number(chat.id)) || {};
+      harness.chats.set(Number(chat.id), {
+        ...current,
+        ...chat,
+        id: Number(chat.id),
+        unread_count: Number(chat.unread_count || 0),
+        pending: Boolean(chat.pending),
+      });
+    },
+  });
+  harness.chats.set(7, { id: 7, unread_count: 1, pending: false });
+  harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
+  harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
+
   await harness.controller.syncVisibleActiveChat();
 
   assert.equal(harness.chats.get(7).unread_count, 1);

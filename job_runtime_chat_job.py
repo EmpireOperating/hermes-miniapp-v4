@@ -108,6 +108,15 @@ def execute_chat_job(
         last_event_source = ""
         saw_terminal_done = False
         event_iter = None
+
+        def _persist_live_runtime_state() -> None:
+            runtime.store.set_runtime_checkpoint(
+                session_id=session_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                pending_tool_lines=tool_trace_lines,
+                pending_assistant=reply_text,
+            )
         set_spawn_trace_context = getattr(runtime.client, "set_spawn_trace_context", None)
         if callable(set_spawn_trace_context):
             set_spawn_trace_context(
@@ -155,11 +164,13 @@ def execute_chat_job(
                     display = str(payload.get("display") or payload.get("preview") or payload.get("tool_name") or "Tool running").strip()
                     if display:
                         tool_trace_lines.append(display)
+                        _persist_live_runtime_state()
                     runtime.publish_job_event(job_id, "tool", payload)
                 elif event_type == "chunk":
                     chunk = str(event.get("text") or "")
                     if chunk:
                         reply_text += chunk
+                        _persist_live_runtime_state()
                         runtime.publish_job_event(job_id, "chunk", {"text": chunk, "chat_id": chat_id})
                 elif event_type == "done":
                     saw_terminal_done = True
@@ -168,6 +179,7 @@ def execute_chat_job(
                     checkpoint_payload = event.get("runtime_checkpoint")
                     if isinstance(checkpoint_payload, list):
                         runtime_checkpoint = [item for item in checkpoint_payload if isinstance(item, dict)]
+                    _persist_live_runtime_state()
                     break
                 elif event_type == "error":
                     raise client_error_cls(str(event.get("error") or "Hermes stream failed."))
@@ -259,13 +271,14 @@ def execute_chat_job(
             chunk_body = f"[part {index}/{total}]\n{part}"
             runtime.store.add_message(user_id=user_id, chat_id=chat_id, role="hermes", body=chunk_body)
 
-    if runtime_checkpoint:
-        runtime.store.set_runtime_checkpoint(
-            session_id=session_id,
-            user_id=user_id,
-            chat_id=chat_id,
-            history=runtime_checkpoint,
-        )
+    runtime.store.set_runtime_checkpoint(
+        session_id=session_id,
+        user_id=user_id,
+        chat_id=chat_id,
+        history=runtime_checkpoint if runtime_checkpoint else None,
+        pending_tool_lines=[],
+        pending_assistant="",
+    )
 
     preserve_warm_owner = False
     warm_owner_state = getattr(runtime.client, "warm_session_owner_state", None)

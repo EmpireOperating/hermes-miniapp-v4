@@ -28,7 +28,7 @@ class _FakeStore:
     def __init__(self) -> None:
         self.messages: list[tuple[str, int, str, str]] = []
         self.completed: list[int] = []
-        self.checkpoint_writes: list[tuple[str, list[dict[str, str]]]] = []
+        self.checkpoint_writes: list[dict[str, object]] = []
         self.job_state = {"status": "running"}
 
     def get_message(self, *, user_id: str, chat_id: int, message_id: int):
@@ -37,6 +37,9 @@ class _FakeStore:
         return _Turn(body="hello")
 
     def get_runtime_checkpoint(self, _session_id: str):
+        return None
+
+    def get_runtime_checkpoint_state(self, _session_id: str):
         return None
 
     def get_history_before(self, **_kwargs):
@@ -48,8 +51,24 @@ class _FakeStore:
     def add_message(self, *, user_id: str, chat_id: int, role: str, body: str) -> None:
         self.messages.append((user_id, chat_id, role, body))
 
-    def set_runtime_checkpoint(self, *, session_id: str, user_id: str, chat_id: int, history: list[dict[str, str]]) -> None:
-        self.checkpoint_writes.append((session_id, history))
+    def set_runtime_checkpoint(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        chat_id: int,
+        history: list[dict[str, str]] | None = None,
+        pending_tool_lines: list[str] | None = None,
+        pending_assistant: str | None = None,
+    ) -> None:
+        self.checkpoint_writes.append({
+            "session_id": session_id,
+            "user_id": user_id,
+            "chat_id": chat_id,
+            "history": history,
+            "pending_tool_lines": list(pending_tool_lines or []),
+            "pending_assistant": str(pending_assistant or ""),
+        })
 
     def complete_job(self, job_id: int) -> None:
         self.completed.append(job_id)
@@ -162,6 +181,32 @@ def test_execute_chat_job_completes_and_publishes_done_event() -> None:
     assert runtime.store.completed == [3]
     assert any(role == "hermes" and body == "hello world" for _, _, role, body in runtime.store.messages)
     assert any(name == "done" and payload.get("reply") == "hello world" for _, name, payload in runtime.published)
+
+
+def test_execute_chat_job_persists_live_pending_tool_and_assistant_checkpoint_state() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "tool", "display": "read_file"},
+            {"type": "chunk", "text": "partial"},
+            {"type": "done", "reply": "partial", "latency_ms": 5},
+        ]
+    )
+    job = {"id": 30, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert runtime.store.checkpoint_writes[0]["pending_tool_lines"] == ["read_file"]
+    assert runtime.store.checkpoint_writes[0]["pending_assistant"] == ""
+    assert runtime.store.checkpoint_writes[1]["pending_tool_lines"] == ["read_file"]
+    assert runtime.store.checkpoint_writes[1]["pending_assistant"] == "partial"
+    assert runtime.store.checkpoint_writes[-1]["pending_tool_lines"] == []
+    assert runtime.store.checkpoint_writes[-1]["pending_assistant"] == ""
 
 
 def test_execute_chat_job_stops_consuming_stream_immediately_after_terminal_done() -> None:

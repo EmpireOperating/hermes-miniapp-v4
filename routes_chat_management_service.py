@@ -33,8 +33,44 @@ class ChatManagementService:
             payload["file_refs"] = refs
         return payload
 
+    def _augment_history_with_runtime_pending(self, *, user_id: str, chat_id: int, history: list[dict[str, object]]) -> list[dict[str, object]]:
+        store = self._store_getter()
+        try:
+            chat = store.get_chat(user_id=user_id, chat_id=chat_id)
+        except KeyError:
+            return history
+        if not bool(getattr(chat, 'pending', False)):
+            return history
+        checkpoint_state = store.get_runtime_checkpoint_state(self._session_id_builder_fn(user_id, chat_id))
+        if not checkpoint_state:
+            return history
+        next_history = list(history)
+        checkpoint_updated_at = str(checkpoint_state.get('updated_at') or '')
+        pending_tool_lines = [str(line).strip() for line in (checkpoint_state.get('pending_tool_lines') or []) if str(line).strip()]
+        pending_assistant = str(checkpoint_state.get('pending_assistant') or '').strip()
+        if pending_tool_lines and not any(item.get('pending') and str(item.get('role') or '').lower() == 'tool' for item in next_history):
+            next_history.append({
+                'id': 0,
+                'chat_id': int(chat_id),
+                'role': 'tool',
+                'body': '\n'.join(pending_tool_lines),
+                'created_at': checkpoint_updated_at,
+                'pending': True,
+            })
+        if pending_assistant and not any(item.get('pending') and str(item.get('role') or '').lower() in {'assistant', 'hermes'} for item in next_history):
+            next_history.append({
+                'id': 0,
+                'chat_id': int(chat_id),
+                'role': 'assistant',
+                'body': pending_assistant,
+                'created_at': checkpoint_updated_at,
+                'pending': True,
+            })
+        return next_history
+
     def chat_history(self, user_id: str, chat_id: int, *, limit: int = 120) -> list[dict[str, object]]:
-        return [self.serialize_turn(turn) for turn in self._store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
+        history = [self.serialize_turn(turn) for turn in self._store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
+        return self._augment_history_with_runtime_pending(user_id=user_id, chat_id=chat_id, history=history)
 
     def serialize_chats(self, user_id: str) -> list[dict[str, object]]:
         return [self._serialize_chat_fn(chat) for chat in self._store_getter().list_chats(user_id=user_id)]
@@ -52,7 +88,7 @@ class ChatManagementService:
         if activate:
             store.mark_chat_read(user_id=user_id, chat_id=chat_id)
             store.set_active_chat(user_id=user_id, chat_id=chat_id)
-        history = [self.serialize_turn(turn) for turn in store.get_history(user_id=user_id, chat_id=chat_id, limit=120)]
+        history = self.chat_history(user_id=user_id, chat_id=chat_id, limit=120)
         chat = store.get_chat(user_id=user_id, chat_id=chat_id)
         return {"ok": True, "chat": self._serialize_chat_fn(chat), "history": history}
 
@@ -140,40 +176,41 @@ class ChatManagementService:
         user_id: str,
         chat_id: int,
         allow_empty: bool,
+        include_full_state: bool = True,
     ) -> tuple[dict[str, object], int]:
         store = self._store_getter()
         self.evict_chat_runtime(user_id=user_id, chat_id=chat_id, reason="invalidated_by_remove")
         next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id, allow_empty=allow_empty)
 
         if not next_chat_id:
-            chats = self.serialize_chats(user_id=user_id)
-            pinned_chats = self.serialize_pinned_chats(user_id=user_id)
-            return {
+            payload: dict[str, object] = {
                 "ok": True,
                 "removed_chat_id": chat_id,
                 "active_chat_id": None,
                 "active_chat": None,
                 "history": [],
-                "chats": chats,
-                "pinned_chats": pinned_chats,
-            }, 200
+            }
+            if include_full_state:
+                payload["chats"] = self.serialize_chats(user_id=user_id)
+                payload["pinned_chats"] = self.serialize_pinned_chats(user_id=user_id)
+            return payload, 200
 
-        history = self.chat_history(user_id=user_id, chat_id=next_chat_id, limit=120)
         store.mark_chat_read(user_id=user_id, chat_id=next_chat_id)
         store.set_active_chat(user_id=user_id, chat_id=next_chat_id)
-        active_chat = store.get_chat(user_id=user_id, chat_id=next_chat_id)
-        chats = self.serialize_chats(user_id=user_id)
-        pinned_chats = self.serialize_pinned_chats(user_id=user_id)
 
-        return {
+        payload = {
             "ok": True,
             "removed_chat_id": chat_id,
             "active_chat_id": next_chat_id,
-            "active_chat": self._serialize_chat_fn(active_chat),
-            "history": history,
-            "chats": chats,
-            "pinned_chats": pinned_chats,
-        }, 200
+        }
+        if include_full_state:
+            history = self.chat_history(user_id=user_id, chat_id=next_chat_id, limit=120)
+            active_chat = store.get_chat(user_id=user_id, chat_id=next_chat_id)
+            payload["active_chat"] = self._serialize_chat_fn(active_chat)
+            payload["history"] = history
+            payload["chats"] = self.serialize_chats(user_id=user_id)
+            payload["pinned_chats"] = self.serialize_pinned_chats(user_id=user_id)
+        return payload, 200
 
     def chats_status_response(self, *, user_id: str) -> tuple[dict[str, object], int]:
         self._runtime_getter().ensure_pending_jobs(user_id)

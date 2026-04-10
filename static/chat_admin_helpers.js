@@ -272,33 +272,132 @@
       return maxSuffix <= 0 ? lineageBase : `${lineageBase} #${maxSuffix + 1}`;
     }
 
+    function snapshotMap(mapRef) {
+      return new Map(mapRef instanceof Map ? mapRef : []);
+    }
+
+    function restoreMap(targetMap, snapshot) {
+      if (!(targetMap instanceof Map)) return;
+      targetMap.clear();
+      snapshot.forEach((value, key) => {
+        targetMap.set(key, value);
+      });
+    }
+
+    function snapshotSet(setRef) {
+      return new Set(setRef instanceof Set ? setRef : []);
+    }
+
+    function restoreSet(targetSet, snapshot) {
+      if (!(targetSet instanceof Set)) return;
+      targetSet.clear();
+      snapshot.forEach((value) => {
+        targetSet.add(value);
+      });
+    }
+
+    function getOptimisticNextActiveChatId(closingChatId) {
+      return [...chats.keys()]
+        .map((chatId) => Number(chatId))
+        .filter((chatId) => chatId > 0 && chatId !== Number(closingChatId))
+        .sort((a, b) => a - b)[0] || 0;
+    }
+
     async function removeActiveChat() {
       const activeChatId = Number(getActiveChatId());
       if (!activeChatId) return;
       ensureSilentCloseTabAllowed(activeChatId);
       const removedChatSnapshot = chats.get(activeChatId) || pinnedChats.get(activeChatId) || null;
       const removedWasPinned = Boolean(removedChatSnapshot?.is_pinned);
-      const data = await apiPost('/api/chats/remove', { chat_id: activeChatId, allow_empty: true });
-      syncChats(data.chats || []);
-      syncPinnedChats(data.pinned_chats || []);
-      if (removedWasPinned && !pinnedChats.has(activeChatId) && removedChatSnapshot) {
-        pinnedChats.set(activeChatId, { ...removedChatSnapshot, is_pinned: true });
-      }
-      const removedChatId = Number(data.removed_chat_id || 0);
-      histories.delete(removedChatId);
+      const optimisticNextChatId = getOptimisticNextActiveChatId(activeChatId);
+      const optimisticSnapshot = {
+        chats: snapshotMap(chats),
+        pinnedChats: snapshotMap(pinnedChats),
+        histories: snapshotMap(histories),
+        pendingChats: snapshotSet(pendingChats),
+        latencyByChat: snapshotMap(latencyByChat),
+        streamPhaseByChat: snapshotMap(streamPhaseByChat),
+        unseenStreamChats: snapshotSet(unseenStreamChats),
+      };
+
+      chats.delete(activeChatId);
+      histories.delete(activeChatId);
       clearChatStreamState({
-        chatId: removedChatId,
+        chatId: activeChatId,
         pendingChats,
         streamPhaseByChat,
         unseenStreamChats,
       });
-      latencyByChat.delete(removedChatId);
+      latencyByChat.delete(activeChatId);
       onLatencyByChatMutated?.(latencyByChat);
 
-      const nextActiveChatId = Number(data.active_chat_id || 0);
-      if (!nextActiveChatId || !data.active_chat) {
-        setNoActiveChatMeta();
+      if (optimisticNextChatId > 0) {
+        setActiveChatMeta(optimisticNextChatId, { fullTabRender: false, deferNonCritical: true });
+        renderTabs();
         renderPinnedChats();
+        renderMessages(optimisticNextChatId);
+      } else {
+        setNoActiveChatMeta();
+      }
+
+      let data;
+      try {
+        data = await apiPost('/api/chats/remove', {
+          chat_id: activeChatId,
+          allow_empty: true,
+          include_full_state: false,
+        });
+      } catch (error) {
+        restoreMap(chats, optimisticSnapshot.chats);
+        restoreMap(pinnedChats, optimisticSnapshot.pinnedChats);
+        restoreMap(histories, optimisticSnapshot.histories);
+        restoreSet(pendingChats, optimisticSnapshot.pendingChats);
+        restoreMap(latencyByChat, optimisticSnapshot.latencyByChat);
+        restoreMap(streamPhaseByChat, optimisticSnapshot.streamPhaseByChat);
+        restoreSet(unseenStreamChats, optimisticSnapshot.unseenStreamChats);
+        onLatencyByChatMutated?.(latencyByChat);
+        setActiveChatMeta(activeChatId);
+        renderPinnedChats();
+        renderMessages(activeChatId);
+        throw error;
+      }
+
+      const hasFullState = Array.isArray(data.chats) || Array.isArray(data.pinned_chats);
+      if (Array.isArray(data.chats)) {
+        syncChats(data.chats || []);
+      }
+      if (Array.isArray(data.pinned_chats)) {
+        syncPinnedChats(data.pinned_chats || []);
+      }
+      if ((hasFullState || removedWasPinned) && !pinnedChats.has(activeChatId) && removedChatSnapshot) {
+        pinnedChats.set(activeChatId, { ...removedChatSnapshot, is_pinned: true });
+      }
+      const removedChatId = Number(data.removed_chat_id || 0);
+      histories.delete(removedChatId);
+      if (removedChatId > 0 && removedChatId !== activeChatId) {
+        clearChatStreamState({
+          chatId: removedChatId,
+          pendingChats,
+          streamPhaseByChat,
+          unseenStreamChats,
+        });
+        latencyByChat.delete(removedChatId);
+        onLatencyByChatMutated?.(latencyByChat);
+      }
+
+      const nextActiveChatId = Number(data.active_chat_id || 0);
+      if (!nextActiveChatId) {
+        renderPinnedChats();
+        return;
+      }
+
+      if (!data.active_chat || !Array.isArray(data.history)) {
+        renderPinnedChats();
+        if (nextActiveChatId !== Number(getActiveChatId())) {
+          await openChat(nextActiveChatId);
+        } else if (!histories.has(nextActiveChatId)) {
+          await openChat(nextActiveChatId);
+        }
         return;
       }
 
