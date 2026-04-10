@@ -317,7 +317,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert render_trace_src in page
     assert file_preview_src in page
     assert app_src in page
-    assert page.index(runtime_unread_src) < page.index(runtime_latency_src) < page.index(runtime_history_src) < page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(chat_tabs_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(keyboard_src) < page.index(interaction_src) < page.index(bootstrap_auth_src) < page.index(chat_history_src) < page.index(chat_admin_src) < page.index(shell_ui_src) < page.index(composer_viewport_src) < page.index(visibility_skin_src) < page.index(startup_bindings_src) < page.index(startup_metrics_src) < page.index(render_trace_text_src) < page.index(render_trace_debug_src) < page.index(render_trace_message_src) < page.index(render_trace_history_src) < page.index(render_trace_src) < page.index(file_preview_src) < page.index(app_src)
+    assert page.index(runtime_unread_src) < page.index(runtime_latency_src) < page.index(runtime_history_src) < page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(chat_tabs_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(bootstrap_auth_src) < page.index(chat_history_src) < page.index(chat_admin_src) < page.index(visibility_skin_src) < page.index(startup_bindings_src) < page.index(startup_metrics_src) < page.index(render_trace_text_src) < page.index(render_trace_debug_src) < page.index(render_trace_message_src) < page.index(render_trace_history_src) < page.index(render_trace_src) < page.index(interaction_src) < page.index(app_src) < page.index(keyboard_src) < page.index(shell_ui_src) < page.index(composer_viewport_src) < page.index(file_preview_src)
 
 
 def test_app_hides_dev_stream_and_source_pills_from_main_ui(monkeypatch, tmp_path) -> None:
@@ -700,7 +700,133 @@ def test_operator_runtime_endpoint_returns_runtime_status_with_valid_token(monke
     assert payload["ok"] is True
     assert "warm_sessions" in payload
     assert "retirement_summary" in payload["warm_sessions"]
+    assert isinstance(payload.get("recent_client_boot_summaries"), list)
     assert response.headers["Cache-Control"] == "no-store, max-age=0"
+
+
+def test_boot_telemetry_records_summary_and_exposes_it_via_operator_runtime(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-secret")
+    _, client = _client(monkeypatch, tmp_path)
+
+    post_response = client.post(
+        "/api/telemetry/boot",
+        json={
+            "totalOpenMs": 3210,
+            "dominantPhase": "authWaitMs",
+            "telegramUserId": 9001,
+            "telegramUsername": "tester",
+            "ignored": {"nested": True},
+        },
+        headers={"User-Agent": "MiniappTest/1.0", "X-Forwarded-For": "203.0.113.9"},
+    )
+
+    assert post_response.status_code == 200
+    assert post_response.get_json() == {"ok": True}
+    assert post_response.headers["Cache-Control"] == "no-store, max-age=0"
+
+    runtime_response = client.get("/api/_operator/runtime", headers={"X-Hermes-Operator-Token": "operator-secret"})
+
+    assert runtime_response.status_code == 200
+    payload = runtime_response.get_json()
+    recent = payload["recent_client_boot_summaries"]
+    assert len(recent) >= 1
+    latest = recent[0]
+    assert latest["totalOpenMs"] == 3210
+    assert latest["dominantPhase"] == "authWaitMs"
+    assert latest["telegramUserId"] == 9001
+    assert latest["telegramUsername"] == "tester"
+    assert latest["remoteAddr"] == "203.0.113.9"
+    assert latest["userAgent"] == "MiniappTest/1.0"
+    assert "ignored" not in latest
+    assert isinstance(latest["serverRecordedAtMs"], int)
+
+
+def test_boot_telemetry_accepts_text_plain_beacon_payload(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-secret")
+    _, client = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/api/telemetry/boot",
+        data='{"totalOpenMs": 1111, "dominantPhase": "shellToAppScriptMs"}',
+        headers={"Content-Type": "text/plain;charset=UTF-8"},
+    )
+
+    assert response.status_code == 200
+    runtime_response = client.get("/api/_operator/runtime", headers={"X-Hermes-Operator-Token": "operator-secret"})
+    payload = runtime_response.get_json()
+    assert payload["recent_client_boot_summaries"][0]["totalOpenMs"] == 1111
+    assert payload["recent_client_boot_summaries"][0]["dominantPhase"] == "shellToAppScriptMs"
+
+
+def test_boot_telemetry_bypasses_origin_and_content_type_guards(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-secret")
+    monkeypatch.setenv("MINI_APP_ALLOWED_ORIGINS", "https://allowed.example")
+    monkeypatch.setenv("MINI_APP_ENFORCE_ORIGIN_CHECK", "1")
+    _, client = _client(monkeypatch, tmp_path, isolate_security_env=False)
+
+    response = client.post(
+        "/api/telemetry/boot",
+        data='{"totalOpenMs": 987, "dominantPhase": "totalOpenMs"}',
+        headers={"Content-Type": "text/plain;charset=UTF-8"},
+    )
+
+    assert response.status_code == 200
+    runtime_response = client.get("/api/_operator/runtime", headers={"X-Hermes-Operator-Token": "operator-secret"})
+    payload = runtime_response.get_json()
+    assert payload["recent_client_boot_summaries"][0]["totalOpenMs"] == 987
+
+
+def test_boot_telemetry_dedupes_repeated_boot_summary_ids(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-secret")
+    _, client = _client(monkeypatch, tmp_path)
+
+    first = client.post(
+        "/api/telemetry/boot",
+        json={"bootSummaryId": "boot-123", "totalOpenMs": 2100, "dominantPhase": "authWaitMs"},
+    )
+    second = client.post(
+        "/api/telemetry/boot",
+        json={"bootSummaryId": "boot-123", "totalOpenMs": 2100, "dominantPhase": "authWaitMs"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    runtime_response = client.get("/api/_operator/runtime", headers={"X-Hermes-Operator-Token": "operator-secret"})
+    payload = runtime_response.get_json()
+    matches = [entry for entry in payload["recent_client_boot_summaries"] if entry.get("bootSummaryId") == "boot-123"]
+    assert len(matches) == 1
+
+
+def test_boot_telemetry_survives_server_reload_via_log(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-secret")
+    server, client = _client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/api/telemetry/boot",
+        json={"bootSummaryId": "boot-reload", "totalOpenMs": 1666, "dominantPhase": "shellToAppScriptMs"},
+    )
+
+    assert response.status_code == 200
+    log_path = server.CLIENT_BOOT_SUMMARY_LOG_PATH
+    assert log_path.exists()
+    reloaded = load_server(monkeypatch, tmp_path)
+    runtime_response = reloaded.app.test_client().get(
+        "/api/_operator/runtime",
+        headers={"X-Hermes-Operator-Token": "operator-secret"},
+    )
+    payload = runtime_response.get_json()
+    matches = [entry for entry in payload["recent_client_boot_summaries"] if entry.get("bootSummaryId") == "boot-reload"]
+    assert len(matches) == 1
+    assert matches[0]["totalOpenMs"] == 1666
+
+
+def test_boot_telemetry_rejects_invalid_payload(monkeypatch, tmp_path) -> None:
+    _, client = _client(monkeypatch, tmp_path)
+
+    response = client.post("/api/telemetry/boot", json={"nested": {"nope": True}})
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Invalid boot summary."
 
 
 def test_startup_auth_allows_empty_chat_state() -> None:
@@ -820,12 +946,12 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "shellUiHelpers.createController({" in app_script
     assert "shellUiController.setElementHidden(element, hidden)" in app_script
     assert "shellUiController.syncDebugOnlyPillVisibility()" in app_script
-    assert 'throw new Error("HermesMiniappShellUI is required before app.js")' in app_script
+    assert "createDeferredControllerHelper('HermesMiniappShellUI')" in app_script
     assert "HermesMiniappComposerViewport" in composer_viewport_script
     assert "function createController(deps)" in composer_viewport_script
     assert "function ensureComposerVisible" in composer_viewport_script
     assert "composerViewportHelpers.createController({" in app_script
-    assert 'throw new Error("HermesMiniappComposerViewport is required before app.js")' in app_script
+    assert "createDeferredControllerHelper('HermesMiniappComposerViewport')" in app_script
     assert "function resolveRuntimeLatencyHelpers()" in runtime_helpers_script
     assert "function createLatencyPersistenceController({" in runtime_latency_script
     assert "function createLatencyController({" in runtime_latency_script
@@ -885,6 +1011,9 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "resolveRenderTraceDebugHelpers()" in render_trace_script
     assert "renderTraceHelpers.createController({" in app_script
     assert "renderTraceHelpers.createMessageRenderController({" in app_script
+    assert "createDeferredRenderTraceApiHelper('HermesMiniappRenderTrace')" in app_script
+    assert "createMessageRenderController(...args)" in app_script
+    assert "createHistoryRenderController(...args)" in app_script
     assert "startupBindingsController.bootstrap()" in app_script
     assert "startupBindingsController.installPendingCompletionWatchdog()" in app_script
     assert "messageRenderController.renderBody(container, rawText, { fileRefs })" in app_script
@@ -903,13 +1032,12 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "messageRenderController.findLatestAssistantHistoryMessage(chatId, { pendingOnly })" in app_script
     assert "messageRenderController.patchVisiblePendingAssistant(chatId, nextBody, pendingState)" in app_script
     assert "messageRenderController.patchVisibleToolTrace(chatId)" in app_script
-    assert 'throw new Error("HermesMiniappRenderTrace is required before app.js")' in app_script
     assert "HermesMiniappFilePreview" in file_preview_script
     assert "function createController(deps)" in file_preview_script
     assert "async function openFilePreview" in file_preview_script
     assert "function handleMessageFileRefClick(event)" in file_preview_script
     assert "filePreviewHelpers.createController({" in app_script
-    assert 'throw new Error("HermesMiniappFilePreview is required before app.js")' in app_script
+    assert "createDeferredControllerHelper('HermesMiniappFilePreview')" in app_script
     assert "chat-title-modal" in template
     assert '{% if dev_auth_enabled %}' in template
     assert "dev-auth-modal" in template

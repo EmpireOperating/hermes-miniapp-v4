@@ -7,8 +7,8 @@
       hasActiveChat,
       pending,
       canPrompt: Boolean(isAuthenticated) && hasActiveChat,
-      canSend: hasActiveChat && !pending && Boolean(isAuthenticated),
-      sendLabel: pending ? "Sending…" : "Send",
+      canSend: hasActiveChat && Boolean(isAuthenticated),
+      sendLabel: pending ? "Interrupt & send" : "Send",
       canRemove: hasActiveChat && !pending && Boolean(isAuthenticated),
       canPin: hasActiveChat && Boolean(isAuthenticated),
     };

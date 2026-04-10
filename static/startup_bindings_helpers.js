@@ -297,9 +297,16 @@
       }
 
       const mobileBootstrapPath = Boolean(isMobileBootstrapPath?.());
-      if (!mobileBootstrapPath && await maybeRefreshForBootstrapVersionMismatch?.()) {
-        revealShell?.();
-        return;
+      if (!mobileBootstrapPath) {
+        logBootStage?.('version-check-start');
+        if (await maybeRefreshForBootstrapVersionMismatch?.()) {
+          logBootStage?.('version-check-finished', { refreshed: true });
+          revealShell?.();
+          return;
+        }
+        logBootStage?.('version-check-finished', { refreshed: false });
+      } else {
+        logBootStage?.('version-check-skipped-mobile');
       }
 
       try {
@@ -367,6 +374,12 @@
           activeChatId: Number(getActiveChatId?.() || 0),
           chatCount: Number(getChatsSize?.() || 0),
           pendingActiveChat: Boolean(isActiveChatPending?.()),
+          mobileBootstrapPath,
+          hasTelegram: Boolean(tg),
+          hasTelegramInitData: Boolean(getInitData?.()),
+          telegramUserId: Number(tg?.initDataUnsafe?.user?.id || 0) || null,
+          telegramUsername: String(tg?.initDataUnsafe?.user?.username || '').trim(),
+          preAuthVersionCheckBlockedAuth: !mobileBootstrapPath,
         });
       }
     }

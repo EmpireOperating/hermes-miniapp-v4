@@ -1480,6 +1480,52 @@ test('mergeHydratedHistory does not duplicate singleton pending tool trace when 
   assert.equal(toolRows[0].collapsed, true);
 });
 
+test('mergeHydratedHistory collapses duplicate local pending tool rows created by repeated reload restores', () => {
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    { role: 'tool', body: 'read_file', created_at: '2026-04-09T20:40:04Z', pending: true, collapsed: false },
+    { role: 'tool', body: 'read_file\nsearch_files\nwrite_file', created_at: '2026-04-09T20:40:05Z', pending: true, collapsed: true },
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    { role: 'tool', body: 'read_file\nsearch_files', created_at: '2026-04-09 20:40:06', pending: true },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    chatPending: true,
+  });
+
+  const toolRows = merged.filter((item) => item.role === 'tool');
+  assert.equal(toolRows.length, 1);
+  assert.equal(toolRows[0].body, 'read_file\nsearch_files\nwrite_file');
+  assert.equal(toolRows[0].collapsed, true);
+});
+
+test('mergeHydratedHistory collapses duplicate hydrated pending tool rows before preserving local UI state', () => {
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    { role: 'tool', body: 'read_file\nsearch_files\nwrite_file', created_at: '2026-04-09T20:40:05Z', pending: true, collapsed: true },
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    { role: 'tool', body: 'read_file', created_at: '2026-04-09 20:40:04', pending: true },
+    { role: 'tool', body: 'read_file\nsearch_files', created_at: '2026-04-09 20:40:06', pending: true },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    chatPending: true,
+  });
+
+  const toolRows = merged.filter((item) => item.role === 'tool');
+  assert.equal(toolRows.length, 1);
+  assert.equal(toolRows[0].body, 'read_file\nsearch_files\nwrite_file');
+  assert.equal(toolRows[0].collapsed, true);
+});
+
 test('shouldUseAppendOnlyRender returns false when new history inserts before current tail', () => {
   const previousTail = {
     role: 'hermes',

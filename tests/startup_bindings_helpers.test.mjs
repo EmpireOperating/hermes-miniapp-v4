@@ -462,6 +462,8 @@ test('bootstrap runs happy-path startup orchestration and restores pending snaps
   assert.equal(harness.initDataValue, 'telegram-init-data');
   assert.deepEqual(harness.bootLatency, ['bootstrap-start']);
   assert.equal(harness.authBootstrapCalls.length, 2);
+  assert.ok(harness.logBootStages.some(([name]) => name === 'version-check-start'));
+  assert.ok(harness.logBootStages.some(([name]) => name === 'version-check-finished'));
   assert.equal(harness.restoreSnapshotCalls[0], 7);
   assert.deepEqual(harness.renderMessagesCalls, [[7, { preserveViewport: true }]]);
   assert.equal(harness.syncDevAuthUiCalls.length >= 2, true);
@@ -497,6 +499,7 @@ test('bootstrap stops after bootstrap-version refresh redirect on desktop path',
 
   assert.equal(harness.maybeRefreshCalls.length, 1);
   assert.equal(harness.authBootstrapCalls.length, 0);
+  assert.ok(harness.logBootStages.some(([name, details]) => name === 'version-check-finished' && details?.refreshed === true));
   assert.ok(harness.logBootStages.some(([name]) => name === 'revealShell'));
 });
 
@@ -510,6 +513,7 @@ test('bootstrap skips blocking version refresh on mobile and schedules follow-up
 
   assert.equal(harness.maybeRefreshCalls.length, 0);
   assert.equal(harness.authBootstrapCalls.length, 2);
+  assert.ok(harness.logBootStages.some(([name]) => name === 'version-check-skipped-mobile'));
   assert.equal(harness.timeoutCallbacks.length, 1);
 
   await harness.timeoutCallbacks[0]();

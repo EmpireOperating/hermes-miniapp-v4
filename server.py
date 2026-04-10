@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import time
+from collections import deque
 from pathlib import Path
 
 from flask import Flask, Response, g, request
@@ -38,6 +39,11 @@ from validators import parse_chat_id, validate_message, validate_title
 
 BASE_DIR = Path(__file__).resolve().parent
 SESSION_STORE_PATH = Path(os.environ.get("MINI_APP_SESSION_STORE_PATH") or (BASE_DIR / "sessions.db"))
+CLIENT_BOOT_SUMMARY_LOG_PATH = Path(
+    os.environ.get("MINI_APP_BOOT_SUMMARY_LOG_PATH") or (BASE_DIR / "var" / "client_boot_summaries.ndjson")
+)
+RECENT_CLIENT_BOOT_SUMMARIES: deque[dict[str, object]] = deque(maxlen=50)
+RECENT_CLIENT_BOOT_SUMMARY_IDS: deque[str] = deque(maxlen=200)
 
 _previous_runtime = globals().get("runtime")
 if _previous_runtime is not None:
@@ -447,6 +453,7 @@ def enforce_request_guards() -> Response | None:
         now_ms_fn=now_ms,
         auth_cookie_name=AUTH_COOKIE_NAME,
         verify_auth_session_token_fn=_verify_auth_session_token,
+        relaxed_paths={"/api/telemetry/boot"},
     )
 
 
@@ -560,11 +567,85 @@ register_jobs_runtime_routes(
 )
 
 
+def _append_client_boot_summary_log(summary: dict[str, object]) -> None:
+    try:
+        CLIENT_BOOT_SUMMARY_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with CLIENT_BOOT_SUMMARY_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(summary, separators=(",", ":"), sort_keys=True))
+            handle.write("\n")
+    except Exception:  # noqa: BLE001 - best-effort telemetry persistence must never break requests
+        pass
+
+
+def _load_recent_client_boot_summaries_from_log(limit: int = 50) -> list[dict[str, object]]:
+    path = CLIENT_BOOT_SUMMARY_LOG_PATH
+    if limit <= 0 or not path.exists():
+        return []
+    loaded: list[dict[str, object]] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = str(raw_line or "").strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(parsed, dict):
+                    loaded.append(parsed)
+    except Exception:  # noqa: BLE001 - best-effort telemetry loading must never break requests
+        return []
+    if len(loaded) > limit:
+        loaded = loaded[-limit:]
+    loaded.reverse()
+    return loaded
+
+
+def _record_recent_client_boot_summary(summary: dict[str, object]) -> None:
+    normalized = dict(summary or {})
+    summary_id = str(normalized.get("bootSummaryId") or "").strip()
+    if summary_id and summary_id in RECENT_CLIENT_BOOT_SUMMARY_IDS:
+        return
+    if summary_id:
+        RECENT_CLIENT_BOOT_SUMMARY_IDS.append(summary_id)
+    RECENT_CLIENT_BOOT_SUMMARIES.appendleft(normalized)
+    _append_client_boot_summary_log(normalized)
+
+
+def _recent_client_boot_summaries() -> list[dict[str, object]]:
+    live_entries = list(RECENT_CLIENT_BOOT_SUMMARIES)
+    if len(live_entries) >= RECENT_CLIENT_BOOT_SUMMARIES.maxlen:
+        return live_entries
+    merged: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+
+    def _append_unique(entry: dict[str, object]) -> None:
+        summary_id = str(entry.get("bootSummaryId") or "").strip()
+        if summary_id:
+            if summary_id in seen_ids:
+                return
+            seen_ids.add(summary_id)
+        merged.append(entry)
+
+    for entry in live_entries:
+        if isinstance(entry, dict):
+            _append_unique(entry)
+    for entry in _load_recent_client_boot_summaries_from_log(limit=RECENT_CLIENT_BOOT_SUMMARIES.maxlen):
+        if isinstance(entry, dict):
+            _append_unique(entry)
+        if len(merged) >= RECENT_CLIENT_BOOT_SUMMARIES.maxlen:
+            break
+    return merged[: RECENT_CLIENT_BOOT_SUMMARIES.maxlen]
+
+
 register_meta_routes(
     api_bp,
     allowed_skins=ALLOWED_SKINS,
     bootstrap_version_fn=lambda: _dev_reload_version(),
     runtime_status_fn=lambda: client.runtime_status(),
+    record_boot_summary_fn=_record_recent_client_boot_summary,
+    recent_boot_summaries_fn=_recent_client_boot_summaries,
     operator_token=str(os.environ.get("MINI_APP_OPERATOR_API_TOKEN") or "").strip(),
 )
 

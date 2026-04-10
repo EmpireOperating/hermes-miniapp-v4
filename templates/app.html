@@ -63,6 +63,12 @@
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="//telegram.org">
     <link rel="preload" as="image" href="/static/hermes-banner.png">
+    <link rel="preload" as="script" href="/static/stream_controller.js?v={{ stream_controller_version }}">
+    <link rel="preload" as="script" href="/static/bootstrap_auth_helpers.js?v={{ bootstrap_auth_helpers_version }}">
+    <link rel="preload" as="script" href="/static/chat_history_helpers.js?v={{ chat_history_helpers_version }}">
+    <link rel="preload" as="script" href="/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}">
+    <link rel="preload" as="script" href="/static/startup_metrics_helpers.js?v={{ startup_metrics_helpers_version }}">
+    <link rel="preload" as="script" href="/static/app.js?v={{ app_js_version }}">
     <link rel="stylesheet" href="/static/app.css?v={{ css_version }}">
     <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
@@ -280,18 +286,11 @@
     <script defer src="/static/app_shared_utils.js?v={{ shared_utils_version }}"></script>
     <script defer src="/static/chat_ui_helpers.js?v={{ chat_ui_helpers_version }}"></script>
     <script defer src="/static/chat_tabs_helpers.js?v={{ chat_tabs_helpers_version }}"></script>
-    <script defer src="/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}"></script>
     <script defer src="/static/stream_state_helpers.js?v={{ stream_state_helpers_version }}"></script>
     <script defer src="/static/stream_controller.js?v={{ stream_controller_version }}"></script>
     <script defer src="/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}"></script>
-    <script defer src="/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}"></script>
-    <script defer src="/static/interaction_helpers.js?v={{ interaction_helpers_version }}"></script>
     <script defer src="/static/bootstrap_auth_helpers.js?v={{ bootstrap_auth_helpers_version }}"></script>
     <script defer src="/static/chat_history_helpers.js?v={{ chat_history_helpers_version }}"></script>
-    <script defer src="/static/chat_admin_helpers.js?v={{ chat_admin_helpers_version }}"></script>
-    <script defer src="/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}"></script>
-    <script defer src="/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}"></script>
-    <script defer src="/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}"></script>
     <script defer src="/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}"></script>
     <script defer src="/static/startup_metrics_helpers.js?v={{ startup_metrics_helpers_version }}"></script>
     <script defer src="/static/render_trace_text_helpers.js?v={{ render_trace_text_helpers_version }}"></script>
@@ -299,7 +298,14 @@
     <script defer src="/static/render_trace_message_helpers.js?v={{ render_trace_message_helpers_version }}"></script>
     <script defer src="/static/render_trace_history_helpers.js?v={{ render_trace_history_helpers_version }}"></script>
     <script defer src="/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}"></script>
-    <script defer src="/static/file_preview_helpers.js?v={{ file_preview_helpers_version }}"></script>
     <script defer src="/static/app.js?v={{ app_js_version }}"></script>
+    <script defer src="/static/chat_admin_helpers.js?v={{ chat_admin_helpers_version }}"></script>
+    <script defer src="/static/interaction_helpers.js?v={{ interaction_helpers_version }}"></script>
+    <script defer src="/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}"></script>
+    <script defer src="/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}"></script>
+    <script defer src="/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}"></script>
+    <script defer src="/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}"></script>
+    <script defer src="/static/file_preview_helpers.js?v={{ file_preview_helpers_version }}"></script>
+    <script defer src="/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}"></script>
   </body>
 </html>

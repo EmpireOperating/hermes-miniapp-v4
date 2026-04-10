@@ -14,9 +14,9 @@ test('deriveComposerState reflects pending/auth combinations', () => {
   });
 
   assert.equal(pendingState.pending, true);
-  assert.equal(pendingState.canSend, false);
+  assert.equal(pendingState.canSend, true);
   assert.equal(pendingState.canPin, true);
-  assert.equal(pendingState.sendLabel, 'Sending…');
+  assert.equal(pendingState.sendLabel, 'Interrupt & send');
 
   const idleState = composerStateHelpers.deriveComposerState({
     activeChatId: 3,
@@ -37,8 +37,8 @@ test('applyComposerState updates control disabled flags and button labels', () =
 
   composerStateHelpers.applyComposerState({
     state: {
-      canSend: false,
-      sendLabel: 'Sending…',
+      canSend: true,
+      sendLabel: 'Interrupt & send',
       canPrompt: true,
       canRemove: false,
       canPin: false,
@@ -49,8 +49,8 @@ test('applyComposerState updates control disabled flags and button labels', () =
     pinChatButton,
   });
 
-  assert.equal(sendButton.disabled, true);
-  assert.equal(sendButton.textContent, 'Sending…');
+  assert.equal(sendButton.disabled, false);
+  assert.equal(sendButton.textContent, 'Interrupt & send');
   assert.equal(promptEl.disabled, false);
   assert.equal(removeChatButton.disabled, true);
   assert.equal(pinChatButton.disabled, true);
@@ -78,10 +78,10 @@ test('createController updateComposerState derives and applies control state', (
   const state = controller.updateComposerState();
 
   assert.equal(state.pending, true);
-  assert.equal(state.canSend, false);
+  assert.equal(state.canSend, true);
   assert.equal(state.canPin, true);
-  assert.equal(sendButton.disabled, true);
-  assert.equal(sendButton.textContent, 'Sending…');
+  assert.equal(sendButton.disabled, false);
+  assert.equal(sendButton.textContent, 'Interrupt & send');
   assert.equal(promptEl.disabled, false);
   assert.equal(removeChatButton.disabled, true);
   assert.equal(pinChatButton.disabled, false);

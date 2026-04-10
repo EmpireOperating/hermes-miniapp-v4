@@ -30,17 +30,22 @@ def enforce_api_request_guards(
     now_ms_fn: Callable[[], float],
     auth_cookie_name: str,
     verify_auth_session_token_fn: Callable[[str], str | None],
+    relaxed_paths: set[str] | None = None,
 ) -> Response | None:
     g.request_id = new_request_id_fn()
     g.request_started_ms = now_ms_fn()
 
-    if request.path.startswith("/api") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-        if request.mimetype != "application/json":
+    relaxed_paths = set(relaxed_paths or ())
+    path = str(request.path or "")
+    relaxed_path = path in relaxed_paths
+
+    if path.startswith("/api") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        if not relaxed_path and request.mimetype != "application/json":
             return jsonify({"ok": False, "error": "Content-Type must be application/json."}), 415
-        if not origin_allowed_fn():
+        if not relaxed_path and not origin_allowed_fn():
             return jsonify({"ok": False, "error": "Origin not allowed."}), 403
 
-    if not request.path.startswith("/api"):
+    if not path.startswith("/api"):
         return None
 
     remote = (request.remote_addr or "unknown").strip()
@@ -50,7 +55,7 @@ def enforce_api_request_guards(
         verify_auth_session_token_fn=verify_auth_session_token_fn,
     )
 
-    if request.path in {"/api/chat/stream", "/api/chat/stream/resume"}:
+    if path in {"/api/chat/stream", "/api/chat/stream/resume"}:
         ok = check_rate_limit_fn(f"stream:{identity}", rate_limit_stream_requests, rate_limit_window_seconds)
     else:
         ok = check_rate_limit_fn(f"api:{identity}", rate_limit_api_requests, rate_limit_window_seconds)

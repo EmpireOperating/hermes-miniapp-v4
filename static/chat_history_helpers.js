@@ -173,6 +173,8 @@
       clearPendingStreamSnapshot,
       finalizeHydratedPendingState,
       shouldDeferNonCriticalCachedOpen = () => false,
+      renderTraceLog = () => {},
+      nowMs = () => Date.now(),
     } = deps;
 
     const activeRenderState = {
@@ -192,6 +194,10 @@
 
     function isActiveChat(chatId) {
       return normalizeChatId(chatId) === normalizeChatId(getActiveChatId());
+    }
+
+    function traceChatHistory(eventName, details = null) {
+      renderTraceLog(`chat-history-${eventName}`, details);
     }
 
     function getCurrentUnreadCount(chatId) {
@@ -387,23 +393,69 @@
 
     async function loadChatHistory(chatId, { activate = true } = {}) {
       const targetChatId = normalizeChatId(chatId);
+      const startedAtMs = nowMs();
+      traceChatHistory('history-fetch-start', {
+        chatId: targetChatId,
+        activate: Boolean(activate),
+      });
       try {
-        return await apiPost('/api/chats/history', { chat_id: targetChatId, activate });
+        const data = await apiPost('/api/chats/history', { chat_id: targetChatId, activate });
+        traceChatHistory('history-fetch-finished', {
+          chatId: targetChatId,
+          activate: Boolean(activate),
+          source: 'history',
+          durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
+          historyCount: Array.isArray(data?.history) ? data.history.length : 0,
+        });
+        return data;
       } catch (error) {
         const message = String(error?.message || '');
         const isNotFound = /request failed:\s*404/i.test(message);
         if (!isNotFound) {
+          traceChatHistory('history-fetch-failed', {
+            chatId: targetChatId,
+            activate: Boolean(activate),
+            durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
+            message,
+          });
           throw error;
         }
-        return apiPost('/api/chats/open', { chat_id: targetChatId });
+        traceChatHistory('history-fetch-fallback-open', {
+          chatId: targetChatId,
+          activate: Boolean(activate),
+          durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
+        });
+        const data = await apiPost('/api/chats/open', { chat_id: targetChatId });
+        traceChatHistory('history-fetch-finished', {
+          chatId: targetChatId,
+          activate: Boolean(activate),
+          source: 'open-fallback',
+          durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
+          historyCount: Array.isArray(data?.history) ? data.history.length : 0,
+        });
+        return data;
       }
     }
 
     async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) {
+      const hydrateStartedAtMs = nowMs();
+      traceChatHistory('hydrate-start', {
+        chatId: targetChatId,
+        requestId: Number(requestId) || 0,
+        hadCachedHistory: Boolean(hadCachedHistory),
+        activeAtStart: isActiveChat(targetChatId),
+      });
       const data = await loadChatHistory(targetChatId, { activate: true });
       upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
 
       if (requestId !== getLastOpenChatRequestId()) {
+        traceChatHistory('hydrate-skipped-stale-request', {
+          chatId: targetChatId,
+          requestId: Number(requestId) || 0,
+          latestRequestId: Number(getLastOpenChatRequestId()) || 0,
+          hadCachedHistory: Boolean(hadCachedHistory),
+          durationMs: Math.max(0, Math.round(nowMs() - hydrateStartedAtMs)),
+        });
         return;
       }
 
@@ -436,6 +488,19 @@
 
       refreshTabNode(targetChatId);
 
+      traceChatHistory('hydrate-applied', {
+        chatId: targetChatId,
+        requestId: Number(requestId) || 0,
+        hadCachedHistory: Boolean(hadCachedHistory),
+        activeAtApply: isActiveChat(targetChatId),
+        previousHistoryCount: previousHistory.length,
+        nextHistoryCount: finalHistory.length,
+        historyChanged,
+        restoredPendingSnapshot: Boolean(restoredPendingSnapshot),
+        shouldResumePending: Boolean(shouldResumePending),
+        durationMs: Math.max(0, Math.round(nowMs() - hydrateStartedAtMs)),
+      });
+
       if (!isActiveChat(targetChatId)) {
         setActiveChatMeta(targetChatId);
         renderMessages(targetChatId);
@@ -464,24 +529,104 @@
       const requestId = getLastOpenChatRequestId() + 1;
       setLastOpenChatRequestId(requestId);
       const hadCachedHistory = histories.has(targetChatId);
+      const openStartedAtMs = nowMs();
+      traceChatHistory('open-start', {
+        chatId: targetChatId,
+        requestId,
+        hadCachedHistory,
+      });
       armActivationReadThreshold(targetChatId);
 
       if (hadCachedHistory) {
         const shouldDeferMeta = Boolean(shouldDeferNonCriticalCachedOpen(targetChatId));
         setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: shouldDeferMeta });
-        renderMessages(targetChatId);
+        const renderCachedChat = () => {
+          if (requestId !== getLastOpenChatRequestId()) {
+            traceChatHistory('cached-render-skipped-stale-request', {
+              chatId: targetChatId,
+              requestId,
+              latestRequestId: Number(getLastOpenChatRequestId()) || 0,
+            });
+            return;
+          }
+          if (!isActiveChat(targetChatId)) {
+            traceChatHistory('cached-render-skipped-inactive', {
+              chatId: targetChatId,
+              requestId,
+              activeChatId: normalizeChatId(getActiveChatId()),
+            });
+            return;
+          }
+          traceChatHistory('cached-render-commit', {
+            chatId: targetChatId,
+            requestId,
+            deferred: shouldDeferMeta,
+            durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
+          });
+          renderMessages(targetChatId);
+        };
+        if (shouldDeferMeta) {
+          enqueueUiMutation(renderCachedChat);
+        } else {
+          renderCachedChat();
+        }
 
-        scheduleTimeout(() => {
+        const hydrateCachedChat = () => {
+          if (requestId !== getLastOpenChatRequestId()) {
+            traceChatHistory('cached-hydrate-skipped-stale-request', {
+              chatId: targetChatId,
+              requestId,
+              latestRequestId: Number(getLastOpenChatRequestId()) || 0,
+            });
+            return;
+          }
+          if (!isActiveChat(targetChatId)) {
+            traceChatHistory('cached-hydrate-skipped-inactive', {
+              chatId: targetChatId,
+              requestId,
+              activeChatId: normalizeChatId(getActiveChatId()),
+            });
+            return;
+          }
+          traceChatHistory('cached-hydrate-begin', {
+            chatId: targetChatId,
+            requestId,
+            durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
+          });
           void hydrateChatFromServer(targetChatId, requestId, true).catch(() => {
             // best-effort refresh while cached view is already visible
           });
-        }, 0);
+        };
+
+        if (shouldDeferMeta && typeof requestIdle === 'function') {
+          traceChatHistory('cached-hydrate-scheduled', {
+            chatId: targetChatId,
+            requestId,
+            mode: 'idle',
+            timeoutMs: 250,
+          });
+          requestIdle(hydrateCachedChat, { timeout: 250 });
+        } else {
+          traceChatHistory('cached-hydrate-scheduled', {
+            chatId: targetChatId,
+            requestId,
+            mode: 'timeout',
+            delayMs: shouldDeferMeta ? 32 : 0,
+          });
+          scheduleTimeout(hydrateCachedChat, shouldDeferMeta ? 32 : 0);
+        }
         return;
       }
 
       try {
         await hydrateChatFromServer(targetChatId, requestId, false);
       } catch (error) {
+        traceChatHistory('open-failed', {
+          chatId: targetChatId,
+          requestId,
+          durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
+          message: String(error?.message || ''),
+        });
         if (requestId === getLastOpenChatRequestId()) {
           appendSystemMessage(error.message || 'Failed to open chat.', targetChatId);
         }
@@ -494,12 +639,26 @@
         return;
       }
       prefetchingHistories.add(key);
+      const startedAtMs = nowMs();
+      traceChatHistory('prefetch-start', {
+        chatId: key,
+      });
       void loadChatHistory(key, { activate: false })
         .then((data) => {
           upsertChat(data.chat);
           histories.set(key, data.history || []);
+          traceChatHistory('prefetch-finished', {
+            chatId: key,
+            durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
+            historyCount: Array.isArray(data?.history) ? data.history.length : 0,
+          });
         })
-        .catch(() => {
+        .catch((error) => {
+          traceChatHistory('prefetch-failed', {
+            chatId: key,
+            durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
+            message: String(error?.message || ''),
+          });
           // Best-effort warm cache
         })
         .finally(() => {
@@ -513,9 +672,20 @@
         .filter((id) => !histories.has(Number(id)) && !prefetchingHistories.has(Number(id)))
         .slice(0, 4);
       if (!ids.length) return;
+
+      const [priorityId, ...remainingIds] = ids;
+      traceChatHistory('warm-cache-start', {
+        chatIds: ids.map((id) => normalizeChatId(id)),
+        priorityChatId: normalizeChatId(priorityId),
+      });
+      prefetchChatHistory(priorityId);
+      if (!remainingIds.length) {
+        return;
+      }
+
       const warmNext = (index) => {
-        if (index >= ids.length) return;
-        prefetchChatHistory(ids[index]);
+        if (index >= remainingIds.length) return;
+        prefetchChatHistory(remainingIds[index]);
         scheduleTimeout(() => warmNext(index + 1), 160);
       };
 

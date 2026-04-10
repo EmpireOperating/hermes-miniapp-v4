@@ -33,6 +33,9 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
   const clearIntervalCalls = [];
   const clearTimeoutCalls = [];
   const windowResizeListeners = [];
+  const windowBlurListeners = [];
+  const windowPagehideListeners = [];
+  const documentVisibilityListeners = [];
   const telegramViewportHandlers = [];
   const jumpVisibilityUpdates = [];
   const queryTargets = {
@@ -54,6 +57,7 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
     selectionRanges: [],
     blur() {
       this.blurCalls += 1;
+      documentObject.activeElement = documentObject.body;
     },
     focus(options) {
       this.focusCalls.push(options ?? null);
@@ -103,6 +107,10 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
     addEventListener(type, handler) {
       if (type === 'resize') {
         windowResizeListeners.push(handler);
+      } else if (type === 'blur') {
+        windowBlurListeners.push(handler);
+      } else if (type === 'pagehide') {
+        windowPagehideListeners.push(handler);
       }
     },
     requestAnimationFrame(callback) {
@@ -121,6 +129,11 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
           cssVarUpdates.push([name, value]);
         },
       },
+    },
+    addEventListener(type, handler) {
+      if (type === 'visibilitychange') {
+        documentVisibilityListeners.push(handler);
+      }
     },
     querySelector(selector) {
       return queryTargets[selector] || null;
@@ -171,6 +184,9 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
     clearIntervalCalls,
     clearTimeoutCalls,
     windowResizeListeners,
+    windowBlurListeners,
+    windowPagehideListeners,
+    documentVisibilityListeners,
     telegramViewportHandlers,
     cssVarUpdates,
     chatScrollTop,
@@ -288,6 +304,29 @@ test('installKeyboardViewportSync clears interval on blur', () => {
   harness.promptEl.dispatch('blur');
 
   assert.deepEqual(harness.clearIntervalCalls, [1]);
+});
+
+test('installKeyboardViewportSync clears sync state and blurs focused mobile composer when the app backgrounds', () => {
+  const harness = buildHarness({ mobileQuoteMode: true });
+
+  harness.controller.installKeyboardViewportSync();
+  harness.promptEl.dispatch('touchstart');
+  harness.documentObject.activeElement = harness.promptEl;
+  harness.promptEl.focusCalls.length = 0;
+  harness.form.scrollIntoViewCalls.length = 0;
+
+  harness.documentObject.visibilityState = 'hidden';
+  harness.documentVisibilityListeners[0]();
+
+  assert.equal(harness.promptEl.blurCalls, 1);
+  assert.equal(harness.documentObject.activeElement, harness.documentObject.body);
+  assert.deepEqual(harness.clearIntervalCalls, [1]);
+
+  harness.documentObject.visibilityState = 'visible';
+  harness.visualViewport.dispatch('resize');
+
+  assert.deepEqual(harness.promptEl.focusCalls, []);
+  assert.equal(harness.form.scrollIntoViewCalls.length, 0);
 });
 
 test('installKeyboardViewportSync stops interval sync when user is no longer near bottom', () => {

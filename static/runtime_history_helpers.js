@@ -37,6 +37,42 @@
     return nextItem;
   }
 
+  function collapseDuplicatePendingToolRows(history) {
+    const items = Array.isArray(history) ? history : [];
+    let keptPendingTool = null;
+    const nextHistory = [];
+
+    for (const item of items) {
+      const isPendingTool = Boolean(item?.pending) && String(item?.role || '').toLowerCase() === 'tool';
+      if (!isPendingTool) {
+        nextHistory.push(item);
+        continue;
+      }
+
+      if (!keptPendingTool) {
+        keptPendingTool = { ...item };
+        nextHistory.push(keptPendingTool);
+        continue;
+      }
+
+      const keptBody = String(keptPendingTool?.body || '');
+      const candidateBody = String(item?.body || '');
+      if (candidateBody.length > keptBody.length) {
+        keptPendingTool.body = candidateBody;
+      }
+      if (typeof item?.collapsed === 'boolean') {
+        keptPendingTool.collapsed = item.collapsed;
+      }
+      const keptCreatedAt = String(keptPendingTool?.created_at || '');
+      const candidateCreatedAt = String(item?.created_at || '');
+      if (!keptCreatedAt && candidateCreatedAt) {
+        keptPendingTool.created_at = candidateCreatedAt;
+      }
+    }
+
+    return nextHistory;
+  }
+
   function preserveCompletedLocalToolMessages(previousHistory, nextHistory) {
     const previous = Array.isArray(previousHistory) ? previousHistory : [];
     const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
@@ -119,8 +155,8 @@
   }
 
   function mergeHydratedHistory({ previousHistory, nextHistory, chatPending, preserveCompletedToolTrace = false }) {
-    const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
-    const previous = Array.isArray(previousHistory) ? previousHistory : [];
+    const incoming = collapseDuplicatePendingToolRows(Array.isArray(nextHistory) ? nextHistory.slice() : []);
+    const previous = collapseDuplicatePendingToolRows(Array.isArray(previousHistory) ? previousHistory : []);
     if (!chatPending) {
       return preserveCompletedToolTrace
         ? preserveCompletedLocalToolMessages(previous, incoming)

@@ -25,6 +25,8 @@
       syncActiveMessageView,
       getStreamAbortControllers,
       maybeRefreshForBootstrapVersionMismatch = null,
+      markBackgrounded = null,
+      markVisibilityResume = null,
     } = deps;
 
     function normalizeSkin(value) {
@@ -144,7 +146,14 @@
     }
 
     async function handleVisibilityChange() {
-      if (documentObject.visibilityState !== 'visible') return;
+      if (documentObject.visibilityState !== 'visible') {
+        markBackgrounded?.({ trigger: 'visibilitychange' });
+        return;
+      }
+      markVisibilityResume?.({
+        trigger: 'visibilitychange',
+        pendingChatCount: Number(pendingChats?.size || 0),
+      });
       if (await maybeRefreshForBootstrapVersionMismatch?.()) return;
       syncSkinFromStorage();
       if (!getIsAuthenticated()) return;
@@ -189,6 +198,9 @@
 
       windowObject.addEventListener('focus', () => {
         syncSkinFromStorage();
+      });
+      windowObject.addEventListener?.('pagehide', () => {
+        markBackgrounded?.({ trigger: 'pagehide' });
       });
 
       windowObject.addEventListener('storage', handleStorageEvent);

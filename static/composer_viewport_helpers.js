@@ -244,6 +244,13 @@
 
       let focusSyncIntervalId = null;
       let keyboardSyncUntil = 0;
+      let explicitComposerRevealRequested = false;
+
+      const clearSyncWindowState = () => {
+        keyboardSyncUntil = 0;
+        explicitComposerRevealRequested = false;
+        stopFocusIntervalSync();
+      };
 
       const isPromptFocused = () => documentObject.activeElement === promptEl;
 
@@ -253,28 +260,67 @@
 
       const isWithinSyncWindow = () => Date.now() <= keyboardSyncUntil;
 
+      const hasExplicitComposerRevealRequest = () => explicitComposerRevealRequested && isWithinSyncWindow();
+
       const shouldAutoMaintainComposerVisibility = () => {
         if (!isPromptFocused()) return false;
         if (!messagesEl) return true;
         return Boolean(isNearBottomFn?.(messagesEl, 40));
       };
 
+      const shouldMaintainComposerVisibilityDuringSyncWindow = () => {
+        if (hasExplicitComposerRevealRequest()) return true;
+        return shouldAutoMaintainComposerVisibility();
+      };
+
       const guardedEnsureComposerVisible = () => {
-        if (!shouldAutoMaintainComposerVisibility()) return;
+        if (!shouldMaintainComposerVisibilityDuringSyncWindow()) return;
         ensureComposerVisible({ smooth: false });
       };
 
+      const ensurePromptFocusDuringSyncWindow = () => {
+        if (!promptEl || promptEl.disabled) return false;
+        if (!isWithinSyncWindow()) return false;
+        if (documentObject.activeElement === promptEl) return true;
+        if (documentObject.querySelector?.('dialog[open]')) return false;
+
+        if (mobileQuoteMode) {
+          promptEl.focus();
+        } else {
+          try {
+            promptEl.focus({ preventScroll: true });
+          } catch {
+            promptEl.focus();
+          }
+        }
+
+        if (documentObject.activeElement !== promptEl) return false;
+        const caret = String(promptEl.value || '').length;
+        try {
+          promptEl.setSelectionRange?.(caret, caret);
+        } catch {
+          // Some mobile webviews reject setSelectionRange during keyboard transitions.
+        }
+        return true;
+      };
+
+      const guardedMaintainComposerDuringSyncWindow = () => {
+        ensurePromptFocusDuringSyncWindow();
+        guardedEnsureComposerVisible();
+      };
+
       const runSyncBurst = () => {
+        ensurePromptFocusDuringSyncWindow();
         ensureComposerVisible({ smooth: false });
         const raf = windowObject.requestAnimationFrame || globalScope.requestAnimationFrame;
         if (typeof raf === 'function') {
-          raf(() => guardedEnsureComposerVisible());
+          raf(() => guardedMaintainComposerDuringSyncWindow());
         }
-        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 90);
-        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 220);
-        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 420);
-        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 700);
-        windowObject.setTimeout(() => guardedEnsureComposerVisible(), 1000);
+        windowObject.setTimeout(() => guardedMaintainComposerDuringSyncWindow(), 90);
+        windowObject.setTimeout(() => guardedMaintainComposerDuringSyncWindow(), 220);
+        windowObject.setTimeout(() => guardedMaintainComposerDuringSyncWindow(), 420);
+        windowObject.setTimeout(() => guardedMaintainComposerDuringSyncWindow(), 700);
+        windowObject.setTimeout(() => guardedMaintainComposerDuringSyncWindow(), 1000);
       };
 
       const stopFocusIntervalSync = () => {
@@ -286,8 +332,12 @@
       const startFocusIntervalSync = () => {
         if (focusSyncIntervalId) return;
         focusSyncIntervalId = windowObject.setInterval(() => {
-          if (!isPromptFocused() || !isWithinSyncWindow() || !shouldAutoMaintainComposerVisibility()) {
+          if (!isWithinSyncWindow() || !shouldMaintainComposerVisibilityDuringSyncWindow()) {
             stopFocusIntervalSync();
+            return;
+          }
+          ensurePromptFocusDuringSyncWindow();
+          if (!shouldMaintainComposerVisibilityDuringSyncWindow()) {
             return;
           }
           ensureComposerVisible({ smooth: false });
@@ -311,6 +361,7 @@
       };
 
       const primeBeforeFocus = () => {
+        explicitComposerRevealRequested = true;
         armSyncWindow();
         focusComposerFromUserGesture();
         runSyncBurst();
@@ -318,7 +369,9 @@
       };
 
       promptEl.addEventListener('touchstart', primeBeforeFocus, { passive: true });
+      promptEl.addEventListener('touchend', primeBeforeFocus);
       promptEl.addEventListener('mousedown', primeBeforeFocus);
+      promptEl.addEventListener('click', primeBeforeFocus);
 
       const focusSync = () => {
         armSyncWindow();
@@ -328,15 +381,26 @@
 
       promptEl.addEventListener('focus', focusSync);
       promptEl.addEventListener('blur', () => {
-        keyboardSyncUntil = 0;
-        stopFocusIntervalSync();
+        clearSyncWindowState();
       });
+
+      const suspendComposerFocusOnBackground = () => {
+        clearSyncWindowState();
+        if (!mobileQuoteMode) return;
+        if (!isPromptFocused()) return;
+        promptEl.blur?.();
+      };
+
+      const onDocumentVisibilityChange = () => {
+        if (documentObject.visibilityState === 'visible') return;
+        suspendComposerFocusOnBackground();
+      };
 
       const onViewportShift = () => {
         syncViewportCssVars();
-        if (!isPromptFocused()) return;
         if (!isWithinSyncWindow()) return;
-        if (!shouldAutoMaintainComposerVisibility()) return;
+        ensurePromptFocusDuringSyncWindow();
+        if (!shouldMaintainComposerVisibilityDuringSyncWindow()) return;
         ensureComposerVisible({ smooth: false });
       };
 
@@ -345,7 +409,10 @@
         windowObject.visualViewport.addEventListener('scroll', onViewportShift);
       }
 
+      documentObject.addEventListener?.('visibilitychange', onDocumentVisibilityChange);
       windowObject.addEventListener('resize', onViewportShift);
+      windowObject.addEventListener?.('blur', suspendComposerFocusOnBackground);
+      windowObject.addEventListener?.('pagehide', suspendComposerFocusOnBackground);
       tg?.onEvent?.('viewportChanged', onViewportShift);
     }
 

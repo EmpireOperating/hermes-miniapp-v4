@@ -900,6 +900,56 @@ def test_worker_retry_exhaustion_stops_at_max_and_surfaces_terminal_error(monkey
     assert (error_events[-1].get("payload") or {}).get("retrying") is False
 
 
+def test_worker_retry_exhaustion_suppresses_terminal_error_for_intentional_interrupt_replacement(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server._RUNTIME_DEPS.bind_runtime()
+    runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
+    runtime._shutdown_event.clear()
+
+    user_id = "interrupt-user"
+    chat_id = server.store.ensure_default_chat(user_id)
+    operator_message_id = server.store.add_message(user_id, chat_id, "operator", "please stop")
+    job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+
+    def interrupted_retryable(_job: dict[str, object]) -> None:
+        raise JobRetryableError("Subprocess worker exited rc=-9")
+
+    suppressed_messages: list[dict[str, object]] = []
+    published_events: list[dict[str, object]] = []
+
+    monkeypatch.setattr(runtime, "run_chat_job", interrupted_retryable)
+    monkeypatch.setattr(runtime, "_fd_metrics", lambda: (11, 16384))
+    monkeypatch.setattr(runtime.store, "retry_or_dead_letter_job", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(runtime.store, "get_job_state", lambda _job_id: {
+        "id": job_id,
+        "chat_id": chat_id,
+        "status": "dead",
+        "error": "interrupted_by_new_message",
+        "attempts": 1,
+        "max_attempts": 1,
+        "created_at": "",
+        "started_at": "",
+        "next_attempt_at": "",
+        "queued_ahead": 0,
+        "running_total": 0,
+    })
+    monkeypatch.setattr(
+        runtime,
+        "_safe_add_system_message",
+        lambda **kwargs: suppressed_messages.append(dict(kwargs)),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "publish_job_event",
+        lambda job_id, event, payload=None: published_events.append({"job_id": job_id, "event": event, "payload": payload}),
+    )
+
+    runtime._process_available_jobs_once()
+
+    assert suppressed_messages == []
+    assert [event["event"] for event in published_events] == []
+
+
 def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
     runtime = server._RUNTIME_DEPS.bind_runtime()

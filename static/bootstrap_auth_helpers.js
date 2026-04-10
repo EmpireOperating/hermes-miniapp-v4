@@ -56,6 +56,7 @@
       syncBootLatencyChip = null,
       updateComposerState = null,
       isMobileQuoteMode = null,
+      markVersionSyncReloadIntent = null,
     } = deps;
 
     async function safeReadJson(response) {
@@ -262,7 +263,7 @@
 
       const bootstrapHistory = Array.isArray(data?.history) ? [...data.history] : [];
       const mobileBootstrapPath = isMobileBootstrapPath();
-      const bootstrapVirtualizeThreshold = mobileBootstrapPath ? 32 : 96;
+      const bootstrapForceVirtualize = !mobileBootstrapPath && bootstrapHistory.length >= 96;
       const hasFreshPendingSnapshot = typeof hasFreshPendingStreamSnapshot === "function"
         ? Boolean(hasFreshPendingStreamSnapshot(activeId))
         : false;
@@ -297,7 +298,7 @@
         historyCount: bootstrapHistory.length,
         restoredPendingSnapshot,
       });
-      renderMessages(activeId, { forceVirtualize: bootstrapHistory.length >= bootstrapVirtualizeThreshold });
+      renderMessages(activeId, { forceVirtualize: bootstrapForceVirtualize });
       onBootstrapStage?.("initial-render-finished", {
         activeChatId: activeId,
         historyCount: bootstrapHistory.length,
@@ -459,6 +460,7 @@
       syncBootLatencyChip?.("auth-request");
 
       for (let attempt = 1; attempt <= Math.max(1, Number(authBootstrapMaxAttempts) || 1); attempt += 1) {
+        onBootstrapStage?.("auth-bootstrap-attempt-start", { attempt });
         try {
           const response = await fetchImpl("/api/auth", {
             method: "POST",
@@ -478,8 +480,17 @@
             onBootstrapStage?.("auth-bootstrap-failed", { attempt, status: response.status, retryable: false });
             return { response, data };
           }
+          onBootstrapStage?.("auth-bootstrap-attempt-retryable-failure", {
+            attempt,
+            status: response.status,
+            retryable: true,
+          });
         } catch (error) {
           lastError = error;
+          onBootstrapStage?.("auth-bootstrap-attempt-error", {
+            attempt,
+            message: String(error?.message || error || ""),
+          });
           if (attempt >= Math.max(1, Number(authBootstrapMaxAttempts) || 1)) {
             break;
           }
@@ -487,6 +498,10 @@
 
         const jitterMs = Math.floor(Math.random() * 120);
         const backoffMs = Math.max(0, Number(authBootstrapBaseDelayMs) || 0) * attempt + jitterMs;
+        onBootstrapStage?.("auth-bootstrap-retry-scheduled", {
+          attempt,
+          backoffMs,
+        });
         await delayMs(backoffMs);
       }
 
@@ -533,6 +548,12 @@
         }
         const pathName = String(windowObject?.location?.pathname || "");
         const target = `${pathName}?v=${encodeURIComponent(serverVersion)}`;
+        markVersionSyncReloadIntent?.({
+          fromVersion: bootBootstrapVersion,
+          toVersion: serverVersion,
+          trigger: 'bootstrap-version-mismatch',
+          target,
+        });
         windowObject?.location?.replace?.(target);
         return true;
       } catch {

@@ -36,6 +36,8 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
   const refreshChatsCalls = [];
   const apiPostCalls = [];
   const bootstrapRefreshCalls = [];
+  const lifecycleMarks = [];
+  const visibilityResumes = [];
 
   const documentObject = createEventTarget({
     visibilityState,
@@ -142,6 +144,8 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
       syncActiveMessageViewCalls.push({ chatId, options });
     },
     getStreamAbortControllers: () => streamAbortControllers,
+    markBackgrounded: (marker) => lifecycleMarks.push({ ...marker }),
+    markVisibilityResume: (marker) => visibilityResumes.push({ ...marker }),
   });
 
   return {
@@ -162,6 +166,8 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
     refreshChatsCalls,
     apiPostCalls,
     bootstrapRefreshCalls,
+    lifecycleMarks,
+    visibilityResumes,
     streamAbortControllers,
     getCurrentSkin: () => currentSkin,
   };
@@ -227,6 +233,9 @@ test('handleVisibilityChange refreshes lifecycle and delegates active-chat recon
   await harness.controller.handleVisibilityChange();
 
   assert.deepEqual(harness.bootstrapRefreshCalls, ['refresh']);
+  assert.equal(harness.visibilityResumes.length, 1);
+  assert.equal(harness.visibilityResumes[0].trigger, 'visibilitychange');
+  assert.equal(harness.visibilityResumes[0].pendingChatCount, 0);
   assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
   assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
   assert.equal(harness.syncVisibleActiveChatCalls.length, 1);
@@ -241,6 +250,8 @@ test('handleVisibilityChange is a no-op when document is hidden', async () => {
 
   await harness.controller.handleVisibilityChange();
 
+  assert.equal(harness.lifecycleMarks.length, 1);
+  assert.equal(harness.lifecycleMarks[0].trigger, 'visibilitychange');
   assert.deepEqual(harness.syncActiveMessageViewCalls, []);
   assert.deepEqual(harness.refreshChatsCalls, []);
   assert.deepEqual(harness.syncVisibleActiveChatCalls, []);

@@ -221,20 +221,36 @@ def process_available_jobs_once(
             else:
                 runtime._record_runtime_counter("retry_exhausted_dead")
                 runtime._clear_touch_tracking(job_id)
-                LOGGER.error(
-                    "job_retry_exhausted job_id=%s user_id=%s chat_id=%s attempts=%s max_attempts=%s fd_open=%s fd_limit_soft=%s error=%s",
-                    job_id,
-                    user_id,
-                    chat_id,
-                    attempts,
-                    max_attempts,
-                    fd_open,
-                    fd_limit_soft,
-                    error_text,
+                state_after_retry = runtime.store.get_job_state(job_id) or {}
+                interrupted_replacement = (
+                    str(state_after_retry.get("status") or "") == "dead"
+                    and str(state_after_retry.get("error") or "") == "interrupted_by_new_message"
                 )
-                display_attempts = runtime._bounded_attempts_for_display(attempts, max_attempts)
-                runtime._safe_add_system_message(user_id=user_id, chat_id=chat_id, job_id=job_id, text=f"Hermes failed after {display_attempts} attempts: {error_text}")
-                runtime.publish_job_event(job_id, JOB_EVENT_ERROR, {"error": error_text, "chat_id": chat_id, "retrying": False})
+                if interrupted_replacement:
+                    LOGGER.info(
+                        "job_retry_exhausted_suppressed_interrupt job_id=%s user_id=%s chat_id=%s attempts=%s max_attempts=%s error=%s",
+                        job_id,
+                        user_id,
+                        chat_id,
+                        attempts,
+                        max_attempts,
+                        error_text,
+                    )
+                else:
+                    LOGGER.error(
+                        "job_retry_exhausted job_id=%s user_id=%s chat_id=%s attempts=%s max_attempts=%s fd_open=%s fd_limit_soft=%s error=%s",
+                        job_id,
+                        user_id,
+                        chat_id,
+                        attempts,
+                        max_attempts,
+                        fd_open,
+                        fd_limit_soft,
+                        error_text,
+                    )
+                    display_attempts = runtime._bounded_attempts_for_display(attempts, max_attempts)
+                    runtime._safe_add_system_message(user_id=user_id, chat_id=chat_id, job_id=job_id, text=f"Hermes failed after {display_attempts} attempts: {error_text}")
+                    runtime.publish_job_event(job_id, JOB_EVENT_ERROR, {"error": error_text, "chat_id": chat_id, "retrying": False})
         except Exception as exc:  # noqa: BLE001 - broad-except-policy: worker loop must quarantine unexpected failures per job
             if runtime.is_stale_chat_job_error(exc):
                 error_text = f"Stale chat job dropped: {exc}"

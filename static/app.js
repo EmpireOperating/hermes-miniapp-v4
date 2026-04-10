@@ -25,6 +25,227 @@ const filePreviewAllowedRoots = filePreviewFeatureEnabled && Array.isArray(fileP
   : [];
 const sharedUtils = window.HermesMiniappSharedUtils;
 
+function createDeferredControllerHelper(globalKey) {
+  const existing = window[globalKey];
+  if (existing) {
+    return existing;
+  }
+
+  let resolvedApi = null;
+  const controllerStates = new Set();
+  const shouldReplayMethod = (prop) => /^(bind|install|sync|start|set|save|handle)/.test(String(prop || ''));
+
+  function attachResolvedController(state) {
+    if (!state || state.realController || !resolvedApi || typeof resolvedApi.createController !== 'function') {
+      return;
+    }
+    try {
+      state.realController = resolvedApi.createController(state.deps) || null;
+    } catch {
+      state.realController = null;
+      return;
+    }
+    if (!state.realController || !Array.isArray(state.pendingCalls) || !state.pendingCalls.length) {
+      return;
+    }
+    const pendingCalls = state.pendingCalls.splice(0);
+    pendingCalls.forEach(({ prop, args }) => {
+      const method = state.realController?.[prop];
+      if (typeof method === 'function') {
+        method(...args);
+      }
+    });
+  }
+
+  const facadeApi = {
+    createController(deps) {
+      const state = {
+        deps,
+        realController: null,
+        pendingCalls: [],
+      };
+      controllerStates.add(state);
+      attachResolvedController(state);
+      return new Proxy({}, {
+        get(_target, prop) {
+          if (prop === '__lateBound') {
+            return true;
+          }
+          return (...args) => {
+            attachResolvedController(state);
+            const method = state.realController?.[prop];
+            if (typeof method === 'function') {
+              return method(...args);
+            }
+            if (shouldReplayMethod(prop)) {
+              state.pendingCalls.push({ prop, args });
+            }
+            return undefined;
+          };
+        },
+      });
+    },
+  };
+
+  Object.defineProperty(window, globalKey, {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return facadeApi;
+    },
+    set(value) {
+      resolvedApi = value;
+      controllerStates.forEach((state) => attachResolvedController(state));
+    },
+  });
+
+  return facadeApi;
+}
+
+function createDeferredApiHelper(globalKey, fallbackApi = {}) {
+  const existing = window[globalKey];
+  if (existing) {
+    return existing;
+  }
+
+  let resolvedApi = null;
+  const deferredControllerHelper = createDeferredControllerHelper(`${globalKey}__deferred_controller__`);
+
+  const facadeApi = new Proxy({}, {
+    get(_target, prop) {
+      if (prop === '__lateBound') {
+        return true;
+      }
+      return (...args) => {
+        const method = resolvedApi?.[prop];
+        if (typeof method === 'function') {
+          return method(...args);
+        }
+        const fallback = fallbackApi?.[prop];
+        if (typeof fallback === 'function') {
+          return fallback(...args);
+        }
+        if (prop === 'createController') {
+          return deferredControllerHelper.createController(...args);
+        }
+        return fallback;
+      };
+    },
+  });
+
+  Object.defineProperty(window, globalKey, {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return facadeApi;
+    },
+    set(value) {
+      resolvedApi = value;
+    },
+  });
+
+  return facadeApi;
+}
+
+function createDeferredRenderTraceApiHelper(globalKey) {
+  const existing = window[globalKey];
+  if (existing) {
+    return existing;
+  }
+
+  const deferredDebugControllerHelper = createDeferredControllerHelper(`${globalKey}__debug_controller__`);
+  const deferredMessageControllerHelper = createDeferredControllerHelper(`${globalKey}__message_controller__`);
+  const deferredHistoryControllerHelper = createDeferredControllerHelper(`${globalKey}__history_controller__`);
+
+  return createDeferredApiHelper(globalKey, {
+    parseBooleanFlag() {
+      return null;
+    },
+    createController(...args) {
+      return deferredDebugControllerHelper.createController(...args);
+    },
+    createMessageRenderController(...args) {
+      return deferredMessageControllerHelper.createController(...args);
+    },
+    createHistoryRenderController(...args) {
+      return deferredHistoryControllerHelper.createController(...args);
+    },
+  });
+}
+
+const deferredInteractionFallbacks = {
+  unwrapLegacyQuoteBlock(text) {
+    return String(text || '');
+  },
+  normalizeQuoteSelection(rawText) {
+    return String(rawText || '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/[\u2028\u2029]/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .split('\n')
+      .map((line) => line.replace(/\s+$/g, ''))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  },
+  splitGraphemes(text) {
+    return Array.from(String(text || ''));
+  },
+  wrapQuoteLine(line, width = 46) {
+    const text = String(line || '');
+    if (!text) return [''];
+    const safeWidth = Math.max(8, Number(width) || 46);
+    const chunks = [];
+    for (let index = 0; index < text.length; index += safeWidth) {
+      chunks.push(text.slice(index, index + safeWidth).trimEnd());
+    }
+    return chunks.length ? chunks : [''];
+  },
+  getQuoteWrapWidth({ promptInput, windowObject = window } = {}) {
+    try {
+      if (!promptInput || !windowObject) return 46;
+      const style = windowObject.getComputedStyle?.(promptInput);
+      const fontSize = Number.parseFloat(style?.fontSize || '') || 16;
+      const inputWidth = promptInput.clientWidth || promptInput.offsetWidth || 0;
+      if (!inputWidth) return 46;
+      const usableWidth = Math.max(120, inputWidth - 28);
+      const charWidth = Math.max(fontSize * 0.58, 7);
+      const estimatedChars = Math.floor(usableWidth / charWidth);
+      return Math.max(22, Math.min(46, estimatedChars - 2));
+    } catch {
+      return 46;
+    }
+  },
+  formatQuoteBlock(rawText) {
+    const clean = deferredInteractionFallbacks.normalizeQuoteSelection(rawText);
+    if (!clean) return '';
+    const lines = clean.split('\n').map((line) => (line ? `│ ${line}` : '│'));
+    return `┌ Quote\n${lines.join('\n')}\n└\n\n\n`;
+  },
+  isCoarsePointer({ windowObject = window } = {}) {
+    if (!windowObject) return false;
+    try {
+      if (windowObject.matchMedia?.('(pointer: coarse)')?.matches) {
+        return true;
+      }
+    } catch {
+      // Fall through.
+    }
+    return 'ontouchstart' in windowObject;
+  },
+  clearSelectionQuoteState() {},
+  cancelSelectionQuoteTimer() {},
+  scheduleSelectionQuoteClear() {},
+  scheduleSelectionQuoteSync() {},
+  applyQuoteIntoPrompt() {},
+  activeSelectionQuote() { return null; },
+  quotePlacementKey({ text = '', rect = {} } = {}) {
+    return [text, Math.round(rect.left || 0), Math.round(rect.top || 0), Math.round(rect.width || 0), Math.round(rect.height || 0)].join('|');
+  },
+  showSelectionQuoteAction() {},
+  syncSelectionQuoteAction() {},
+}
+
 if (!sharedUtils) {
   throw new Error("HermesMiniappSharedUtils is required before app.js");
 }
@@ -36,10 +257,7 @@ const chatHistoryHelpers = window.HermesMiniappChatHistory;
 if (!chatHistoryHelpers) {
   throw new Error("HermesMiniappChatHistory is required before app.js");
 }
-const chatAdminHelpers = window.HermesMiniappChatAdmin;
-if (!chatAdminHelpers) {
-  throw new Error("HermesMiniappChatAdmin is required before app.js");
-}
+const chatAdminHelpers = window.HermesMiniappChatAdmin || createDeferredControllerHelper('HermesMiniappChatAdmin');
 const chatUiHelpers = window.HermesMiniappChatUI;
 if (!chatUiHelpers) {
   throw new Error("HermesMiniappChatUI is required before app.js");
@@ -48,46 +266,22 @@ const chatTabsHelpers = window.HermesMiniappChatTabs;
 if (!chatTabsHelpers) {
   throw new Error("HermesMiniappChatTabs is required before app.js");
 }
-const messageActionsHelpers = window.HermesMiniappMessageActions;
-if (!messageActionsHelpers) {
-  throw new Error("HermesMiniappMessageActions is required before app.js");
-}
+const messageActionsHelpers = window.HermesMiniappMessageActions || createDeferredControllerHelper('HermesMiniappMessageActions');
 const composerStateHelpers = window.HermesMiniappComposerState;
 if (!composerStateHelpers) {
   throw new Error("HermesMiniappComposerState is required before app.js");
 }
-const keyboardShortcutsHelpers = window.HermesMiniappKeyboardShortcuts;
-if (!keyboardShortcutsHelpers) {
-  throw new Error("HermesMiniappKeyboardShortcuts is required before app.js");
-}
-const interactionHelpers = window.HermesMiniappInteraction;
-if (!interactionHelpers) {
-  throw new Error("HermesMiniappInteraction is required before app.js");
-}
-const shellUiHelpers = window.HermesMiniappShellUI;
-if (!shellUiHelpers) {
-  throw new Error("HermesMiniappShellUI is required before app.js");
-}
-const composerViewportHelpers = window.HermesMiniappComposerViewport;
-if (!composerViewportHelpers) {
-  throw new Error("HermesMiniappComposerViewport is required before app.js");
-}
-const visibilitySkinHelpers = window.HermesMiniappVisibilitySkin;
-if (!visibilitySkinHelpers) {
-  throw new Error("HermesMiniappVisibilitySkin is required before app.js");
-}
+const keyboardShortcutsHelpers = window.HermesMiniappKeyboardShortcuts || createDeferredControllerHelper('HermesMiniappKeyboardShortcuts');
+const interactionHelpers = window.HermesMiniappInteraction || createDeferredApiHelper('HermesMiniappInteraction', deferredInteractionFallbacks);
+const shellUiHelpers = window.HermesMiniappShellUI || createDeferredControllerHelper('HermesMiniappShellUI');
+const composerViewportHelpers = window.HermesMiniappComposerViewport || createDeferredControllerHelper('HermesMiniappComposerViewport');
+const visibilitySkinHelpers = window.HermesMiniappVisibilitySkin || createDeferredControllerHelper('HermesMiniappVisibilitySkin');
 const startupBindingsHelpers = window.HermesMiniappStartupBindings;
 if (!startupBindingsHelpers) {
   throw new Error("HermesMiniappStartupBindings is required before app.js");
 }
-const renderTraceHelpers = window.HermesMiniappRenderTrace;
-if (!renderTraceHelpers) {
-  throw new Error("HermesMiniappRenderTrace is required before app.js");
-}
-const filePreviewHelpers = window.HermesMiniappFilePreview;
-if (!filePreviewHelpers) {
-  throw new Error("HermesMiniappFilePreview is required before app.js");
-}
+const renderTraceHelpers = window.HermesMiniappRenderTrace || createDeferredRenderTraceApiHelper('HermesMiniappRenderTrace');
+const filePreviewHelpers = window.HermesMiniappFilePreview || createDeferredControllerHelper('HermesMiniappFilePreview');
 const { parseSseEvent, formatMessageTime, nowStamp, formatLatency, escapeHtml, cleanDisplayText, copyTextToClipboard } = sharedUtils;
 const authStatus = document.getElementById("auth-status");
 const streamStatus = document.getElementById("stream-status");
@@ -535,6 +729,10 @@ let syncBootLatencyChip = () => {};
 let logBootStage = () => 0;
 let summarizeBootMetrics = () => ({});
 let revealShell = () => {};
+let flushPendingBootSummaries = async () => false;
+let markBackgrounded = () => ({});
+let markVisibilityResume = () => ({});
+let markVersionSyncReloadIntent = () => ({});
 
 function chatLabel(chatId) {
   const chat = chats.get(Number(chatId));
@@ -557,6 +755,7 @@ function setActivityChip(chip, text) {
 const startupMetricsController = startupMetricsHelpers.createController({
   windowObject: window,
   documentObject: document,
+  navigatorObject: navigator,
   latencyChip,
   setActivityChip,
   formatLatency,
@@ -564,11 +763,23 @@ const startupMetricsController = startupMetricsHelpers.createController({
 });
 bootMetrics = startupMetricsController.bootMetrics;
 recordBootMetric = startupMetricsController.recordBootMetric;
+const recordBootMeta = startupMetricsController.recordBootMeta;
 syncBootLatencyChip = startupMetricsController.syncBootLatencyChip;
 logBootStage = startupMetricsController.logBootStage;
 summarizeBootMetrics = startupMetricsController.summarizeBootMetrics;
 revealShell = startupMetricsController.revealShell;
+flushPendingBootSummaries = startupMetricsController.flushPendingBootSummaries || flushPendingBootSummaries;
+markBackgrounded = startupMetricsController.markBackgrounded || markBackgrounded;
+markVisibilityResume = startupMetricsController.markVisibilityResume || markVisibilityResume;
+markVersionSyncReloadIntent = startupMetricsController.markVersionSyncReloadIntent || markVersionSyncReloadIntent;
 recordBootMetric("appScriptStartMs");
+void flushPendingBootSummaries();
+recordBootMeta?.({
+  authBootstrapAttempts: 0,
+  authBootstrapRetryCount: 0,
+  authBootstrapRetryBackoffMsTotal: 0,
+  mobileBootstrapPath: Boolean(mobileQuoteMode),
+});
 syncBootLatencyChip("app-script-start");
 
 function setStreamStatus(text) {
@@ -799,8 +1010,44 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   syncBootLatencyChip,
   updateComposerState,
   isMobileQuoteMode: () => mobileQuoteMode,
+  markVersionSyncReloadIntent,
   onBootstrapStage: (stage, details = {}) => {
-    logBootStage(stage, details);
+    const normalized = details && typeof details === 'object' ? details : {};
+    if (stage === 'auth-bootstrap-attempt-start') {
+      recordBootMeta?.('authBootstrapAttempts', Math.max(Number(normalized.attempt) || 0, Number(startupMetricsController.bootMeta?.authBootstrapAttempts || 0)));
+    } else if (stage === 'auth-bootstrap-retry-scheduled') {
+      const currentCount = Number(startupMetricsController.bootMeta?.authBootstrapRetryCount || 0);
+      const currentBackoff = Number(startupMetricsController.bootMeta?.authBootstrapRetryBackoffMsTotal || 0);
+      recordBootMeta?.({
+        authBootstrapRetryCount: currentCount + 1,
+        authBootstrapRetryBackoffMsTotal: currentBackoff + Math.max(0, Number(normalized.backoffMs) || 0),
+        authBootstrapLastBackoffMs: Math.max(0, Number(normalized.backoffMs) || 0),
+      });
+    } else if (stage === 'auth-bootstrap-ok' || stage === 'auth-bootstrap-failed') {
+      recordBootMeta?.({
+        authBootstrapFinalStatus: Number(normalized.status || 0),
+        authBootstrapSucceeded: stage === 'auth-bootstrap-ok',
+      });
+    } else if (stage === 'auth-bootstrap-attempt-error') {
+      recordBootMeta?.('authBootstrapLastError', String(normalized.message || ''));
+    } else if (stage === 'auth-bootstrap-applied-start') {
+      recordBootMeta?.({
+        bootstrapChatCount: Number(normalized.chatCount || 0),
+        bootstrapActiveChatId: Number(normalized.activeChatId || 0),
+      });
+    } else if (stage === 'initial-render-start') {
+      recordBootMeta?.({
+        bootstrapHistoryCount: Number(normalized.historyCount || 0),
+        restoredPendingSnapshot: Boolean(normalized.restoredPendingSnapshot),
+      });
+    } else if (stage === 'warm-history-cache-triggered') {
+      recordBootMeta?.('warmedHistoryOnOpen', true);
+    } else if (stage === 'pending-stream-resume-triggered') {
+      recordBootMeta?.('resumedPendingStreamOnOpen', true);
+    } else if (stage === 'auth-bootstrap-applied-finished') {
+      recordBootMeta?.('pendingResumeTriggered', Boolean(normalized.pendingResumeTriggered));
+    }
+    logBootStage(stage, normalized);
   },
 });
 
@@ -1473,6 +1720,10 @@ const chatHistoryController = chatHistoryHelpers.createController({
     return runtimeHelpers.shouldResumeOnVisibilityChange(args);
   },
   shouldDeferNonCriticalCachedOpen: () => !mobileQuoteMode && document.visibilityState === 'visible',
+  renderTraceLog,
+  nowMs: () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()),
 });
 
 const chatAdminController = chatAdminHelpers.createController({
@@ -1601,6 +1852,8 @@ const visibilitySkinController = visibilitySkinHelpers.createController({
   syncActiveMessageView,
   getStreamAbortControllers,
   maybeRefreshForBootstrapVersionMismatch,
+  markBackgrounded,
+  markVisibilityResume,
 });
 
 const startupBindingsController = startupBindingsHelpers.createController({

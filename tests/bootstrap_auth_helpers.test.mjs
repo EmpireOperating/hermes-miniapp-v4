@@ -46,6 +46,7 @@ function buildHarness(overrides = {}) {
   const bootLatencyStages = [];
   const bootStages = [];
   const locationReplacements = [];
+  const reloadIntentMarkers = [];
   const windowObject = {
     setTimeout: (callback, _delay) => {
       callback();
@@ -136,6 +137,7 @@ function buildHarness(overrides = {}) {
     syncBootLatencyChip: (stage) => bootLatencyStages.push(String(stage)),
     updateComposerState: () => {},
     isMobileQuoteMode: () => false,
+    markVersionSyncReloadIntent: (marker) => reloadIntentMarkers.push({ ...marker }),
     onBootstrapStage: (stage, details = {}) => bootStages.push({ stage: String(stage), details }),
     ...controllerOverrides,
   });
@@ -168,6 +170,7 @@ function buildHarness(overrides = {}) {
     getBootLatencyStages: () => bootLatencyStages,
     getBootStages: () => bootStages,
     getLocationReplacements: () => locationReplacements,
+    getReloadIntentMarkers: () => reloadIntentMarkers,
     setAuthenticated: (value) => { isAuthenticated = Boolean(value); },
   };
 }
@@ -284,7 +287,7 @@ test('applyAuthBootstrap arms the active unread threshold for the bootstrap-sele
   assert.deepEqual(harness.getArmedActivationUnreadThresholds(), [{ chatId: 5, unreadCount: 3 }]);
 });
 
-test('applyAuthBootstrap force-virtualizes earlier on mobile bootstrap opens', () => {
+test('applyAuthBootstrap avoids forced virtualization on mobile bootstrap opens so chats paint immediately', () => {
   const harness = buildHarness({
     isMobileQuoteMode: () => true,
   });
@@ -299,7 +302,7 @@ test('applyAuthBootstrap force-virtualizes earlier on mobile bootstrap opens', (
   }, { preferredUsername: 'Desktop' });
 
   assert.deepEqual(harness.renderedMessages, [5]);
-  assert.deepEqual(harness.getRenderedMessageOptions(), [{ forceVirtualize: true }]);
+  assert.deepEqual(harness.getRenderedMessageOptions(), [{ forceVirtualize: false }]);
 });
 
 test('applyAuthBootstrap skips open-time history warming on mobile', () => {
@@ -473,7 +476,13 @@ test('fetchAuthBootstrapWithRetry retries retryable auth bootstrap failures and 
   assert.equal(harness.fetchCalls.length, 2);
   assert.deepEqual(harness.getBootLatencyStages(), ['auth-request']);
   assert.deepEqual(harness.getBootMetrics(), ['authBootstrapStartMs', 'authBootstrapSuccessMs']);
-  assert.deepEqual(harness.getBootStages().map((entry) => entry.stage), ['auth-bootstrap-ok']);
+  assert.deepEqual(harness.getBootStages().map((entry) => entry.stage), [
+    'auth-bootstrap-attempt-start',
+    'auth-bootstrap-attempt-retryable-failure',
+    'auth-bootstrap-retry-scheduled',
+    'auth-bootstrap-attempt-start',
+    'auth-bootstrap-ok',
+  ]);
 });
 
 test('maybeRefreshForBootstrapVersionMismatch refreshes once when server version changes', async () => {
@@ -494,4 +503,10 @@ test('maybeRefreshForBootstrapVersionMismatch refreshes once when server version
     'build-old->build-new',
   );
   assert.deepEqual(harness.getLocationReplacements(), ['/app?v=build-new']);
+  assert.deepEqual(harness.getReloadIntentMarkers(), [{
+    fromVersion: 'build-old',
+    toVersion: 'build-new',
+    trigger: 'bootstrap-version-mismatch',
+    target: '/app?v=build-new',
+  }]);
 });
