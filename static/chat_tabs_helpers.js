@@ -162,6 +162,7 @@
       [...chats.keys()].forEach((chatId) => {
         if (!nextIds.has(Number(chatId))) {
           chats.delete(Number(chatId));
+          pinnedChats.delete(Number(chatId));
           histories.delete(Number(chatId));
           clearChatStreamState({
             chatId: Number(chatId),

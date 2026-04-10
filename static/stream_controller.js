@@ -1376,6 +1376,21 @@
         if (shouldResumeAfterFinally) {
           return;
         }
+
+        const transientNetworkFailure = isTransientResumeRecoveryError?.(error);
+        if (transientNetworkFailure) {
+          await hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted: true });
+          const stillPending = Boolean(chats.get(chatId)?.pending) || pendingChats.has(chatId);
+          if (!stillPending) {
+            setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
+            triggerIncomingMessageHaptic(chatId, { fallbackToLatestHistory: true });
+            return;
+          }
+          wasAborted = true;
+          shouldResumeAfterFinally = true;
+          return;
+        }
+
         setStreamPhase(chatId, STREAM_PHASES.ERROR);
         finalizeInlineToolTrace(chatId);
         updatePendingAssistant(chatId, `Network failure: ${error.message}`, false);

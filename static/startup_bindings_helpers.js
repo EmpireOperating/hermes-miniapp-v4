@@ -81,6 +81,7 @@
       getRenderTraceDebugEnabled,
       renderTraceLog,
       maybeRefreshForBootstrapVersionMismatch,
+      isMobileBootstrapPath = () => false,
       logBootStage,
       syncBootLatencyChip,
       fetchAuthBootstrapWithRetry,
@@ -295,7 +296,8 @@
         return;
       }
 
-      if (await maybeRefreshForBootstrapVersionMismatch?.()) {
+      const mobileBootstrapPath = Boolean(isMobileBootstrapPath?.());
+      if (!mobileBootstrapPath && await maybeRefreshForBootstrapVersionMismatch?.()) {
         revealShell?.();
         return;
       }
@@ -351,6 +353,11 @@
         authStatusEl.textContent = 'Sign-in error';
         appendSystemMessage(`Could not start the app: ${error.message}`);
       } finally {
+        if (mobileBootstrapPath && typeof maybeRefreshForBootstrapVersionMismatch === 'function' && Boolean(getIsAuthenticated())) {
+          windowObject?.setTimeout?.(() => {
+            void maybeRefreshForBootstrapVersionMismatch().catch?.(() => {});
+          }, 0);
+        }
         syncDevAuthUi?.();
         updateComposerState?.();
         revealShell?.();

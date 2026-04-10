@@ -266,6 +266,19 @@ test('installKeyboardViewportSync wires focus/viewport listeners, sync burst tim
   ]);
 });
 
+test('installKeyboardViewportSync focuses the composer synchronously on mobile touchstart', () => {
+  const harness = buildHarness({ mobileQuoteMode: true });
+
+  harness.controller.installKeyboardViewportSync();
+  harness.promptEl.dispatch('touchstart');
+
+  assert.deepEqual(harness.promptEl.focusCalls, [null]);
+  assert.equal(harness.documentObject.activeElement, harness.promptEl);
+  assert.deepEqual(harness.timeoutCalls, [90, 220, 420, 700, 1000]);
+  assert.deepEqual(harness.intervalCallbacks.map((entry) => entry.delay), [140]);
+});
+
+
 test('installKeyboardViewportSync clears interval on blur', () => {
   const harness = buildHarness();
 

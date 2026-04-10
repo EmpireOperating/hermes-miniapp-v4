@@ -798,6 +798,7 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   recordBootMetric,
   syncBootLatencyChip,
   updateComposerState,
+  isMobileQuoteMode: () => mobileQuoteMode,
   onBootstrapStage: (stage, details = {}) => {
     logBootStage(stage, details);
   },
@@ -1685,6 +1686,7 @@ const startupBindingsController = startupBindingsHelpers.createController({
   getRenderTraceDebugEnabled: () => renderTraceDebugEnabled,
   renderTraceLog,
   maybeRefreshForBootstrapVersionMismatch,
+  isMobileBootstrapPath: () => mobileQuoteMode,
   logBootStage,
   syncBootLatencyChip,
   fetchAuthBootstrapWithRetry,

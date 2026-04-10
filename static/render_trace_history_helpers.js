@@ -313,7 +313,7 @@
       }
     }
 
-    function renderMessages(chatId, { preserveViewport = false, forceBottom = false } = {}) {
+    function renderMessages(chatId, { preserveViewport = false, forceBottom = false, forceVirtualize = false } = {}) {
       const targetChatId = Number(chatId);
       const isSameRenderedChat = Number(getRenderedChatId?.()) === targetChatId;
       const prevScrollTop = Number(messagesEl.scrollTop || 0);
@@ -322,7 +322,7 @@
       const shouldStick = Boolean(forceBottom || (preserveViewport && isSameRenderedChat && wasNearBottom));
 
       const history = histories.get(targetChatId) || [];
-      const shouldVirtualize = shouldVirtualizeHistory(history.length);
+      const shouldVirtualize = Boolean(forceVirtualize) || shouldVirtualizeHistory(history.length);
       const estimatedHeight = getEstimatedMessageHeight(targetChatId);
 
       if (tryAppendOnlyRender(targetChatId, history, {

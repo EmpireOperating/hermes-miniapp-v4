@@ -508,7 +508,10 @@
     }
 
     function warmChatHistoryCache() {
-      const ids = [...chats.keys()].filter((id) => !isActiveChat(id));
+      const ids = [...chats.keys()]
+        .filter((id) => !isActiveChat(id))
+        .filter((id) => !histories.has(Number(id)) && !prefetchingHistories.has(Number(id)))
+        .slice(0, 4);
       if (!ids.length) return;
       const warmNext = (index) => {
         if (index >= ids.length) return;

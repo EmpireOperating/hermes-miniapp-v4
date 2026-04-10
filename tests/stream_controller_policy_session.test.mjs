@@ -305,3 +305,101 @@ test('createStreamLifecycleController defers send-path resume handoff until afte
     globalThis.document = previousDocument;
   }
 });
+
+test('createStreamLifecycleController reconciles transient send-path network failures to completed history before surfacing an error', async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'visible', activeElement: null };
+  const sessionController = streamController.createStreamSessionController({
+    getActiveChatId: () => 7,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    persistStreamCursor: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    incrementUnread: () => {},
+    renderTabs: () => {},
+  });
+  const chat = { pending: false };
+  let hydrateCalls = 0;
+  const pendingAssistantUpdates = [];
+  const scheduled = [];
+  const transcriptController = {
+    hydrateChatAfterGracefulResumeCompletion: async () => {
+      hydrateCalls += 1;
+      chat.pending = false;
+    },
+    consumeStreamWithReconnect: async () => false,
+  };
+  const lifecycleController = streamController.createStreamLifecycleController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: () => streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: () => {},
+    chats: new Map([[7, chat]]),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    updatePendingAssistant: (_chatId, text) => { pendingAssistantUpdates.push(String(text)); },
+    markStreamUpdate: () => {},
+    syncActiveMessageView: () => {},
+    getActiveChatId: () => 7,
+    messagesEl: { scrollHeight: 0, clientHeight: 0, scrollTop: 0, focus: () => {} },
+    promptEl: { value: '', selectionStart: 0, selectionEnd: 0 },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    finalizeStreamPendingState: () => {},
+    renderTraceLog: () => {},
+    authPayload: (payload) => payload,
+    parseStreamErrorPayload: () => ({}),
+    summarizeUiFailure: () => 'failed',
+    getIsAuthenticated: () => true,
+    setIsAuthenticated: () => {},
+    authStatusEl: { textContent: '' },
+    dropPendingToolTraceMessages: () => {},
+    addLocalMessage: () => {},
+    setDraft: () => {},
+    resetToolStream: () => {},
+    clearReconnectResumeBlock: () => {},
+    resetReconnectResumeBudget: () => {},
+    consumeReconnectResumeBudget: () => ({ allowed: true, attempts: 1, maxAttempts: 6 }),
+    suppressBlockedChatPending: () => {},
+    blockReconnectResume: () => {},
+    isReconnectResumeBlocked: () => false,
+    resumeAttemptedAtByChat: new Map(),
+    resumeCooldownUntilByChat: new Map(),
+    resumeInFlightByChat: new Set(),
+    isTransientResumeRecoveryError: (error) => /load failed/i.test(String(error?.message || '')),
+    nextResumeRecoveryDelayMs: () => 0,
+    delayMs: async () => {},
+    markChatStreamPending: () => {},
+    getStoredStreamCursor: () => null,
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    isNearBottom: () => true,
+    fetchImpl: async () => {
+      throw new Error('Load failed');
+    },
+    setTimeoutFn: (fn, delay) => {
+      scheduled.push({ fn, delay });
+      return scheduled.length;
+    },
+    finalizeInlineToolTrace: () => {},
+    triggerIncomingMessageHaptic: () => {},
+  }, sessionController, transcriptController);
+
+  try {
+    await lifecycleController.sendPrompt('hello');
+
+    assert.equal(hydrateCalls, 1);
+    assert.deepEqual(pendingAssistantUpdates, []);
+    assert.equal(scheduled.length, 0);
+    assert.equal(chat.pending, false);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});

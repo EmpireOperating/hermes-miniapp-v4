@@ -156,6 +156,13 @@ def extract_file_refs(text: str, *, message_id: int | None = None) -> list[dict[
     refs: list[dict[str, Any]] = []
     seen: set[tuple[int, str]] = set()
 
+    has_path_signal = "/" in value or "\\" in value
+    has_line_signal = ":" in value or "#" in value
+    has_filename_signal = "." in value
+    has_special_filename_signal = any(name in value for name in ("Dockerfile", "Makefile", "README", "LICENSE"))
+    if not (has_path_signal or has_line_signal or has_filename_signal or has_special_filename_signal):
+        return []
+
     candidates = list(_CANDIDATE_PATTERN.finditer(value)) + list(_BARE_FILE_PATTERN.finditer(value))
     candidates.sort(key=lambda match: (int(match.start()), -len(str(match.group(0) or ""))))
 

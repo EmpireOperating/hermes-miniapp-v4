@@ -11,6 +11,10 @@ from flask import Response, g, jsonify, request
 from file_refs import extract_file_refs
 
 
+_AUTH_PRUNE_INTERVAL_SECONDS = 300
+_last_pruned_auth_sessions_at = 0
+
+
 def register_auth_routes(
     api_bp,
     *,
@@ -46,14 +50,23 @@ def register_auth_routes(
             return False, None
         return None, ({"ok": False, "error": "Invalid allow_empty flag. Expected boolean."}, 400)
 
-    def _augment_history_with_runtime_pending(*, user_id: str, chat_id: int, history: list[dict[str, object]]) -> list[dict[str, object]]:
+    def _maybe_prune_expired_auth_sessions(store, *, now_ts: int) -> None:
+        global _last_pruned_auth_sessions_at
+        if now_ts - _last_pruned_auth_sessions_at < _AUTH_PRUNE_INTERVAL_SECONDS:
+            return
+        store.prune_expired_auth_sessions(now_ts)
+        _last_pruned_auth_sessions_at = now_ts
+
+    def _augment_history_with_runtime_pending(
+        *,
+        user_id: str,
+        chat_id: int,
+        history: list[dict[str, object]],
+        chat_pending: bool = False,
+    ) -> list[dict[str, object]]:
+        if not bool(chat_pending):
+            return history
         store = store_getter()
-        try:
-            chat = store.get_chat(user_id=user_id, chat_id=chat_id)
-        except KeyError:
-            return history
-        if not bool(getattr(chat, 'pending', False)):
-            return history
         checkpoint_state = store.get_runtime_checkpoint_state(session_id_builder_fn(user_id, chat_id))
         if not checkpoint_state:
             return history
@@ -85,34 +98,60 @@ def register_auth_routes(
         store = store_getter()
         runtime = runtime_getter()
         user_id = str(verified_user.id)
-        store.prune_expired_auth_sessions(int(time.time()))
-        runtime.ensure_pending_jobs(user_id)
+        now_ts = int(time.time())
+        _maybe_prune_expired_auth_sessions(store, now_ts=now_ts)
         display_name = verified_user.first_name or verified_user.username or "Operator"
 
         chats = [serialize_chat_fn(chat) for chat in store.list_chats(user_id=user_id)]
         visible_chat_ids = {int(chat["id"]) for chat in chats}
+        pending_visible_chat = any(bool(chat.get("pending")) for chat in chats)
+        if pending_visible_chat:
+            runtime.ensure_pending_jobs(user_id)
 
         active_chat_id = store.get_active_chat(user_id)
         if active_chat_id and int(active_chat_id) not in visible_chat_ids:
             active_chat_id = None
 
-        explicit_empty_chat_state = store.has_explicit_empty_chat_state(user_id)
-        if not active_chat_id and not allow_empty and not explicit_empty_chat_state:
-            active_chat_id = store.ensure_default_chat(user_id)
-            chats = [serialize_chat_fn(chat) for chat in store.list_chats(user_id=user_id)]
-            visible_chat_ids = {int(chat["id"]) for chat in chats}
+        if not active_chat_id and not allow_empty:
+            if chats:
+                active_chat_id = int(chats[0]["id"])
+            else:
+                explicit_empty_chat_state = store.has_explicit_empty_chat_state(user_id)
+                if not explicit_empty_chat_state:
+                    active_chat_id = store.ensure_default_chat(user_id)
+                    try:
+                        ensured_chat = serialize_chat_fn(store.get_chat(user_id=user_id, chat_id=int(active_chat_id)))
+                    except KeyError:
+                        ensured_chat = None
+                    if ensured_chat:
+                        chats.append(ensured_chat)
+                        visible_chat_ids.add(int(ensured_chat["id"]))
 
         if active_chat_id and int(active_chat_id) in visible_chat_ids:
+            serialized_active_chat = next((chat for chat in chats if int(chat["id"]) == int(active_chat_id)), None)
             history = [_serialize_turn(turn) for turn in store.get_history(user_id=user_id, chat_id=active_chat_id, limit=120)]
-            history = _augment_history_with_runtime_pending(user_id=user_id, chat_id=int(active_chat_id), history=history)
-            store.mark_chat_read(user_id=user_id, chat_id=active_chat_id)
-            store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
+            history = _augment_history_with_runtime_pending(
+                user_id=user_id,
+                chat_id=int(active_chat_id),
+                history=history,
+                chat_pending=bool(serialized_active_chat and serialized_active_chat.get("pending")),
+            )
+            if serialized_active_chat and int(serialized_active_chat.get("unread_count") or 0) > 0:
+                latest_history_message_id = max((int(item.get("id") or 0) for item in history), default=0)
+                if latest_history_message_id > 0 and hasattr(store, "mark_chat_read_through"):
+                    store.mark_chat_read_through(user_id=user_id, chat_id=active_chat_id, message_id=latest_history_message_id)
+                else:
+                    store.mark_chat_read(user_id=user_id, chat_id=active_chat_id)
+                serialized_active_chat["unread_count"] = 0
+            if store.get_active_chat(user_id) != int(active_chat_id):
+                store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
         else:
             active_chat_id = None
             history = []
-            store.clear_active_chat(user_id=user_id)
+            if store.get_active_chat(user_id) is not None:
+                store.clear_active_chat(user_id=user_id)
 
-        pinned_chats = [serialize_chat_fn(chat) for chat in store.list_pinned_chats(user_id=user_id)]
+        pinned_chats = [chat for chat in chats if bool(chat.get("is_pinned"))]
         skin = store.get_skin(user_id=user_id)
         response = jsonify(
             {
@@ -128,7 +167,6 @@ def register_auth_routes(
                 "history": history,
                 "chats": chats,
                 "pinned_chats": pinned_chats,
-                "stats": {"turn_count": store.get_turn_count(user_id)},
             }
         )
         response.set_cookie(

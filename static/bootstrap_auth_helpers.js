@@ -55,6 +55,7 @@
       recordBootMetric = null,
       syncBootLatencyChip = null,
       updateComposerState = null,
+      isMobileQuoteMode = null,
     } = deps;
 
     async function safeReadJson(response) {
@@ -98,6 +99,13 @@
       for (const roleNode of messagesEl.querySelectorAll('.message--operator .message__role, .message[data-role="operator"] .message__role, .message[data-role="user"] .message__role')) {
         roleNode.textContent = label;
       }
+    }
+
+    function isMobileBootstrapPath() {
+      if (typeof isMobileQuoteMode === "function") {
+        return Boolean(isMobileQuoteMode());
+      }
+      return false;
     }
 
     function authPayload(extra = {}) {
@@ -228,10 +236,11 @@
         chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
       });
       syncChats(data.chats || []);
-      syncPinnedChats(data.pinned_chats || []);
       onBootstrapStage?.("auth-bootstrap-sync-chats-finished", {
         chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
       });
+      const bootstrapChats = Array.isArray(data?.chats) ? data.chats : [];
+      const hasPinnedChats = bootstrapChats.some((chat) => Boolean(chat?.is_pinned));
       const activeId = Number(data.active_chat_id || 0);
       if (activeId > 0 && typeof ensureActivationReadThreshold === "function") {
         const activeChat = chats?.get?.(activeId) || data?.chats?.find?.((chat) => Number(chat?.id) === activeId) || null;
@@ -239,7 +248,9 @@
       }
       if (!activeId) {
         setActiveChatMeta(null);
-        renderPinnedChats();
+        if (hasPinnedChats) {
+          void delayMs(0).then(() => renderPinnedChats());
+        }
         syncDevAuthUi();
         onBootstrapStage?.("auth-bootstrap-applied-finished", {
           activeChatId: 0,
@@ -249,7 +260,9 @@
         return;
       }
 
-      histories.set(activeId, data.history || []);
+      const bootstrapHistory = Array.isArray(data?.history) ? [...data.history] : [];
+      const mobileBootstrapPath = isMobileBootstrapPath();
+      const bootstrapVirtualizeThreshold = mobileBootstrapPath ? 32 : 96;
       const hasFreshPendingSnapshot = typeof hasFreshPendingStreamSnapshot === "function"
         ? Boolean(hasFreshPendingStreamSnapshot(activeId))
         : false;
@@ -262,44 +275,49 @@
           chat.pending = true;
         }
       }
-      setActiveChatMeta(activeId);
-      renderPinnedChats();
+      const restoredHistory = restoredPendingSnapshot ? histories.get(activeId) : null;
+      if (restoredPendingSnapshot && Array.isArray(restoredHistory) && restoredHistory.length > bootstrapHistory.length) {
+        bootstrapHistory.splice(0, bootstrapHistory.length, ...restoredHistory);
+      }
+      const shouldInjectEmptyState = !bootstrapHistory.length && !restoredPendingSnapshot;
+      if (shouldInjectEmptyState) {
+        bootstrapHistory.push({
+          role: "system",
+          body: "You're all set. This chat is empty.",
+          created_at: new Date().toISOString(),
+        });
+      }
+      histories.set(activeId, bootstrapHistory);
+      setActiveChatMeta(activeId, { deferNonCritical: true });
+      if (hasPinnedChats) {
+        void delayMs(0).then(() => renderPinnedChats());
+      }
       onBootstrapStage?.("initial-render-start", {
         activeChatId: activeId,
-        historyCount: Array.isArray(data?.history) ? data.history.length : 0,
+        historyCount: bootstrapHistory.length,
         restoredPendingSnapshot,
       });
-      renderMessages(activeId);
+      renderMessages(activeId, { forceVirtualize: bootstrapHistory.length >= bootstrapVirtualizeThreshold });
       onBootstrapStage?.("initial-render-finished", {
         activeChatId: activeId,
-        historyCount: Array.isArray(data?.history) ? data.history.length : 0,
+        historyCount: bootstrapHistory.length,
         restoredPendingSnapshot,
       });
-      onBootstrapStage?.("warm-history-cache-triggered", {
-        activeChatId: activeId,
-      });
-      warmChatHistoryCache();
+      if (!mobileBootstrapPath && bootstrapChats.length > 1) {
+        onBootstrapStage?.("warm-history-cache-triggered", {
+          activeChatId: activeId,
+        });
+        void delayMs(0).then(() => warmChatHistoryCache());
+      }
       const shouldResumePending = (Boolean(chats.get(activeId)?.pending) || restoredPendingSnapshot) && !pendingChats.has(activeId);
       if (shouldResumePending) {
         onBootstrapStage?.("pending-stream-resume-triggered", {
           activeChatId: activeId,
           force: Boolean(restoredPendingSnapshot && !Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === activeId)?.pending)),
         });
-        void resumePendingChatStream(activeId, { force: restoredPendingSnapshot && !Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === activeId)?.pending) });
-      }
-      if (!(data.history || []).length) {
-        addLocalMessage(activeId, {
-          role: "system",
-          body: "You're all set. This chat is empty.",
-          created_at: new Date().toISOString(),
-        });
-        onBootstrapStage?.("initial-empty-chat-render-start", {
-          activeChatId: activeId,
-        });
-        renderMessages(activeId);
-        onBootstrapStage?.("initial-empty-chat-render-finished", {
-          activeChatId: activeId,
-        });
+        void delayMs(0).then(() => resumePendingChatStream(activeId, {
+          force: restoredPendingSnapshot && !Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === activeId)?.pending),
+        }));
       }
       syncDevAuthUi();
       onBootstrapStage?.("auth-bootstrap-applied-finished", {

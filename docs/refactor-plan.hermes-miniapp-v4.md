@@ -7,21 +7,23 @@
 - Project slug: hermes-miniapp-v4
 - Generated: 2026-04-08T14:22:38-06:00
 - Branch: main
-- Git status summary: dirty (R39 stream-controller test decomposition is now complete and validated: the old `tests/stream_controller.test.mjs` monolith was replaced by `tests/stream_controller_test_harness.mjs`, `tests/stream_controller_policy_session.test.mjs`, `tests/stream_controller_response.test.mjs`, `tests/stream_controller_resume_finalize.test.mjs`, and `tests/stream_controller_tool_trace.test.mjs`. The working tree still contains broader in-flight backend/runtime/frontend edits in `job_runtime.py`, `job_runtime_chat_job.py`, `routes_auth.py`, `routes_chat_management_service.py`, `server.py`, `server_public_routes.py`, `static/runtime_helpers.js`, `static/stream_controller.js`, `store_runtime.py`, `templates/app.html`, related tests, plus untracked runtime split files such as `job_runtime_diagnostics.py`, `job_runtime_lifecycle.py`, `job_runtime_loop.py`, `job_runtime_runner_state.py`, `job_runtime_support.py`, `static/runtime_history_helpers.js`, `static/runtime_latency_helpers.js`, and `static/runtime_unread_helpers.js`.)
-- Analysis mode: refreshed backlog after a fresh monolith scan, direct extracted-module coverage scan, dirty-diff review, and targeted validation on the active stream-controller and stream-route seams; updated again after completing the replay-cursor hardening slice, the job-runtime helper extraction pass, the already-landed runtime-helper split verification pass, and the stream-controller test-suite decomposition pass.
+- Git status summary: dirty (current in-flight mini app work is concentrated in `routes_auth.py`, `static/bootstrap_auth_helpers.js`, `static/chat_history_helpers.js`, `static/render_trace_history_helpers.js`, `static/startup_bindings_helpers.js`, `static/stream_controller.js`, `tests/bootstrap_auth_helpers.test.mjs`, `tests/chat_history_helpers.test.mjs`, `tests/render_trace_history_helpers.test.mjs`, `tests/startup_bindings_helpers.test.mjs`, `tests/stream_controller_policy_session.test.mjs`, and `tests/test_routes_auth.py`.)
+- Analysis mode: refreshed backlog after a fresh monolith scan, direct extracted-module coverage scan, dirty-diff review, and targeted validation on the active auth/bootstrap/history/stream seams (`node --check ...`, `node --test ...` → 103 passed; `source .venv/bin/activate && python -m pytest -q tests/test_routes_auth.py` → 25 passed). Reopened the backlog from the stale 100% snapshot to reflect the current auth-route, bootstrap-helper, and chat-history monolith work.
 
 ## Progress metrics
-- Total items: 39
+- Total items: 43
 - Done: 39
 - In progress: 0
 - Blocked: 0
-- Todo: 0
-- % complete: 100%
+- Todo: 4
+- % complete: 91%
 - Last completed item: R39 (Decompose `tests/stream_controller.test.mjs` into focused suites aligned with the new subcontrollers)
-- Last updated: 2026-04-09T23:07:42Z
+- Last updated: 2026-04-10T02:07:02Z
 
 ## Next up
-- None — current canonical refactor backlog is fully executed again.
+- R40 (Split `routes_auth.py` into thin route adapters plus auth/bootstrap service helpers)
+- R41 (Split `static/bootstrap_auth_helpers.js` into focused auth-request / dev-auth-ui / bootstrap-apply helpers)
+- R42 (Split `static/chat_history_helpers.js` into focused history/read-sync/open/meta helpers)
 
 Note: “Next up” is only a prioritized subset, not the full backlog.
 
@@ -103,11 +105,57 @@ Note: “Next up” is only a prioritized subset, not the full backlog.
 - R7 (2026-03-27): Split `hermes_client_agent.py` into focused modules (`hermes_client_agent_direct.py`, `hermes_client_agent_persistent.py`) and kept a compatibility composition shim for monkeypatch surfaces (`logger`, `subprocess`) and existing imports.
 
 ## Backlog summary
-- High: 0
-- Medium: 0
+- High: 2
+- Medium: 2
 - Low: 0
 
 ## Backlog
+
+- [ ] R40: Split `routes_auth.py` into thin route adapters plus auth/bootstrap service helpers
+ - Status: todo
+ - Severity: High
+ - Scope/files: `routes_auth.py` (+ new helper/service module[s]), `tests/test_routes_auth.py`, and any dynamic getter wiring in `server.py`/route registration touched by the split
+ - Why it matters: `routes_auth.py` is back up to 269 LOC and now mixes request parsing, auth success/bootstrap payload shaping, runtime-pending history augmentation, dev-auth logic, logout-all, and skin preference handling. The current dirty diff shows active growth here, so its route/service ownership boundary is the highest-signal backend refactor seam in the mini app right now.
+ - Proposed change: Extract bootstrap/auth-success response shaping plus pending-history augmentation and dev-auth/session helpers into focused service/helper module(s), leaving `register_auth_routes(...)` as request parsing, guard checks, and delegation. Preserve existing getter-injection and monkeypatch-friendly behavior.
+ - Validation steps:
+   - `source .venv/bin/activate && python -m py_compile routes_auth.py tests/test_routes_auth.py`
+   - `source .venv/bin/activate && python -m pytest -q tests/test_routes_auth.py`
+ - Notes/dependencies: Coordinate carefully with dev-auth enablement/env semantics already covered by `tests/server_test_utils.py`; avoid mixing unrelated startup/server config changes into this pass.
+
+- [ ] R41: Split `static/bootstrap_auth_helpers.js` into focused auth-request / dev-auth-ui / bootstrap-apply helpers
+ - Status: todo
+ - Severity: High
+ - Scope/files: `static/bootstrap_auth_helpers.js` (+ helper slices if needed), `tests/bootstrap_auth_helpers.test.mjs`, `tests/test_routes_meta.py`
+ - Why it matters: `static/bootstrap_auth_helpers.js` is now 575 LOC and co-locates request utilities (`authPayload`, `safeReadJson`, `apiPost`), error summarization, dev-auth UI state/default storage, bootstrap retry/version-reload policy, and full auth-bootstrap application orchestration. It has become the next frontend helper monolith after the completed stream/runtime splits.
+ - Proposed change: Separate request/bootstrap transport utilities from dev-auth UI/default persistence and auth-bootstrap application orchestration behind focused helper slices or subcontrollers while preserving the current `createController(...)` facade and script-order stability.
+ - Validation steps:
+   - `node --check static/bootstrap_auth_helpers.js tests/bootstrap_auth_helpers.test.mjs`
+   - `node --test tests/bootstrap_auth_helpers.test.mjs`
+   - `source .venv/bin/activate && python -m pytest -q tests/test_routes_meta.py -k "bootstrap or auth"`
+ - Notes/dependencies: Keep `static/app.js` compatibility stable; route/meta asset assertions will need updates if new helper files are introduced.
+
+- [ ] R42: Split `static/chat_history_helpers.js` into focused history/read-sync/open/meta helpers
+ - Status: todo
+ - Severity: Medium
+ - Scope/files: `static/chat_history_helpers.js` (+ helper slices if needed), `tests/chat_history_helpers.test.mjs`, related app-delegation/meta coverage
+ - Why it matters: `static/chat_history_helpers.js` is now 872 LOC and combines active-chat metadata, open/hydrate flows, unread/mark-read thresholds, pending snapshot reconciliation, system-message rendering, and active-view scheduling. It is the highest-blast-radius remaining frontend helper module tied to transcript correctness.
+ - Proposed change: Extract focused helper slices or subcontrollers for (a) active-chat meta, (b) open/hydrate/sync flows, (c) unread/read-threshold state, and (d) local system-message / pending-assistant mutation helpers, while keeping the current controller facade app-compatible.
+ - Validation steps:
+   - `node --check static/chat_history_helpers.js tests/chat_history_helpers.test.mjs`
+   - `node --test tests/chat_history_helpers.test.mjs`
+   - `source .venv/bin/activate && python -m pytest -q tests/test_routes_meta.py -k "chat_history or active chat"`
+ - Notes/dependencies: Coordinate with `static/render_trace_history_helpers.js` and `static/stream_controller.js` contracts so hydrate/render/resume ownership stays explicit and non-duplicated.
+
+- [ ] R43: Decompose `tests/chat_history_helpers.test.mjs` into focused suites aligned with the chat-history seams
+ - Status: todo
+ - Severity: Medium
+ - Scope/files: `tests/chat_history_helpers.test.mjs` → focused suites/harness files aligned with chat-history helper ownership
+ - Why it matters: `tests/chat_history_helpers.test.mjs` is now 1722 LOC, making it the next major frontend regression monolith after the stream-controller split. Its breadth makes future chat-history refactors harder to reason about and slows targeted iteration.
+ - Proposed change: Split the monolith into focused suites for meta/deferred activation, open/hydrate/resume flows, unread/mark-read threshold behavior, and local mutation/system-message helpers, with a shared harness for common DOM/history fixtures.
+ - Validation steps:
+   - `node --check tests/chat_history_helpers*.mjs`
+   - `node --test <new focused chat-history suite files>`
+ - Notes/dependencies: Do R42 first so the production ownership seams are stable before splitting the tests around them.
 
 - [x] R36: Finish replay-cursor commit hardening in `static/stream_controller.js`
  - Status: done

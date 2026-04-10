@@ -47,6 +47,7 @@ function buildHarness({
   bootstrapResponse = { response: { ok: true, status: 200 }, data: { ok: true, active_chat_id: 7, chats: [{ id: 7, pending: true }] } },
   maybeRefresh = false,
   isNearBottom = true,
+  isMobileBootstrapPath = false,
 } = {}) {
   const chatScrollTop = new Map();
   const chatStickToBottom = new Map();
@@ -74,7 +75,9 @@ function buildHarness({
   const refreshChatsCalls = [];
   const syncVisibleActiveChatCalls = [];
   const intervalCallbacks = [];
+  const timeoutCallbacks = [];
   const consoleErrors = [];
+  const maybeRefreshCalls = [];
   let initDataValue = '';
   let renderTraceEnabled = false;
 
@@ -115,6 +118,10 @@ function buildHarness({
     setInterval(callback) {
       intervalCallbacks.push(callback);
       return intervalCallbacks.length;
+    },
+    setTimeout(callback) {
+      timeoutCallbacks.push(callback);
+      return timeoutCallbacks.length;
     },
     console: {
       error(...args) {
@@ -231,7 +238,11 @@ function buildHarness({
     getInitData: () => initDataValue,
     getRenderTraceDebugEnabled: () => renderTraceEnabled,
     renderTraceLog: (eventName, details) => logBootStages.push(['trace', eventName, details]),
-    maybeRefreshForBootstrapVersionMismatch: async () => maybeRefresh,
+    maybeRefreshForBootstrapVersionMismatch: async () => {
+      maybeRefreshCalls.push(true);
+      return maybeRefresh;
+    },
+    isMobileBootstrapPath: () => isMobileBootstrapPath,
     logBootStage: (eventName, details = null) => logBootStages.push([eventName, details]),
     syncBootLatencyChip: (eventName) => bootLatency.push(eventName),
     fetchAuthBootstrapWithRetry: async () => {
@@ -300,6 +311,8 @@ function buildHarness({
     refreshChatsCalls,
     syncVisibleActiveChatCalls,
     intervalCallbacks,
+    timeoutCallbacks,
+    maybeRefreshCalls,
     consoleErrors,
     tg,
     get initDataValue() {
@@ -477,13 +490,31 @@ test('bootstrap short-circuits on missing bindings and still reveals shell', asy
   assert.ok(harness.logBootStages.some(([name]) => name === 'revealShell'));
 });
 
-test('bootstrap stops after bootstrap-version refresh redirect', async () => {
+test('bootstrap stops after bootstrap-version refresh redirect on desktop path', async () => {
   const harness = buildHarness({ maybeRefresh: true });
 
   await harness.controller.bootstrap();
 
+  assert.equal(harness.maybeRefreshCalls.length, 1);
   assert.equal(harness.authBootstrapCalls.length, 0);
   assert.ok(harness.logBootStages.some(([name]) => name === 'revealShell'));
+});
+
+test('bootstrap skips blocking version refresh on mobile and schedules follow-up check', async () => {
+  const harness = buildHarness({
+    maybeRefresh: true,
+    isMobileBootstrapPath: true,
+  });
+
+  await harness.controller.bootstrap();
+
+  assert.equal(harness.maybeRefreshCalls.length, 0);
+  assert.equal(harness.authBootstrapCalls.length, 2);
+  assert.equal(harness.timeoutCallbacks.length, 1);
+
+  await harness.timeoutCallbacks[0]();
+
+  assert.equal(harness.maybeRefreshCalls.length, 1);
 });
 
 test('bootstrap surfaces desktop testing ready message when auth bootstrap fails in desktop mode', async () => {

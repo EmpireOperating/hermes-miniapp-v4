@@ -32,6 +32,7 @@ function buildHarness(overrides = {}) {
   const upsertedChats = [];
   const pinnedSyncs = [];
   const renderedMessages = [];
+  const renderedMessageOptions = [];
   const localMessages = [];
   let activeChatId = null;
   let skin = '';
@@ -111,7 +112,10 @@ function buildHarness(overrides = {}) {
     histories,
     setActiveChatMeta: (chatId) => { activeChatId = chatId == null ? null : Number(chatId); },
     renderPinnedChats: () => {},
-    renderMessages: (chatId) => renderedMessages.push(Number(chatId)),
+    renderMessages: (chatId, options = {}) => {
+      renderedMessages.push(Number(chatId));
+      renderedMessageOptions.push({ ...options });
+    },
     warmChatHistoryCache: () => { warmCalls += 1; },
     chats,
     pendingChats,
@@ -130,6 +134,8 @@ function buildHarness(overrides = {}) {
     bootstrapVersionReloadStorageKey: 'bootstrap-version-reload',
     recordBootMetric: (name) => bootMetrics.push(String(name)),
     syncBootLatencyChip: (stage) => bootLatencyStages.push(String(stage)),
+    updateComposerState: () => {},
+    isMobileQuoteMode: () => false,
     onBootstrapStage: (stage, details = {}) => bootStages.push({ stage: String(stage), details }),
     ...controllerOverrides,
   });
@@ -146,6 +152,7 @@ function buildHarness(overrides = {}) {
     upsertedChats,
     pinnedSyncs,
     renderedMessages,
+    getRenderedMessageOptions: () => renderedMessageOptions,
     localMessages,
     fetchCalls,
     appendedSystemMessages,
@@ -247,12 +254,16 @@ test('applyAuthBootstrap updates auth-facing UI and history state', () => {
   assert.equal(harness.getOperatorDisplayName(), 'desktop');
   assert.equal(harness.getSkin(), 'oracle');
   assert.equal(harness.getActiveChatId(), 5);
-  assert.deepEqual(harness.histories.get(5), []);
+  assert.deepEqual(harness.histories.get(5), [{
+    role: 'system',
+    body: "You're all set. This chat is empty.",
+    created_at: harness.histories.get(5)[0].created_at,
+  }]);
   assert.deepEqual(harness.upsertedChats, [{ id: 5, pending: false }]);
-  assert.deepEqual(harness.pinnedSyncs, [[{ id: 5 }]]);
-  assert.deepEqual(harness.localMessages.length, 1);
+  assert.deepEqual(harness.pinnedSyncs, []);
+  assert.equal(harness.localMessages.length, 0);
   assert.equal(harness.getRoleLabelsRefreshed(), 1);
-  assert.equal(harness.getWarmCalls(), 1);
+  assert.equal(harness.getWarmCalls(), 0);
   assert.deepEqual(harness.getResumeCalls(), []);
 });
 
@@ -273,6 +284,42 @@ test('applyAuthBootstrap arms the active unread threshold for the bootstrap-sele
   assert.deepEqual(harness.getArmedActivationUnreadThresholds(), [{ chatId: 5, unreadCount: 3 }]);
 });
 
+test('applyAuthBootstrap force-virtualizes earlier on mobile bootstrap opens', () => {
+  const harness = buildHarness({
+    isMobileQuoteMode: () => true,
+  });
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    skin: 'terminal',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: false }],
+    pinned_chats: [],
+    history: Array.from({ length: 40 }, (_, index) => ({ role: 'assistant', body: `line ${index}` })),
+  }, { preferredUsername: 'Desktop' });
+
+  assert.deepEqual(harness.renderedMessages, [5]);
+  assert.deepEqual(harness.getRenderedMessageOptions(), [{ forceVirtualize: true }]);
+});
+
+test('applyAuthBootstrap skips open-time history warming on mobile', () => {
+  const harness = buildHarness({
+    isMobileQuoteMode: () => true,
+  });
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    skin: 'terminal',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: false }, { id: 8, pending: false }],
+    pinned_chats: [],
+    history: [{ role: 'assistant', body: 'hello' }],
+  }, { preferredUsername: 'Desktop' });
+
+  assert.equal(harness.getWarmCalls(), 0);
+  assert.equal(harness.getBootStages().some((entry) => entry.stage === 'warm-history-cache-triggered'), false);
+});
+
 test('applyAuthBootstrap supports explicit no-active-chat state', () => {
   const harness = buildHarness();
 
@@ -289,10 +336,10 @@ test('applyAuthBootstrap supports explicit no-active-chat state', () => {
   assert.deepEqual(harness.renderedMessages, []);
   assert.deepEqual(harness.localMessages, []);
   assert.equal(harness.getWarmCalls(), 0);
-  assert.deepEqual(harness.pinnedSyncs, [[{ id: 11 }]]);
+  assert.deepEqual(harness.pinnedSyncs, []);
 });
 
-test('applyAuthBootstrap restores fresh local pending snapshot and force-resumes when server bootstrap briefly says not pending', () => {
+test('applyAuthBootstrap restores fresh local pending snapshot and force-resumes when server bootstrap briefly says not pending', async () => {
   const harness = buildHarness({
     hasFreshPendingStreamSnapshot: (chatId) => Number(chatId) === 5,
     restorePendingStreamSnapshot: (chatId) => {
@@ -314,7 +361,12 @@ test('applyAuthBootstrap restores fresh local pending snapshot and force-resumes
   }, { preferredUsername: 'Desktop' });
 
   assert.deepEqual(harness.histories.get(5), [{ role: 'tool', body: 'missed tool', pending: true }]);
-  assert.deepEqual(harness.getResumeCalls(), [{ chatId: 5, options: { force: true } }]);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(
+    JSON.stringify(harness.getResumeCalls()),
+    JSON.stringify([{ chatId: 5, options: { force: true } }]),
+  );
 });
 
 test('request utility delegates cover auth payload + safe JSON fallback', async () => {

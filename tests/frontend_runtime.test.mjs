@@ -667,12 +667,18 @@ test('applyAuthBootstrap clears stale tabs when auth bootstrap returns zero open
       for (const chatId of [...chats.keys()]) {
         if (!nextIds.has(chatId)) {
           chats.delete(chatId);
+          pinnedChats.delete(chatId);
           histories.delete(chatId);
           pendingChats.delete(chatId);
         }
       }
       chatList.forEach((chat) => {
         chats.set(Number(chat.id), chat);
+        if (chat?.is_pinned) {
+          pinnedChats.set(Number(chat.id), chat);
+        } else {
+          pinnedChats.delete(Number(chat.id));
+        }
       });
     },
     syncPinnedChats: (chatList) => {

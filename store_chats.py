@@ -301,6 +301,15 @@ class StoreChatsMixin:
                 (last_message_id, user_id, chat_id),
             )
 
+    def mark_chat_read_through(self, user_id: str, chat_id: int, message_id: int) -> None:
+        last_message_id = max(0, int(message_id or 0))
+        with self._connect() as conn:
+            self._ensure_chat_exists(conn, user_id, chat_id)
+            conn.execute(
+                "UPDATE chat_threads SET last_read_message_id = ?, updated_at = updated_at WHERE user_id = ? AND id = ?",
+                (last_message_id, user_id, chat_id),
+            )
+
     def _cancel_open_jobs_for_chat(self, conn, *, user_id: str, chat_id: int, reason: str) -> None:
         cancel_open_jobs_for_chat(
             conn,

@@ -294,8 +294,25 @@
         }, 140);
       };
 
+      const focusComposerFromUserGesture = () => {
+        if (!promptEl || promptEl.disabled) return;
+        if (documentObject.activeElement === promptEl) return;
+        if (mobileQuoteMode) {
+          // Mobile/webview focus is more reliable with a plain synchronous focus()
+          // while the original tap gesture is still active.
+          promptEl.focus();
+          return;
+        }
+        try {
+          promptEl.focus({ preventScroll: true });
+        } catch {
+          promptEl.focus();
+        }
+      };
+
       const primeBeforeFocus = () => {
         armSyncWindow();
+        focusComposerFromUserGesture();
         runSyncBurst();
         startFocusIntervalSync();
       };
