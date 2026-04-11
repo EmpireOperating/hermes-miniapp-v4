@@ -8,6 +8,12 @@ const chatTabsHelpers = require('../static/chat_tabs_helpers.js');
 function makeClassList() {
   const values = new Set();
   return {
+    add(...names) {
+      names.forEach((name) => values.add(name));
+    },
+    remove(...names) {
+      names.forEach((name) => values.delete(name));
+    },
     toggle(name, enabled) {
       if (enabled) values.add(name);
       else values.delete(name);
@@ -18,12 +24,53 @@ function makeClassList() {
   };
 }
 
-function makeElement() {
+function makeElement(tagName = 'div') {
   const attrs = new Map();
-  return {
+  const listeners = new Map();
+  const children = [];
+  const element = {
+    tagName: String(tagName || 'div').toUpperCase(),
     hidden: false,
     textContent: '',
     classList: makeClassList(),
+    dataset: {},
+    children,
+    parentElement: null,
+    appendChild(child) {
+      if (!child) return child;
+      child.parentElement = element;
+      children.push(child);
+      return child;
+    },
+    append(...items) {
+      items.forEach((item) => {
+        if (item && typeof item === 'object') {
+          element.appendChild(item);
+        }
+      });
+    },
+    replaceChildren(...items) {
+      children.splice(0, children.length);
+      items.forEach((item) => {
+        if (item && typeof item === 'object') {
+          item.parentElement = element;
+          children.push(item);
+        }
+      });
+    },
+    addEventListener(type, listener) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(listener);
+    },
+    dispatchEvent(event) {
+      const nextEvent = event || {};
+      if (!nextEvent.target) {
+        nextEvent.target = element;
+      }
+      for (const listener of listeners.get(nextEvent.type) || []) {
+        listener(nextEvent);
+      }
+    },
     setAttribute(name, value) {
       attrs.set(name, String(value));
     },
@@ -31,9 +78,26 @@ function makeElement() {
       return attrs.get(name);
     },
   };
+  return element;
 }
 
-function createHarness({ activeChatId = 7, now = 1000 } = {}) {
+function createFakeDocument() {
+  return {
+    createElement(tagName) {
+      return makeElement(tagName);
+    },
+  };
+}
+
+function createHarness({
+  activeChatId = 7,
+  now = 1000,
+  mobileTabCarouselEnabled = false,
+  mobileViewport = false,
+  getCurrentUnreadCount = null,
+} = {}) {
+  let activeChatIdValue = activeChatId;
+  let nowValue = now;
   const chats = new Map();
   const pinnedChats = new Map();
   const histories = new Map();
@@ -61,6 +125,13 @@ function createHarness({ activeChatId = 7, now = 1000 } = {}) {
   const pinnedChatsCountEl = makeElement();
   const pinnedChatsToggleButton = makeElement();
   const pinChatButton = makeElement();
+  const tabsEl = makeElement();
+  const hiddenUnreadLeftEl = makeElement();
+  const hiddenUnreadRightEl = makeElement();
+  const hiddenUnreadSummaryEl = makeElement();
+  const tabOverviewEl = makeElement();
+  const openedChats = [];
+  const documentObject = createFakeDocument();
 
   const localStorageRef = {
     getItem() {
@@ -92,8 +163,33 @@ function createHarness({ activeChatId = 7, now = 1000 } = {}) {
     renderedHistoryLength,
     renderedHistoryVirtualized,
     tabNodes,
+    tabsEl,
+    hiddenUnreadLeftEl,
+    hiddenUnreadRightEl,
+    hiddenUnreadSummaryEl,
+    tabOverviewEl,
+    mobileTabCarouselEnabled,
+    getIsMobileCarouselViewport: () => mobileViewport,
+    getCurrentUnreadCount,
+    openChat: async (chatId) => {
+      openedChats.push(Number(chatId));
+    },
     clearChatStreamState: (payload) => clearCalls.push(payload),
     chatUiHelpers: {
+      renderTabs() {},
+      refreshTabNode() {},
+      syncActiveTabSelection({ previousChatId, nextChatId, tabNodes: nextTabNodes, renderTabs, refreshTabNode }) {
+        const prevKey = Number(previousChatId);
+        const nextKey = Number(nextChatId);
+        const hasPrevNode = !prevKey || nextTabNodes.has(prevKey);
+        const hasNextNode = !!nextKey && nextTabNodes.has(nextKey);
+        if (!hasPrevNode || !hasNextNode) {
+          renderTabs?.();
+          return;
+        }
+        refreshTabNode?.(prevKey);
+        refreshTabNode?.(nextKey);
+      },
       renderPinnedChats(payload) {
         renderPinnedChatsCalls.push(payload);
       },
@@ -103,8 +199,8 @@ function createHarness({ activeChatId = 7, now = 1000 } = {}) {
     pinnedChatsCountEl,
     pinnedChatsToggleButton,
     pinChatButton,
-    documentObject: {},
-    getActiveChatId: () => activeChatId,
+    documentObject,
+    getActiveChatId: () => activeChatIdValue,
     getPinnedChatsCollapsed: () => pinnedChatsCollapsed,
     setPinnedChatsCollapsedState: (value) => {
       pinnedChatsCollapsed = Boolean(value);
@@ -117,7 +213,7 @@ function createHarness({ activeChatId = 7, now = 1000 } = {}) {
     reconnectResumeBlockedChats,
     resumeCycleCountByChat,
     maxAutoResumeCyclesPerChat: 6,
-    nowFn: () => now,
+    nowFn: () => nowValue,
   });
 
   return {
@@ -142,6 +238,18 @@ function createHarness({ activeChatId = 7, now = 1000 } = {}) {
     clearCalls,
     renderPinnedChatsCalls,
     localStorageWrites,
+    tabsEl,
+    hiddenUnreadLeftEl,
+    hiddenUnreadRightEl,
+    hiddenUnreadSummaryEl,
+    tabOverviewEl,
+    openedChats,
+    setActiveChatIdForTests: (value) => {
+      activeChatIdValue = value == null ? null : Number(value);
+    },
+    setNowForTests: (value) => {
+      nowValue = Number(value);
+    },
     pinnedChatsWrap,
     pinnedChatsEl,
     pinnedChatsCountEl,
@@ -307,4 +415,201 @@ test('syncPinChatButton reflects active chat pin state', () => {
   h.chats.set(12, { id: 12, is_pinned: false });
   h.controller.syncPinChatButton();
   assert.equal(h.pinChatButton.textContent, 'Pin chat');
+});
+
+test('renderTabs enables mobile carousel overview strip when feature flag is active on mobile viewport', () => {
+  const h = createHarness({ activeChatId: 2, mobileTabCarouselEnabled: true, mobileViewport: true });
+  h.tabOverviewEl.clientWidth = 240;
+  h.tabOverviewEl.scrollWidth = 180;
+  const centeredCalls = [];
+  h.tabNodes.set(1, { scrollIntoView() { centeredCalls.push(1); }, classList: makeClassList(), querySelector() { return null; } });
+  h.tabNodes.set(2, { scrollIntoView(options) { centeredCalls.push(options); }, classList: makeClassList(), querySelector() { return null; } });
+  h.tabNodes.set(3, { scrollIntoView() { centeredCalls.push(3); }, classList: makeClassList(), querySelector() { return null; } });
+  h.tabNodes.set(4, { scrollIntoView() { centeredCalls.push(4); }, classList: makeClassList(), querySelector() { return null; } });
+  h.tabNodes.set(5, { scrollIntoView() { centeredCalls.push(5); }, classList: makeClassList(), querySelector() { return null; } });
+
+  h.chats.set(1, { id: 1, unread_count: 1, pending: false, is_pinned: false, title: 'One' });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: false, is_pinned: false, title: 'Two' });
+  h.chats.set(3, { id: 3, unread_count: 1, pending: true, is_pinned: false, title: 'Three' });
+  h.chats.set(4, { id: 4, unread_count: 2, pending: false, is_pinned: false, title: 'Four' });
+  h.chats.set(5, { id: 5, unread_count: 0, pending: false, is_pinned: false, title: 'Five' });
+
+  h.controller.renderTabs();
+
+  assert.equal(h.tabsEl.classList.has('chat-tabs--mobile-carousel'), true);
+  assert.equal(h.hiddenUnreadLeftEl.hidden, true);
+  assert.equal(h.hiddenUnreadLeftEl.textContent, '');
+  assert.equal(h.hiddenUnreadRightEl.hidden, true);
+  assert.equal(h.hiddenUnreadRightEl.textContent, '');
+  assert.equal(h.hiddenUnreadSummaryEl.hidden, true);
+  assert.equal(h.hiddenUnreadSummaryEl.textContent, '');
+  assert.equal(h.tabOverviewEl.hidden, false);
+  assert.equal(h.tabOverviewEl.children.length, 5);
+  assert.equal(h.tabOverviewEl.children[0].dataset.chatId, '1');
+  assert.equal(h.tabOverviewEl.children[0].dataset.state, 'unread');
+  assert.equal(h.tabOverviewEl.children[1].dataset.chatId, '2');
+  assert.equal(h.tabOverviewEl.children[1].dataset.active, 'true');
+  assert.equal(h.tabOverviewEl.children[1].dataset.state, 'idle');
+  assert.equal(h.tabOverviewEl.children[2].dataset.state, 'working');
+  assert.equal(h.tabOverviewEl.children[3].dataset.state, 'unread');
+  assert.equal(h.tabOverviewEl.children[4].dataset.state, 'idle');
+  assert.equal(h.tabOverviewEl.classList.has('chat-tabs__overview--centered'), true);
+  assert.deepEqual(centeredCalls, [{ block: 'nearest', inline: 'center' }]);
+});
+
+test('manual carousel interaction does not get recentered by later background rerenders', () => {
+  const h = createHarness({ activeChatId: 2, mobileTabCarouselEnabled: true, mobileViewport: true, now: 1000 });
+  const centeredCalls = [];
+  h.tabNodes.set(2, {
+    scrollIntoView(options) {
+      centeredCalls.push(options);
+    },
+    classList: makeClassList(),
+    querySelector() { return null; },
+  });
+  h.chats.set(1, { id: 1, unread_count: 0, pending: false, is_pinned: false, title: 'One' });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: false, is_pinned: false, title: 'Two' });
+  h.chats.set(3, { id: 3, unread_count: 1, pending: false, is_pinned: false, title: 'Three' });
+
+  h.controller.renderTabs();
+  h.controller.noteMobileCarouselInteraction();
+  h.setNowForTests(1400);
+  h.controller.renderTabs();
+  h.setNowForTests(5505);
+  h.controller.renderTabs();
+
+  assert.deepEqual(centeredCalls, [
+    { block: 'nearest', inline: 'center' },
+  ]);
+});
+
+test('manual carousel browsing does not get force-centered when active tab selection is re-synced to the same chat', () => {
+  const h = createHarness({ activeChatId: 2, mobileTabCarouselEnabled: true, mobileViewport: true, now: 1000 });
+  const centeredCalls = [];
+  h.tabNodes.set(2, {
+    scrollIntoView(options) {
+      centeredCalls.push(['chat-2', options]);
+    },
+    classList: makeClassList(),
+    querySelector() { return null; },
+  });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: false, is_pinned: false, title: 'Two' });
+
+  h.controller.renderTabs();
+  h.controller.noteMobileCarouselInteraction();
+  h.setNowForTests(2200);
+  h.controller.syncActiveTabSelection(2, 2);
+
+  assert.deepEqual(centeredCalls, [
+    ['chat-2', { block: 'nearest', inline: 'center' }],
+  ]);
+});
+
+test('manual carousel browsing clears after active tab changes so next active tab can center', () => {
+  const h = createHarness({ activeChatId: 2, mobileTabCarouselEnabled: true, mobileViewport: true, now: 1000 });
+  const centeredCalls = [];
+  h.tabNodes.set(2, {
+    scrollIntoView(options) {
+      centeredCalls.push(['chat-2', options]);
+    },
+    classList: makeClassList(),
+    querySelector() { return null; },
+  });
+  h.tabNodes.set(4, {
+    scrollIntoView(options) {
+      centeredCalls.push(['chat-4', options]);
+    },
+    classList: makeClassList(),
+    querySelector() { return null; },
+  });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: false, is_pinned: false, title: 'Two' });
+  h.chats.set(4, { id: 4, unread_count: 0, pending: false, is_pinned: false, title: 'Four' });
+
+  h.controller.renderTabs();
+  h.controller.noteMobileCarouselInteraction();
+  h.setActiveChatIdForTests(4);
+  h.controller.syncActiveTabSelection(2, 4);
+
+  assert.deepEqual(centeredCalls, [
+    ['chat-2', { block: 'nearest', inline: 'center' }],
+    ['chat-4', { block: 'nearest', inline: 'center' }],
+  ]);
+});
+
+test('mobile carousel overview strip updates marker state without relying on hidden unread summary text', () => {
+  const effectiveUnreadByChat = new Map([[1, 3], [3, 0], [5, 2]]);
+  const h = createHarness({
+    activeChatId: 3,
+    mobileTabCarouselEnabled: true,
+    mobileViewport: true,
+    getCurrentUnreadCount: (chatId) => effectiveUnreadByChat.get(Number(chatId)) ?? 0,
+  });
+  h.chats.set(1, { id: 1, unread_count: 3, pending: false, is_pinned: false, title: 'One' });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: true, is_pinned: false, title: 'Two' });
+  h.chats.set(3, { id: 3, unread_count: 0, pending: false, is_pinned: false, title: 'Three' });
+  h.chats.set(4, { id: 4, unread_count: 0, pending: false, is_pinned: false, title: 'Four' });
+  h.chats.set(5, { id: 5, unread_count: 2, pending: false, is_pinned: false, title: 'Five' });
+
+  h.controller.renderTabs();
+  assert.equal(h.hiddenUnreadLeftEl.hidden, true);
+  assert.equal(h.hiddenUnreadRightEl.hidden, true);
+  assert.equal(h.hiddenUnreadSummaryEl.hidden, true);
+  assert.deepEqual(
+    h.tabOverviewEl.children.map((child) => child.dataset.state),
+    ['unread', 'working', 'idle', 'idle', 'unread'],
+  );
+
+  h.chats.get(1).unread_count = 0;
+  effectiveUnreadByChat.set(1, 0);
+  h.controller.refreshTabNode(1);
+  assert.deepEqual(
+    h.tabOverviewEl.children.map((child) => child.dataset.state),
+    ['idle', 'working', 'idle', 'idle', 'unread'],
+  );
+
+  h.chats.get(5).unread_count = 0;
+  effectiveUnreadByChat.set(5, 0);
+  h.controller.refreshTabNode(5);
+  assert.deepEqual(
+    h.tabOverviewEl.children.map((child) => child.dataset.state),
+    ['idle', 'working', 'idle', 'idle', 'idle'],
+  );
+});
+
+test('mobile carousel overview markers can jump directly to a non-active chat', async () => {
+  const effectiveUnreadByChat = new Map([[1, 1], [2, 0], [3, 2]]);
+  const h = createHarness({
+    activeChatId: 2,
+    mobileTabCarouselEnabled: true,
+    mobileViewport: true,
+    getCurrentUnreadCount: (chatId) => effectiveUnreadByChat.get(Number(chatId)) ?? 0,
+  });
+  h.chats.set(1, { id: 1, unread_count: 1, pending: false, is_pinned: false, title: 'One' });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: false, is_pinned: false, title: 'Two' });
+  h.chats.set(3, { id: 3, unread_count: 2, pending: false, is_pinned: false, title: 'Three' });
+
+  h.controller.renderTabs();
+  assert.equal(h.tabOverviewEl.children.length, 3);
+
+  h.tabOverviewEl.children[1].dispatchEvent({ type: 'click' });
+  h.tabOverviewEl.children[2].dispatchEvent({ type: 'click' });
+
+  assert.deepEqual(h.openedChats, [3]);
+});
+
+test('renderTabs leaves carousel disabled outside flagged mobile mode', () => {
+  const h = createHarness({ activeChatId: 2, mobileTabCarouselEnabled: false, mobileViewport: true });
+  h.chats.set(1, { id: 1, unread_count: 1, pending: false, is_pinned: false, title: 'One' });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: false, is_pinned: false, title: 'Two' });
+  h.chats.set(3, { id: 3, unread_count: 1, pending: false, is_pinned: false, title: 'Three' });
+
+  h.controller.renderTabs();
+
+  assert.equal(h.tabsEl.classList.has('chat-tabs--mobile-carousel'), false);
+  assert.equal(h.hiddenUnreadLeftEl.hidden, true);
+  assert.equal(h.hiddenUnreadRightEl.hidden, true);
+  assert.equal(h.hiddenUnreadSummaryEl.hidden, true);
+  assert.equal(h.hiddenUnreadSummaryEl.textContent, '');
+  assert.equal(h.tabOverviewEl.hidden, true);
+  assert.equal(h.tabOverviewEl.children.length, 0);
 });

@@ -16,6 +16,7 @@
       updateJumpLatestVisibility,
     } = deps;
 
+    const MOBILE_COMPOSER_TAP_SLOP_PX = 14;
     let viewportMutationSeq = 0;
     let focusComposerForNewChatRequestId = 0;
 
@@ -245,6 +246,25 @@
       let focusSyncIntervalId = null;
       let keyboardSyncUntil = 0;
       let explicitComposerRevealRequested = false;
+      let pendingPromptTouch = null;
+
+      const getTouchPoint = (event) => {
+        const touch = event?.changedTouches?.[0] || event?.touches?.[0] || null;
+        if (touch) {
+          return {
+            clientX: Number(touch.clientX || 0),
+            clientY: Number(touch.clientY || 0),
+          };
+        }
+        return {
+          clientX: Number(event?.clientX || 0),
+          clientY: Number(event?.clientY || 0),
+        };
+      };
+
+      const cancelPendingPromptTouch = () => {
+        pendingPromptTouch = null;
+      };
 
       const clearSyncWindowState = () => {
         keyboardSyncUntil = 0;
@@ -361,6 +381,9 @@
       };
 
       const primeBeforeFocus = () => {
+        if (mobileQuoteMode && isPromptFocused()) {
+          return;
+        }
         explicitComposerRevealRequested = true;
         armSyncWindow();
         focusComposerFromUserGesture();
@@ -368,8 +391,54 @@
         startFocusIntervalSync();
       };
 
-      promptEl.addEventListener('touchstart', primeBeforeFocus, { passive: true });
-      promptEl.addEventListener('touchend', primeBeforeFocus);
+      const handlePromptTouchStart = (event) => {
+        if (!mobileQuoteMode) {
+          primeBeforeFocus();
+          return;
+        }
+        cancelPendingPromptTouch();
+        if (isPromptFocused()) {
+          clearSyncWindowState();
+          return;
+        }
+        if (promptEl.disabled) return;
+        const { clientX, clientY } = getTouchPoint(event);
+        pendingPromptTouch = {
+          startX: clientX,
+          startY: clientY,
+        };
+      };
+
+      const handlePromptTouchMove = (event) => {
+        if (!pendingPromptTouch) return;
+        const { clientX, clientY } = getTouchPoint(event);
+        const deltaX = clientX - pendingPromptTouch.startX;
+        const deltaY = clientY - pendingPromptTouch.startY;
+        if (Math.hypot(deltaX, deltaY) > MOBILE_COMPOSER_TAP_SLOP_PX) {
+          cancelPendingPromptTouch();
+        }
+      };
+
+      const handlePromptTouchEnd = (event) => {
+        if (!mobileQuoteMode) {
+          primeBeforeFocus();
+          return;
+        }
+        if (!pendingPromptTouch) return;
+        const { clientX, clientY } = getTouchPoint(event);
+        const deltaX = clientX - pendingPromptTouch.startX;
+        const deltaY = clientY - pendingPromptTouch.startY;
+        cancelPendingPromptTouch();
+        if (Math.hypot(deltaX, deltaY) > MOBILE_COMPOSER_TAP_SLOP_PX) {
+          return;
+        }
+        primeBeforeFocus();
+      };
+
+      promptEl.addEventListener('touchstart', handlePromptTouchStart, { passive: false });
+      promptEl.addEventListener('touchmove', handlePromptTouchMove, { passive: true });
+      promptEl.addEventListener('touchend', handlePromptTouchEnd, { passive: false });
+      promptEl.addEventListener('touchcancel', cancelPendingPromptTouch);
       promptEl.addEventListener('mousedown', primeBeforeFocus);
       promptEl.addEventListener('click', primeBeforeFocus);
 

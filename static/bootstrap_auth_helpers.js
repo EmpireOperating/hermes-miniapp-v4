@@ -1,75 +1,25 @@
 (function initHermesMiniappBootstrapAuth(globalScope) {
-  function createController(deps) {
-    const {
-      desktopTestingEnabled,
-      devAuthSessionStorageKey,
-      devAuthControls = null,
-      devModeBadge = null,
-      devSignInButton = null,
-      devAuthHashSecret = "",
-      getIsAuthenticated,
-      setIsAuthenticated,
-      sessionStorageRef,
-      devAuthModal,
-      devAuthForm,
-      devAuthSecretInput,
-      devAuthUserIdInput,
-      devAuthDisplayNameInput,
-      devAuthUsernameInput,
-      devAuthCancelButton,
-      authStatus,
-      appendSystemMessage,
-      safeReadJson: safeReadJsonOverride,
-      fetchImpl,
-      normalizeHandle: normalizeHandleOverride = null,
-      initData = "",
-      parseSseEvent = null,
-      fallbackHandleFromDisplayName: fallbackHandleFromDisplayNameOverride = null,
-      setOperatorDisplayName,
-      getOperatorDisplayName = null,
-      operatorName,
-      messagesEl = null,
-      refreshOperatorRoleLabels: refreshOperatorRoleLabelsOverride = null,
-      setSkin,
-      syncChats,
-      syncPinnedChats,
-      histories,
-      setActiveChatMeta,
-      renderPinnedChats,
-      renderMessages,
-      warmChatHistoryCache,
-      chats,
-      pendingChats,
-      resumePendingChatStream,
-      addLocalMessage,
-      hasFreshPendingStreamSnapshot = null,
-      restorePendingStreamSnapshot = null,
-      ensureActivationReadThreshold = null,
-      onBootstrapStage = null,
-      windowObject = globalScope.window || null,
-      authBootstrapMaxAttempts = 1,
-      authBootstrapBaseDelayMs = 0,
-      authBootstrapRetryableStatus = null,
-      bootBootstrapVersion = "",
-      bootstrapVersionReloadStorageKey = "",
-      recordBootMetric = null,
-      syncBootLatencyChip = null,
-      updateComposerState = null,
-      isMobileQuoteMode = null,
-      markVersionSyncReloadIntent = null,
-    } = deps;
-
-    async function safeReadJson(response) {
-      try {
-        if (typeof safeReadJsonOverride === "function") {
-          return await safeReadJsonOverride(response);
-        }
-        return await response.json();
-      } catch {
-        return null;
-      }
+  function createDelayController({ windowObject }) {
+    function delayMs(ms) {
+      return new Promise((resolve) => {
+        const scheduleTimeout = typeof windowObject?.setTimeout === "function"
+          ? windowObject.setTimeout.bind(windowObject)
+          : globalScope.setTimeout;
+        scheduleTimeout(resolve, Math.max(0, Number(ms) || 0));
+      });
     }
 
+    return { delayMs };
+  }
+
+  function createIdentityController({
+    normalizeHandleOverride = null,
+    fallbackHandleFromDisplayNameOverride = null,
+    refreshOperatorRoleLabelsOverride = null,
+    getOperatorDisplayName = null,
+    messagesEl = null,
+    isMobileQuoteMode = null,
+  }) {
     function normalizeHandle(value) {
       if (typeof normalizeHandleOverride === "function") {
         return normalizeHandleOverride(value);
@@ -109,8 +59,48 @@
       return false;
     }
 
+    return {
+      normalizeHandle,
+      fallbackHandleFromDisplayName,
+      refreshOperatorRoleLabels,
+      isMobileBootstrapPath,
+    };
+  }
+
+  function createRequestController({
+    initData = "",
+    parseSseEvent = null,
+    safeReadJsonOverride = null,
+    fetchImpl,
+    setIsAuthenticated,
+    authStatus,
+    updateComposerState = null,
+    authBootstrapMaxAttempts = 1,
+    authBootstrapBaseDelayMs = 0,
+    authBootstrapRetryableStatus = null,
+    bootBootstrapVersion = "",
+    bootstrapVersionReloadStorageKey = "",
+    sessionStorageRef,
+    recordBootMetric = null,
+    syncBootLatencyChip = null,
+    onBootstrapStage = null,
+    markVersionSyncReloadIntent = null,
+    windowObject = null,
+    delayMs,
+  }) {
     function authPayload(extra = {}) {
       return { init_data: initData, ...extra };
+    }
+
+    async function safeReadJson(response) {
+      try {
+        if (typeof safeReadJsonOverride === "function") {
+          return await safeReadJsonOverride(response);
+        }
+        return await response.json();
+      } catch {
+        return null;
+      }
     }
 
     function summarizeUiFailure(rawBody, { status = 0, fallback = "Request failed." } = {}) {
@@ -173,6 +163,151 @@
       return data;
     }
 
+    function isRetryableAuthBootstrapFailure(response, data) {
+      const status = Number(response?.status || 0);
+      if (!status) return true;
+      if (authBootstrapRetryableStatus?.has?.(status)) return true;
+      const text = String(data?.error || "");
+      return /temporarily unavailable|try again|timeout/i.test(text);
+    }
+
+    async function fetchAuthBootstrapWithRetry() {
+      let lastResponse = null;
+      let lastData = null;
+      let lastError = null;
+      const maxAttempts = Math.max(1, Number(authBootstrapMaxAttempts) || 1);
+
+      recordBootMetric?.("authBootstrapStartMs");
+      syncBootLatencyChip?.("auth-request");
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        onBootstrapStage?.("auth-bootstrap-attempt-start", { attempt });
+        try {
+          const response = await fetchImpl("/api/auth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ init_data: initData, allow_empty: true }),
+          });
+          const data = await safeReadJson(response);
+          if (response.ok && data?.ok) {
+            recordBootMetric?.("authBootstrapSuccessMs");
+            onBootstrapStage?.("auth-bootstrap-ok", { attempt, status: response.status });
+            return { response, data };
+          }
+          lastResponse = response;
+          lastData = data;
+          if (!isRetryableAuthBootstrapFailure(response, data) || attempt >= maxAttempts) {
+            recordBootMetric?.("authBootstrapFailureMs");
+            onBootstrapStage?.("auth-bootstrap-failed", { attempt, status: response.status, retryable: false });
+            return { response, data };
+          }
+          onBootstrapStage?.("auth-bootstrap-attempt-retryable-failure", {
+            attempt,
+            status: response.status,
+            retryable: true,
+          });
+        } catch (error) {
+          lastError = error;
+          onBootstrapStage?.("auth-bootstrap-attempt-error", {
+            attempt,
+            message: String(error?.message || error || ""),
+          });
+          if (attempt >= maxAttempts) {
+            break;
+          }
+        }
+
+        const jitterMs = Math.floor(Math.random() * 120);
+        const backoffMs = Math.max(0, Number(authBootstrapBaseDelayMs) || 0) * attempt + jitterMs;
+        onBootstrapStage?.("auth-bootstrap-retry-scheduled", {
+          attempt,
+          backoffMs,
+        });
+        await delayMs(backoffMs);
+      }
+
+      if (lastResponse) {
+        return { response: lastResponse, data: lastData };
+      }
+      if (lastError) {
+        recordBootMetric?.("authBootstrapErrorMs");
+        onBootstrapStage?.("auth-bootstrap-failed", {
+          attempt: maxAttempts,
+          status: 0,
+          retryable: false,
+          message: String(lastError?.message || lastError || ""),
+        });
+        throw lastError;
+      }
+      recordBootMetric?.("authBootstrapErrorMs");
+      throw new Error("Session bootstrap failed before response.");
+    }
+
+    async function maybeRefreshForBootstrapVersionMismatch() {
+      if (!bootBootstrapVersion) return false;
+
+      try {
+        const response = await fetchImpl("/api/state", {
+          method: "GET",
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" },
+        });
+        const data = await safeReadJson(response);
+        if (!response.ok || !data?.ok) {
+          return false;
+        }
+        const serverVersion = String(data?.bootstrap_version || "").trim();
+        if (!serverVersion || serverVersion === bootBootstrapVersion) {
+          sessionStorageRef?.removeItem?.(bootstrapVersionReloadStorageKey);
+          return false;
+        }
+
+        const reloadMarker = `${bootBootstrapVersion}->${serverVersion}`;
+        const priorMarker = sessionStorageRef?.getItem?.(bootstrapVersionReloadStorageKey) || "";
+        if (priorMarker === reloadMarker) {
+          return false;
+        }
+        sessionStorageRef?.setItem?.(bootstrapVersionReloadStorageKey, reloadMarker);
+
+        if (authStatus) {
+          authStatus.textContent = "Refreshing app…";
+          authStatus.title = "Detected a newer app build. Reloading once to sync assets.";
+        }
+        const pathName = String(windowObject?.location?.pathname || "");
+        const target = `${pathName}?v=${encodeURIComponent(serverVersion)}`;
+        markVersionSyncReloadIntent?.({
+          fromVersion: bootBootstrapVersion,
+          toVersion: serverVersion,
+          trigger: "bootstrap-version-mismatch",
+          target,
+        });
+        windowObject?.location?.replace?.(target);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    return {
+      authPayload,
+      safeReadJson,
+      summarizeUiFailure,
+      parseStreamErrorPayload,
+      apiPost,
+      fetchAuthBootstrapWithRetry,
+      maybeRefreshForBootstrapVersionMismatch,
+    };
+  }
+
+  function createDevAuthUiController({
+    desktopTestingEnabled,
+    getIsAuthenticated,
+    devAuthControls = null,
+    devModeBadge = null,
+    devSignInButton = null,
+    sessionStorageRef,
+    devAuthSessionStorageKey,
+  }) {
     function syncDevAuthUi() {
       const revealed = Boolean(desktopTestingEnabled);
       const authenticated = Boolean(getIsAuthenticated?.());
@@ -217,6 +352,40 @@
       }
     }
 
+    return {
+      syncDevAuthUi,
+      readDevAuthDefaults,
+      writeDevAuthDefaults,
+    };
+  }
+
+  function createBootstrapApplyController({
+    setIsAuthenticated,
+    normalizeHandle,
+    fallbackHandleFromDisplayName,
+    setOperatorDisplayName,
+    operatorName,
+    authStatus,
+    refreshOperatorRoleLabels,
+    setSkin,
+    syncChats,
+    syncPinnedChats,
+    histories,
+    setActiveChatMeta,
+    renderPinnedChats,
+    renderMessages,
+    warmChatHistoryCache,
+    chats,
+    pendingChats,
+    resumePendingChatStream,
+    hasFreshPendingStreamSnapshot = null,
+    restorePendingStreamSnapshot = null,
+    ensureActivationReadThreshold = null,
+    onBootstrapStage = null,
+    delayMs,
+    isMobileBootstrapPath,
+    syncDevAuthUi,
+  }) {
     function applyAuthBootstrap(data, { preferredUsername = "" } = {}) {
       onBootstrapStage?.("auth-bootstrap-applied-start", {
         activeChatId: Number(data?.active_chat_id || 0),
@@ -241,7 +410,9 @@
         chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
       });
       const bootstrapChats = Array.isArray(data?.chats) ? data.chats : [];
-      const hasPinnedChats = bootstrapChats.some((chat) => Boolean(chat?.is_pinned));
+      const bootstrapPinnedChats = Array.isArray(data?.pinned_chats) ? data.pinned_chats : [];
+      syncPinnedChats(bootstrapPinnedChats);
+      const hasPinnedChats = bootstrapPinnedChats.length > 0 || bootstrapChats.some((chat) => Boolean(chat?.is_pinned));
       const activeId = Number(data.active_chat_id || 0);
       if (activeId > 0 && typeof ensureActivationReadThreshold === "function") {
         const activeChat = chats?.get?.(activeId) || data?.chats?.find?.((chat) => Number(chat?.id) === activeId) || null;
@@ -328,6 +499,29 @@
       });
     }
 
+    return { applyAuthBootstrap };
+  }
+
+  function createDevAuthSignInController({
+    desktopTestingEnabled,
+    devAuthHashSecret = "",
+    devAuthModal,
+    devAuthForm,
+    devAuthSecretInput,
+    devAuthUserIdInput,
+    devAuthDisplayNameInput,
+    devAuthUsernameInput,
+    devAuthCancelButton,
+    authStatus,
+    appendSystemMessage,
+    fetchImpl,
+    safeReadJson,
+    readDevAuthDefaults,
+    writeDevAuthDefaults,
+    applyAuthBootstrap,
+    syncDevAuthUi,
+    windowObject = null,
+  }) {
     async function askForDevAuth(defaults) {
       if (devAuthModal && devAuthForm && devAuthSecretInput && devAuthUserIdInput && devAuthDisplayNameInput && devAuthUsernameInput && devAuthCancelButton && devAuthModal.showModal) {
         devAuthSecretInput.value = String(defaults.secret || "");
@@ -375,13 +569,14 @@
         });
       }
 
-      const secret = globalScope.window?.prompt ? window.prompt("Dev auth secret", defaults.secret || "") : null;
+      const promptWindow = globalScope.window || windowObject || null;
+      const secret = promptWindow?.prompt ? promptWindow.prompt("Dev auth secret", defaults.secret || "") : null;
       if (secret === null) return null;
-      const userId = window.prompt("Dev user id", defaults.userId || "9001");
+      const userId = promptWindow?.prompt ? promptWindow.prompt("Dev user id", defaults.userId || "9001") : null;
       if (userId === null) return null;
-      const displayName = window.prompt("Display name", defaults.displayName || "Desktop Tester");
+      const displayName = promptWindow?.prompt ? promptWindow.prompt("Display name", defaults.displayName || "Desktop Tester") : null;
       if (displayName === null) return null;
-      const username = window.prompt("Username", defaults.username || "desktop");
+      const username = promptWindow?.prompt ? promptWindow.prompt("Username", defaults.username || "desktop") : null;
       if (username === null) return null;
       return { secret, userId, displayName, username };
     }
@@ -407,7 +602,9 @@
       }
 
       writeDevAuthDefaults({ secret, userId, displayName, username });
-      authStatus.textContent = "Signing in (dev)…";
+      if (authStatus) {
+        authStatus.textContent = "Signing in (dev)…";
+      }
 
       const response = await fetchImpl("/api/dev/auth", {
         method: "POST",
@@ -424,7 +621,9 @@
       });
       const data = await safeReadJson(response);
       if (!response.ok || !data?.ok) {
-        authStatus.textContent = "Dev sign-in failed";
+        if (authStatus) {
+          authStatus.textContent = "Dev sign-in failed";
+        }
         appendSystemMessage(data?.error || `Dev sign-in failed (${response.status}).`);
         syncDevAuthUi();
         return false;
@@ -434,150 +633,175 @@
       return true;
     }
 
-    function delayMs(ms) {
-      return new Promise((resolve) => {
-        const scheduleTimeout = typeof windowObject?.setTimeout === "function"
-          ? windowObject.setTimeout.bind(windowObject)
-          : globalScope.setTimeout;
-        scheduleTimeout(resolve, Math.max(0, Number(ms) || 0));
-      });
-    }
-
-    function isRetryableAuthBootstrapFailure(response, data) {
-      const status = Number(response?.status || 0);
-      if (!status) return true;
-      if (authBootstrapRetryableStatus?.has?.(status)) return true;
-      const text = String(data?.error || "");
-      return /temporarily unavailable|try again|timeout/i.test(text);
-    }
-
-    async function fetchAuthBootstrapWithRetry() {
-      let lastResponse = null;
-      let lastData = null;
-      let lastError = null;
-
-      recordBootMetric?.("authBootstrapStartMs");
-      syncBootLatencyChip?.("auth-request");
-
-      for (let attempt = 1; attempt <= Math.max(1, Number(authBootstrapMaxAttempts) || 1); attempt += 1) {
-        onBootstrapStage?.("auth-bootstrap-attempt-start", { attempt });
-        try {
-          const response = await fetchImpl("/api/auth", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ init_data: initData, allow_empty: true }),
-          });
-          const data = await safeReadJson(response);
-          if (response.ok && data?.ok) {
-            recordBootMetric?.("authBootstrapSuccessMs");
-            onBootstrapStage?.("auth-bootstrap-ok", { attempt, status: response.status });
-            return { response, data };
-          }
-          lastResponse = response;
-          lastData = data;
-          if (!isRetryableAuthBootstrapFailure(response, data) || attempt >= Math.max(1, Number(authBootstrapMaxAttempts) || 1)) {
-            recordBootMetric?.("authBootstrapFailureMs");
-            onBootstrapStage?.("auth-bootstrap-failed", { attempt, status: response.status, retryable: false });
-            return { response, data };
-          }
-          onBootstrapStage?.("auth-bootstrap-attempt-retryable-failure", {
-            attempt,
-            status: response.status,
-            retryable: true,
-          });
-        } catch (error) {
-          lastError = error;
-          onBootstrapStage?.("auth-bootstrap-attempt-error", {
-            attempt,
-            message: String(error?.message || error || ""),
-          });
-          if (attempt >= Math.max(1, Number(authBootstrapMaxAttempts) || 1)) {
-            break;
-          }
-        }
-
-        const jitterMs = Math.floor(Math.random() * 120);
-        const backoffMs = Math.max(0, Number(authBootstrapBaseDelayMs) || 0) * attempt + jitterMs;
-        onBootstrapStage?.("auth-bootstrap-retry-scheduled", {
-          attempt,
-          backoffMs,
-        });
-        await delayMs(backoffMs);
-      }
-
-      if (lastResponse) {
-        return { response: lastResponse, data: lastData };
-      }
-      if (lastError) {
-        recordBootMetric?.("authBootstrapErrorMs");
-        throw lastError;
-      }
-      recordBootMetric?.("authBootstrapErrorMs");
-      throw new Error("Session bootstrap failed before response.");
-    }
-
-    async function maybeRefreshForBootstrapVersionMismatch() {
-      if (!bootBootstrapVersion) return false;
-
-      try {
-        const response = await fetchImpl("/api/state", {
-          method: "GET",
-          cache: "no-store",
-          headers: { "Cache-Control": "no-cache" },
-        });
-        const data = await safeReadJson(response);
-        if (!response.ok || !data?.ok) {
-          return false;
-        }
-        const serverVersion = String(data?.bootstrap_version || "").trim();
-        if (!serverVersion || serverVersion === bootBootstrapVersion) {
-          sessionStorageRef?.removeItem?.(bootstrapVersionReloadStorageKey);
-          return false;
-        }
-
-        const reloadMarker = `${bootBootstrapVersion}->${serverVersion}`;
-        const priorMarker = sessionStorageRef?.getItem?.(bootstrapVersionReloadStorageKey) || "";
-        if (priorMarker === reloadMarker) {
-          return false;
-        }
-        sessionStorageRef?.setItem?.(bootstrapVersionReloadStorageKey, reloadMarker);
-
-        if (authStatus) {
-          authStatus.textContent = "Refreshing app…";
-          authStatus.title = "Detected a newer app build. Reloading once to sync assets.";
-        }
-        const pathName = String(windowObject?.location?.pathname || "");
-        const target = `${pathName}?v=${encodeURIComponent(serverVersion)}`;
-        markVersionSyncReloadIntent?.({
-          fromVersion: bootBootstrapVersion,
-          toVersion: serverVersion,
-          trigger: 'bootstrap-version-mismatch',
-          target,
-        });
-        windowObject?.location?.replace?.(target);
-        return true;
-      } catch {
-        return false;
-      }
-    }
-
     return {
-      normalizeHandle,
-      fallbackHandleFromDisplayName,
-      refreshOperatorRoleLabels,
-      authPayload,
-      safeReadJson,
-      summarizeUiFailure,
-      parseStreamErrorPayload,
-      apiPost,
-      syncDevAuthUi,
-      readDevAuthDefaults,
-      writeDevAuthDefaults,
-      applyAuthBootstrap,
       askForDevAuth,
       signInWithDevAuth,
-      fetchAuthBootstrapWithRetry,
-      maybeRefreshForBootstrapVersionMismatch,
+    };
+  }
+
+  function createController(deps) {
+    const {
+      desktopTestingEnabled,
+      devAuthSessionStorageKey,
+      devAuthControls = null,
+      devModeBadge = null,
+      devSignInButton = null,
+      devAuthHashSecret = "",
+      getIsAuthenticated,
+      setIsAuthenticated,
+      sessionStorageRef,
+      devAuthModal,
+      devAuthForm,
+      devAuthSecretInput,
+      devAuthUserIdInput,
+      devAuthDisplayNameInput,
+      devAuthUsernameInput,
+      devAuthCancelButton,
+      authStatus,
+      appendSystemMessage,
+      safeReadJson: safeReadJsonOverride,
+      fetchImpl,
+      normalizeHandle: normalizeHandleOverride = null,
+      initData = "",
+      parseSseEvent = null,
+      fallbackHandleFromDisplayName: fallbackHandleFromDisplayNameOverride = null,
+      setOperatorDisplayName,
+      getOperatorDisplayName = null,
+      operatorName,
+      messagesEl = null,
+      refreshOperatorRoleLabels: refreshOperatorRoleLabelsOverride = null,
+      setSkin,
+      syncChats,
+      syncPinnedChats,
+      histories,
+      setActiveChatMeta,
+      renderPinnedChats,
+      renderMessages,
+      warmChatHistoryCache,
+      chats,
+      pendingChats,
+      resumePendingChatStream,
+      hasFreshPendingStreamSnapshot = null,
+      restorePendingStreamSnapshot = null,
+      ensureActivationReadThreshold = null,
+      onBootstrapStage = null,
+      windowObject = globalScope.window || null,
+      authBootstrapMaxAttempts = 1,
+      authBootstrapBaseDelayMs = 0,
+      authBootstrapRetryableStatus = null,
+      bootBootstrapVersion = "",
+      bootstrapVersionReloadStorageKey = "",
+      recordBootMetric = null,
+      syncBootLatencyChip = null,
+      updateComposerState = null,
+      isMobileQuoteMode = null,
+      markVersionSyncReloadIntent = null,
+    } = deps;
+
+    const delayController = createDelayController({ windowObject });
+    const identityController = createIdentityController({
+      normalizeHandleOverride,
+      fallbackHandleFromDisplayNameOverride,
+      refreshOperatorRoleLabelsOverride,
+      getOperatorDisplayName,
+      messagesEl,
+      isMobileQuoteMode,
+    });
+    const devAuthUiController = createDevAuthUiController({
+      desktopTestingEnabled,
+      getIsAuthenticated,
+      devAuthControls,
+      devModeBadge,
+      devSignInButton,
+      sessionStorageRef,
+      devAuthSessionStorageKey,
+    });
+    const bootstrapApplyController = createBootstrapApplyController({
+      setIsAuthenticated,
+      normalizeHandle: identityController.normalizeHandle,
+      fallbackHandleFromDisplayName: identityController.fallbackHandleFromDisplayName,
+      setOperatorDisplayName,
+      operatorName,
+      authStatus,
+      refreshOperatorRoleLabels: identityController.refreshOperatorRoleLabels,
+      setSkin,
+      syncChats,
+      syncPinnedChats,
+      histories,
+      setActiveChatMeta,
+      renderPinnedChats,
+      renderMessages,
+      warmChatHistoryCache,
+      chats,
+      pendingChats,
+      resumePendingChatStream,
+      hasFreshPendingStreamSnapshot,
+      restorePendingStreamSnapshot,
+      ensureActivationReadThreshold,
+      onBootstrapStage,
+      delayMs: delayController.delayMs,
+      isMobileBootstrapPath: identityController.isMobileBootstrapPath,
+      syncDevAuthUi: devAuthUiController.syncDevAuthUi,
+    });
+    const requestController = createRequestController({
+      initData,
+      parseSseEvent,
+      safeReadJsonOverride,
+      fetchImpl,
+      setIsAuthenticated,
+      authStatus,
+      updateComposerState,
+      authBootstrapMaxAttempts,
+      authBootstrapBaseDelayMs,
+      authBootstrapRetryableStatus,
+      bootBootstrapVersion,
+      bootstrapVersionReloadStorageKey,
+      sessionStorageRef,
+      recordBootMetric,
+      syncBootLatencyChip,
+      onBootstrapStage,
+      markVersionSyncReloadIntent,
+      windowObject,
+      delayMs: delayController.delayMs,
+    });
+    const devAuthSignInController = createDevAuthSignInController({
+      desktopTestingEnabled,
+      devAuthHashSecret,
+      devAuthModal,
+      devAuthForm,
+      devAuthSecretInput,
+      devAuthUserIdInput,
+      devAuthDisplayNameInput,
+      devAuthUsernameInput,
+      devAuthCancelButton,
+      authStatus,
+      appendSystemMessage,
+      fetchImpl,
+      safeReadJson: requestController.safeReadJson,
+      readDevAuthDefaults: devAuthUiController.readDevAuthDefaults,
+      writeDevAuthDefaults: devAuthUiController.writeDevAuthDefaults,
+      applyAuthBootstrap: bootstrapApplyController.applyAuthBootstrap,
+      syncDevAuthUi: devAuthUiController.syncDevAuthUi,
+      windowObject,
+    });
+
+    return {
+      normalizeHandle: identityController.normalizeHandle,
+      fallbackHandleFromDisplayName: identityController.fallbackHandleFromDisplayName,
+      refreshOperatorRoleLabels: identityController.refreshOperatorRoleLabels,
+      authPayload: requestController.authPayload,
+      safeReadJson: requestController.safeReadJson,
+      summarizeUiFailure: requestController.summarizeUiFailure,
+      parseStreamErrorPayload: requestController.parseStreamErrorPayload,
+      apiPost: requestController.apiPost,
+      syncDevAuthUi: devAuthUiController.syncDevAuthUi,
+      readDevAuthDefaults: devAuthUiController.readDevAuthDefaults,
+      writeDevAuthDefaults: devAuthUiController.writeDevAuthDefaults,
+      applyAuthBootstrap: bootstrapApplyController.applyAuthBootstrap,
+      askForDevAuth: devAuthSignInController.askForDevAuth,
+      signInWithDevAuth: devAuthSignInController.signInWithDevAuth,
+      fetchAuthBootstrapWithRetry: requestController.fetchAuthBootstrapWithRetry,
+      maybeRefreshForBootstrapVersionMismatch: requestController.maybeRefreshForBootstrapVersionMismatch,
     };
   }
 

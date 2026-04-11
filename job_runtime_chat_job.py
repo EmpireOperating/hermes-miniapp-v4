@@ -17,6 +17,13 @@ _TOOL_EXECUTION_CLAIM_RE = re.compile(
     r"|\btool\s+activity\b",
     re.IGNORECASE,
 )
+_AMBIGUOUS_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:"
+    r"do\s+it|continue|please\s+continue|go\s+ahead|proceed|keep\s+going|"
+    r"do\s+that|do\s+this|fix\s+it|that|this|it|yes|yep|ok|okay"
+    r")\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
 
 
 def _is_tool_demo_request(message: str) -> bool:
@@ -25,6 +32,20 @@ def _is_tool_demo_request(message: str) -> bool:
 
 def _reply_claims_tool_execution(reply_text: str) -> bool:
     return bool(_TOOL_EXECUTION_CLAIM_RE.search(str(reply_text or "")))
+
+
+def _build_chat_scoped_message(*, message: str, chat_title: str | None) -> str:
+    cleaned = str(message or "").strip()
+    title = str(chat_title or "").strip()
+    if not cleaned or not title:
+        return cleaned
+    if not _AMBIGUOUS_FOLLOWUP_RE.match(cleaned):
+        return cleaned
+    return (
+        f'Current thread title: "{title}". '
+        "Interpret the operator's latest message only within this thread; do not switch to work from another chat.\n\n"
+        f"Operator message: {cleaned}"
+    )
 
 
 def execute_chat_job(
@@ -50,6 +71,15 @@ def execute_chat_job(
         raise non_retryable_error_cls(f"Missing operator turn: {exc}") from exc
 
     message = operator_turn.body
+    chat_title = None
+    get_chat = getattr(runtime.store, "get_chat", None)
+    if callable(get_chat):
+        try:
+            chat = get_chat(user_id, chat_id)
+            chat_title = getattr(chat, "title", None)
+        except Exception:  # noqa: BLE001 - best-effort thread guardrail only
+            chat_title = None
+    run_message = _build_chat_scoped_message(message=message, chat_title=chat_title)
     session_id = runtime.session_id_builder(user_id, chat_id)
     include_history = runtime.client.should_include_conversation_history(session_id=session_id)
     history: list[dict[str, object]] = []
@@ -196,7 +226,7 @@ def execute_chat_job(
 
         return saw_terminal_done, reply_text, latency_ms, tool_trace_lines, runtime_checkpoint, last_event_source
 
-    saw_terminal_done, reply_text, latency_ms, tool_trace_lines, runtime_checkpoint, last_event_source = _consume_stream(message)
+    saw_terminal_done, reply_text, latency_ms, tool_trace_lines, runtime_checkpoint, last_event_source = _consume_stream(run_message)
 
     state = runtime.store.get_job_state(job_id)
     if not state or state.get("status") != "running":

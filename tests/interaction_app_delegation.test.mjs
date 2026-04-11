@@ -53,3 +53,18 @@ test('app.js interaction wrappers delegate through interactionController', async
     'app.js should install selection quote bindings through the wrapper',
   );
 });
+
+test('deferred interaction helper forwards resolved controller APIs to the deferred controller registry', async () => {
+  const source = await readFile(appJsUrl, 'utf8');
+
+  assert.match(
+    source,
+    /const\s+deferredControllerGlobalKey\s*=\s*`\$\{globalKey\}__deferred_controller__`;/,
+    'createDeferredApiHelper should track the deferred controller registry key',
+  );
+  assert.match(
+    source,
+    /window\[deferredControllerGlobalKey\]\s*=\s*value;/,
+    'late-loaded helper APIs with createController should be forwarded into the deferred controller registry',
+  );
+});

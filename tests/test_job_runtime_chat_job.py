@@ -24,17 +24,27 @@ class _Turn:
     body: str
 
 
+@dataclass
+class _Chat:
+    title: str
+
+
 class _FakeStore:
     def __init__(self) -> None:
         self.messages: list[tuple[str, int, str, str]] = []
         self.completed: list[int] = []
         self.checkpoint_writes: list[dict[str, object]] = []
         self.job_state = {"status": "running"}
+        self.operator_body = "hello"
+        self.chat_title = "Chat"
 
     def get_message(self, *, user_id: str, chat_id: int, message_id: int):
         if message_id == -1:
             raise KeyError("missing")
-        return _Turn(body="hello")
+        return _Turn(body=self.operator_body)
+
+    def get_chat(self, user_id: str, chat_id: int):
+        return _Chat(title=self.chat_title)
 
     def get_runtime_checkpoint(self, _session_id: str):
         return None
@@ -85,6 +95,7 @@ class _FakeClient:
         self._events = events
         self.evicted_sessions: list[str] = []
         self._warm_owner_state = warm_owner_state or {"owner_records": []}
+        self.stream_calls: list[dict[str, object]] = []
 
     def should_include_conversation_history(self, *, session_id: str) -> bool:
         return False
@@ -99,7 +110,8 @@ class _FakeClient:
     def warm_session_owner_state(self) -> dict[str, object]:
         return dict(self._warm_owner_state)
 
-    def stream_events(self, **_kwargs):
+    def stream_events(self, **kwargs):
+        self.stream_calls.append(dict(kwargs))
         yield from self._events
 
 
@@ -207,6 +219,42 @@ def test_execute_chat_job_persists_live_pending_tool_and_assistant_checkpoint_st
     assert runtime.store.checkpoint_writes[1]["pending_assistant"] == "partial"
     assert runtime.store.checkpoint_writes[-1]["pending_tool_lines"] == []
     assert runtime.store.checkpoint_writes[-1]["pending_assistant"] == ""
+
+
+def test_execute_chat_job_scopes_ambiguous_followup_to_chat_title() -> None:
+    runtime = _FakeRuntime(events=[{"type": "done", "reply": "ok", "latency_ms": 5}])
+    runtime.store.operator_body = "Do it"
+    runtime.store.chat_title = "Refactor"
+    job = {"id": 31, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    sent_message = runtime.client.stream_calls[0]["message"]
+    assert 'Current thread title: "Refactor".' in sent_message
+    assert "Operator message: Do it" in sent_message
+
+
+def test_execute_chat_job_leaves_specific_prompt_unwrapped() -> None:
+    runtime = _FakeRuntime(events=[{"type": "done", "reply": "ok", "latency_ms": 5}])
+    runtime.store.operator_body = "Please finish R42 next and then R43."
+    runtime.store.chat_title = "Refactor"
+    job = {"id": 32, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert runtime.client.stream_calls[0]["message"] == "Please finish R42 next and then R43."
 
 
 def test_execute_chat_job_stops_consuming_stream_immediately_after_terminal_done() -> None:

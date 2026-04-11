@@ -7,6 +7,7 @@ const runtime = require('../static/runtime_helpers.js');
 const sharedUtils = require('../static/app_shared_utils.js');
 const bootstrapAuth=require('../static/bootstrap_auth_helpers.js');
 const composerViewport = require('../static/composer_viewport_helpers.js');
+const interaction = require('../static/interaction_helpers.js');
 
 function createMessageNode(messageKey, offsetTop, offsetHeight = 100) {
   return {
@@ -413,6 +414,152 @@ test('preserveViewportDuringUiMutation keeps the same reading position when earl
   }
 });
 
+function createComposerViewportHarness() {
+  const promptListeners = new Map();
+  const windowListeners = new Map();
+  const viewportListeners = new Map();
+  const documentListeners = new Map();
+  const body = { tagName: 'BODY' };
+  const documentElement = {
+    style: {
+      setProperty: () => {},
+    },
+  };
+  const documentObject = {
+    visibilityState: 'visible',
+    activeElement: body,
+    body,
+    documentElement,
+    querySelector: () => null,
+    addEventListener: (eventName, handler) => {
+      documentListeners.set(eventName, handler);
+    },
+  };
+  const promptEl = {
+    disabled: false,
+    value: '',
+    focusCalls: 0,
+    blurCalls: 0,
+    addEventListener: (eventName, handler) => {
+      if (!promptListeners.has(eventName)) {
+        promptListeners.set(eventName, []);
+      }
+      promptListeners.get(eventName).push(handler);
+    },
+    focus: () => {
+      promptEl.focusCalls += 1;
+      documentObject.activeElement = promptEl;
+    },
+    blur: () => {
+      promptEl.blurCalls += 1;
+      documentObject.activeElement = body;
+    },
+    setSelectionRange: () => {},
+    getBoundingClientRect: () => ({ top: 600, bottom: 640 }),
+  };
+  const form = {
+    scrollIntoView: () => {},
+  };
+  const windowObject = {
+    innerHeight: 800,
+    scrollBy: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    setInterval: () => 1,
+    clearInterval: () => {},
+    addEventListener: (eventName, handler) => {
+      windowListeners.set(eventName, handler);
+    },
+    visualViewport: {
+      height: 800,
+      offsetTop: 0,
+      addEventListener: (eventName, handler) => {
+        viewportListeners.set(eventName, handler);
+      },
+    },
+  };
+  const controller = composerViewport.createController({
+    windowObject,
+    documentObject,
+    tg: null,
+    promptEl,
+    form,
+    messagesEl: null,
+    tabsEl: null,
+    mobileQuoteMode: true,
+    isNearBottomFn: () => false,
+    getActiveChatId: () => 7,
+    chatScrollTop: new Map(),
+    chatStickToBottom: new Map(),
+    updateJumpLatestVisibility: () => {},
+  });
+  controller.installKeyboardViewportSync();
+  return {
+    promptEl,
+    documentObject,
+    dispatchPromptEvent(eventName, event) {
+      for (const handler of promptListeners.get(eventName) || []) {
+        handler(event);
+      }
+    },
+  };
+}
+
+test('installKeyboardViewportSync does not focus composer after touch scroll gesture on prompt', () => {
+  const harness = createComposerViewportHarness();
+  const touchStartEvent = {
+    touches: [{ clientX: 20, clientY: 30 }],
+    preventDefaultCalled: false,
+    preventDefault() {
+      this.preventDefaultCalled = true;
+    },
+  };
+  const touchMoveEvent = {
+    touches: [{ clientX: 20, clientY: 54 }],
+  };
+  const touchEndEvent = {
+    changedTouches: [{ clientX: 20, clientY: 54 }],
+    preventDefaultCalled: false,
+    preventDefault() {
+      this.preventDefaultCalled = true;
+    },
+  };
+
+  harness.dispatchPromptEvent('touchstart', touchStartEvent);
+  harness.dispatchPromptEvent('touchmove', touchMoveEvent);
+  harness.dispatchPromptEvent('touchend', touchEndEvent);
+
+  assert.equal(harness.promptEl.focusCalls, 0);
+  assert.equal(harness.documentObject.activeElement, harness.documentObject.body);
+  assert.equal(touchStartEvent.preventDefaultCalled, false);
+  assert.equal(touchEndEvent.preventDefaultCalled, false);
+});
+
+test('installKeyboardViewportSync focuses composer only after guarded touch tap on prompt', () => {
+  const harness = createComposerViewportHarness();
+  const touchStartEvent = {
+    touches: [{ clientX: 20, clientY: 30 }],
+    preventDefaultCalled: false,
+    preventDefault() {
+      this.preventDefaultCalled = true;
+    },
+  };
+  const touchEndEvent = {
+    changedTouches: [{ clientX: 24, clientY: 34 }],
+    preventDefaultCalled: false,
+    preventDefault() {
+      this.preventDefaultCalled = true;
+    },
+  };
+
+  harness.dispatchPromptEvent('touchstart', touchStartEvent);
+  harness.dispatchPromptEvent('touchend', touchEndEvent);
+
+  assert.equal(harness.promptEl.focusCalls, 1);
+  assert.equal(harness.documentObject.activeElement, harness.promptEl);
+  assert.equal(touchStartEvent.preventDefaultCalled, false);
+  assert.equal(touchEndEvent.preventDefaultCalled, false);
+});
 
 test('createLatencyController syncActiveLatencyChip resets to placeholder when active chat is missing', () => {
   const latencyByChat = new Map([[7, '1s']]);
@@ -867,7 +1014,7 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
   assert.ok(updates.length >= 3);
 });
 
-test('createStreamActivityController clears stale live latency when switching to a pending tab without a live controller', () => {
+test('createStreamActivityController clears stale live latency when switching to a pending tab without a live controller after handoff grace expires', () => {
   const chats = new Map([
     [7, { pending: false, title: 'Working Chat' }],
     [8, { pending: true, title: 'Stuck Chat' }],
@@ -899,6 +1046,8 @@ test('createStreamActivityController clears stale live latency when switching to
       getActiveChatId: () => activeChatId,
       hasLiveStreamController: (chatId) => Number(chatId) === liveChatId,
       getChatLatencyText: () => '9s · live',
+      getStreamPhase: () => 'streaming_assistant',
+      streamPhases: { STREAMING_ASSISTANT: 'streaming_assistant' },
       chatLabel: (chatId) => chats.get(Number(chatId))?.title || 'Chat',
       compactChatLabel: (chatId) => chats.get(Number(chatId))?.title || 'Chat',
       setStreamStatus: (text) => {
@@ -921,12 +1070,13 @@ test('createStreamActivityController clears stale live latency when switching to
     assert.equal(intervalCallbacks.length, 1);
 
     liveChatId = null;
+    Date.now = () => 1_005_000;
     controller.syncActivePendingStatus();
     assert.equal(streamStatus.textContent, 'Waiting for Hermes in Stuck Chat');
     assert.equal(streamChip.textContent, 'stream: pending · Stuck Chat');
     assert.equal(latencyChip.textContent, 'latency: --');
 
-    Date.now = () => 1_005_000;
+    Date.now = () => 1_006_000;
     intervalCallbacks[0]();
     assert.equal(latencyChip.textContent, 'latency: --');
     assert.deepEqual(setChatLatencyCalls, [{ chatId: 8, text: '9s · live' }]);

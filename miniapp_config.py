@@ -60,6 +60,7 @@ class MiniAppConfig:
     stream_timing_debug: bool
     stream_efficiency_mode: bool
     stream_metrics_refresh_seconds: int
+    mobile_tab_carousel_enabled: bool
     dev_auth_enabled: bool
     dev_auth_secret: str
     dev_auth_expires_at_epoch: int | None
@@ -238,6 +239,11 @@ class MiniAppConfig:
             stream_timing_debug=stream_timing_debug,
             stream_efficiency_mode=stream_efficiency_mode,
             stream_metrics_refresh_seconds=stream_metrics_refresh_seconds,
+            mobile_tab_carousel_enabled=_as_bool_any(
+                "MINI_APP_MOBILE_TAB_CAROUSEL",
+                "MINIAPP_MOBILE_TAB_CAROUSEL",
+                default=False,
+            ),
             dev_auth_enabled=_as_bool_any("MINIAPP_DEV_BYPASS", "MINI_APP_DEV_BYPASS", default=False),
             dev_auth_secret=str(
                 os.environ.get("MINIAPP_DEV_SECRET")

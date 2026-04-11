@@ -306,6 +306,127 @@ test('createStreamLifecycleController defers send-path resume handoff until afte
   }
 });
 
+test('createStreamLifecycleController keeps pending state during transient resume retry backoff', async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'visible', activeElement: null };
+  const sessionController = streamController.createStreamSessionController({
+    getActiveChatId: () => 7,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    persistStreamCursor: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    incrementUnread: () => {},
+    renderTabs: () => {},
+  });
+  const chat = { pending: true };
+  const finalizeCalls = [];
+  const reconnectCalls = [];
+  const delayCalls = [];
+  const pendingStatesDuringDelay = [];
+  let fetchCount = 0;
+  const lifecycleController = streamController.createStreamLifecycleController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: () => streamState.STREAM_PHASES.PENDING_TOOL,
+    setStreamPhase: () => {},
+    chats: new Map([[7, chat]]),
+    pendingChats: new Set([7]),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    syncActiveMessageView: () => {},
+    getActiveChatId: () => 7,
+    messagesEl: { scrollHeight: 0, clientHeight: 0, scrollTop: 0, focus: () => {} },
+    promptEl: { value: '', selectionStart: 0, selectionEnd: 0 },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    finalizeStreamPendingState: (chatId, wasAborted) => {
+      finalizeCalls.push({ chatId: Number(chatId), wasAborted: Boolean(wasAborted) });
+      if (!wasAborted) {
+        chat.pending = false;
+      }
+    },
+    renderTraceLog: () => {},
+    authPayload: (payload) => payload,
+    parseStreamErrorPayload: () => ({}),
+    summarizeUiFailure: () => 'failed',
+    getIsAuthenticated: () => true,
+    setIsAuthenticated: () => {},
+    authStatusEl: { textContent: '' },
+    dropPendingToolTraceMessages: () => {},
+    addLocalMessage: () => {},
+    setDraft: () => {},
+    resetToolStream: () => {},
+    clearReconnectResumeBlock: () => {},
+    resetReconnectResumeBudget: () => {},
+    consumeReconnectResumeBudget: () => ({ allowed: true, attempts: 1, maxAttempts: 6 }),
+    suppressBlockedChatPending: () => {},
+    blockReconnectResume: () => {},
+    isReconnectResumeBlocked: () => false,
+    resumeAttemptedAtByChat: new Map(),
+    resumeCooldownUntilByChat: new Map(),
+    resumeInFlightByChat: new Set(),
+    isTransientResumeRecoveryError: (error) => /load failed/i.test(String(error?.message || '')),
+    nextResumeRecoveryDelayMs: () => 0,
+    delayMs: async (ms) => {
+      delayCalls.push(Number(ms));
+      pendingStatesDuringDelay.push(Boolean(chat.pending));
+    },
+    markChatStreamPending: () => {},
+    getStoredStreamCursor: () => null,
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    isNearBottom: () => true,
+    fetchImpl: async () => {
+      fetchCount += 1;
+      if (fetchCount === 1) {
+        throw new Error('Load failed');
+      }
+      return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => '' };
+    },
+    setTimeoutFn: () => 0,
+    finalizeInlineToolTrace: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    markStreamReconnecting: (chatId, details = {}) => {
+      reconnectCalls.push({ chatId: Number(chatId), details: { ...details } });
+    },
+  }, sessionController, {
+    hydrateChatAfterGracefulResumeCompletion: async () => {},
+    consumeStreamWithReconnect: async () => false,
+  });
+
+  try {
+    await lifecycleController.resumePendingChatStream(7, { force: true });
+
+    assert.equal(fetchCount, 2);
+    assert.deepEqual(delayCalls, [0]);
+    assert.deepEqual(pendingStatesDuringDelay, [true]);
+    assert.deepEqual(reconnectCalls, [
+      {
+        chatId: 7,
+        details: { attempt: 1, maxAttempts: 3 },
+      },
+      {
+        chatId: 7,
+        details: { attempt: 2, maxAttempts: 3 },
+      },
+    ]);
+    assert.deepEqual(finalizeCalls, [
+      { chatId: 7, wasAborted: false },
+    ]);
+    assert.equal(chat.pending, false);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test('createStreamLifecycleController reconciles transient send-path network failures to completed history before surfacing an error', async () => {
   const previousDocument = globalThis.document;
   globalThis.document = { visibilityState: 'visible', activeElement: null };

@@ -154,7 +154,6 @@
         trigger: 'visibilitychange',
         pendingChatCount: Number(pendingChats?.size || 0),
       });
-      if (await maybeRefreshForBootstrapVersionMismatch?.()) return;
       syncSkinFromStorage();
       if (!getIsAuthenticated()) return;
 

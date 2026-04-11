@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -23,6 +24,44 @@ from hermes_client_types import HermesClientError, HermesReply, IsolatedWorkerWa
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _AttachResumeTransport:
+    session_id: str
+    requested_path: str
+    transport_kind: str
+    worker_endpoint: str
+    resume_token: str
+    resume_deadline_ms: int | None
+
+
+@dataclass
+class _WarmReuseAttemptArtifacts:
+    validation: dict[str, Any]
+    attach_plan: dict[str, Any] | None = None
+    attach_execution: dict[str, Any] | None = None
+    attach_eligibility: dict[str, Any] | None = None
+    attach_action: dict[str, Any] | None = None
+    attach_resume: dict[str, Any] | None = None
+    attached_stream: Iterator[dict[str, Any]] | None = None
+
+
+@dataclass(frozen=True)
+class _StreamRequestContext:
+    user_id: str
+    cleaned_message: str
+    conversation_history: list[dict[str, Any]] | None
+    session_id: str | None
+    requested_path: str
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCLIMixin):
@@ -1386,6 +1425,105 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             return None, retire_reason
         return refreshed, None
 
+    def _build_attach_handshake_result(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        owner_pid: Any,
+        status: str,
+        reason: str,
+        handshake_attempted: bool,
+        handshake_detail: dict[str, Any] | None = None,
+        attempt_count: int | None = None,
+        next_step: str = "fallback_to_cold_path",
+    ) -> dict[str, Any]:
+        payload = {
+            "executed": True,
+            "status": status,
+            "session_id": str(session_id or ""),
+            "requested_path": str(requested_path or "unknown"),
+            "owner_pid": owner_pid,
+            "reason": str(reason or "unknown"),
+            "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
+            "handshake_attempted": bool(handshake_attempted),
+            "handshake_detail": dict(handshake_detail) if isinstance(handshake_detail, dict) else None,
+            "next_step": next_step,
+        }
+        if attempt_count is not None:
+            payload["attempt_count"] = int(attempt_count)
+        return payload
+
+    def _probe_live_worker_attach_handshake(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        owner_pid: int,
+        attempt_count: int,
+    ) -> dict[str, Any]:
+        try:
+            os.kill(owner_pid, 0)
+        except ProcessLookupError:
+            return self._build_attach_handshake_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                owner_pid=owner_pid,
+                status="attach_action_handshake_failed",
+                reason="owner_pid_not_found_during_handshake",
+                handshake_attempted=True,
+                attempt_count=attempt_count,
+            )
+        except PermissionError:
+            return self._build_attach_handshake_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                owner_pid=owner_pid,
+                status="attach_action_handshake_failed",
+                reason="owner_pid_permission_denied_during_handshake",
+                handshake_attempted=True,
+                attempt_count=attempt_count,
+            )
+
+        process_status = self._read_process_status(owner_pid)
+        stdin_link = self._read_process_fd_link(owner_pid, 0)
+        stdout_link = self._read_process_fd_link(owner_pid, 1)
+        process_state = str((process_status or {}).get("state") or "").strip()
+        process_state_code = str((process_status or {}).get("state_code") or "").strip().upper()
+        handshake_detail = {
+            "process_state": process_state or None,
+            "stdin_link": stdin_link,
+            "stdout_link": stdout_link,
+        }
+        if process_state_code == "Z":
+            return self._build_attach_handshake_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                owner_pid=owner_pid,
+                status="attach_action_handshake_failed",
+                reason="owner_pid_zombie_during_handshake",
+                handshake_attempted=True,
+                handshake_detail=handshake_detail,
+                attempt_count=attempt_count,
+            )
+        if process_status and stdin_link and stdout_link:
+            return self._build_attach_handshake_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                owner_pid=owner_pid,
+                status="attach_action_handshake_succeeded",
+                reason="handshake_proc_probe_succeeded",
+                handshake_attempted=True,
+                handshake_detail=handshake_detail,
+                attempt_count=attempt_count,
+                next_step="implement_live_stream_attach_after_handshake",
+            )
+        return {
+            "pending": True,
+            "reason": "handshake_transport_endpoints_unavailable",
+            "handshake_detail": handshake_detail,
+        }
+
     def _attempt_live_worker_attach_handshake(
         self,
         *,
@@ -1395,23 +1533,16 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
     ) -> dict[str, Any]:
         execution_payload = dict(attach_execution) if isinstance(attach_execution, dict) else {}
         owner_pid = execution_payload.get("owner_pid")
-        try:
-            pid_int = int(owner_pid)
-        except (TypeError, ValueError):
-            pid_int = None
-        if not pid_int or pid_int <= 0:
-            return {
-                "executed": True,
-                "status": "attach_action_handshake_failed",
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "owner_pid": owner_pid,
-                "reason": "invalid_owner_pid",
-                "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
-                "handshake_attempted": False,
-                "handshake_detail": None,
-                "next_step": "fallback_to_cold_path",
-            }
+        pid_int = _coerce_positive_int(owner_pid)
+        if pid_int is None:
+            return self._build_attach_handshake_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                owner_pid=owner_pid,
+                status="attach_action_handshake_failed",
+                reason="invalid_owner_pid",
+                handshake_attempted=False,
+            )
 
         deadline = time.monotonic() + (float(self.warm_attach_handshake_timeout_ms) / 1000.0)
         attempts = 0
@@ -1420,98 +1551,28 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         while True:
             attempts += 1
             if time.monotonic() > deadline:
-                return {
-                    "executed": True,
-                    "status": "attach_action_handshake_timeout",
-                    "session_id": str(session_id or ""),
-                    "requested_path": str(requested_path or "unknown"),
-                    "owner_pid": pid_int,
-                    "reason": last_reason,
-                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
-                    "handshake_attempted": True,
-                    "handshake_detail": dict(last_detail) if isinstance(last_detail, dict) else None,
-                    "attempt_count": attempts,
-                    "next_step": "fallback_to_cold_path",
-                }
+                return self._build_attach_handshake_result(
+                    session_id=session_id,
+                    requested_path=requested_path,
+                    owner_pid=pid_int,
+                    status="attach_action_handshake_timeout",
+                    reason=last_reason,
+                    handshake_attempted=True,
+                    handshake_detail=last_detail,
+                    attempt_count=attempts,
+                )
 
-            try:
-                os.kill(pid_int, 0)
-            except ProcessLookupError:
-                last_reason = "owner_pid_not_found_during_handshake"
-                last_detail = None
-                return {
-                    "executed": True,
-                    "status": "attach_action_handshake_failed",
-                    "session_id": str(session_id or ""),
-                    "requested_path": str(requested_path or "unknown"),
-                    "owner_pid": pid_int,
-                    "reason": last_reason,
-                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
-                    "handshake_attempted": True,
-                    "handshake_detail": None,
-                    "attempt_count": attempts,
-                    "next_step": "fallback_to_cold_path",
-                }
-            except PermissionError:
-                last_reason = "owner_pid_permission_denied_during_handshake"
-                last_detail = None
-                return {
-                    "executed": True,
-                    "status": "attach_action_handshake_failed",
-                    "session_id": str(session_id or ""),
-                    "requested_path": str(requested_path or "unknown"),
-                    "owner_pid": pid_int,
-                    "reason": last_reason,
-                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
-                    "handshake_attempted": True,
-                    "handshake_detail": None,
-                    "attempt_count": attempts,
-                    "next_step": "fallback_to_cold_path",
-                }
+            probe = self._probe_live_worker_attach_handshake(
+                session_id=session_id,
+                requested_path=requested_path,
+                owner_pid=pid_int,
+                attempt_count=attempts,
+            )
+            if not bool(probe.get("pending")):
+                return probe
 
-            process_status = self._read_process_status(pid_int)
-            stdin_link = self._read_process_fd_link(pid_int, 0)
-            stdout_link = self._read_process_fd_link(pid_int, 1)
-            process_state = str((process_status or {}).get("state") or "").strip()
-            process_state_code = str((process_status or {}).get("state_code") or "").strip().upper()
-            handshake_detail = {
-                "process_state": process_state or None,
-                "stdin_link": stdin_link,
-                "stdout_link": stdout_link,
-            }
-            if process_state_code == "Z":
-                last_reason = "owner_pid_zombie_during_handshake"
-                last_detail = handshake_detail
-                return {
-                    "executed": True,
-                    "status": "attach_action_handshake_failed",
-                    "session_id": str(session_id or ""),
-                    "requested_path": str(requested_path or "unknown"),
-                    "owner_pid": pid_int,
-                    "reason": last_reason,
-                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
-                    "handshake_attempted": True,
-                    "handshake_detail": handshake_detail,
-                    "attempt_count": attempts,
-                    "next_step": "fallback_to_cold_path",
-                }
-            if process_status and stdin_link and stdout_link:
-                return {
-                    "executed": True,
-                    "status": "attach_action_handshake_succeeded",
-                    "session_id": str(session_id or ""),
-                    "requested_path": str(requested_path or "unknown"),
-                    "owner_pid": pid_int,
-                    "reason": "handshake_proc_probe_succeeded",
-                    "handshake_timeout_ms": int(self.warm_attach_handshake_timeout_ms),
-                    "handshake_attempted": True,
-                    "handshake_detail": handshake_detail,
-                    "attempt_count": attempts,
-                    "next_step": "implement_live_stream_attach_after_handshake",
-                }
-
-            last_reason = "handshake_transport_endpoints_unavailable"
-            last_detail = handshake_detail
+            last_reason = str(probe.get("reason") or "handshake_transport_endpoints_unavailable")
+            last_detail = dict(probe.get("handshake_detail") or {}) if isinstance(probe.get("handshake_detail"), dict) else None
             time.sleep(0.01)
 
     def _terminate_warm_owner_process(self, *, pid: int | None, reason: str) -> bool:
@@ -1605,31 +1666,67 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
                 pass
 
-    def _attempt_live_worker_attach_resume(
+    def _build_attach_resume_result(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        status: str,
+        reason: str,
+        transport_kind: str | None,
+        worker_endpoint: str | None,
+        resume_token_present: bool,
+        executed: bool,
+        next_step: str = "fallback_to_cold_path",
+        **extra: Any,
+    ) -> dict[str, Any]:
+        payload = {
+            "executed": executed,
+            "status": status,
+            "session_id": str(session_id or ""),
+            "requested_path": str(requested_path or "unknown"),
+            "reason": str(reason or "unknown"),
+            "transport_kind": transport_kind,
+            "worker_endpoint": worker_endpoint,
+            "resume_token_present": bool(resume_token_present),
+            "next_step": next_step,
+        }
+        payload.update(extra)
+        return payload
+
+    def _close_attach_resume_resources(self, *, sock: socket.socket | None = None, reader: Any | None = None) -> None:
+        if reader is not None:
+            try:
+                reader.close()
+            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
+                pass
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
+                pass
+
+    def _resolve_attach_resume_transport(
         self,
         *,
         session_id: str,
         requested_path: str,
         reuse_contract: dict[str, Any] | None,
         attach_action: dict[str, Any] | None,
-        user_id: str,
-        message: str,
-        conversation_history: list[dict[str, str]] | None,
-    ) -> tuple[dict[str, Any], Iterator[dict[str, Any]] | None]:
+    ) -> dict[str, Any]:
         contract_payload = dict(reuse_contract) if isinstance(reuse_contract, dict) else {}
         attach_action_payload = dict(attach_action) if isinstance(attach_action, dict) else {}
         if str(attach_action_payload.get("status") or "") != "attach_action_handshake_succeeded":
-            return ({
-                "executed": False,
-                "status": "attach_action_attach_unavailable",
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "reason": "handshake_not_succeeded",
-                "transport_kind": contract_payload.get("transport_kind"),
-                "worker_endpoint": contract_payload.get("worker_endpoint"),
-                "resume_token_present": bool(contract_payload.get("resume_token")),
-                "next_step": "fallback_to_cold_path",
-            }, None)
+            return self._build_attach_resume_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                status="attach_action_attach_unavailable",
+                reason="handshake_not_succeeded",
+                transport_kind=contract_payload.get("transport_kind"),
+                worker_endpoint=contract_payload.get("worker_endpoint"),
+                resume_token_present=bool(contract_payload.get("resume_token")),
+                executed=False,
+            )
 
         transport_kind = str(contract_payload.get("transport_kind") or "").strip()
         worker_endpoint = str(contract_payload.get("worker_endpoint") or "").strip()
@@ -1641,193 +1738,255 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             resume_deadline_int = None
         now_ms = int(time.monotonic() * 1000)
         if resume_deadline_int is not None and now_ms > resume_deadline_int:
-            return ({
-                "executed": True,
-                "status": "attach_action_attach_unavailable",
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "reason": "resume_deadline_expired",
-                "transport_kind": transport_kind or None,
-                "worker_endpoint": worker_endpoint or None,
-                "resume_token_present": bool(resume_token),
-                "resume_deadline_ms": resume_deadline_int,
-                "next_step": "fallback_to_cold_path",
-            }, None)
+            return self._build_attach_resume_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                status="attach_action_attach_unavailable",
+                reason="resume_deadline_expired",
+                transport_kind=transport_kind or None,
+                worker_endpoint=worker_endpoint or None,
+                resume_token_present=bool(resume_token),
+                executed=True,
+                resume_deadline_ms=resume_deadline_int,
+            )
         if transport_kind != "unix_socket_jsonl":
-            return ({
-                "executed": False,
-                "status": "attach_action_attach_unavailable",
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "reason": "unsupported_transport_kind",
-                "transport_kind": transport_kind or None,
-                "worker_endpoint": worker_endpoint or None,
-                "resume_token_present": bool(resume_token),
-                "next_step": "fallback_to_cold_path",
-            }, None)
+            return self._build_attach_resume_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                status="attach_action_attach_unavailable",
+                reason="unsupported_transport_kind",
+                transport_kind=transport_kind or None,
+                worker_endpoint=worker_endpoint or None,
+                resume_token_present=bool(resume_token),
+                executed=False,
+            )
         missing_fields: list[str] = []
         if not worker_endpoint:
             missing_fields.append("worker_endpoint")
         if not resume_token:
             missing_fields.append("resume_token")
         if missing_fields:
-            return ({
-                "executed": False,
-                "status": "attach_action_attach_unavailable",
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "reason": "missing_attach_transport_fields",
-                "transport_kind": transport_kind,
-                "worker_endpoint": worker_endpoint or None,
-                "resume_token_present": bool(resume_token),
-                "missing_fields": missing_fields,
-                "next_step": "fallback_to_cold_path",
-            }, None)
+            return self._build_attach_resume_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                status="attach_action_attach_unavailable",
+                reason="missing_attach_transport_fields",
+                transport_kind=transport_kind,
+                worker_endpoint=worker_endpoint or None,
+                resume_token_present=bool(resume_token),
+                executed=False,
+                missing_fields=missing_fields,
+            )
+        return {
+            **self._build_attach_resume_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                status="attach_action_attach_ready",
+                reason="attach_transport_resolved",
+                transport_kind=transport_kind,
+                worker_endpoint=worker_endpoint,
+                resume_token_present=True,
+                executed=False,
+                next_step="connect_attach_resume_transport",
+            ),
+            "resume_token": resume_token,
+            "resume_deadline_ms": resume_deadline_int,
+        }
 
+    def _read_attach_resume_ack(
+        self,
+        *,
+        transport: _AttachResumeTransport,
+        sock: socket.socket,
+        reader: Any,
+    ) -> tuple[dict[str, Any], Iterator[dict[str, Any]] | None]:
+        ack_line = reader.readline()
+        if not ack_line:
+            self._close_attach_resume_resources(sock=sock, reader=reader)
+            return (
+                self._build_attach_resume_result(
+                    session_id=transport.session_id,
+                    requested_path=transport.requested_path,
+                    status="attach_action_attach_failed",
+                    reason="attach_ack_missing",
+                    transport_kind=transport.transport_kind,
+                    worker_endpoint=transport.worker_endpoint,
+                    resume_token_present=True,
+                    executed=True,
+                ),
+                None,
+            )
+        try:
+            ack_payload = json.loads(ack_line.decode("utf-8", errors="ignore"))
+        except json.JSONDecodeError:
+            self._close_attach_resume_resources(sock=sock, reader=reader)
+            return (
+                self._build_attach_resume_result(
+                    session_id=transport.session_id,
+                    requested_path=transport.requested_path,
+                    status="attach_action_attach_failed",
+                    reason="attach_ack_invalid_json",
+                    transport_kind=transport.transport_kind,
+                    worker_endpoint=transport.worker_endpoint,
+                    resume_token_present=True,
+                    executed=True,
+                ),
+                None,
+            )
+        if not isinstance(ack_payload, dict) or str(ack_payload.get("type") or "") != "attach_ack":
+            self._close_attach_resume_resources(sock=sock, reader=reader)
+            return (
+                self._build_attach_resume_result(
+                    session_id=transport.session_id,
+                    requested_path=transport.requested_path,
+                    status="attach_action_attach_failed",
+                    reason="attach_ack_invalid_shape",
+                    transport_kind=transport.transport_kind,
+                    worker_endpoint=transport.worker_endpoint,
+                    resume_token_present=True,
+                    executed=True,
+                    ack_payload=ack_payload if isinstance(ack_payload, dict) else None,
+                ),
+                None,
+            )
+        if not bool(ack_payload.get("accepted")):
+            self._close_attach_resume_resources(sock=sock, reader=reader)
+            return (
+                self._build_attach_resume_result(
+                    session_id=transport.session_id,
+                    requested_path=transport.requested_path,
+                    status="attach_action_attach_failed",
+                    reason=str(ack_payload.get("reason") or "attach_rejected"),
+                    transport_kind=transport.transport_kind,
+                    worker_endpoint=transport.worker_endpoint,
+                    resume_token_present=True,
+                    executed=True,
+                    ack_payload=dict(ack_payload),
+                ),
+                None,
+            )
+        return (
+            self._build_attach_resume_result(
+                session_id=transport.session_id,
+                requested_path=transport.requested_path,
+                status="attach_action_attach_succeeded",
+                reason=str(ack_payload.get("reason") or "attach_accepted"),
+                transport_kind=transport.transport_kind,
+                worker_endpoint=transport.worker_endpoint,
+                resume_token_present=True,
+                executed=True,
+                next_step="stream_attached_worker_events",
+                ack_payload=dict(ack_payload),
+            ),
+            self._stream_events_from_worker_attach_socket(session_id=transport.session_id, sock=sock, reader=reader),
+        )
+
+    def _build_attach_resume_request_payload(
+        self,
+        *,
+        transport: _AttachResumeTransport,
+        user_id: str,
+        message: str,
+        conversation_history: list[dict[str, str]] | None,
+    ) -> dict[str, Any]:
+        return {
+            "type": "warm_attach_resume",
+            "session_id": transport.session_id,
+            "requested_path": transport.requested_path,
+            "resume_token": transport.resume_token,
+            "user_id": str(user_id or ""),
+            "message": str(message or ""),
+            "conversation_history": list(conversation_history or []),
+        }
+
+    def _connect_attach_resume_transport(
+        self,
+        *,
+        transport: _AttachResumeTransport,
+        user_id: str,
+        message: str,
+        conversation_history: list[dict[str, str]] | None,
+    ) -> tuple[socket.socket, Any]:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(float(self.warm_attach_resume_timeout_ms) / 1000.0)
         try:
-            sock.connect(worker_endpoint)
-            request_payload = {
-                "type": "warm_attach_resume",
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "resume_token": resume_token,
-                "user_id": str(user_id or ""),
-                "message": str(message or ""),
-                "conversation_history": list(conversation_history or []),
-            }
+            sock.connect(transport.worker_endpoint)
+            request_payload = self._build_attach_resume_request_payload(
+                transport=transport,
+                user_id=user_id,
+                message=message,
+                conversation_history=conversation_history,
+            )
             sock.sendall((json.dumps(request_payload, separators=(",", ":")) + "\n").encode("utf-8"))
-            reader = sock.makefile("rb")
-            ack_line = reader.readline()
-            if not ack_line:
-                try:
-                    reader.close()
-                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                    pass
-                try:
-                    sock.close()
-                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                    pass
-                return ({
-                    "executed": True,
-                    "status": "attach_action_attach_failed",
-                    "session_id": str(session_id or ""),
-                    "requested_path": str(requested_path or "unknown"),
-                    "reason": "attach_ack_missing",
-                    "transport_kind": transport_kind,
-                    "worker_endpoint": worker_endpoint,
-                    "resume_token_present": True,
-                    "next_step": "fallback_to_cold_path",
-                }, None)
-            try:
-                ack_payload = json.loads(ack_line.decode("utf-8", errors="ignore"))
-            except json.JSONDecodeError:
-                try:
-                    reader.close()
-                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                    pass
-                try:
-                    sock.close()
-                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                    pass
-                return ({
-                    "executed": True,
-                    "status": "attach_action_attach_failed",
-                    "session_id": str(session_id or ""),
-                    "requested_path": str(requested_path or "unknown"),
-                    "reason": "attach_ack_invalid_json",
-                    "transport_kind": transport_kind,
-                    "worker_endpoint": worker_endpoint,
-                    "resume_token_present": True,
-                    "next_step": "fallback_to_cold_path",
-                }, None)
-            if not isinstance(ack_payload, dict) or str(ack_payload.get("type") or "") != "attach_ack":
-                try:
-                    reader.close()
-                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                    pass
-                try:
-                    sock.close()
-                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                    pass
-                return ({
-                    "executed": True,
-                    "status": "attach_action_attach_failed",
-                    "session_id": str(session_id or ""),
-                    "requested_path": str(requested_path or "unknown"),
-                    "reason": "attach_ack_invalid_shape",
-                    "transport_kind": transport_kind,
-                    "worker_endpoint": worker_endpoint,
-                    "resume_token_present": True,
-                    "ack_payload": ack_payload if isinstance(ack_payload, dict) else None,
-                    "next_step": "fallback_to_cold_path",
-                }, None)
-            if not bool(ack_payload.get("accepted")):
-                try:
-                    reader.close()
-                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                    pass
-                try:
-                    sock.close()
-                except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                    pass
-                return ({
-                    "executed": True,
-                    "status": "attach_action_attach_failed",
-                    "session_id": str(session_id or ""),
-                    "requested_path": str(requested_path or "unknown"),
-                    "reason": str(ack_payload.get("reason") or "attach_rejected"),
-                    "transport_kind": transport_kind,
-                    "worker_endpoint": worker_endpoint,
-                    "resume_token_present": True,
-                    "ack_payload": dict(ack_payload),
-                    "next_step": "fallback_to_cold_path",
-                }, None)
-            return ({
-                "executed": True,
-                "status": "attach_action_attach_succeeded",
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "reason": str(ack_payload.get("reason") or "attach_accepted"),
-                "transport_kind": transport_kind,
-                "worker_endpoint": worker_endpoint,
-                "resume_token_present": True,
-                "ack_payload": dict(ack_payload),
-                "next_step": "stream_attached_worker_events",
-            }, self._stream_events_from_worker_attach_socket(session_id=session_id, sock=sock, reader=reader))
+            return sock, sock.makefile("rb")
+        except Exception:
+            self._close_attach_resume_resources(sock=sock)
+            raise
+
+    def _attempt_live_worker_attach_resume(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        reuse_contract: dict[str, Any] | None,
+        attach_action: dict[str, Any] | None,
+        user_id: str,
+        message: str,
+        conversation_history: list[dict[str, str]] | None,
+    ) -> tuple[dict[str, Any], Iterator[dict[str, Any]] | None]:
+        resolved_transport = self._resolve_attach_resume_transport(
+            session_id=session_id,
+            requested_path=requested_path,
+            reuse_contract=reuse_contract,
+            attach_action=attach_action,
+        )
+        if str(resolved_transport.get("status") or "") != "attach_action_attach_ready":
+            return resolved_transport, None
+
+        transport = _AttachResumeTransport(
+            session_id=str(session_id or ""),
+            requested_path=str(requested_path or "unknown"),
+            transport_kind=str(resolved_transport.get("transport_kind") or ""),
+            worker_endpoint=str(resolved_transport.get("worker_endpoint") or ""),
+            resume_token=str(resolved_transport.get("resume_token") or ""),
+            resume_deadline_ms=resolved_transport.get("resume_deadline_ms"),
+        )
+        try:
+            sock, reader = self._connect_attach_resume_transport(
+                transport=transport,
+                user_id=user_id,
+                message=message,
+                conversation_history=conversation_history,
+            )
+            return self._read_attach_resume_ack(transport=transport, sock=sock, reader=reader)
         except socket.timeout:
-            try:
-                sock.close()
-            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                pass
-            return ({
-                "executed": True,
-                "status": "attach_action_attach_timeout",
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "reason": "attach_connect_or_ack_timeout",
-                "transport_kind": transport_kind,
-                "worker_endpoint": worker_endpoint,
-                "resume_token_present": bool(resume_token),
-                "next_step": "fallback_to_cold_path",
-            }, None)
+            return (
+                self._build_attach_resume_result(
+                    session_id=transport.session_id,
+                    requested_path=transport.requested_path,
+                    status="attach_action_attach_timeout",
+                    reason="attach_connect_or_ack_timeout",
+                    transport_kind=transport.transport_kind,
+                    worker_endpoint=transport.worker_endpoint,
+                    resume_token_present=bool(transport.resume_token),
+                    executed=True,
+                ),
+                None,
+            )
         except OSError as exc:
-            try:
-                sock.close()
-            except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
-                pass
-            return ({
-                "executed": True,
-                "status": "attach_action_attach_failed",
-                "session_id": str(session_id or ""),
-                "requested_path": str(requested_path or "unknown"),
-                "reason": f"attach_socket_error:{exc.__class__.__name__}",
-                "transport_kind": transport_kind,
-                "worker_endpoint": worker_endpoint,
-                "resume_token_present": bool(resume_token),
-                "next_step": "fallback_to_cold_path",
-            }, None)
+            return (
+                self._build_attach_resume_result(
+                    session_id=transport.session_id,
+                    requested_path=transport.requested_path,
+                    status="attach_action_attach_failed",
+                    reason=f"attach_socket_error:{exc.__class__.__name__}",
+                    transport_kind=transport.transport_kind,
+                    worker_endpoint=transport.worker_endpoint,
+                    resume_token_present=bool(transport.resume_token),
+                    executed=True,
+                ),
+                None,
+            )
 
     def _verify_worker_attach_session_binding(self, *, session_id: str, cmdline: str | None) -> dict[str, Any]:
         cmdline_text = str(cmdline or "")
@@ -1987,6 +2146,192 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         result.setdefault("owner_pid", execution_payload.get("owner_pid"))
         return result
 
+    def _attempt_worker_attach_warm_reuse(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        candidate_payload: dict[str, Any],
+        reuse_contract: dict[str, Any],
+        artifacts: _WarmReuseAttemptArtifacts,
+        user_id: str,
+        message: str,
+    ) -> _WarmReuseAttemptArtifacts:
+        artifacts.attach_plan = self.plan_worker_attach_handshake(
+            session_id=session_id,
+            requested_path=requested_path,
+            candidate=candidate_payload,
+            reuse_contract=reuse_contract,
+            validation=artifacts.validation,
+        )
+        artifacts.attach_execution = self.execute_worker_attach(
+            session_id=session_id,
+            requested_path=requested_path,
+            attach_plan=artifacts.attach_plan,
+        )
+        artifacts.attach_eligibility = self.decide_worker_attach_eligibility(
+            validation=artifacts.validation,
+            attach_plan=artifacts.attach_plan,
+            attach_execution=artifacts.attach_execution,
+        )
+        if isinstance(artifacts.attach_eligibility, dict) and bool(artifacts.attach_eligibility.get("eligible")):
+            artifacts.attach_action = self.execute_worker_attach_action(
+                session_id=session_id,
+                requested_path=requested_path,
+                attach_eligibility=artifacts.attach_eligibility,
+                attach_execution=artifacts.attach_execution,
+            )
+        if str((artifacts.attach_action or {}).get("status") or "") == "attach_action_handshake_succeeded":
+            artifacts.attach_resume, artifacts.attached_stream = self._attempt_live_worker_attach_resume(
+                session_id=session_id,
+                requested_path=requested_path,
+                reuse_contract=reuse_contract,
+                attach_action=artifacts.attach_action,
+                user_id=user_id,
+                message=message,
+                # Same-chat warm attach resumes an already-live isolated worker.
+                # Do not inject full DB history again or we can duplicate context inside
+                # the reused runtime.
+                conversation_history=[],
+            )
+        return artifacts
+
+    def _describe_warm_reuse_attempt(
+        self,
+        *,
+        validation_status: str,
+        resume_capability: str,
+        artifacts: _WarmReuseAttemptArtifacts,
+    ) -> tuple[str, str]:
+        if bool(artifacts.validation.get("valid")):
+            if resume_capability == "worker_attach":
+                attach_action_status = str((artifacts.attach_action or {}).get("status") or "")
+                attach_resume_status = str((artifacts.attach_resume or {}).get("status") or "")
+                if attach_resume_status == "attach_action_attach_succeeded" and artifacts.attached_stream is not None:
+                    return (
+                        "reuse_worker_attach_resume_streaming",
+                        "warm reuse candidate passed validation, completed handshake, and attached to a live worker resume transport",
+                    )
+                if attach_resume_status == "attach_action_attach_timeout":
+                    return (
+                        "reuse_worker_attach_resume_timeout",
+                        "warm reuse candidate passed validation and handshake, but the live worker resume attach timed out and fell back safely",
+                    )
+                if attach_resume_status == "attach_action_attach_failed":
+                    return (
+                        "reuse_worker_attach_resume_failed",
+                        "warm reuse candidate passed validation and handshake, but the live worker resume attach failed and fell back safely",
+                    )
+                if attach_action_status == "attach_action_handshake_succeeded":
+                    return (
+                        "reuse_worker_attach_resume_unavailable",
+                        "warm reuse candidate passed validation and handshake, but no supported live worker resume transport was available",
+                    )
+                if attach_action_status == "attach_action_handshake_timeout":
+                    return (
+                        "reuse_worker_attach_handshake_timeout",
+                        "warm reuse candidate passed validation, but the first live worker-attach handshake probe timed out and fell back safely",
+                    )
+                if attach_action_status == "attach_action_handshake_failed":
+                    return (
+                        "reuse_worker_attach_handshake_failed",
+                        "warm reuse candidate passed validation, but the first live worker-attach handshake probe failed and fell back safely",
+                    )
+                return (
+                    "reuse_worker_attach_not_supported_yet",
+                    "warm reuse candidate passed validation and advertises worker_attach capability, but attach execution could not progress beyond readiness checks",
+                )
+            return (
+                "reuse_resume_not_supported_yet",
+                "warm reuse candidate passed basic contract validation, but resume/handoff is not implemented yet",
+            )
+        if validation_status == "missing_required_fields":
+            return (
+                "reuse_contract_missing_required_fields",
+                "warm reuse candidate is missing one or more required contract fields for a reuse attempt",
+            )
+        if validation_status == "invalid_session_binding":
+            return (
+                "reuse_contract_invalid_session_binding",
+                "warm reuse candidate contract is bound to a different session than the attempted reuse target",
+            )
+        if validation_status == "unsupported_contract_version":
+            return (
+                "reuse_contract_unsupported_version",
+                "warm reuse candidate contract version is not supported by the current validator",
+            )
+        return (
+            "reuse_contract_invalid",
+            "warm reuse candidate contract failed validation",
+        )
+
+    def _record_warm_reuse_attempt(
+        self,
+        *,
+        session_id: str,
+        reason: str,
+        requested_path: str,
+        candidate_payload: dict[str, Any],
+        reuse_contract: dict[str, Any],
+        artifacts: _WarmReuseAttemptArtifacts,
+        attempt: str,
+        detail: str,
+        policy: dict[str, Any],
+        user_id: str,
+        message: str,
+        conversation_history: list[dict[str, str]] | None,
+    ) -> None:
+        payload = {
+            "event": "warm_reuse_attempt",
+            "session_id": str(session_id or ""),
+            "reason": str(reason or "unknown"),
+            "requested_path": str(requested_path or "unknown"),
+            "attempt": attempt,
+            "detail": detail,
+            "candidate": candidate_payload,
+            "reuse_contract": reuse_contract or None,
+            "validation": dict(artifacts.validation),
+            "attach_plan": dict(artifacts.attach_plan) if isinstance(artifacts.attach_plan, dict) else None,
+            "attach_execution": dict(artifacts.attach_execution) if isinstance(artifacts.attach_execution, dict) else None,
+            "attach_eligibility": dict(artifacts.attach_eligibility) if isinstance(artifacts.attach_eligibility, dict) else None,
+            "attach_action": dict(artifacts.attach_action) if isinstance(artifacts.attach_action, dict) else None,
+            "attach_resume": dict(artifacts.attach_resume) if isinstance(artifacts.attach_resume, dict) else None,
+            "missing_required_fields": list(artifacts.validation.get("missing_required_fields") or []),
+            "reserved_future_fields": list(artifacts.validation.get("reserved_future_fields") or []),
+            "policy": dict(policy),
+            "fallback_to": str(requested_path or "unknown"),
+            "fallback_reason": attempt,
+            "user_id": str(user_id or ""),
+            "message_length": len(str(message or "")),
+            "conversation_history_len": len(conversation_history or []),
+            "monotonic_ms": int(time.monotonic() * 1000),
+        }
+        self._warm_reuse_attempt_events.append(dict(payload))
+
+    def _attempt_validated_warm_reuse(
+        self,
+        *,
+        session_id: str,
+        requested_path: str,
+        candidate_payload: dict[str, Any],
+        reuse_contract: dict[str, Any],
+        validation: dict[str, Any],
+        user_id: str,
+        message: str,
+    ) -> _WarmReuseAttemptArtifacts:
+        artifacts = _WarmReuseAttemptArtifacts(validation=dict(validation))
+        if bool(validation.get("valid")) and str(validation.get("resume_capability") or "unknown") == "worker_attach":
+            return self._attempt_worker_attach_warm_reuse(
+                session_id=session_id,
+                requested_path=requested_path,
+                candidate_payload=candidate_payload,
+                reuse_contract=reuse_contract,
+                artifacts=artifacts,
+                user_id=user_id,
+                message=message,
+            )
+        return artifacts
+
     def attempt_warm_reuse(
         self,
         *,
@@ -2002,121 +2347,38 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         candidate_payload = self._normalize_warm_reuse_candidate(candidate) or {}
         reuse_contract = dict(candidate_payload.get("reuse_contract") or {})
         validation = self.validate_warm_reuse_contract(session_id=session_id, reuse_contract=reuse_contract)
-        missing_required_fields = list(validation.get("missing_required_fields") or [])
-        reserved_for_future = list(validation.get("reserved_future_fields") or [])
         validation_status = str(validation.get("status") or "unknown")
         resume_capability = str(validation.get("resume_capability") or "unknown")
-        attach_plan = None
-        attach_execution = None
-        attach_eligibility = None
-        attach_action = None
-        attach_resume = None
-        attached_stream: Iterator[dict[str, Any]] | None = None
-        if bool(validation.get("valid")):
-            if resume_capability == "worker_attach":
-                attach_plan = self.plan_worker_attach_handshake(
-                    session_id=session_id,
-                    requested_path=requested_path,
-                    candidate=candidate_payload,
-                    reuse_contract=reuse_contract,
-                    validation=validation,
-                )
-                attach_execution = self.execute_worker_attach(
-                    session_id=session_id,
-                    requested_path=requested_path,
-                    attach_plan=attach_plan,
-                )
-                attach_eligibility = self.decide_worker_attach_eligibility(
-                    validation=validation,
-                    attach_plan=attach_plan,
-                    attach_execution=attach_execution,
-                )
-                if isinstance(attach_eligibility, dict) and bool(attach_eligibility.get("eligible")):
-                    attach_action = self.execute_worker_attach_action(
-                        session_id=session_id,
-                        requested_path=requested_path,
-                        attach_eligibility=attach_eligibility,
-                        attach_execution=attach_execution,
-                    )
-                attach_action_status = str((attach_action or {}).get("status") or "")
-                if attach_action_status == "attach_action_handshake_succeeded":
-                    attach_resume, attached_stream = self._attempt_live_worker_attach_resume(
-                        session_id=session_id,
-                        requested_path=requested_path,
-                        reuse_contract=reuse_contract,
-                        attach_action=attach_action,
-                        user_id=user_id,
-                        message=message,
-                        # Same-chat warm attach resumes an already-live isolated worker.
-                        # Do not inject full DB history again or we can duplicate context inside
-                        # the reused runtime.
-                        conversation_history=[],
-                    )
-                    attach_resume_status = str((attach_resume or {}).get("status") or "")
-                    if attach_resume_status == "attach_action_attach_succeeded" and attached_stream is not None:
-                        attempt = "reuse_worker_attach_resume_streaming"
-                        detail = "warm reuse candidate passed validation, completed handshake, and attached to a live worker resume transport"
-                    elif attach_resume_status == "attach_action_attach_timeout":
-                        attempt = "reuse_worker_attach_resume_timeout"
-                        detail = "warm reuse candidate passed validation and handshake, but the live worker resume attach timed out and fell back safely"
-                    elif attach_resume_status == "attach_action_attach_failed":
-                        attempt = "reuse_worker_attach_resume_failed"
-                        detail = "warm reuse candidate passed validation and handshake, but the live worker resume attach failed and fell back safely"
-                    else:
-                        attempt = "reuse_worker_attach_resume_unavailable"
-                        detail = "warm reuse candidate passed validation and handshake, but no supported live worker resume transport was available"
-                elif attach_action_status == "attach_action_handshake_timeout":
-                    attempt = "reuse_worker_attach_handshake_timeout"
-                    detail = "warm reuse candidate passed validation, but the first live worker-attach handshake probe timed out and fell back safely"
-                elif attach_action_status == "attach_action_handshake_failed":
-                    attempt = "reuse_worker_attach_handshake_failed"
-                    detail = "warm reuse candidate passed validation, but the first live worker-attach handshake probe failed and fell back safely"
-                else:
-                    attempt = "reuse_worker_attach_not_supported_yet"
-                    detail = "warm reuse candidate passed validation and advertises worker_attach capability, but attach execution could not progress beyond readiness checks"
-            else:
-                attempt = "reuse_resume_not_supported_yet"
-                detail = "warm reuse candidate passed basic contract validation, but resume/handoff is not implemented yet"
-        elif validation_status == "missing_required_fields":
-            attempt = "reuse_contract_missing_required_fields"
-            detail = "warm reuse candidate is missing one or more required contract fields for a reuse attempt"
-        elif validation_status == "invalid_session_binding":
-            attempt = "reuse_contract_invalid_session_binding"
-            detail = "warm reuse candidate contract is bound to a different session than the attempted reuse target"
-        elif validation_status == "unsupported_contract_version":
-            attempt = "reuse_contract_unsupported_version"
-            detail = "warm reuse candidate contract version is not supported by the current validator"
-        else:
-            attempt = "reuse_contract_invalid"
-            detail = "warm reuse candidate contract failed validation"
-        payload = {
-            "event": "warm_reuse_attempt",
-            "session_id": str(session_id or ""),
-            "reason": str(reason or "unknown"),
-            "requested_path": str(requested_path or "unknown"),
-            "attempt": attempt,
-            "detail": detail,
-            "candidate": candidate_payload,
-            "reuse_contract": reuse_contract or None,
-            "validation": dict(validation),
-            "attach_plan": dict(attach_plan) if isinstance(attach_plan, dict) else None,
-            "attach_execution": dict(attach_execution) if isinstance(attach_execution, dict) else None,
-            "attach_eligibility": dict(attach_eligibility) if isinstance(attach_eligibility, dict) else None,
-            "attach_action": dict(attach_action) if isinstance(attach_action, dict) else None,
-            "attach_resume": dict(attach_resume) if isinstance(attach_resume, dict) else None,
-            "missing_required_fields": missing_required_fields,
-            "reserved_future_fields": reserved_for_future,
-            "policy": dict(policy),
-            "fallback_to": str(requested_path or "unknown"),
-            "fallback_reason": attempt,
-            "user_id": str(user_id or ""),
-            "message_length": len(str(message or "")),
-            "conversation_history_len": len(conversation_history or []),
-            "monotonic_ms": int(time.monotonic() * 1000),
-        }
-        self._warm_reuse_attempt_events.append(dict(payload))
-        if attached_stream is not None and attempt == "reuse_worker_attach_resume_streaming":
-            return attached_stream
+        artifacts = self._attempt_validated_warm_reuse(
+            session_id=session_id,
+            requested_path=requested_path,
+            candidate_payload=candidate_payload,
+            reuse_contract=reuse_contract,
+            validation=validation,
+            user_id=user_id,
+            message=message,
+        )
+        attempt, detail = self._describe_warm_reuse_attempt(
+            validation_status=validation_status,
+            resume_capability=resume_capability,
+            artifacts=artifacts,
+        )
+        self._record_warm_reuse_attempt(
+            session_id=session_id,
+            reason=reason,
+            requested_path=requested_path,
+            candidate_payload=candidate_payload,
+            reuse_contract=reuse_contract,
+            artifacts=artifacts,
+            attempt=attempt,
+            detail=detail,
+            policy=policy,
+            user_id=user_id,
+            message=message,
+            conversation_history=conversation_history,
+        )
+        if artifacts.attached_stream is not None and attempt == "reuse_worker_attach_resume_streaming":
+            return artifacts.attached_stream
         return None
 
     def record_warm_reuse_decision(
@@ -2440,6 +2702,222 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 if text:
                     yield text
 
+    def _stream_events_via_http_transport(
+        self,
+        *,
+        stream_url: str,
+        source: str,
+        transition_reason: str,
+        context: _StreamRequestContext,
+    ) -> Iterator[dict[str, Any]]:
+        self._record_transport_transition(
+            previous_path="none",
+            next_path=source,
+            reason=transition_reason,
+            session_id=context.session_id,
+            user_id=context.user_id,
+        )
+        yield {"type": "meta", "source": source}
+        built = []
+        started = time.perf_counter()
+        for chunk in self._stream_via_http(stream_url, user_id=context.user_id, message=context.cleaned_message):
+            if not chunk:
+                continue
+            built.append(chunk)
+            yield {"type": "chunk", "text": chunk}
+        reply = "".join(built).strip()
+        if not reply:
+            raise HermesClientError("Hermes stream endpoint returned an empty reply.")
+        yield {
+            "type": "done",
+            "reply": reply,
+            "source": source,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        }
+
+    def _attempt_stream_events_warm_reuse(self, context: _StreamRequestContext) -> Iterator[dict[str, Any]] | None:
+        if not context.session_id:
+            return None
+        reason = f"stream_start:{context.requested_path}"
+        warm_probe = self.probe_warm_session_candidate(context.session_id, reason=reason)
+        warm_candidate = warm_probe.get("candidate") if isinstance(warm_probe, dict) else None
+        warm_policy = None
+        if isinstance(warm_candidate, dict):
+            warm_policy = self.evaluate_warm_reuse_policy(
+                context.session_id,
+                reason=reason,
+                requested_path=context.requested_path,
+                candidate=warm_candidate,
+            )
+            if isinstance(warm_policy, dict) and bool(warm_policy.get("allowed")):
+                warm_reuse_events = self.attempt_warm_reuse(
+                    session_id=context.session_id,
+                    reason=reason,
+                    requested_path=context.requested_path,
+                    candidate=warm_candidate,
+                    policy=warm_policy,
+                    user_id=context.user_id,
+                    message=context.cleaned_message,
+                    conversation_history=context.conversation_history,
+                )
+                if warm_reuse_events is not None:
+                    return warm_reuse_events
+        self.record_warm_reuse_decision(
+            context.session_id,
+            reason=reason,
+            candidate=warm_candidate,
+            policy=warm_policy,
+        )
+        return None
+
+    def _stream_events_via_local_transport(self, context: _StreamRequestContext) -> Iterator[dict[str, Any]]:
+        recovered_fallback_history: list[dict[str, str]] = []
+        persistent_fallback_triggered = False
+        if self.direct_agent_enabled and self.persistent_sessions_enabled:
+            self._record_transport_transition(
+                previous_path="none",
+                next_path="agent-persistent",
+                reason="persistent_start",
+                session_id=context.session_id,
+                user_id=context.user_id,
+            )
+            try:
+                yield from self._stream_via_persistent_agent(
+                    user_id=context.user_id,
+                    message=context.cleaned_message,
+                    conversation_history=context.conversation_history,
+                    session_id=context.session_id,
+                )
+                return
+            except Exception as exc:  # broad-except-policy: persistent runtime failures must fall back to non-persistent transport
+                persistent_fallback_triggered = True
+                recovered_fallback_history = self._recover_fallback_history(
+                    session_id=context.session_id,
+                    conversation_history=context.conversation_history,
+                )
+                if context.session_id:
+                    retired = self._retire_warm_session_on_failure_signature(
+                        session_id=context.session_id,
+                        exc=exc,
+                        phase="persistent_runtime",
+                    )
+                    if not retired:
+                        self.evict_session(context.session_id)
+                self._record_transport_transition(
+                    previous_path="agent-persistent",
+                    next_path="agent" if self.direct_agent_enabled else "cli",
+                    reason=f"persistent_failure:{self._safe_failure_reason(exc)}",
+                    session_id=context.session_id,
+                    user_id=context.user_id,
+                )
+                logger.warning(
+                    "Persistent miniapp runtime failed; falling back to non-persistent path",
+                    extra={
+                        "session_id": context.session_id or "",
+                        "user_id": context.user_id,
+                        "error": str(exc),
+                        "fallback_to": "agent" if self.direct_agent_enabled else "cli",
+                        "recovered_history_len": len(recovered_fallback_history),
+                    },
+                    exc_info=True,
+                )
+
+        if self.direct_agent_enabled:
+            direct_transport_label = "agent-worker-isolated" if self._worker_owned_warm_continuity_enabled() else "agent"
+            self._record_transport_transition(
+                previous_path="agent-persistent" if persistent_fallback_triggered else "none",
+                next_path=direct_transport_label,
+                reason="direct_start",
+                session_id=context.session_id,
+                user_id=context.user_id,
+            )
+            try:
+                agent_history = recovered_fallback_history or context.conversation_history
+                for event in self._stream_via_agent(
+                    user_id=context.user_id,
+                    message=context.cleaned_message,
+                    conversation_history=agent_history,
+                    session_id=context.session_id,
+                ):
+                    if str(event.get("type") or "") != "done":
+                        yield event
+                        continue
+
+                    done_event = dict(event)
+                    checkpoint_payload = done_event.get("runtime_checkpoint")
+                    has_checkpoint = isinstance(checkpoint_payload, list) and len(checkpoint_payload) > 0
+                    if not has_checkpoint:
+                        synthesized = self._build_fallback_runtime_checkpoint(
+                            recovered_history=self._normalize_conversation_history(agent_history),
+                            user_message=context.cleaned_message,
+                            assistant_reply=str(done_event.get("reply") or ""),
+                        )
+                        if synthesized:
+                            done_event["runtime_checkpoint"] = synthesized
+                    yield done_event
+                return
+            except HermesClientError as exc:
+                if context.session_id:
+                    self._retire_warm_session_on_failure_signature(
+                        session_id=context.session_id,
+                        exc=exc,
+                        phase="direct_agent",
+                    )
+                if self._is_child_spawn_cap_error(exc):
+                    self._record_transport_transition(
+                        previous_path="agent",
+                        next_path="agent",
+                        reason=f"direct_failure_no_cli_fallback:{self._safe_failure_reason(exc)}",
+                        session_id=context.session_id,
+                        user_id=context.user_id,
+                    )
+                    raise
+                self._record_transport_transition(
+                    previous_path="agent",
+                    next_path="cli",
+                    reason=f"direct_failure:{self._safe_failure_reason(exc)}",
+                    session_id=context.session_id,
+                    user_id=context.user_id,
+                )
+
+        self._record_transport_transition(
+            previous_path="none" if not self.direct_agent_enabled else "agent",
+            next_path="cli",
+            reason="cli_start",
+            session_id=context.session_id,
+            user_id=context.user_id,
+        )
+        yield from self._stream_via_cli_progress(message=context.cleaned_message, session_id=context.session_id)
+
+    def _stream_events_via_configured_remote_transport(self, context: _StreamRequestContext) -> Iterator[dict[str, Any]] | None:
+        if self.stream_url:
+            return self._stream_events_via_http_transport(
+                stream_url=self.stream_url,
+                source="http-stream",
+                transition_reason="stream_url_start",
+                context=context,
+            )
+        if self.api_url:
+            return self._stream_events_via_http_transport(
+                stream_url=self.api_url,
+                source="http",
+                transition_reason="api_stream_start",
+                context=context,
+            )
+        return None
+
+    def _stream_events_after_remote_transport(self, context: _StreamRequestContext) -> Iterator[dict[str, Any]]:
+        self._record_session_launch(
+            session_id=context.session_id,
+            requested_path=context.requested_path,
+            message=context.cleaned_message,
+            user_id=context.user_id,
+        )
+        warm_reuse_events = self._attempt_stream_events_warm_reuse(context)
+        if warm_reuse_events is not None:
+            return warm_reuse_events
+        return self._stream_events_via_local_transport(context)
+
     def stream_events(
         self,
         user_id: str,
@@ -2460,218 +2938,27 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         if not cleaned:
             raise HermesClientError("Message cannot be empty.")
 
-        if self.stream_url:
-            self._record_transport_transition(
-                previous_path="none",
-                next_path="http-stream",
-                reason="stream_url_start",
-                session_id=session_id,
-                user_id=user_id,
-            )
-            yield {"type": "meta", "source": "http-stream"}
-            built = []
-            started = time.perf_counter()
-            for chunk in self._stream_via_http(self.stream_url, user_id=user_id, message=cleaned):
-                if not chunk:
-                    continue
-                built.append(chunk)
-                yield {"type": "chunk", "text": chunk}
-            reply = "".join(built).strip()
-            if not reply:
-                raise HermesClientError("Hermes stream endpoint returned an empty reply.")
-            yield {
-                "type": "done",
-                "reply": reply,
-                "source": "http-stream",
-                "latency_ms": int((time.perf_counter() - started) * 1000),
-            }
-            return
+        context = _StreamRequestContext(
+            user_id=user_id,
+            cleaned_message=cleaned,
+            conversation_history=conversation_history,
+            session_id=session_id,
+            requested_path=self._selected_transport(),
+        )
 
-        if self.api_url:
-            self._record_transport_transition(
-                previous_path="none",
-                next_path="http",
-                reason="api_stream_start",
-                session_id=session_id,
-                user_id=user_id,
-            )
+        remote_events = self._stream_events_via_configured_remote_transport(context)
+        if remote_events is not None:
             try:
-                yielded_any = False
-                built = []
-                started = time.perf_counter()
-                yield {"type": "meta", "source": "http"}
-                for chunk in self._stream_via_http(self.api_url, user_id=user_id, message=cleaned):
-                    yielded_any = True
-                    built.append(chunk)
-                    yield {"type": "chunk", "text": chunk}
-                if yielded_any:
-                    reply = "".join(built).strip()
-                    yield {
-                        "type": "done",
-                        "reply": reply,
-                        "source": "http",
-                        "latency_ms": int((time.perf_counter() - started) * 1000),
-                    }
-                    return
+                yield from remote_events
+                return
             except HermesClientError as exc:
                 self._record_transport_transition(
-                    previous_path="http",
+                    previous_path="http-stream" if self.stream_url else "http",
                     next_path="agent" if self.direct_agent_enabled else "cli",
                     reason=f"http_stream_failure:{self._safe_failure_reason(exc)}",
-                    session_id=session_id,
-                    user_id=user_id,
+                    session_id=context.session_id,
+                    user_id=context.user_id,
                 )
 
-        recovered_fallback_history: list[dict[str, str]] = []
-        persistent_fallback_triggered = False
-        requested_path = self._selected_transport()
-        self._record_session_launch(session_id=session_id, requested_path=requested_path, message=cleaned, user_id=user_id)
-        if session_id:
-            warm_probe = self.probe_warm_session_candidate(session_id, reason=f"stream_start:{requested_path}")
-            warm_candidate = warm_probe.get("candidate") if isinstance(warm_probe, dict) else None
-            warm_policy = None
-            if isinstance(warm_candidate, dict):
-                warm_policy = self.evaluate_warm_reuse_policy(
-                    session_id,
-                    reason=f"stream_start:{requested_path}",
-                    requested_path=requested_path,
-                    candidate=warm_candidate,
-                )
-                if isinstance(warm_policy, dict) and bool(warm_policy.get("allowed")):
-                    warm_reuse_events = self.attempt_warm_reuse(
-                        session_id=session_id,
-                        reason=f"stream_start:{requested_path}",
-                        requested_path=requested_path,
-                        candidate=warm_candidate,
-                        policy=warm_policy,
-                        user_id=user_id,
-                        message=cleaned,
-                        conversation_history=conversation_history,
-                    )
-                    if warm_reuse_events is not None:
-                        yield from warm_reuse_events
-                        return
-            self.record_warm_reuse_decision(
-                session_id,
-                reason=f"stream_start:{requested_path}",
-                candidate=warm_candidate,
-                policy=warm_policy,
-            )
-
-        if self.direct_agent_enabled and self.persistent_sessions_enabled:
-            self._record_transport_transition(
-                previous_path="none",
-                next_path="agent-persistent",
-                reason="persistent_start",
-                session_id=session_id,
-                user_id=user_id,
-            )
-            try:
-                yield from self._stream_via_persistent_agent(
-                    user_id=user_id,
-                    message=cleaned,
-                    conversation_history=conversation_history,
-                    session_id=session_id,
-                )
-                return
-            except Exception as exc:  # broad-except-policy: persistent runtime failures must fall back to non-persistent transport
-                persistent_fallback_triggered = True
-                recovered_fallback_history = self._recover_fallback_history(
-                    session_id=session_id,
-                    conversation_history=conversation_history,
-                )
-                if session_id:
-                    retired = self._retire_warm_session_on_failure_signature(
-                        session_id=session_id,
-                        exc=exc,
-                        phase="persistent_runtime",
-                    )
-                    if not retired:
-                        self.evict_session(session_id)
-                self._record_transport_transition(
-                    previous_path="agent-persistent",
-                    next_path="agent" if self.direct_agent_enabled else "cli",
-                    reason=f"persistent_failure:{self._safe_failure_reason(exc)}",
-                    session_id=session_id,
-                    user_id=user_id,
-                )
-                # Fall back to existing subprocess/CLI path when persistent runtime fails.
-                logger.warning(
-                    "Persistent miniapp runtime failed; falling back to non-persistent path",
-                    extra={
-                        "session_id": session_id or "",
-                        "user_id": user_id,
-                        "error": str(exc),
-                        "fallback_to": "agent" if self.direct_agent_enabled else "cli",
-                        "recovered_history_len": len(recovered_fallback_history),
-                    },
-                    exc_info=True,
-                )
-
-        if self.direct_agent_enabled:
-            direct_transport_label = "agent-worker-isolated" if self._worker_owned_warm_continuity_enabled() else "agent"
-            self._record_transport_transition(
-                previous_path="agent-persistent" if persistent_fallback_triggered else "none",
-                next_path=direct_transport_label,
-                reason="direct_start",
-                session_id=session_id,
-                user_id=user_id,
-            )
-            try:
-                agent_history = recovered_fallback_history or conversation_history
-                for event in self._stream_via_agent(
-                    user_id=user_id,
-                    message=cleaned,
-                    conversation_history=agent_history,
-                    session_id=session_id,
-                ):
-                    if str(event.get("type") or "") != "done":
-                        yield event
-                        continue
-
-                    done_event = dict(event)
-                    checkpoint_payload = done_event.get("runtime_checkpoint")
-                    has_checkpoint = isinstance(checkpoint_payload, list) and len(checkpoint_payload) > 0
-                    if not has_checkpoint:
-                        synthesized = self._build_fallback_runtime_checkpoint(
-                            recovered_history=self._normalize_conversation_history(agent_history),
-                            user_message=cleaned,
-                            assistant_reply=str(done_event.get("reply") or ""),
-                        )
-                        if synthesized:
-                            done_event["runtime_checkpoint"] = synthesized
-                    yield done_event
-                return
-            except HermesClientError as exc:
-                if session_id:
-                    self._retire_warm_session_on_failure_signature(
-                        session_id=session_id,
-                        exc=exc,
-                        phase="direct_agent",
-                    )
-                if self._is_child_spawn_cap_error(exc):
-                    self._record_transport_transition(
-                        previous_path="agent",
-                        next_path="agent",
-                        reason=f"direct_failure_no_cli_fallback:{self._safe_failure_reason(exc)}",
-                        session_id=session_id,
-                        user_id=user_id,
-                    )
-                    raise
-                self._record_transport_transition(
-                    previous_path="agent",
-                    next_path="cli",
-                    reason=f"direct_failure:{self._safe_failure_reason(exc)}",
-                    session_id=session_id,
-                    user_id=user_id,
-                )
-
-        self._record_transport_transition(
-            previous_path="none" if not self.direct_agent_enabled else "agent",
-            next_path="cli",
-            reason="cli_start",
-            session_id=session_id,
-            user_id=user_id,
-        )
-        yield from self._stream_via_cli_progress(message=cleaned, session_id=session_id)
+        yield from self._stream_events_after_remote_transport(context)
         return

@@ -150,3 +150,40 @@ def test_mini_app_route_exposes_dev_auth_flag(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert captured["dev_auth_enabled"] is True
     assert captured["bootstrap_version"] == "r1"
+
+
+
+def test_mini_app_route_exposes_mobile_tab_carousel_feature_flag(monkeypatch, tmp_path) -> None:
+    app, public_bp = _build_app(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    def fake_render_template(_name: str, **kwargs):
+        captured.update(kwargs)
+        return "<html>ok</html>"
+
+    monkeypatch.setattr(server_public_routes, "render_template", fake_render_template)
+
+    register_public_routes(
+        public_bp,
+        app=app,
+        allowed_skins={"terminal", "minimal"},
+        skin_cookie_name="skin",
+        max_message_len=4096,
+        dev_reload=False,
+        dev_reload_interval_ms=300,
+        request_debug=False,
+        dev_auth_enabled=False,
+        mobile_tab_carousel_enabled=True,
+        static_no_store_filenames={"app.js"},
+        asset_version_fn=lambda _: "v1",
+        dev_reload_version_fn=lambda: "r1",
+        ensure_csp_nonce_fn=lambda: "nonce",
+    )
+    app.register_blueprint(public_bp)
+    client = app.test_client()
+
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert captured["mobile_tab_carousel_enabled"] is True

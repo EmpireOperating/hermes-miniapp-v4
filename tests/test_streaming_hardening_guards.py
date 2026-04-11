@@ -128,8 +128,11 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "const reconnectDisplayTimerByChat = new Map();" in runtime_latency_helpers_js
     assert "const chat = activeKey ? chats.get(activeKey) : null;" in runtime_latency_helpers_js
     assert "const hasLiveController = activeKey && typeof hasLiveStreamController === 'function'" in runtime_latency_helpers_js
-    assert "if (activeKey && !hasLiveController) {" in runtime_latency_helpers_js
+    assert "const preserveLiveLatency = activeKey && !hasLiveController && shouldPreserveLiveLatencyDuringPendingHandoff(activeKey);" in runtime_latency_helpers_js
+    assert "if (activeKey && !hasLiveController && !preserveLiveLatency) {" in runtime_latency_helpers_js
     assert "clearLiveLatency(activeKey);" in runtime_latency_helpers_js
+    assert "if (preserveLiveLatency) {" in runtime_latency_helpers_js
+    assert "renderLiveLatencyFromStart(activeKey);" in runtime_latency_helpers_js
     assert "function beginLiveLatency(chatId, { elapsedMs = null } = {})" in runtime_latency_helpers_js
     assert "function markToolActivity(chatId)" in runtime_latency_helpers_js
     assert "function markStreamComplete(chatId, latencyText = \"--\")" in runtime_latency_helpers_js
@@ -156,17 +159,17 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "const resumeAttemptedAtByChat = new Map();" in app_js
     assert "const resumeCooldownUntilByChat = new Map();" in app_js
     assert "const resumeInFlightByChat = new Set();" in app_js
-    assert "if (isReconnectResumeBlocked?.(key)) {" in stream_controller_js
+    assert "if (deps.isReconnectResumeBlocked?.(key)) {" in stream_controller_js
     assert "if (cooldownUntil > now) {" in stream_controller_js
-    assert "if (resumeInFlightByChat?.has?.(key)) {" in stream_controller_js
+    assert "if (deps.resumeInFlightByChat?.has?.(key)) {" in stream_controller_js
     assert "if (lastAttemptAt > 0 && (now - lastAttemptAt) < RESUME_REATTACH_MIN_INTERVAL_MS) {" in stream_controller_js
     assert "appendInlineToolTrace," in app_js
-    assert "const reconnectBudget = consumeReconnectResumeBudget?.(key) || {" in stream_controller_js
+    assert "const reconnectBudget = deps.consumeReconnectResumeBudget?.(key) || {" in stream_controller_js
     assert "if (!reconnectBudget.allowed) {" in stream_controller_js
     assert "appendSystemMessage(`Auto-reconnect paused in '${chatLabel(key)}' after ${reconnectBudget.maxAttempts} failed resume cycles.`" in stream_controller_js
-    assert "resumeInFlightByChat?.add?.(key);" in stream_controller_js
-    assert "resumeAttemptedAtByChat?.set?.(key, now);" in stream_controller_js
-    assert "resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);" in stream_controller_js
+    assert "deps.resumeInFlightByChat?.add?.(key);" in stream_controller_js
+    assert "deps.resumeAttemptedAtByChat?.set?.(key, now);" in stream_controller_js
+    assert "deps.resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);" in stream_controller_js
     assert "appendSystemMessage(`Could not reconnect '${chatLabel(key)}': ${error.message}`, key);" in stream_controller_js
     assert "appendSystemMessage(`Reconnect recovery is paused for '${chatLabel(key)}'. Send a new message to try again.`, key);" in stream_controller_js
     assert "appendSystemMessage(`Auto-reconnect paused in '${chatLabel(key)}' after ${reconnectBudget.maxAttempts} failed resume cycles.`, key);" in stream_controller_js

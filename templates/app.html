@@ -134,7 +134,11 @@
           </div>
 
           <div class="tabs-wrap">
+            <div id="chat-tabs-overview" class="chat-tabs__overview" role="toolbar" aria-label="Chat overview" hidden></div>
+            <div id="chat-tabs-hidden-left" class="chat-tabs__edge-unread chat-tabs__edge-unread--left" aria-hidden="true" hidden></div>
+            <div id="chat-tabs-hidden-right" class="chat-tabs__edge-unread chat-tabs__edge-unread--right" aria-hidden="true" hidden></div>
             <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Chat tabs"></div>
+            <div id="chat-tabs-hidden-unread" class="chat-tabs__hidden-unread" aria-live="polite" hidden></div>
             <div id="chat-tab-context-menu" class="chat-tab-context-menu" role="menu" aria-label="Chat tab actions" hidden>
               <button type="button" id="chat-tab-context-fork" class="chat-tab-context-menu__item" role="menuitem">Branch chat</button>
             </div>
@@ -277,6 +281,9 @@
       window.__HERMES_FILE_PREVIEW__ = {
         enabled: {{ 'true' if file_preview_enabled else 'false' }},
         allowedRoots: {{ file_preview_allowed_roots_json|safe }}
+      };
+      window.__HERMES_FEATURES__ = {
+        mobileTabCarousel: {{ 'true' if mobile_tab_carousel_enabled else 'false' }}
       };
     </script>
     <script defer src="/static/runtime_unread_helpers.js?v={{ runtime_unread_helpers_version }}"></script>

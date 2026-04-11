@@ -257,13 +257,13 @@ test('applyAuthBootstrap updates auth-facing UI and history state', () => {
   assert.equal(harness.getOperatorDisplayName(), 'desktop');
   assert.equal(harness.getSkin(), 'oracle');
   assert.equal(harness.getActiveChatId(), 5);
+  assert.deepEqual(harness.pinnedSyncs, [[{ id: 5 }]]);
   assert.deepEqual(harness.histories.get(5), [{
     role: 'system',
     body: "You're all set. This chat is empty.",
     created_at: harness.histories.get(5)[0].created_at,
   }]);
   assert.deepEqual(harness.upsertedChats, [{ id: 5, pending: false }]);
-  assert.deepEqual(harness.pinnedSyncs, []);
   assert.equal(harness.localMessages.length, 0);
   assert.equal(harness.getRoleLabelsRefreshed(), 1);
   assert.equal(harness.getWarmCalls(), 0);
@@ -339,7 +339,7 @@ test('applyAuthBootstrap supports explicit no-active-chat state', () => {
   assert.deepEqual(harness.renderedMessages, []);
   assert.deepEqual(harness.localMessages, []);
   assert.equal(harness.getWarmCalls(), 0);
-  assert.deepEqual(harness.pinnedSyncs, []);
+  assert.deepEqual(harness.pinnedSyncs, [[{ id: 11 }]]);
 });
 
 test('applyAuthBootstrap restores fresh local pending snapshot and force-resumes when server bootstrap briefly says not pending', async () => {
@@ -483,6 +483,105 @@ test('fetchAuthBootstrapWithRetry retries retryable auth bootstrap failures and 
     'auth-bootstrap-attempt-start',
     'auth-bootstrap-ok',
   ]);
+});
+
+test('fetchAuthBootstrapWithRetry records terminal thrown errors as failed bootstrap stage', async () => {
+  const harness = buildHarness({
+    authBootstrapMaxAttempts: 2,
+    fetchImpl: async () => {
+      throw new Error('network down');
+    },
+  });
+
+  await assert.rejects(
+    harness.controller.fetchAuthBootstrapWithRetry(),
+    /network down/,
+  );
+
+  assert.deepEqual(harness.getBootMetrics(), ['authBootstrapStartMs', 'authBootstrapErrorMs']);
+  assert.deepEqual(harness.getBootStages().map((entry) => entry.stage), [
+    'auth-bootstrap-attempt-start',
+    'auth-bootstrap-attempt-error',
+    'auth-bootstrap-retry-scheduled',
+    'auth-bootstrap-attempt-start',
+    'auth-bootstrap-attempt-error',
+    'auth-bootstrap-failed',
+  ]);
+  assert.deepEqual(harness.getBootStages().at(-1), {
+    stage: 'auth-bootstrap-failed',
+    details: {
+      attempt: 2,
+      status: 0,
+      retryable: false,
+      message: 'network down',
+    },
+  });
+});
+
+test('signInWithDevAuth posts stored defaults and applies bootstrap on success', async () => {
+  let devAuthRequest = null;
+  const harness = buildHarness({
+    fetchImpl: async (url, options = {}) => {
+      devAuthRequest = { url, options };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          user: { id: 9001, username: 'desktop', display_name: 'Desktop Tester' },
+          skin: 'oracle',
+          active_chat_id: null,
+          chats: [],
+          pinned_chats: [],
+          history: [],
+        }),
+      };
+    },
+  });
+  harness.controller.writeDevAuthDefaults({
+    secret: 'expected-secret',
+    userId: '9001',
+    displayName: 'Desktop Tester',
+    username: 'desktop',
+  });
+
+  const signedIn = await harness.controller.signInWithDevAuth({ interactive: false });
+
+  assert.equal(signedIn, true);
+  assert.equal(devAuthRequest.url, '/api/dev/auth');
+  assert.equal(devAuthRequest.options.headers['X-Dev-Auth'], 'expected-secret');
+  assert.deepEqual(JSON.parse(devAuthRequest.options.body), {
+    user_id: 9001,
+    display_name: 'Desktop Tester',
+    username: 'desktop',
+    allow_empty: true,
+  });
+  assert.equal(harness.authStatus.textContent, 'Signed in as desktop');
+  assert.equal(harness.getOperatorDisplayName(), 'desktop');
+  assert.equal(harness.getSkin(), 'oracle');
+});
+
+test('signInWithDevAuth surfaces dev sign-in failures without mutating auth state', async () => {
+  const harness = buildHarness({
+    fetchImpl: async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({ ok: false, error: 'Invalid dev auth secret.' }),
+    }),
+  });
+  harness.controller.writeDevAuthDefaults({
+    secret: 'bad-secret',
+    userId: '9001',
+    displayName: 'Desktop Tester',
+    username: 'desktop',
+  });
+
+  const signedIn = await harness.controller.signInWithDevAuth({ interactive: false });
+
+  assert.equal(signedIn, false);
+  assert.equal(harness.authStatus.textContent, 'Dev sign-in failed');
+  assert.deepEqual(harness.appendedSystemMessages, ['Invalid dev auth secret.']);
+  assert.equal(harness.getOperatorDisplayName(), '');
 });
 
 test('maybeRefreshForBootstrapVersionMismatch refreshes once when server version changes', async () => {

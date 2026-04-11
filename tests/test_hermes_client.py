@@ -1277,6 +1277,40 @@ def test_attempt_live_worker_attach_resume_succeeds_over_unix_socket(monkeypatch
     assert events[-1]["reply"] == "attached ok"
 
 
+def test_resolve_attach_resume_transport_requires_supported_socket_contract(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    client = hermes_client.HermesClient()
+
+    unavailable = client._resolve_attach_resume_transport(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        reuse_contract={"transport_kind": "http", "resume_token": "token-123"},
+        attach_action={"status": "attach_action_handshake_succeeded"},
+    )
+
+    assert unavailable["status"] == "attach_action_attach_unavailable"
+    assert unavailable["reason"] == "unsupported_transport_kind"
+    assert unavailable["resume_token_present"] is True
+
+    resolved = client._resolve_attach_resume_transport(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        reuse_contract={
+            "transport_kind": "unix_socket_jsonl",
+            "worker_endpoint": "/tmp/fake.sock",
+            "resume_token": "token-123",
+            "resume_deadline_ms": int(time.monotonic() * 1000) + 5000,
+        },
+        attach_action={"status": "attach_action_handshake_succeeded"},
+    )
+
+    assert resolved["status"] == "attach_action_attach_ready"
+    assert resolved["transport_kind"] == "unix_socket_jsonl"
+    assert resolved["worker_endpoint"] == "/tmp/fake.sock"
+    assert resolved["resume_token"] == "token-123"
+
+
 def test_attempt_warm_reuse_returns_live_attach_stream_when_transport_available(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
     monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")

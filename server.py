@@ -100,6 +100,7 @@ ENABLE_HSTS = CONFIG.enable_hsts
 OPERATOR_DEBUG = CONFIG.operator_debug
 REQUEST_DEBUG = CONFIG.request_debug
 STREAM_TIMING_DEBUG = CONFIG.stream_timing_debug
+MOBILE_TAB_CAROUSEL_ENABLED = CONFIG.mobile_tab_carousel_enabled
 DEV_AUTH_SECRET = CONFIG.dev_auth_secret
 JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
 JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
@@ -496,6 +497,7 @@ register_public_routes(
     dev_reload_interval_ms=DEV_RELOAD_INTERVAL_MS,
     request_debug=REQUEST_DEBUG,
     dev_auth_enabled_fn=_dev_auth_enabled,
+    mobile_tab_carousel_enabled=MOBILE_TAB_CAROUSEL_ENABLED,
     file_preview_enabled=_FILE_PREVIEW_ENABLED,
     file_preview_allowed_roots=_FILE_PREVIEW_ALLOWED_ROOTS,
     static_no_store_filenames=STATIC_NO_STORE_FILENAMES,

@@ -317,7 +317,36 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert render_trace_src in page
     assert file_preview_src in page
     assert app_src in page
-    assert page.index(runtime_unread_src) < page.index(runtime_latency_src) < page.index(runtime_history_src) < page.index(runtime_src) < page.index(shared_src) < page.index(chat_ui_src) < page.index(chat_tabs_src) < page.index(actions_src) < page.index(stream_state_src) < page.index(stream_controller_src) < page.index(composer_src) < page.index(bootstrap_auth_src) < page.index(chat_history_src) < page.index(chat_admin_src) < page.index(visibility_skin_src) < page.index(startup_bindings_src) < page.index(startup_metrics_src) < page.index(render_trace_text_src) < page.index(render_trace_debug_src) < page.index(render_trace_message_src) < page.index(render_trace_history_src) < page.index(render_trace_src) < page.index(interaction_src) < page.index(app_src) < page.index(keyboard_src) < page.index(shell_ui_src) < page.index(composer_viewport_src) < page.index(file_preview_src)
+    runtime_unread_pos = page.rindex(runtime_unread_src)
+    runtime_latency_pos = page.rindex(runtime_latency_src)
+    runtime_history_pos = page.rindex(runtime_history_src)
+    runtime_pos = page.rindex(runtime_src)
+    shared_pos = page.rindex(shared_src)
+    chat_ui_pos = page.rindex(chat_ui_src)
+    chat_tabs_pos = page.rindex(chat_tabs_src)
+    stream_state_pos = page.rindex(stream_state_src)
+    stream_controller_pos = page.rindex(stream_controller_src)
+    composer_pos = page.rindex(composer_src)
+    bootstrap_auth_pos = page.rindex(bootstrap_auth_src)
+    chat_history_pos = page.rindex(chat_history_src)
+    startup_bindings_pos = page.rindex(startup_bindings_src)
+    startup_metrics_pos = page.rindex(startup_metrics_src)
+    render_trace_text_pos = page.rindex(render_trace_text_src)
+    render_trace_debug_pos = page.rindex(render_trace_debug_src)
+    render_trace_message_pos = page.rindex(render_trace_message_src)
+    render_trace_history_pos = page.rindex(render_trace_history_src)
+    render_trace_pos = page.rindex(render_trace_src)
+    app_pos = page.rindex(app_src)
+    chat_admin_pos = page.rindex(chat_admin_src)
+    interaction_pos = page.rindex(interaction_src)
+    actions_pos = page.rindex(actions_src)
+    keyboard_pos = page.rindex(keyboard_src)
+    shell_ui_pos = page.rindex(shell_ui_src)
+    composer_viewport_pos = page.rindex(composer_viewport_src)
+    file_preview_pos = page.rindex(file_preview_src)
+    visibility_skin_pos = page.rindex(visibility_skin_src)
+
+    assert runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_bindings_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < app_pos < chat_admin_pos < interaction_pos < actions_pos < keyboard_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
 
 
 def test_app_hides_dev_stream_and_source_pills_from_main_ui(monkeypatch, tmp_path) -> None:
@@ -938,7 +967,7 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "chatAdminController.handleTabOverflowTriggerClick(event)" in app_script
     assert "chatAdminController.handleGlobalChatContextMenuDismiss(event)" in app_script
     assert "chatAdminController.handleTabContextForkClick(event)" in app_script
-    assert 'throw new Error("HermesMiniappChatAdmin is required before app.js")' in app_script
+    assert "createDeferredControllerHelper('HermesMiniappChatAdmin')" in app_script
     assert "HermesMiniappShellUI" in shell_ui_script
     assert "function createController(deps)" in shell_ui_script
     assert "function syncDebugOnlyPillVisibility()" in shell_ui_script
@@ -965,9 +994,9 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "function handleVisibilityChange()" in visibility_skin_script
     assert "visibilitySkinHelpers.createController({" in app_script
     assert "return visibilitySkinController.saveSkinPreference(skin);" in app_script
-    assert 'throw new Error("HermesMiniappVisibilitySkin is required before app.js")' in app_script
-    assert "HermesMiniappStartupBindings" in startup_bindings_script
+    assert "createDeferredControllerHelper('HermesMiniappVisibilitySkin')" in app_script
     assert "function createController(deps)" in startup_bindings_script
+
     assert "function installCoreEventBindings()" in startup_bindings_script
     assert "function getMissingBootstrapBindings()" in startup_bindings_script
     assert "function reportBootstrapMismatch(reason, details = [])" in startup_bindings_script
@@ -1172,6 +1201,13 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     assert 'if (pinEl) {' in chat_ui_script
     assert 'pinEl.textContent = chat.is_pinned ? "📌" : "";' in chat_ui_script
     assert "pinChatButton.textContent = chat?.is_pinned ? 'Unpin chat' : 'Pin chat';" in chat_tabs_script
+    assert 'id="chat-tabs-overview"' in template
+    assert 'id="chat-tabs-hidden-unread"' in template
+    assert 'window.__HERMES_FEATURES__ = {' in template
+    assert 'mobileTabCarousel: {{ \'true\' if mobile_tab_carousel_enabled else \'false\' }}' in template
+    assert 'chat-tabs--mobile-carousel' in chat_tabs_script
+    assert 'renderMobileTabOverview' in chat_tabs_script
+    assert 'openChat = async () => {}' in chat_tabs_script
 
     # Close tab should be silent (no confirm helper UX); it only removes from active tabs via API.
     # Pinned chats should remain visible in the pinned section after close.

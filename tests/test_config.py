@@ -194,3 +194,11 @@ def test_config_uses_centralized_runtime_limit_defaults(monkeypatch) -> None:
     assert cfg.job_event_history_max_jobs == DEFAULT_JOB_EVENT_HISTORY_MAX_JOBS
     assert cfg.job_event_history_ttl_seconds == DEFAULT_JOB_EVENT_HISTORY_TTL_SECONDS
     assert cfg.job_stall_timeout_seconds >= MIN_JOB_STALL_TIMEOUT_SECONDS
+
+
+def test_config_reads_mobile_tab_carousel_feature_flag(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_MOBILE_TAB_CAROUSEL", "1")
+
+    cfg = _cfg()
+
+    assert cfg.mobile_tab_carousel_enabled is True

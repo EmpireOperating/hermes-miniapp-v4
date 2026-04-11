@@ -433,14 +433,181 @@
     };
   }
 
-  function createStreamTranscriptController(deps, sessionController) {
+  function createTranscriptSignatureHelpers() {
+    function latestAssistantMessage(history) {
+      const items = Array.isArray(history) ? history : [];
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        const role = String(item?.role || '').toLowerCase();
+        if (role !== 'hermes' && role !== 'assistant') continue;
+        return item;
+      }
+      return null;
+    }
+
+    function latestAssistantRenderSignature(history) {
+      const item = latestAssistantMessage(history);
+      if (!item) {
+        return '';
+      }
+      const role = String(item?.role || '').toLowerCase();
+      const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
+      const fileRefSignature = fileRefs
+        .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
+        .join('|');
+      return [
+        role,
+        String(item?.body || ''),
+        item?.pending ? 'pending' : 'final',
+        fileRefSignature,
+      ].join('::');
+    }
+
+    function preserveLatestCompletedAssistantMessage(previousHistory, nextHistory) {
+      const previousAssistant = latestAssistantMessage(previousHistory);
+      const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
+      const previousBody = String(previousAssistant?.body || '').trim();
+      if (!previousAssistant || !previousBody) {
+        return incoming;
+      }
+      const matchingIncomingIndex = incoming.findIndex((item) => {
+        const role = String(item?.role || '').toLowerCase();
+        if (role !== 'hermes' && role !== 'assistant') return false;
+        return String(item?.body || '').trim() === previousBody;
+      });
+      if (matchingIncomingIndex >= 0) {
+        const candidate = incoming[matchingIncomingIndex] || {};
+        incoming[matchingIncomingIndex] = {
+          ...candidate,
+          pending: false,
+        };
+        return incoming;
+      }
+      incoming.push({
+        ...previousAssistant,
+        pending: false,
+      });
+      return incoming;
+    }
+
+    function transcriptRenderSignature(history) {
+      const items = Array.isArray(history) ? history : [];
+      return items
+        .filter((item) => {
+          const role = String(item?.role || '').toLowerCase();
+          return role === 'user' || role === 'tool' || role === 'hermes' || role === 'assistant';
+        })
+        .map((item) => {
+          const role = String(item?.role || '').toLowerCase();
+          const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
+          const fileRefSignature = fileRefs
+            .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
+            .join('|');
+          return [
+            role,
+            String(item?.body || ''),
+            item?.pending ? 'pending' : 'final',
+            item?.collapsed ? 'collapsed' : 'expanded',
+            fileRefSignature,
+          ].join('::');
+        })
+        .join('||');
+    }
+
+    return {
+      latestAssistantRenderSignature,
+      preserveLatestCompletedAssistantMessage,
+      transcriptRenderSignature,
+    };
+  }
+
+  function createTranscriptHydrationController(deps, signatureHelpers) {
+    const {
+      loadChatHistory,
+      getActiveChatId,
+      clearStreamCursor,
+      clearPendingStreamSnapshot,
+      upsertChat,
+      histories,
+      mergeHydratedHistory,
+      renderMessages,
+      renderTraceLog,
+    } = deps;
+    const {
+      latestAssistantRenderSignature,
+      preserveLatestCompletedAssistantMessage,
+      transcriptRenderSignature,
+    } = signatureHelpers;
+
+    async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {}) {
+      const key = Number(chatId);
+      if (!key || typeof loadChatHistory !== "function") return;
+      clearStreamCursor?.(key);
+      clearPendingStreamSnapshot?.(key);
+      try {
+        const hydrated = await loadChatHistory(key, { activate: Number(getActiveChatId()) === key });
+        const hydratedChat = hydrated && typeof hydrated === "object" && hydrated.chat && typeof hydrated.chat === "object"
+          ? { ...hydrated.chat }
+          : hydrated?.chat;
+        if (forceCompleted && hydratedChat && typeof hydratedChat === "object") {
+          hydratedChat.pending = false;
+        }
+        if (typeof upsertChat === "function") {
+          upsertChat(hydratedChat);
+        }
+        const previousHistory = histories?.get?.(key) || [];
+        const previousAssistantSignature = latestAssistantRenderSignature(previousHistory);
+        const previousTranscriptSignature = transcriptRenderSignature(previousHistory);
+        let nextHistory = typeof mergeHydratedHistory === "function"
+          ? mergeHydratedHistory({
+            previousHistory,
+            nextHistory: hydrated.history || [],
+            chatPending: forceCompleted ? false : Boolean(hydratedChat?.pending),
+            preserveCompletedToolTrace: Boolean(forceCompleted),
+          })
+          : (hydrated.history || []);
+        if (forceCompleted) {
+          nextHistory = preserveLatestCompletedAssistantMessage(previousHistory, nextHistory);
+        }
+        histories?.set?.(key, nextHistory);
+        const nextAssistantSignature = latestAssistantRenderSignature(nextHistory);
+        const nextTranscriptSignature = transcriptRenderSignature(nextHistory);
+        const shouldRenderActiveChat = Number(getActiveChatId()) === key
+          && typeof renderMessages === "function"
+          && (
+            previousAssistantSignature !== nextAssistantSignature
+            || previousTranscriptSignature !== nextTranscriptSignature
+          );
+        renderTraceLog("stream-done-hydrate", {
+          chatId: key,
+          forceCompleted: Boolean(forceCompleted),
+          rendered: Boolean(shouldRenderActiveChat),
+          previousAssistantSignature,
+          nextAssistantSignature,
+          previousTranscriptSignature,
+          nextTranscriptSignature,
+        });
+        if (shouldRenderActiveChat) {
+          renderMessages(key, { preserveViewport: true });
+        }
+      } catch {
+        // Best-effort hydration when reconnect says no active job.
+      }
+    }
+
+    return {
+      latestAssistantRenderSignature,
+      transcriptRenderSignature,
+      hydrateChatAfterGracefulResumeCompletion,
+    };
+  }
+
+  function createTranscriptEventController(deps, sessionController, hydrationController) {
     const {
       formatLatency,
       STREAM_PHASES,
       getStreamPhase,
       setStreamPhase,
-      chats,
-      pendingChats,
       chatLabel,
       compactChatLabel,
       finalizeInlineToolTrace,
@@ -456,41 +623,26 @@
       getActiveChatId,
       triggerIncomingMessageHaptic,
       renderTabs,
-      loadChatHistory,
-      upsertChat,
-      histories,
-      mergeHydratedHistory,
-      renderMessages,
-      clearStreamCursor,
-      clearPendingStreamSnapshot,
-      finalizeStreamPendingState,
-      parseSseEvent,
       streamDebugLog,
+      finalizeStreamPendingState,
     } = deps;
     const {
       immediateFinalizedChats,
-      lastStreamEventIdByChat,
       consumeFirstAssistantNotification,
       notifyFirstAssistantChunk,
-      shouldSkipReplayedEvent,
-      commitProcessedStreamEvent,
       setStreamStatusForVisibleChat,
       setStreamChipForVisibleChat,
       setLatencyChipForVisibleChat,
     } = sessionController;
-
+    const {
+      hydrateChatAfterGracefulResumeCompletion,
+    } = hydrationController;
 
     function shouldForceImmediateTranscriptFallback(chatId) {
       const key = Number(chatId);
       if (!key) return false;
-      // In Telegram/WebView contexts, document.visibilityState can lag or report
-      // hidden during an actually visible active session. If inline stream patching
-      // misses, deferring the fallback reconcile behind that signal can suppress
-      // live tool/assistant transcript updates for the whole run. For the active
-      // chat, prefer immediate reconcile unconditionally.
       return Number(getActiveChatId()) === key;
     }
-
 
     function reconcileVisibleTranscriptFallback(chatId) {
       if (shouldForceImmediateTranscriptFallback(chatId)) {
@@ -500,13 +652,12 @@
       scheduleActiveMessageView(chatId);
     }
 
-
     function applyDonePayload(chatId, payload, builtReplyRef, { updateUnread = true } = {}) {
       builtReplyRef.value = payload.reply || builtReplyRef.value;
       finalizeInlineToolTrace(chatId);
-      clearStreamCursor?.(chatId);
+      deps.clearStreamCursor?.(chatId);
       updatePendingAssistant(chatId, builtReplyRef.value, false);
-      clearPendingStreamSnapshot?.(chatId);
+      deps.clearPendingStreamSnapshot?.(chatId);
       const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
       const hadEarlyAssistantHaptic = Boolean(String(earlyAssistantNotification?.messageKey || "").trim());
       const hadEarlyAssistantUnread = Boolean(earlyAssistantNotification?.unreadIncremented);
@@ -537,19 +688,9 @@
         patchedToolTrace,
         fallbackRender,
       });
-      // Finalizing a pending assistant message does not increase history length, so the
-      // normal active-chat reconcile cannot use append-only render and falls back to a full
-      // transcript pass. When the visible DOM patch already succeeded, doing that full pass
-      // immediately at terminal completion just adds latency before the final assistant text
-      // appears. Keep the in-place patch as the fast path and only force a full reconcile
-      // when the visible patch path could not safely update the active transcript.
       if (fallbackRender) {
         syncActiveMessageView(chatId, { preserveViewport: true });
       }
-      // Hydrate from persisted history so server-extracted metadata (e.g. file_refs/ref_id)
-      // is attached to the finalized assistant turn in the active view.
-      // Force the local chat state to completed while hydrating so a slightly stale
-      // history response cannot re-mark the chat as pending after the terminal `done`.
       void hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted: true });
       const deliveredLatency = formatLatency(payload.latency_ms);
       if (typeof deps.markStreamComplete === "function") {
@@ -581,7 +722,6 @@
       }
     }
 
-
     function handleStreamEvent(chatId, eventName, payload, builtReplyRef) {
       if (!payload) {
         return false;
@@ -600,7 +740,6 @@
         renderTraceLog("stream-meta-skin-ignored", {
           chatId: Number(chatId),
           incomingSkin: payload.skin,
-          // current skin is tracked in app.js; this event is intentionally ignored.
         });
       }
       if (eventName === "meta" && payload.detail) {
@@ -641,8 +780,6 @@
         setStreamPhase(chatId, STREAM_PHASES.STREAMING_TOOL);
         const display = payload.display || payload.preview || payload.tool_name || "Tool running";
         deps.appendInlineToolTrace(chatId, display, payload);
-        // Tool journal updates extend the current pending tool card; they should not surface
-        // the chat-level unseen/new-below dot as if a fresh assistant message arrived.
         const patchedToolTrace = patchVisibleToolTrace(chatId);
         renderTraceLog("stream-tool-patch", {
           chatId: Number(chatId),
@@ -690,7 +827,7 @@
       if (eventName === "error") {
         setStreamPhase(chatId, STREAM_PHASES.ERROR);
         finalizeInlineToolTrace(chatId);
-        clearStreamCursor?.(chatId);
+        deps.clearStreamCursor?.(chatId);
         consumeFirstAssistantNotification(chatId);
         updatePendingAssistant(chatId, payload.error || "Hermes stream failed.", false);
         markStreamUpdate(chatId);
@@ -713,7 +850,6 @@
 
       return false;
     }
-
 
     function applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent) {
       setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
@@ -755,6 +891,30 @@
       }
     }
 
+    return {
+      shouldForceImmediateTranscriptFallback,
+      reconcileVisibleTranscriptFallback,
+      applyDonePayload,
+      handleStreamEvent,
+      applyEarlyStreamCloseFallback,
+    };
+  }
+
+  function createTranscriptConsumeController(deps, sessionController, eventController) {
+    const {
+      parseSseEvent,
+      renderTraceLog,
+      streamDebugLog,
+    } = deps;
+    const {
+      lastStreamEventIdByChat,
+      shouldSkipReplayedEvent,
+      commitProcessedStreamEvent,
+    } = sessionController;
+    const {
+      handleStreamEvent,
+      applyEarlyStreamCloseFallback,
+    } = eventController;
 
     async function consumeStreamResponse(chatId, response, builtReplyRef, {
       fallbackTraceEvent,
@@ -898,148 +1058,6 @@
       };
     }
 
-
-    function latestAssistantMessage(history) {
-      const items = Array.isArray(history) ? history : [];
-      for (let index = items.length - 1; index >= 0; index -= 1) {
-        const item = items[index];
-        const role = String(item?.role || '').toLowerCase();
-        if (role !== 'hermes' && role !== 'assistant') continue;
-        return item;
-      }
-      return null;
-    }
-
-
-    function latestAssistantRenderSignature(history) {
-      const item = latestAssistantMessage(history);
-      if (!item) {
-        return '';
-      }
-      const role = String(item?.role || '').toLowerCase();
-      const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
-      const fileRefSignature = fileRefs
-        .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
-        .join('|');
-      return [
-        role,
-        String(item?.body || ''),
-        item?.pending ? 'pending' : 'final',
-        fileRefSignature,
-      ].join('::');
-    }
-
-
-    function preserveLatestCompletedAssistantMessage(previousHistory, nextHistory) {
-      const previousAssistant = latestAssistantMessage(previousHistory);
-      const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
-      const previousBody = String(previousAssistant?.body || '').trim();
-      if (!previousAssistant || !previousBody) {
-        return incoming;
-      }
-      const matchingIncomingIndex = incoming.findIndex((item) => {
-        const role = String(item?.role || '').toLowerCase();
-        if (role !== 'hermes' && role !== 'assistant') return false;
-        return String(item?.body || '').trim() === previousBody;
-      });
-      if (matchingIncomingIndex >= 0) {
-        const candidate = incoming[matchingIncomingIndex] || {};
-        incoming[matchingIncomingIndex] = {
-          ...candidate,
-          pending: false,
-        };
-        return incoming;
-      }
-      incoming.push({
-        ...previousAssistant,
-        pending: false,
-      });
-      return incoming;
-    }
-
-
-    function transcriptRenderSignature(history) {
-      const items = Array.isArray(history) ? history : [];
-      return items
-        .filter((item) => {
-          const role = String(item?.role || '').toLowerCase();
-          return role === 'user' || role === 'tool' || role === 'hermes' || role === 'assistant';
-        })
-        .map((item) => {
-          const role = String(item?.role || '').toLowerCase();
-          const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
-          const fileRefSignature = fileRefs
-            .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
-            .join('|');
-          return [
-            role,
-            String(item?.body || ''),
-            item?.pending ? 'pending' : 'final',
-            item?.collapsed ? 'collapsed' : 'expanded',
-            fileRefSignature,
-          ].join('::');
-        })
-        .join('||');
-    }
-
-
-    async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {}) {
-      const key = Number(chatId);
-      if (!key || typeof loadChatHistory !== "function") return;
-      clearStreamCursor?.(key);
-      clearPendingStreamSnapshot?.(key);
-      try {
-        const hydrated = await loadChatHistory(key, { activate: Number(getActiveChatId()) === key });
-        const hydratedChat = hydrated && typeof hydrated === "object" && hydrated.chat && typeof hydrated.chat === "object"
-          ? { ...hydrated.chat }
-          : hydrated?.chat;
-        if (forceCompleted && hydratedChat && typeof hydratedChat === "object") {
-          hydratedChat.pending = false;
-        }
-        if (typeof upsertChat === "function") {
-          upsertChat(hydratedChat);
-        }
-        const previousHistory = histories?.get?.(key) || [];
-        const previousAssistantSignature = latestAssistantRenderSignature(previousHistory);
-        const previousTranscriptSignature = transcriptRenderSignature(previousHistory);
-        let nextHistory = typeof mergeHydratedHistory === "function"
-          ? mergeHydratedHistory({
-            previousHistory,
-            nextHistory: hydrated.history || [],
-            chatPending: forceCompleted ? false : Boolean(hydratedChat?.pending),
-            preserveCompletedToolTrace: Boolean(forceCompleted),
-          })
-          : (hydrated.history || []);
-        if (forceCompleted) {
-          nextHistory = preserveLatestCompletedAssistantMessage(previousHistory, nextHistory);
-        }
-        histories?.set?.(key, nextHistory);
-        const nextAssistantSignature = latestAssistantRenderSignature(nextHistory);
-        const nextTranscriptSignature = transcriptRenderSignature(nextHistory);
-        const shouldRenderActiveChat = Number(getActiveChatId()) === key
-          && typeof renderMessages === "function"
-          && (
-            previousAssistantSignature !== nextAssistantSignature
-            || previousTranscriptSignature !== nextTranscriptSignature
-          );
-        renderTraceLog("stream-done-hydrate", {
-          chatId: key,
-          forceCompleted: Boolean(forceCompleted),
-          rendered: Boolean(shouldRenderActiveChat),
-          previousAssistantSignature,
-          nextAssistantSignature,
-          previousTranscriptSignature,
-          nextTranscriptSignature,
-        });
-        if (shouldRenderActiveChat) {
-          renderMessages(key, { preserveViewport: true });
-        }
-      } catch {
-        // Best-effort hydration when reconnect says no active job.
-      }
-    }
-
-
     async function consumeStreamWithReconnect(chatId, response, builtReplyRef, {
       fallbackTraceEvent,
       onEarlyClose,
@@ -1072,95 +1090,38 @@
     }
 
     return {
-      shouldForceImmediateTranscriptFallback,
-      reconcileVisibleTranscriptFallback,
-      applyDonePayload,
-      handleStreamEvent,
-      applyEarlyStreamCloseFallback,
       consumeStreamResponse,
-      latestAssistantRenderSignature,
-      transcriptRenderSignature,
-      hydrateChatAfterGracefulResumeCompletion,
       consumeStreamWithReconnect,
     };
   }
 
-  function createStreamLifecycleController(deps, sessionController, transcriptController) {
+  function createStreamTranscriptController(deps, sessionController) {
+    const signatureHelpers = createTranscriptSignatureHelpers();
+    const hydrationController = createTranscriptHydrationController(deps, signatureHelpers);
+    const eventController = createTranscriptEventController(deps, sessionController, hydrationController);
+    const consumeController = createTranscriptConsumeController(deps, sessionController, eventController);
+
+    return {
+      ...eventController,
+      ...consumeController,
+      latestAssistantRenderSignature: hydrationController.latestAssistantRenderSignature,
+      transcriptRenderSignature: hydrationController.transcriptRenderSignature,
+      hydrateChatAfterGracefulResumeCompletion: hydrationController.hydrateChatAfterGracefulResumeCompletion,
+    };
+  }
+
+  function createStreamFocusController(deps, sessionController) {
     const {
-      STREAM_PHASES,
-      getStreamPhase,
-      setStreamPhase,
-      chats,
-      pendingChats,
-      chatLabel,
-      updatePendingAssistant,
-      markStreamUpdate,
-      syncActiveMessageView,
       getActiveChatId,
       messagesEl,
       promptEl,
       isMobileQuoteMode,
       isDesktopViewport,
-      maybeMarkRead,
-      refreshChats,
-      renderTabs,
-      updateComposerState,
-      syncClosingConfirmation,
-      appendSystemMessage,
-      finalizeStreamPendingState,
-      renderTraceLog,
-      authPayload,
-      parseStreamErrorPayload,
-      summarizeUiFailure,
-      getIsAuthenticated,
-      setIsAuthenticated,
-      authStatusEl,
-      dropPendingToolTraceMessages,
-      addLocalMessage,
-      setDraft,
-      resetToolStream,
-      clearReconnectResumeBlock,
-      resetReconnectResumeBudget,
-      consumeReconnectResumeBudget,
-      suppressBlockedChatPending,
-      blockReconnectResume,
-      isReconnectResumeBlocked,
-      MAX_AUTO_RESUME_CYCLES_PER_CHAT = 6,
-      resumeAttemptedAtByChat,
-      resumeCooldownUntilByChat,
-      resumeInFlightByChat,
-      RESUME_RECOVERY_MAX_ATTEMPTS = 3,
-      RESUME_REATTACH_MIN_INTERVAL_MS = 1200,
-      RESUME_COMPLETE_SETTLE_MS = 2500,
-      isTransientResumeRecoveryError,
-      nextResumeRecoveryDelayMs,
-      delayMs,
-      markChatStreamPending,
-      getStoredStreamCursor,
-      clearStreamCursor,
-      clearPendingStreamSnapshot,
       isNearBottom,
-      fetchImpl = (...args) => fetch(...args),
-      setTimeoutFn = (...args) => setTimeout(...args),
-      finalizeInlineToolTrace,
-      triggerIncomingMessageHaptic,
     } = deps;
     const {
-      streamAbortControllers,
       focusRestoreEligibleByChat,
-      immediateFinalizedChats,
-      setFocusRestoreEligibility,
-      setStreamAbortController,
-      clearStreamAbortController,
-      hasLiveStreamController,
-      abortStreamController,
-      consumeFirstAssistantNotification,
     } = sessionController;
-    const {
-      hydrateChatAfterGracefulResumeCompletion,
-      consumeStreamWithReconnect,
-    } = transcriptController;
-
 
     function focusMessagesPaneIfActiveChat(chatId) {
       if (!messagesEl) return;
@@ -1175,7 +1136,6 @@
       }
     }
 
-
     function focusPrimaryChatControlIfActiveChat(chatId) {
       if (Number(getActiveChatId()) !== Number(chatId) || document.visibilityState !== "visible") {
         return;
@@ -1189,16 +1149,62 @@
         return;
       }
 
-      // Do not auto-focus the composer on stream completion/resume.
-      // On mobile/webview this can pull the viewport downward and reopen the keyboard
-      // while tool/activity updates are still settling, which feels like the stream is
-      // hijacking the user's reading position. Desktop can still restore non-scrolling
-      // focus to the transcript pane for keyboard continuity.
       if (!isMobileQuoteMode() && isDesktopViewport()) {
         focusMessagesPaneIfActiveChat(chatId);
+        return;
+      }
+
+      const shouldRestoreFocus = Boolean(focusRestoreEligibleByChat.get(Number(chatId)));
+      if (!shouldRestoreFocus || !promptEl) {
+        return;
+      }
+      try {
+        promptEl.focus({ preventScroll: true });
+      } catch {
+        promptEl.focus();
       }
     }
 
+    function shouldRestoreComposerFocus(chatId) {
+      return Boolean(
+        Number(getActiveChatId()) === Number(chatId)
+        && typeof document !== "undefined"
+        && document.activeElement === promptEl
+        && isNearBottom?.(messagesEl, 40)
+      );
+    }
+
+    return {
+      focusMessagesPaneIfActiveChat,
+      focusPrimaryChatControlIfActiveChat,
+      shouldRestoreComposerFocus,
+    };
+  }
+
+  function createStreamFinalizeController(deps, sessionController, focusController) {
+    const {
+      STREAM_PHASES,
+      getStreamPhase,
+      getActiveChatId,
+      maybeMarkRead,
+      refreshChats,
+      renderTabs,
+      updateComposerState,
+      syncClosingConfirmation,
+      appendSystemMessage,
+      finalizeStreamPendingState,
+      renderTraceLog,
+    } = deps;
+    const {
+      streamAbortControllers,
+      immediateFinalizedChats,
+      clearStreamAbortController,
+      consumeFirstAssistantNotification,
+      focusRestoreEligibleByChat,
+    } = sessionController;
+    const {
+      focusPrimaryChatControlIfActiveChat,
+    } = focusController;
 
     async function finalizeStreamLifecycle(chatId, streamController, { wasAborted }) {
       const key = Number(chatId);
@@ -1222,13 +1228,10 @@
       if (!wasAborted) {
         consumeFirstAssistantNotification(key);
         if (getStreamPhase(chatId) !== STREAM_PHASES.ERROR) {
-          resetReconnectResumeBudget?.(key);
+          deps.resetReconnectResumeBudget?.(key);
         }
       }
       if (wasAborted) {
-        // Abort is commonly used for intentional stream handoff (send -> resume or
-        // resume -> resume rollover). Do not clear pending/phase here, or we can
-        // transiently mark an active chat idle while the replacement stream is live.
         return;
       }
       const finalizedAtDone = immediateFinalizedChats.has(key);
@@ -1257,6 +1260,71 @@
       }
     }
 
+    return {
+      finalizeStreamLifecycle,
+    };
+  }
+
+  function createStreamSendController(
+    deps,
+    sessionController,
+    transcriptController,
+    focusController,
+    finalizeController,
+    getResumePendingChatStream,
+  ) {
+    const {
+      STREAM_PHASES,
+      setStreamPhase,
+      chats,
+      pendingChats,
+      chatLabel,
+      updatePendingAssistant,
+      markStreamUpdate,
+      syncActiveMessageView,
+      getActiveChatId,
+      promptEl,
+      renderTabs,
+      updateComposerState,
+      syncClosingConfirmation,
+      appendSystemMessage,
+      authPayload,
+      parseStreamErrorPayload,
+      summarizeUiFailure,
+      getIsAuthenticated,
+      setIsAuthenticated,
+      authStatusEl,
+      dropPendingToolTraceMessages,
+      addLocalMessage,
+      setDraft,
+      resetToolStream,
+      clearReconnectResumeBlock,
+      resetReconnectResumeBudget,
+      suppressBlockedChatPending,
+      isReconnectResumeBlocked,
+      markChatStreamPending,
+      clearStreamCursor,
+      clearPendingStreamSnapshot,
+      fetchImpl = (...args) => fetch(...args),
+      setTimeoutFn = (...args) => setTimeout(...args),
+      finalizeInlineToolTrace,
+      triggerIncomingMessageHaptic,
+    } = deps;
+    const {
+      setFocusRestoreEligibility,
+      setStreamAbortController,
+    } = sessionController;
+    const {
+      hydrateChatAfterGracefulResumeCompletion,
+      consumeStreamWithReconnect,
+    } = transcriptController;
+    const {
+      focusMessagesPaneIfActiveChat,
+      shouldRestoreComposerFocus,
+    } = focusController;
+    const {
+      finalizeStreamLifecycle,
+    } = finalizeController;
 
     async function sendPrompt(message) {
       if (!getIsAuthenticated?.() || !getActiveChatId?.()) {
@@ -1309,16 +1377,11 @@
       let wasAborted = false;
       let shouldResumeAfterFinally = false;
       const streamController = new AbortController();
-      const shouldRestoreFocusOnComplete = Boolean(
-        Number(getActiveChatId()) === chatId
-        && typeof document !== "undefined"
-        && document.activeElement === promptEl
-        && isNearBottom?.(messagesEl, 40),
-      );
-      setFocusRestoreEligibility(chatId, shouldRestoreFocusOnComplete);
+      setFocusRestoreEligibility(chatId, shouldRestoreComposerFocus(chatId));
       setStreamAbortController(chatId, streamController);
 
       try {
+        const resumePendingChatStream = getResumePendingChatStream();
         const response = await fetchImpl("/api/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1377,7 +1440,7 @@
           return;
         }
 
-        const transientNetworkFailure = isTransientResumeRecoveryError?.(error);
+        const transientNetworkFailure = deps.isTransientResumeRecoveryError?.(error);
         if (transientNetworkFailure) {
           await hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted: true });
           const stillPending = Boolean(chats.get(chatId)?.pending) || pendingChats.has(chatId);
@@ -1401,48 +1464,96 @@
         await finalizeStreamLifecycle(chatId, streamController, { wasAborted });
         if (shouldResumeAfterFinally) {
           setTimeoutFn(() => {
-            void resumePendingChatStream(chatId, { force: true });
+            void getResumePendingChatStream()(chatId, { force: true });
           }, 0);
         }
       }
     }
+
+    return {
+      sendPrompt,
+    };
+  }
+
+  function createStreamResumeController(deps, sessionController, transcriptController, finalizeController) {
+    const {
+      STREAM_PHASES,
+      setStreamPhase,
+      chats,
+      pendingChats,
+      chatLabel,
+      getActiveChatId,
+      getIsAuthenticated,
+      renderTabs,
+      updateComposerState,
+      syncClosingConfirmation,
+      appendSystemMessage,
+      authPayload,
+      parseStreamErrorPayload,
+      summarizeUiFailure,
+      finalizeInlineToolTrace,
+      triggerIncomingMessageHaptic,
+      clearPendingStreamSnapshot,
+      RESUME_RECOVERY_MAX_ATTEMPTS = 3,
+      RESUME_REATTACH_MIN_INTERVAL_MS = 1200,
+      RESUME_COMPLETE_SETTLE_MS = 2500,
+      MAX_AUTO_RESUME_CYCLES_PER_CHAT = 6,
+      isTransientResumeRecoveryError,
+      nextResumeRecoveryDelayMs,
+      delayMs,
+      fetchImpl = (...args) => fetch(...args),
+      setTimeoutFn = (...args) => setTimeout(...args),
+    } = deps;
+    const {
+      hasLiveStreamController,
+      abortStreamController,
+      setFocusRestoreEligibility,
+      setStreamAbortController,
+    } = sessionController;
+    const {
+      hydrateChatAfterGracefulResumeCompletion,
+      consumeStreamWithReconnect,
+    } = transcriptController;
+    const {
+      finalizeStreamLifecycle,
+    } = finalizeController;
 
     async function resumePendingChatStream(chatId, { force = false } = {}) {
       const key = Number(chatId);
       if (!key || !getIsAuthenticated?.()) return;
       let shouldResumeAfterFinally = false;
       try {
-        if (isReconnectResumeBlocked?.(key)) {
-          suppressBlockedChatPending?.(key);
+        if (deps.isReconnectResumeBlocked?.(key)) {
+          deps.suppressBlockedChatPending?.(key);
           renderTabs();
           updateComposerState();
           deps.syncActivePendingStatus?.();
           return;
         }
         const now = Date.now();
-        const cooldownUntil = Number(resumeCooldownUntilByChat?.get?.(key) || 0);
+        const cooldownUntil = Number(deps.resumeCooldownUntilByChat?.get?.(key) || 0);
         if (cooldownUntil > now) {
           return;
         }
-        if (resumeInFlightByChat?.has?.(key)) {
+        if (deps.resumeInFlightByChat?.has?.(key)) {
           return;
         }
         const hasLiveController = hasLiveStreamController(key);
         if (hasLiveController && !force) return;
-        const lastAttemptAt = Number(resumeAttemptedAtByChat?.get?.(key) || 0);
+        const lastAttemptAt = Number(deps.resumeAttemptedAtByChat?.get?.(key) || 0);
         if (lastAttemptAt > 0 && (now - lastAttemptAt) < RESUME_REATTACH_MIN_INTERVAL_MS) {
           return;
         }
         const chatPending = Boolean(chats.get(key)?.pending);
         if (!chatPending && !force) return;
 
-        const reconnectBudget = consumeReconnectResumeBudget?.(key) || {
+        const reconnectBudget = deps.consumeReconnectResumeBudget?.(key) || {
           allowed: true,
           attempts: 1,
           maxAttempts: MAX_AUTO_RESUME_CYCLES_PER_CHAT,
         };
         if (!reconnectBudget.allowed) {
-          blockReconnectResume?.(key);
+          deps.blockReconnectResume?.(key);
           setStreamPhase(key, STREAM_PHASES.ERROR);
           finalizeInlineToolTrace(key);
           appendSystemMessage(`Auto-reconnect paused in '${chatLabel(key)}' after ${reconnectBudget.maxAttempts} failed resume cycles.`, key);
@@ -1456,14 +1567,14 @@
           return;
         }
 
-        resumeInFlightByChat?.add?.(key);
-        resumeAttemptedAtByChat?.set?.(key, now);
+        deps.resumeInFlightByChat?.add?.(key);
+        deps.resumeAttemptedAtByChat?.set?.(key, now);
 
         if (force && hasLiveController) {
           abortStreamController(key);
         }
 
-        markChatStreamPending?.({
+        deps.markChatStreamPending?.({
           chatId: key,
           pendingChats,
           chats,
@@ -1492,7 +1603,7 @@
             const response = await fetchImpl("/api/chat/stream/resume", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(authPayload({ chat_id: key, after_event_id: getStoredStreamCursor?.(key) })),
+              body: JSON.stringify(authPayload({ chat_id: key, after_event_id: deps.getStoredStreamCursor?.(key) })),
               signal: streamController.signal,
             });
 
@@ -1506,8 +1617,9 @@
               const noActiveJob = response.status === 409
                 && /no active hermes job/i.test(parsedResumeError.error || fallback || "");
               if (noActiveJob) {
-                resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
+                deps.resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
                 setStreamPhase(key, STREAM_PHASES.FINALIZED);
+                clearPendingStreamSnapshot?.(key);
                 await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });
                 triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
                 deps.markResumeAlreadyComplete?.(key);
@@ -1520,7 +1632,7 @@
               fallbackTraceEvent: "stream-resume-fallback-patch",
               onEarlyClose: async ({ expectedSegmentEnd = false } = {}) => {
                 if (expectedSegmentEnd) {
-                  resetReconnectResumeBudget?.(key);
+                  deps.resetReconnectResumeBudget?.(key);
                 }
                 wasAborted = true;
                 shouldResumeAfterFinally = true;
@@ -1536,6 +1648,7 @@
             const transientReconnectFailure = isTransientResumeRecoveryError(error);
             const hasAttemptsRemaining = transientReconnectFailure && attempt < RESUME_RECOVERY_MAX_ATTEMPTS;
             if (hasAttemptsRemaining) {
+              wasAborted = true;
               console.warn(`[W_STREAM_RECONNECT_RETRY] chat=${key} attempt=${attempt}/${RESUME_RECOVERY_MAX_ATTEMPTS}`, error);
               if (Number(getActiveChatId()) === key) {
                 deps.markStreamReconnecting?.(key, {
@@ -1551,7 +1664,7 @@
               await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });
               const stillPending = Boolean(chats.get(key)?.pending) || pendingChats.has(key);
               if (!stillPending) {
-                resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
+                deps.resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
                 setStreamPhase(key, STREAM_PHASES.FINALIZED);
                 triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
                 deps.markResumeAlreadyComplete?.(key);
@@ -1559,7 +1672,7 @@
               }
             }
 
-            blockReconnectResume?.(key);
+            deps.blockReconnectResume?.(key);
             setStreamPhase(key, STREAM_PHASES.ERROR);
             finalizeInlineToolTrace(key);
             console.warn(`[E_STREAM_RECONNECT_FAILED] chat=${key}`, error);
@@ -1577,9 +1690,9 @@
           }
         }
       } finally {
-        resumeInFlightByChat?.delete?.(key);
+        deps.resumeInFlightByChat?.delete?.(key);
         if (shouldResumeAfterFinally) {
-          resumeAttemptedAtByChat?.delete?.(key);
+          deps.resumeAttemptedAtByChat?.delete?.(key);
           setTimeoutFn(() => {
             void resumePendingChatStream(key, { force: true });
           }, 0);
@@ -1588,10 +1701,34 @@
     }
 
     return {
-      focusMessagesPaneIfActiveChat,
-      focusPrimaryChatControlIfActiveChat,
-      finalizeStreamLifecycle,
-      sendPrompt,
+      resumePendingChatStream,
+    };
+  }
+
+  function createStreamLifecycleController(deps, sessionController, transcriptController) {
+    const focusController = createStreamFocusController(deps, sessionController);
+    const finalizeController = createStreamFinalizeController(deps, sessionController, focusController);
+    let resumePendingChatStream = async () => {};
+    const sendController = createStreamSendController(
+      deps,
+      sessionController,
+      transcriptController,
+      focusController,
+      finalizeController,
+      () => resumePendingChatStream,
+    );
+    const resumeController = createStreamResumeController(
+      deps,
+      sessionController,
+      transcriptController,
+      finalizeController,
+    );
+    resumePendingChatStream = resumeController.resumePendingChatStream;
+
+    return {
+      ...focusController,
+      ...finalizeController,
+      sendPrompt: sendController.sendPrompt,
       resumePendingChatStream,
     };
   }

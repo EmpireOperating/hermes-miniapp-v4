@@ -47,6 +47,10 @@
       cancelSelectionQuoteSettle,
       cancelSelectionQuoteClear,
       clearSelectionQuoteState,
+      hasMessageSelectionFn,
+      scheduleSelectionQuoteSync,
+      mobileQuoteMode = false,
+      noteMobileCarouselInteraction,
       handleTabClick,
       handlePinnedChatClick,
       togglePinnedChatsCollapsed,
@@ -103,11 +107,23 @@
       getStreamAbortControllers,
     } = deps;
 
+    function getCurrentSelection() {
+      const windowSelection = windowObject?.getSelection?.();
+      if (windowSelection) return windowSelection;
+      return documentObject.getSelection?.() || null;
+    }
+
     function handleMessagesScroll() {
+      const selection = getCurrentSelection();
+      const hasActiveMessageSelection = Boolean(hasMessageSelectionFn?.(selection));
       cancelSelectionQuoteSync();
       cancelSelectionQuoteSettle();
       cancelSelectionQuoteClear();
-      clearSelectionQuoteState();
+      if (hasActiveMessageSelection) {
+        scheduleSelectionQuoteSync?.(mobileQuoteMode ? 220 : 120);
+      } else {
+        clearSelectionQuoteState();
+      }
 
       const key = Number(getActiveChatId());
       if (!key || Number(getRenderedChatId()) !== key) return;
@@ -167,6 +183,9 @@
 
     function installCoreEventBindings() {
       tabsEl.addEventListener('click', handleTabClick);
+      tabsEl.addEventListener('scroll', noteMobileCarouselInteraction, { passive: true });
+      tabsEl.addEventListener('touchstart', noteMobileCarouselInteraction, { passive: true });
+      tabsEl.addEventListener('pointerdown', noteMobileCarouselInteraction, { passive: true });
       pinnedChatsEl?.addEventListener('click', handlePinnedChatClick);
       pinnedChatsToggleButton?.addEventListener('click', togglePinnedChatsCollapsed);
       documentObject.addEventListener('keydown', handleGlobalTabCycle);
@@ -263,6 +282,7 @@
       if (tg) {
         try {
           tg.ready?.();
+          tg.disableVerticalSwipes?.();
           tg.expand?.();
           logBootStage?.('telegram-webapp-ready');
         } catch {
@@ -360,11 +380,10 @@
         authStatusEl.textContent = 'Sign-in error';
         appendSystemMessage(`Could not start the app: ${error.message}`);
       } finally {
-        if (mobileBootstrapPath && typeof maybeRefreshForBootstrapVersionMismatch === 'function' && Boolean(getIsAuthenticated())) {
-          windowObject?.setTimeout?.(() => {
-            void maybeRefreshForBootstrapVersionMismatch().catch?.(() => {});
-          }, 0);
-        }
+        // Telegram mobile/webview sessions can linger for a long time while the backend rolls.
+        // Auto-reloading after auth makes the mini app feel like it is "randomly refreshing"
+        // during normal use, so keep mobile boots stable and let the next fresh open pick up
+        // the new bootstrap version naturally.
         syncDevAuthUi?.();
         updateComposerState?.();
         revealShell?.();
@@ -390,9 +409,6 @@
         if (!getIsAuthenticated() || pendingChats.size === 0) return;
         void (async () => {
           try {
-            if (await maybeRefreshForBootstrapVersionMismatch?.()) {
-              return;
-            }
             await refreshChats();
             if (Number(getActiveChatId()) > 0 && pendingChats.has(Number(getActiveChatId()))) {
               await syncVisibleActiveChat({

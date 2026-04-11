@@ -48,6 +48,11 @@ function buildHarness({
   maybeRefresh = false,
   isNearBottom = true,
   isMobileBootstrapPath = false,
+  noteMobileCarouselInteraction = () => {},
+  hasMessageSelection = false,
+  mobileQuoteMode = false,
+  windowSelection = null,
+  documentSelection = null,
 } = {}) {
   const chatScrollTop = new Map();
   const chatStickToBottom = new Map();
@@ -61,6 +66,8 @@ function buildHarness({
   const scheduleActiveViewCalls = [];
   const appendMessages = [];
   const reportErrors = [];
+  const selectionQuoteSyncCalls = [];
+  const clearSelectionQuoteStateCalls = [];
   const saveSkinCalls = [];
   const closeSettingsCalls = [];
   const signInCalls = [];
@@ -114,7 +121,11 @@ function buildHarness({
   });
 
   const documentObject = createEventTarget({ visibilityState: 'visible' });
+  documentObject.getSelection = () => documentSelection;
   const windowObject = {
+    getSelection() {
+      return windowSelection;
+    },
     setInterval(callback) {
       intervalCallbacks.push(callback);
       return intervalCallbacks.length;
@@ -133,10 +144,14 @@ function buildHarness({
     initData: 'telegram-init-data',
     initDataUnsafe: { user: { username: 'agentuser' } },
     readyCalls: 0,
+    disableVerticalSwipesCalls: 0,
     expandCalls: 0,
     eventRegistrations: [],
     ready() {
       this.readyCalls += 1;
+    },
+    disableVerticalSwipes() {
+      this.disableVerticalSwipesCalls += 1;
     },
     expand() {
       this.expandCalls += 1;
@@ -192,7 +207,11 @@ function buildHarness({
     cancelSelectionQuoteSync: () => {},
     cancelSelectionQuoteSettle: () => {},
     cancelSelectionQuoteClear: () => {},
-    clearSelectionQuoteState: () => {},
+    clearSelectionQuoteState: () => clearSelectionQuoteStateCalls.push(true),
+    hasMessageSelectionFn: (selection) => (typeof hasMessageSelection === 'function' ? hasMessageSelection(selection) : hasMessageSelection),
+    scheduleSelectionQuoteSync: (delay) => selectionQuoteSyncCalls.push(delay),
+    mobileQuoteMode,
+    noteMobileCarouselInteraction,
     handleTabClick: () => {},
     handlePinnedChatClick: () => {},
     togglePinnedChatsCollapsed: () => {},
@@ -297,6 +316,8 @@ function buildHarness({
     scheduleActiveViewCalls,
     appendMessages,
     reportErrors,
+    selectionQuoteSyncCalls,
+    clearSelectionQuoteStateCalls,
     saveSkinCalls,
     closeSettingsCalls,
     signInCalls,
@@ -326,12 +347,40 @@ test('handleMessagesScroll reconciles active chat scroll state and read markers'
 
   harness.controller.handleMessagesScroll();
 
+  assert.deepEqual(harness.clearSelectionQuoteStateCalls, [true]);
+  assert.deepEqual(harness.selectionQuoteSyncCalls, []);
   assert.equal(harness.chatScrollTop.get(7), 120);
   assert.equal(harness.chatStickToBottom.get(7), true);
   assert.deepEqual(harness.refreshTabCalls, [7]);
   assert.deepEqual(harness.maybeMarkReadCalls, [[7, undefined]]);
   assert.deepEqual(harness.scheduleActiveViewCalls, [7]);
   assert.equal(harness.unseenStreamChats.has(7), false);
+});
+
+test('handleMessagesScroll preserves active message selection by re-syncing quote popup instead of clearing it', () => {
+  const harness = buildHarness({ hasMessageSelection: true, mobileQuoteMode: true });
+
+  harness.controller.handleMessagesScroll();
+
+  assert.deepEqual(harness.clearSelectionQuoteStateCalls, []);
+  assert.deepEqual(harness.selectionQuoteSyncCalls, [220]);
+  assert.equal(harness.chatScrollTop.get(7), 120);
+  assert.equal(harness.chatStickToBottom.get(7), true);
+});
+
+test('handleMessagesScroll uses window selection when document selection is unavailable', () => {
+  const windowSelection = { source: 'window' };
+  const harness = buildHarness({
+    mobileQuoteMode: true,
+    windowSelection,
+    documentSelection: null,
+    hasMessageSelection: (selection) => selection === windowSelection,
+  });
+
+  harness.controller.handleMessagesScroll();
+
+  assert.deepEqual(harness.clearSelectionQuoteStateCalls, []);
+  assert.deepEqual(harness.selectionQuoteSyncCalls, [220]);
 });
 
 test('handleMessagesScroll still checks exact unread-message threshold when not near chat bottom', () => {
@@ -370,6 +419,9 @@ test('installCoreEventBindings wires keyboard/mouse and scroll/click listeners',
   harness.controller.installCoreEventBindings();
 
   assert.equal(harness.tabsEl.listeners('click').length, 1);
+  assert.equal(harness.tabsEl.listeners('scroll').length, 1);
+  assert.equal(harness.tabsEl.listeners('touchstart').length, 1);
+  assert.equal(harness.tabsEl.listeners('pointerdown').length, 1);
   assert.equal(harness.pinnedChatsEl.listeners('click').length, 1);
   assert.equal(harness.pinnedChatsToggleButton.listeners('click').length, 1);
   assert.equal(harness.documentObject.listeners('keydown').length, 5);
@@ -378,6 +430,20 @@ test('installCoreEventBindings wires keyboard/mouse and scroll/click listeners',
   assert.equal(harness.messagesEl.listeners('scroll').length, 1);
   assert.equal(harness.jumpLatestButton.listeners('click').length, 1);
   assert.equal(harness.jumpLastStartButton.listeners('click').length, 1);
+});
+
+test('tab carousel interactions delegate to the provided recorder', () => {
+  const calls = [];
+  const harness = buildHarness({
+    noteMobileCarouselInteraction: () => calls.push('note'),
+  });
+
+  harness.controller.installCoreEventBindings();
+  harness.tabsEl.dispatch('scroll');
+  harness.tabsEl.dispatch('touchstart');
+  harness.tabsEl.dispatch('pointerdown');
+
+  assert.deepEqual(calls, ['note', 'note', 'note']);
 });
 
 test('installActionButtonBindings guards unauthenticated skin change and reports async button errors', async () => {
@@ -458,6 +524,7 @@ test('bootstrap runs happy-path startup orchestration and restores pending snaps
   await harness.controller.bootstrap();
 
   assert.equal(harness.tg.readyCalls, 1);
+  assert.equal(harness.tg.disableVerticalSwipesCalls, 1);
   assert.equal(harness.tg.expandCalls, 1);
   assert.equal(harness.initDataValue, 'telegram-init-data');
   assert.deepEqual(harness.bootLatency, ['bootstrap-start']);
@@ -503,7 +570,7 @@ test('bootstrap stops after bootstrap-version refresh redirect on desktop path',
   assert.ok(harness.logBootStages.some(([name]) => name === 'revealShell'));
 });
 
-test('bootstrap skips blocking version refresh on mobile and schedules follow-up check', async () => {
+test('bootstrap skips version-sync refresh entirely on mobile path', async () => {
   const harness = buildHarness({
     maybeRefresh: true,
     isMobileBootstrapPath: true,
@@ -514,11 +581,7 @@ test('bootstrap skips blocking version refresh on mobile and schedules follow-up
   assert.equal(harness.maybeRefreshCalls.length, 0);
   assert.equal(harness.authBootstrapCalls.length, 2);
   assert.ok(harness.logBootStages.some(([name]) => name === 'version-check-skipped-mobile'));
-  assert.equal(harness.timeoutCallbacks.length, 1);
-
-  await harness.timeoutCallbacks[0]();
-
-  assert.equal(harness.maybeRefreshCalls.length, 1);
+  assert.equal(harness.timeoutCallbacks.length, 0);
 });
 
 test('bootstrap surfaces desktop testing ready message when auth bootstrap fails in desktop mode', async () => {
@@ -544,6 +607,7 @@ test('installPendingCompletionWatchdog refreshes pending active chat with hidden
   harness.intervalCallbacks[0]();
   await flushAsync();
 
+  assert.equal(harness.maybeRefreshCalls.length, 0);
   assert.equal(harness.refreshChatsCalls.length, 1);
   assert.equal(harness.syncVisibleActiveChatCalls.length, 1);
   assert.equal(harness.syncVisibleActiveChatCalls[0].hidden, true);

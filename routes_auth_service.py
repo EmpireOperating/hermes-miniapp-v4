@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import time
+from dataclasses import asdict
+from types import SimpleNamespace
+from typing import Any, Callable
+
+from file_refs import extract_file_refs
+
+
+_AUTH_PRUNE_INTERVAL_SECONDS = 300
+_last_pruned_auth_sessions_at = 0
+
+
+class AuthBootstrapService:
+    def __init__(
+        self,
+        *,
+        store_getter: Callable[[], Any],
+        runtime_getter: Callable[[], Any],
+        serialize_chat_fn: Callable[[Any], dict[str, object]],
+        session_id_builder_fn: Callable[[str, int], str],
+    ) -> None:
+        self._store_getter = store_getter
+        self._runtime_getter = runtime_getter
+        self._serialize_chat_fn = serialize_chat_fn
+        self._session_id_builder_fn = session_id_builder_fn
+
+    def serialize_turn(self, turn: Any) -> dict[str, object]:
+        payload = asdict(turn)
+        refs = extract_file_refs(payload.get("body") or "", message_id=int(payload.get("id") or 0))
+        if refs:
+            payload["file_refs"] = refs
+        return payload
+
+    @staticmethod
+    def parse_allow_empty_flag(payload: dict[str, object]) -> tuple[bool | None, tuple[dict[str, object], int] | None]:
+        raw_allow_empty = payload.get("allow_empty", False)
+        if isinstance(raw_allow_empty, bool):
+            return raw_allow_empty, None
+        if raw_allow_empty is None:
+            return False, None
+        return None, ({"ok": False, "error": "Invalid allow_empty flag. Expected boolean."}, 400)
+
+    def _maybe_prune_expired_auth_sessions(self, store: Any, *, now_ts: int) -> None:
+        global _last_pruned_auth_sessions_at
+        if now_ts - _last_pruned_auth_sessions_at < _AUTH_PRUNE_INTERVAL_SECONDS:
+            return
+        store.prune_expired_auth_sessions(now_ts)
+        _last_pruned_auth_sessions_at = now_ts
+
+    def augment_history_with_runtime_pending(
+        self,
+        *,
+        user_id: str,
+        chat_id: int,
+        history: list[dict[str, object]],
+        chat_pending: bool = False,
+    ) -> list[dict[str, object]]:
+        if not bool(chat_pending):
+            return history
+        store = self._store_getter()
+        checkpoint_state = store.get_runtime_checkpoint_state(self._session_id_builder_fn(user_id, chat_id))
+        if not checkpoint_state:
+            return history
+        next_history = list(history)
+        checkpoint_updated_at = str(checkpoint_state.get("updated_at") or "")
+        pending_tool_lines = [
+            str(line).strip()
+            for line in (checkpoint_state.get("pending_tool_lines") or [])
+            if str(line).strip()
+        ]
+        pending_assistant = str(checkpoint_state.get("pending_assistant") or "").strip()
+        if pending_tool_lines and not any(
+            item.get("pending") and str(item.get("role") or "").lower() == "tool"
+            for item in next_history
+        ):
+            next_history.append(
+                {
+                    "id": 0,
+                    "chat_id": int(chat_id),
+                    "role": "tool",
+                    "body": "\n".join(pending_tool_lines),
+                    "created_at": checkpoint_updated_at,
+                    "pending": True,
+                }
+            )
+        if pending_assistant and not any(
+            item.get("pending") and str(item.get("role") or "").lower() in {"assistant", "hermes"}
+            for item in next_history
+        ):
+            next_history.append(
+                {
+                    "id": 0,
+                    "chat_id": int(chat_id),
+                    "role": "assistant",
+                    "body": pending_assistant,
+                    "created_at": checkpoint_updated_at,
+                    "pending": True,
+                }
+            )
+        return next_history
+
+    def _visible_chats(self, *, user_id: str) -> list[dict[str, object]]:
+        return [self._serialize_chat_fn(chat) for chat in self._store_getter().list_chats(user_id=user_id)]
+
+    def _ensure_default_active_chat(
+        self,
+        *,
+        store: Any,
+        user_id: str,
+        chats: list[dict[str, object]],
+        visible_chat_ids: set[int],
+    ) -> int | None:
+        if chats:
+            return int(chats[0]["id"])
+        if store.has_explicit_empty_chat_state(user_id):
+            return None
+        active_chat_id = store.ensure_default_chat(user_id)
+        try:
+            ensured_chat = self._serialize_chat_fn(store.get_chat(user_id=user_id, chat_id=int(active_chat_id)))
+        except KeyError:
+            ensured_chat = None
+        if ensured_chat:
+            chats.append(ensured_chat)
+            visible_chat_ids.add(int(ensured_chat["id"]))
+        return int(active_chat_id)
+
+    def _load_active_chat_history(
+        self,
+        *,
+        store: Any,
+        user_id: str,
+        active_chat_id: int,
+        chats: list[dict[str, object]],
+    ) -> tuple[int | None, list[dict[str, object]]]:
+        serialized_active_chat = next((chat for chat in chats if int(chat["id"]) == int(active_chat_id)), None)
+        history = [
+            self.serialize_turn(turn)
+            for turn in store.get_history(user_id=user_id, chat_id=active_chat_id, limit=120)
+        ]
+        history = self.augment_history_with_runtime_pending(
+            user_id=user_id,
+            chat_id=int(active_chat_id),
+            history=history,
+            chat_pending=bool(serialized_active_chat and serialized_active_chat.get("pending")),
+        )
+        if serialized_active_chat and int(serialized_active_chat.get("unread_count") or 0) > 0:
+            latest_history_message_id = max((int(item.get("id") or 0) for item in history), default=0)
+            if latest_history_message_id > 0 and hasattr(store, "mark_chat_read_through"):
+                store.mark_chat_read_through(user_id=user_id, chat_id=active_chat_id, message_id=latest_history_message_id)
+            else:
+                store.mark_chat_read(user_id=user_id, chat_id=active_chat_id)
+            serialized_active_chat["unread_count"] = 0
+        if store.get_active_chat(user_id) != int(active_chat_id):
+            store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
+        return int(active_chat_id), history
+
+    def auth_success_state(
+        self,
+        verified_user: Any,
+        *,
+        auth_mode: str,
+        allow_empty: bool = False,
+    ) -> dict[str, object]:
+        store = self._store_getter()
+        runtime = self._runtime_getter()
+        user_id = str(verified_user.id)
+        self._maybe_prune_expired_auth_sessions(store, now_ts=int(time.time()))
+        display_name = verified_user.first_name or verified_user.username or "Operator"
+
+        chats = self._visible_chats(user_id=user_id)
+        visible_chat_ids = {int(chat["id"]) for chat in chats}
+        if any(bool(chat.get("pending")) for chat in chats):
+            runtime.ensure_pending_jobs(user_id)
+
+        active_chat_id = store.get_active_chat(user_id)
+        if active_chat_id and int(active_chat_id) not in visible_chat_ids:
+            active_chat_id = None
+
+        if not active_chat_id and not allow_empty:
+            active_chat_id = self._ensure_default_active_chat(
+                store=store,
+                user_id=user_id,
+                chats=chats,
+                visible_chat_ids=visible_chat_ids,
+            )
+
+        if active_chat_id and int(active_chat_id) in visible_chat_ids:
+            active_chat_id, history = self._load_active_chat_history(
+                store=store,
+                user_id=user_id,
+                active_chat_id=int(active_chat_id),
+                chats=chats,
+            )
+        else:
+            active_chat_id = None
+            history = []
+            if store.get_active_chat(user_id) is not None:
+                store.clear_active_chat(user_id=user_id)
+
+        skin = store.get_skin(user_id=user_id)
+        return {
+            "display_name": display_name,
+            "payload": {
+                "ok": True,
+                "auth_mode": auth_mode,
+                "user": {
+                    "id": verified_user.id,
+                    "display_name": display_name,
+                    "username": verified_user.username,
+                },
+                "skin": skin,
+                "active_chat_id": active_chat_id,
+                "history": history,
+                "chats": chats,
+                "pinned_chats": [chat for chat in chats if bool(chat.get("is_pinned"))],
+            },
+        }
+
+    @staticmethod
+    def build_dev_verified_user(payload: dict[str, object]) -> tuple[Any | None, tuple[dict[str, object], int] | None]:
+        raw_user_id = payload.get("user_id", 9001)
+        try:
+            user_id = int(raw_user_id)
+        except (TypeError, ValueError):
+            return None, ({"ok": False, "error": "Invalid dev user id."}, 400)
+        if user_id <= 0:
+            return None, ({"ok": False, "error": "Invalid dev user id."}, 400)
+
+        display_name = str(payload.get("display_name") or "Desktop Tester").strip() or "Desktop Tester"
+        username = str(payload.get("username") or "desktop").strip() or None
+        verified = SimpleNamespace(
+            user=SimpleNamespace(
+                id=user_id,
+                first_name=display_name,
+                username=username,
+            )
+        )
+        return verified, None

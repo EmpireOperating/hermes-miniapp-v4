@@ -161,6 +161,19 @@
     selectionQuoteState?.cancelTimer?.(name);
   }
 
+  function hasSelectionQuoteTimer(name, { selectionQuoteState } = {}) {
+    return Boolean(selectionQuoteState?.timers?.[name]);
+  }
+
+  function getActiveSelection({
+    windowObject = (typeof window !== "undefined" ? window : null),
+    documentObject = (typeof document !== "undefined" ? document : null),
+  } = {}) {
+    const windowSelection = windowObject?.getSelection?.();
+    if (windowSelection) return windowSelection;
+    return documentObject?.getSelection?.() || null;
+  }
+
   function scheduleSelectionQuoteClear({
     selectionQuoteState,
     activeSelectionQuoteFn,
@@ -208,24 +221,59 @@
     const nextCaret = Math.min(cursorStart + quoteBlock.length, promptEl.value.length);
     promptEl.focus?.();
     promptEl.setSelectionRange?.(nextCaret, nextCaret);
+    try {
+      const eventCtor = promptEl.ownerDocument?.defaultView?.Event
+        || (typeof Event === "function" ? Event : null);
+      if (eventCtor && typeof promptEl.dispatchEvent === "function") {
+        promptEl.dispatchEvent(new eventCtor("input", { bubbles: true }));
+      }
+    } catch {
+      // Non-fatal: draft sync listeners may be unavailable in tests.
+    }
     ensureComposerVisible({ smooth: false });
+  }
+
+  function resolveSelectionAnchorElement(nodes, { textNodeType = (typeof Node !== "undefined" ? Node.TEXT_NODE : 3) } = {}) {
+    for (const node of nodes || []) {
+      if (!node) continue;
+      if (node.nodeType === textNodeType) {
+        if (node.parentElement) return node.parentElement;
+        continue;
+      }
+      if (typeof node.nodeType === "number" && node.nodeType === 1) {
+        return node;
+      }
+      if (node.parentElement) {
+        return node.parentElement;
+      }
+      if (node.host && typeof node.host.nodeType === "number" && node.host.nodeType === 1) {
+        return node.host;
+      }
+      if (typeof node.nodeType !== "number") {
+        return node;
+      }
+    }
+    return null;
   }
 
   function activeSelectionQuote({
     messagesEl,
     windowObject = (typeof window !== "undefined" ? window : null),
+    documentObject = (typeof document !== "undefined" ? document : null),
     normalizeQuoteSelectionFn = normalizeQuoteSelection,
     textNodeType = (typeof Node !== "undefined" ? Node.TEXT_NODE : 3),
   } = {}) {
     if (!messagesEl || !windowObject) return null;
-    const selection = windowObject.getSelection?.();
+    const selection = getActiveSelection({ windowObject, documentObject });
     if (!selection || selection.rangeCount < 1 || selection.isCollapsed) {
       return null;
     }
 
     const range = selection.getRangeAt(0);
-    const anchorNode = range.commonAncestorContainer;
-    const anchorElement = anchorNode?.nodeType === textNodeType ? anchorNode.parentElement : anchorNode;
+    const anchorElement = resolveSelectionAnchorElement(
+      [range.commonAncestorContainer, selection.anchorNode, selection.focusNode],
+      { textNodeType },
+    );
     if (!anchorElement || !messagesEl.contains(anchorElement)) {
       return null;
     }
@@ -245,6 +293,22 @@
       Math.round(rect.width || 0),
       Math.round(rect.height || 0),
     ].join("|");
+  }
+
+  function isSimilarQuotePlacement(firstPick, secondPick, tolerancePx = 6) {
+    const firstText = String(firstPick?.text || "");
+    const secondText = String(secondPick?.text || "");
+    if (!firstText || firstText !== secondText) {
+      return false;
+    }
+    const safeTolerance = Math.max(0, Number(tolerancePx) || 0);
+    const firstRect = firstPick?.rect || {};
+    const secondRect = secondPick?.rect || {};
+    return ["left", "top", "width", "height"].every((key) => {
+      const firstValue = Number(firstRect[key] || 0);
+      const secondValue = Number(secondRect[key] || 0);
+      return Math.abs(firstValue - secondValue) <= safeTolerance;
+    });
   }
 
   function showSelectionQuoteAction({ text, rect }, {
@@ -340,7 +404,7 @@
         return;
       }
       const settledKey = quotePlacementKey(settledPick);
-      if (settledKey !== firstKey) {
+      if (settledKey !== firstKey && !isSimilarQuotePlacement(firstPick, settledPick)) {
         scheduleSelectionQuoteSync(140);
         return;
       }
@@ -353,9 +417,15 @@
     return mobileQuoteMode ? (picked?.text || selectionQuoteState.getText()) : selectionQuoteState.getText();
   }
 
-  function hasMessageSelection(selection, { messagesEl }) {
+  function hasMessageSelection(selection, { messagesEl, textNodeType = (typeof Node !== "undefined" ? Node.TEXT_NODE : 3) }) {
     const hasSelection = Boolean(selection && selection.rangeCount >= 1 && !selection.isCollapsed);
-    return Boolean(hasSelection && messagesEl?.contains(selection.anchorNode || null));
+    if (!hasSelection || !messagesEl?.contains) return false;
+    const rangeNode = selection.getRangeAt?.(0)?.commonAncestorContainer || null;
+    const anchorElement = resolveSelectionAnchorElement(
+      [rangeNode, selection.anchorNode, selection.focusNode],
+      { textNodeType },
+    );
+    return Boolean(anchorElement && messagesEl.contains(anchorElement));
   }
 
   function createSelectionQuoteController({
@@ -375,6 +445,16 @@
     applyQuoteIntoPrompt,
     clearSelectionQuoteState,
   }) {
+    function dismissSelectionQuoteAction({ clearNativeSelection = true } = {}) {
+      cancelSelectionQuoteSync();
+      cancelSelectionQuoteSettle();
+      cancelSelectionQuoteClear();
+      if (clearNativeSelection) {
+        getActiveSelection({ windowObject, documentObject })?.removeAllRanges?.();
+      }
+      clearSelectionQuoteState();
+    }
+
     return {
       handleQuoteButtonClick() {
         const textToQuote = quoteSelectionTextForInsert({
@@ -383,12 +463,8 @@
           selectionQuoteState,
         });
         if (!textToQuote) return;
-        cancelSelectionQuoteSync();
-        cancelSelectionQuoteSettle();
-        cancelSelectionQuoteClear();
         applyQuoteIntoPrompt(textToQuote);
-        windowObject.getSelection?.()?.removeAllRanges?.();
-        clearSelectionQuoteState();
+        dismissSelectionQuoteAction({ clearNativeSelection: true });
       },
 
       handleMessagesMouseUp() {
@@ -425,12 +501,11 @@
 
       handleDocumentSelectionChange() {
         const active = documentObject.activeElement;
-        if (active === promptEl) {
+        const selection = getActiveSelection({ windowObject, documentObject });
+        const inMessages = hasMessageSelection(selection, { messagesEl });
+        if (active === promptEl && !inMessages) {
           return;
         }
-
-        const selection = documentObject.getSelection?.();
-        const inMessages = hasMessageSelection(selection, { messagesEl });
 
         if (mobileQuoteMode) {
           if (!inMessages) {
@@ -440,13 +515,25 @@
             return;
           }
 
-          // On mobile, hide while selection changes and only reveal after touchend settle.
+          // Mobile WebViews can emit repeated selectionchange events while the
+          // native selection UI is already settling. If we cancel and re-arm
+          // the debounce on every one of those events, the quote popup can be
+          // starved forever and never reappear. Only arm the settle cycle once
+          // until the pending sync/settle timer finishes.
+          const mobileResyncPending = hasSelectionQuoteTimer("sync", { selectionQuoteState })
+            || hasSelectionQuoteTimer("settle", { selectionQuoteState });
+          if (mobileResyncPending) {
+            return;
+          }
+
+          cancelSelectionQuoteClear();
           cancelSelectionQuoteSync();
           cancelSelectionQuoteSettle();
           selectionQuoteState.clearPlacement();
           if (selectionQuoteButton) {
             selectionQuoteButton.hidden = true;
           }
+          scheduleSelectionQuoteSync(220);
           return;
         }
 
@@ -460,24 +547,51 @@
         scheduleSelectionQuoteSync(140);
       },
 
+      handleDocumentPointerDown(event) {
+        const target = event?.target;
+        if (!target) return;
+        if (target === selectionQuoteButton || selectionQuoteButton?.contains?.(target)) return;
+        if (messagesEl?.contains?.(target)) return;
+        dismissSelectionQuoteAction({ clearNativeSelection: true });
+      },
+
       handleDocumentTouchStart(event) {
         if (!mobileQuoteMode) return;
         const target = event.target;
         if (!target) return;
         if (messagesEl.contains(target)) return;
-        if (target === promptEl || promptEl?.contains?.(target)) return;
-        cancelSelectionQuoteSync();
-        cancelSelectionQuoteSettle();
-        scheduleSelectionQuoteClear(220);
+        if (target === selectionQuoteButton || selectionQuoteButton?.contains?.(target)) return;
+        dismissSelectionQuoteAction({ clearNativeSelection: true });
       },
 
       bind() {
         selectionQuoteButton?.addEventListener("click", () => this.handleQuoteButtonClick());
+        selectionQuoteButton?.addEventListener("touchstart", (event) => {
+          if (!mobileQuoteMode) return;
+          // Telegram/iOS selection overlays can swallow the synthetic click that
+          // normally follows a tap. Apply the quote on touchstart so the action
+          // still fires and the popup clears immediately.
+          event?.preventDefault?.();
+          this.handleQuoteButtonClick();
+        }, { passive: false });
         messagesEl.addEventListener("mouseup", () => this.handleMessagesMouseUp());
         messagesEl.addEventListener("touchstart", () => this.handleMessagesTouchStart());
         messagesEl.addEventListener("touchend", () => this.handleMessagesTouchEnd());
         messagesEl.addEventListener("touchcancel", () => this.handleMessagesTouchCancel());
+        messagesEl.addEventListener("pointerdown", (event) => {
+          if (String(event?.pointerType || "").toLowerCase() === "mouse") return;
+          this.handleMessagesTouchStart();
+        });
+        messagesEl.addEventListener("pointerup", (event) => {
+          if (String(event?.pointerType || "").toLowerCase() === "mouse") return;
+          this.handleMessagesTouchEnd();
+        });
+        messagesEl.addEventListener("pointercancel", (event) => {
+          if (String(event?.pointerType || "").toLowerCase() === "mouse") return;
+          this.handleMessagesTouchCancel();
+        });
         documentObject.addEventListener("selectionchange", () => this.handleDocumentSelectionChange());
+        documentObject.addEventListener("mousedown", (event) => this.handleDocumentPointerDown(event));
         documentObject.addEventListener("touchstart", (event) => this.handleDocumentTouchStart(event));
       },
     };
@@ -574,6 +688,7 @@
     syncSelectionQuoteAction,
     quoteSelectionTextForInsert,
     hasMessageSelection,
+    getActiveSelection,
     createSelectionQuoteController,
     createController,
   };

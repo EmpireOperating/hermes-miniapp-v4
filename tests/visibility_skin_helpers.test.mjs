@@ -232,7 +232,7 @@ test('handleVisibilityChange refreshes lifecycle and delegates active-chat recon
 
   await harness.controller.handleVisibilityChange();
 
-  assert.deepEqual(harness.bootstrapRefreshCalls, ['refresh']);
+  assert.deepEqual(harness.bootstrapRefreshCalls, []);
   assert.equal(harness.visibilityResumes.length, 1);
   assert.equal(harness.visibilityResumes[0].trigger, 'visibilitychange');
   assert.equal(harness.visibilityResumes[0].pendingChatCount, 0);
@@ -252,6 +252,7 @@ test('handleVisibilityChange is a no-op when document is hidden', async () => {
 
   assert.equal(harness.lifecycleMarks.length, 1);
   assert.equal(harness.lifecycleMarks[0].trigger, 'visibilitychange');
+  assert.deepEqual(harness.bootstrapRefreshCalls, []);
   assert.deepEqual(harness.syncActiveMessageViewCalls, []);
   assert.deepEqual(harness.refreshChatsCalls, []);
   assert.deepEqual(harness.syncVisibleActiveChatCalls, []);
@@ -262,12 +263,12 @@ test('handleVisibilityChange is a no-op when unauthenticated', async () => {
 
   await harness.controller.handleVisibilityChange();
 
-  assert.deepEqual(harness.bootstrapRefreshCalls, ['refresh']);
+  assert.deepEqual(harness.bootstrapRefreshCalls, []);
   assert.deepEqual(harness.refreshChatsCalls, []);
   assert.deepEqual(harness.syncVisibleActiveChatCalls, []);
 });
 
-test('handleVisibilityChange stops normal sync when bootstrap refresh triggers reload', async () => {
+test('handleVisibilityChange ignores bootstrap refresh callbacks and continues normal sync', async () => {
   const harness = buildHarness({ visibilityState: 'visible', authenticated: true });
   harness.controller = visibilitySkin.createController({
     windowObject: harness.windowObject,
@@ -301,13 +302,17 @@ test('handleVisibilityChange stops normal sync when bootstrap refresh triggers r
     getIsAuthenticated: () => true,
     getActiveChatId: () => 1,
     maybeRefreshForBootstrapVersionMismatch: async () => true,
-    refreshChats: async () => { throw new Error('should not refresh chats after reload trigger'); },
-    syncVisibleActiveChat: async () => { throw new Error('should not sync visible chat after reload trigger'); },
-    syncActiveMessageView: () => { throw new Error('should not reconcile transcript after reload trigger'); },
+    refreshChats: async () => { harness.refreshChatsCalls.push('refresh'); },
+    syncVisibleActiveChat: async () => { harness.syncVisibleActiveChatCalls.push({ hidden: false, streamAbortControllers: new Map() }); },
+    syncActiveMessageView: () => { harness.syncActiveMessageViewCalls.push({ chatId: 1, options: { preserveViewport: true } }); },
     getStreamAbortControllers: () => new Map(),
   });
 
   await harness.controller.handleVisibilityChange();
+
+  assert.deepEqual(harness.bootstrapRefreshCalls, []);
+  assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
+  assert.equal(harness.syncVisibleActiveChatCalls.length, 1);
 });
 
 test('syncVisibleActiveChat delegates to injected controller method', async () => {

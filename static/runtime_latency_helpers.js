@@ -265,6 +265,8 @@
     getActiveChatId,
     hasLiveStreamController,
     getChatLatencyText,
+    getStreamPhase = null,
+    streamPhases = {},
     chatLabel,
     compactChatLabel,
     setStreamStatus,
@@ -277,7 +279,9 @@
   }) {
     const RECONNECT_PILL_DELAY_MS = 2200;
     const LIVE_LATENCY_TICK_MS = 1000;
+    const PENDING_HANDOFF_LATENCY_GRACE_MS = 4000;
     const liveLatencyStartedAtByChat = new Map();
+    const liveLatencyTouchedAtByChat = new Map();
     const reconnectDisplayTimerByChat = new Map();
     let liveLatencyIntervalId = null;
 
@@ -345,7 +349,45 @@
       const key = normalizeChatId(chatId);
       if (!key) return;
       liveLatencyStartedAtByChat.delete(key);
+      liveLatencyTouchedAtByChat.delete(key);
       stopLiveLatencyLoopIfIdle();
+    }
+
+    function touchLiveLatency(chatId, nowMs = Date.now()) {
+      const key = normalizeChatId(chatId);
+      if (!key) return;
+      liveLatencyTouchedAtByChat.set(key, Number(nowMs) || Date.now());
+    }
+
+    function shouldPreserveLiveLatencyDuringPendingHandoff(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key) return false;
+      const touchedAt = Number(liveLatencyTouchedAtByChat.get(key) || 0);
+      if (!Number.isFinite(touchedAt) || touchedAt <= 0) return false;
+      const now = Date.now();
+      if ((now - touchedAt) > PENDING_HANDOFF_LATENCY_GRACE_MS) {
+        return false;
+      }
+      const phase = typeof getStreamPhase === 'function' ? String(getStreamPhase(key) || '').trim().toLowerCase() : '';
+      return phase === String(streamPhases.PENDING_TOOL || 'pending_tool')
+        || phase === String(streamPhases.STREAMING_TOOL || 'streaming_tool')
+        || phase === String(streamPhases.STREAMING_ASSISTANT || 'streaming_assistant');
+    }
+
+    function renderLiveLatencyFromStart(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key) return false;
+      const startedAt = Number(liveLatencyStartedAtByChat.get(key) || 0);
+      if (!startedAt) {
+        return false;
+      }
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+      const fallbackSeconds = `${Math.max(0, Math.ceil(elapsedMs / 1000))}s`;
+      const runningLatency = `${formatLatency?.(elapsedMs) || fallbackSeconds} · live`;
+      touchLiveLatency(key);
+      setLatencyChipForActiveChat(key, `latency: ${runningLatency}`);
+      setChatLatency?.(key, runningLatency);
+      return true;
     }
 
     function tickLiveLatency() {
@@ -362,16 +404,9 @@
         syncActiveLatencyChip?.();
         return;
       }
-      const startedAt = Number(liveLatencyStartedAtByChat.get(activeKey) || 0);
-      if (!startedAt) {
+      if (!renderLiveLatencyFromStart(activeKey)) {
         stopLiveLatencyLoopIfIdle();
-        return;
       }
-      const elapsedMs = Math.max(0, Date.now() - startedAt);
-      const fallbackSeconds = `${Math.max(0, Math.ceil(elapsedMs / 1000))}s`;
-      const runningLatency = `${formatLatency?.(elapsedMs) || fallbackSeconds} · live`;
-      setLatencyChipForActiveChat(activeKey, `latency: ${runningLatency}`);
-      setChatLatency?.(activeKey, runningLatency);
     }
 
     function ensureLiveLatencyLoop() {
@@ -390,6 +425,7 @@
       } else if (!liveLatencyStartedAtByChat.has(key)) {
         liveLatencyStartedAtByChat.set(key, Date.now());
       }
+      touchLiveLatency(key);
       tickLiveLatency();
       ensureLiveLatencyLoop();
     }
@@ -413,12 +449,16 @@
         const hasLiveController = activeKey && typeof hasLiveStreamController === 'function'
           ? Boolean(hasLiveStreamController(activeKey))
           : true;
-        if (activeKey && !hasLiveController) {
+        const preserveLiveLatency = activeKey && !hasLiveController && shouldPreserveLiveLatencyDuringPendingHandoff(activeKey);
+        if (activeKey && !hasLiveController && !preserveLiveLatency) {
           clearLiveLatency(activeKey);
           syncActiveLatencyChip?.();
         }
         setStreamStatus?.(`Waiting for Hermes in ${chatLabel?.(activeKey) || "Chat"}`);
         setActivityChip?.(streamChip, `stream: pending · ${compactChatLabel?.(activeKey) || "Chat"}`);
+        if (preserveLiveLatency) {
+          renderLiveLatencyFromStart(activeKey);
+        }
         return;
       }
       if (activeKey && hasLiveStreamController?.(activeKey)) {

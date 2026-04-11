@@ -282,16 +282,65 @@ test('installKeyboardViewportSync wires focus/viewport listeners, sync burst tim
   ]);
 });
 
-test('installKeyboardViewportSync focuses the composer synchronously on mobile touchstart', () => {
+test('installKeyboardViewportSync focuses the composer on guarded mobile prompt tap', () => {
   const harness = buildHarness({ mobileQuoteMode: true });
 
   harness.controller.installKeyboardViewportSync();
-  harness.promptEl.dispatch('touchstart');
+  harness.promptEl.dispatch('touchstart', { touches: [{ clientX: 20, clientY: 30 }] });
+  harness.promptEl.dispatch('touchend', { changedTouches: [{ clientX: 24, clientY: 34 }] });
 
   assert.deepEqual(harness.promptEl.focusCalls, [null]);
   assert.equal(harness.documentObject.activeElement, harness.promptEl);
   assert.deepEqual(harness.timeoutCalls, [90, 220, 420, 700, 1000]);
   assert.deepEqual(harness.intervalCallbacks.map((entry) => entry.delay), [140]);
+});
+
+test('installKeyboardViewportSync does not cancel native mobile prompt touch defaults', () => {
+  const harness = buildHarness({ mobileQuoteMode: true });
+  const touchStartEvent = {
+    touches: [{ clientX: 20, clientY: 30 }],
+    preventDefaultCalled: false,
+    preventDefault() {
+      this.preventDefaultCalled = true;
+    },
+  };
+  const touchEndEvent = {
+    changedTouches: [{ clientX: 24, clientY: 34 }],
+    preventDefaultCalled: false,
+    preventDefault() {
+      this.preventDefaultCalled = true;
+    },
+  };
+
+  harness.controller.installKeyboardViewportSync();
+  harness.promptEl.dispatch('touchstart', touchStartEvent);
+  harness.promptEl.dispatch('touchend', touchEndEvent);
+
+  assert.equal(touchStartEvent.preventDefaultCalled, false);
+  assert.equal(touchEndEvent.preventDefaultCalled, false);
+  assert.equal(harness.documentObject.activeElement, harness.promptEl);
+});
+
+test('installKeyboardViewportSync stops mobile focus sync when user touches an already-focused prompt', () => {
+  const harness = buildHarness({ mobileQuoteMode: true });
+
+  harness.controller.installKeyboardViewportSync();
+  harness.promptEl.dispatch('touchstart', { touches: [{ clientX: 20, clientY: 30 }] });
+  harness.promptEl.dispatch('touchend', { changedTouches: [{ clientX: 24, clientY: 34 }] });
+  assert.deepEqual(harness.intervalCallbacks.map((entry) => entry.delay), [140]);
+
+  harness.promptEl.focusCalls.length = 0;
+  harness.form.scrollIntoViewCalls.length = 0;
+  harness.scrollByCalls.length = 0;
+  harness.promptEl.dispatch('touchstart', { touches: [{ clientX: 24, clientY: 34 }] });
+  harness.promptEl.dispatch('touchend', { changedTouches: [{ clientX: 24, clientY: 34 }] });
+  harness.promptEl.dispatch('click');
+  harness.visualViewport.dispatch('resize');
+
+  assert.deepEqual(harness.clearIntervalCalls, [1]);
+  assert.deepEqual(harness.promptEl.focusCalls, []);
+  assert.equal(harness.form.scrollIntoViewCalls.length, 0);
+  assert.equal(harness.scrollByCalls.length, 0);
 });
 
 
@@ -310,7 +359,8 @@ test('installKeyboardViewportSync clears sync state and blurs focused mobile com
   const harness = buildHarness({ mobileQuoteMode: true });
 
   harness.controller.installKeyboardViewportSync();
-  harness.promptEl.dispatch('touchstart');
+  harness.promptEl.dispatch('touchstart', { touches: [{ clientX: 20, clientY: 30 }] });
+  harness.promptEl.dispatch('touchend', { changedTouches: [{ clientX: 24, clientY: 34 }] });
   harness.documentObject.activeElement = harness.promptEl;
   harness.promptEl.focusCalls.length = 0;
   harness.form.scrollIntoViewCalls.length = 0;

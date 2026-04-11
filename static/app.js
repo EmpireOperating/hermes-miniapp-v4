@@ -18,6 +18,8 @@ const devAuthHashSecret = desktopTestingRequested && currentLocationHash.startsW
   : "";
 const filePreviewConfig = window.__HERMES_FILE_PREVIEW__ || { enabled: false, allowedRoots: [] };
 const filePreviewFeatureEnabled = Boolean(filePreviewConfig.enabled);
+const featureConfig = window.__HERMES_FEATURES__ || { mobileTabCarousel: false };
+const mobileTabCarouselFeatureEnabled = Boolean(featureConfig.mobileTabCarousel);
 const filePreviewAllowedRoots = filePreviewFeatureEnabled && Array.isArray(filePreviewConfig.allowedRoots)
   ? filePreviewConfig.allowedRoots
       .map((value) => String(value || "").trim())
@@ -109,7 +111,8 @@ function createDeferredApiHelper(globalKey, fallbackApi = {}) {
   }
 
   let resolvedApi = null;
-  const deferredControllerHelper = createDeferredControllerHelper(`${globalKey}__deferred_controller__`);
+  const deferredControllerGlobalKey = `${globalKey}__deferred_controller__`;
+  const deferredControllerHelper = createDeferredControllerHelper(deferredControllerGlobalKey);
 
   const facadeApi = new Proxy({}, {
     get(_target, prop) {
@@ -141,6 +144,9 @@ function createDeferredApiHelper(globalKey, fallbackApi = {}) {
     },
     set(value) {
       resolvedApi = value;
+      if (value && typeof value.createController === 'function') {
+        window[deferredControllerGlobalKey] = value;
+      }
     },
   });
 
@@ -320,6 +326,10 @@ if (body && !body.dataset.skin) {
 }
 const messagesEl = document.getElementById("messages");
 const tabsEl = document.getElementById("chat-tabs");
+const tabOverviewEl = document.getElementById("chat-tabs-overview");
+const hiddenUnreadLeftEl = document.getElementById("chat-tabs-hidden-left");
+const hiddenUnreadRightEl = document.getElementById("chat-tabs-hidden-right");
+const hiddenUnreadSummaryEl = document.getElementById("chat-tabs-hidden-unread");
 const form = document.getElementById("chat-form");
 const promptEl = document.getElementById("prompt");
 const sendButton = document.getElementById("send-button");
@@ -429,6 +439,8 @@ const {
   clearChatStreamState,
 } = streamStateHelpers;
 
+let chatHistoryController = null;
+
 const chatTabsController = chatTabsHelpers.createController({
   localStorageRef: localStorage,
   pinnedChatsCollapsedStorageKey: PINNED_CHATS_COLLAPSED_STORAGE_KEY,
@@ -449,6 +461,19 @@ const chatTabsController = chatTabsHelpers.createController({
   tabNodes,
   tabTemplate,
   tabsEl,
+  hiddenUnreadLeftEl,
+  hiddenUnreadRightEl,
+  hiddenUnreadSummaryEl,
+  tabOverviewEl,
+  mobileTabCarouselEnabled: mobileTabCarouselFeatureEnabled,
+  getIsMobileCarouselViewport: () => isCoarsePointer(),
+  getCurrentUnreadCount: (chatId) => {
+    if (typeof chatHistoryController?.getCurrentUnreadCount === 'function') {
+      return chatHistoryController.getCurrentUnreadCount(chatId);
+    }
+    return Math.max(0, Number(chats.get(Number(chatId))?.unread_count || 0));
+  },
+  openChat: (chatId) => openChat(chatId),
   clearChatStreamState,
   chatUiHelpers,
   pinnedChatsWrap,
@@ -996,7 +1021,6 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   chats,
   pendingChats,
   resumePendingChatStream,
-  addLocalMessage,
   hasFreshPendingStreamSnapshot,
   restorePendingStreamSnapshot,
   ensureActivationReadThreshold: (chatId, unreadCount) => chatHistoryController.ensureActivationReadThreshold(chatId, unreadCount),
@@ -1267,10 +1291,11 @@ function activeSelectionQuote() {
   return interactionHelpers.activeSelectionQuote({
     messagesEl,
     windowObject: window,
+    documentObject: document,
     normalizeQuoteSelectionFn: normalizeQuoteSelection,
-    textNodeType: Node.TEXT_NODE,
   });
 }
+
 
 function quotePlacementKey({ text, rect }) {
   return interactionHelpers.quotePlacementKey({ text, rect });
@@ -1667,7 +1692,7 @@ async function refreshChats() {
   return chatHistoryController.refreshChats();
 }
 
-const chatHistoryController = chatHistoryHelpers.createController({
+chatHistoryController = chatHistoryHelpers.createController({
   apiPost,
   histories,
   chats,
@@ -1814,6 +1839,8 @@ const streamActivityController = runtimeHelpers.createStreamActivityController({
   getActiveChatId: () => Number(activeChatId),
   hasLiveStreamController,
   getChatLatencyText: (chatId) => latencyByChat.get(Number(chatId)) || '',
+  getStreamPhase,
+  streamPhases: STREAM_PHASES,
   chatLabel,
   compactChatLabel,
   setStreamStatus,
@@ -1903,6 +1930,10 @@ const startupBindingsController = startupBindingsHelpers.createController({
   cancelSelectionQuoteSettle,
   cancelSelectionQuoteClear,
   clearSelectionQuoteState,
+  hasMessageSelectionFn: (selection) => interactionHelpers.hasMessageSelection(selection, { messagesEl }),
+  scheduleSelectionQuoteSync,
+  mobileQuoteMode,
+  noteMobileCarouselInteraction: () => chatTabsController.noteMobileCarouselInteraction(),
   handleTabClick,
   handlePinnedChatClick,
   togglePinnedChatsCollapsed,

@@ -130,74 +130,105 @@
     };
   }
 
-  function createController(deps) {
+
+  function normalizeChatId(chatId) {
+    return Number(chatId);
+  }
+
+  function hasLocalPendingTranscript(history) {
+    const previous = Array.isArray(history) ? history : [];
+    return previous.some((item) => {
+      if (!item?.pending) return false;
+      const role = String(item?.role || '').toLowerCase();
+      return role === 'tool' || role === 'hermes' || role === 'assistant';
+    });
+  }
+
+  function latestAssistantLikeBody(history, { pending } = {}) {
+    const entries = Array.isArray(history) ? history : [];
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const item = entries[index];
+      const role = String(item?.role || '').toLowerCase();
+      if (role !== 'assistant' && role !== 'hermes') continue;
+      if (Boolean(item?.pending) !== Boolean(pending)) continue;
+      const body = String(item?.body || '').trim();
+      if (!body) continue;
+      return body;
+    }
+    return '';
+  }
+
+  function hydratedCompletionMatchesVisibleLocalPending(previousHistory, nextHistory) {
+    const completedBody = latestAssistantLikeBody(nextHistory, { pending: false });
+    if (!completedBody) return false;
+    const pendingBody = latestAssistantLikeBody(previousHistory, { pending: true });
+    if (pendingBody) {
+      return completedBody === pendingBody;
+    }
+    const hydratedPendingTranscript = Array.isArray(nextHistory) && nextHistory.some((item) => {
+      if (!item?.pending) return false;
+      const role = String(item?.role || '').toLowerCase();
+      return role === 'tool' || role === 'hermes' || role === 'assistant';
+    });
+    if (hydratedPendingTranscript) {
+      return false;
+    }
+    return hasLocalPendingTranscript(previousHistory);
+  }
+
+  function historiesDiffer(currentHistory, incomingHistory) {
+    const a = currentHistory || [];
+    const b = incomingHistory || [];
+    if (a.length !== b.length) return true;
+    if (!a.length) return false;
+
+    const aLast = a[a.length - 1] || {};
+    const bLast = b[b.length - 1] || {};
+    return aLast.id !== bLast.id || aLast.body !== bLast.body || aLast.role !== bLast.role;
+  }
+
+  function historyRenderSignature(history) {
+    const entries = Array.isArray(history) ? history : [];
+    return entries.map((item, index) => {
+      const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
+      const fileRefSignature = fileRefs
+        .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
+        .join('|');
+      return [
+        index,
+        String(item?.role || ''),
+        String(item?.body || ''),
+        item?.pending ? 'pending' : 'final',
+        String(item?.created_at || ''),
+        fileRefSignature,
+      ].join('::');
+    }).join('||');
+  }
+
+  function createReadSyncController(deps) {
     const {
       apiPost,
-      histories,
       chats,
-      prefetchingHistories,
       upsertChat,
-      setActiveChatMeta,
-      renderMessages,
-      hasLiveStreamController,
-      abortStreamController,
-      mergeHydratedHistory,
-      refreshTabNode,
       getActiveChatId,
-      resumePendingChatStream,
-      messagesEl,
-      template,
-      nowStamp,
-      renderBody,
-      getLastOpenChatRequestId,
-      setLastOpenChatRequestId,
-      scheduleTimeout,
-      requestIdle,
-      runAfterUiMutation,
-      getIsAuthenticated = () => true,
+      getIsAuthenticated,
       isNearBottomFn,
       messagesContainer,
       unseenStreamChats,
       markReadInFlight,
       renderTabs,
-      syncChats,
-      syncPinnedChats,
-      renderPinnedChats,
       syncActivePendingStatus,
       updateComposerState,
       pendingChats,
-      shouldResumeOnVisibilityChange,
-      restorePendingStreamSnapshot,
-      hasFreshPendingStreamSnapshot,
-      persistPendingStreamSnapshot,
-      clearPendingStreamSnapshot,
-      finalizeHydratedPendingState,
-      shouldDeferNonCriticalCachedOpen = () => false,
-      renderTraceLog = () => {},
-      nowMs = () => Date.now(),
+      hasLiveStreamController,
     } = deps;
 
-    const activeRenderState = {
-      scheduled: false,
-      chatId: null,
-    };
     const deferredMarkReadRetry = new Map();
     const optimisticUnreadClears = new Map();
     const activationReadThresholdState = new Map();
-    const enqueueUiMutation = typeof runAfterUiMutation === 'function'
-      ? runAfterUiMutation
-      : (callback) => scheduleTimeout(callback, 0);
-
-    function normalizeChatId(chatId) {
-      return Number(chatId);
-    }
 
     function isActiveChat(chatId) {
       return normalizeChatId(chatId) === normalizeChatId(getActiveChatId());
-    }
-
-    function traceChatHistory(eventName, details = null) {
-      renderTraceLog(`chat-history-${eventName}`, details);
     }
 
     function getCurrentUnreadCount(chatId) {
@@ -235,32 +266,53 @@
       activationReadThresholdState.delete(key);
     }
 
-    function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
-      if (!chat || typeof chat !== 'object') {
-        return chat;
+    function getMessageBottomOffset(node, container) {
+      if (!node || !container) return null;
+
+      const offsetTop = Number(node?.offsetTop);
+      const offsetHeight = Number(node?.offsetHeight);
+      if (Number.isFinite(offsetTop) && Number.isFinite(offsetHeight)) {
+        return Math.max(0, offsetTop + offsetHeight);
       }
-      const key = normalizeChatId(chat.id);
-      if (!key) {
-        return chat;
+
+      const nodeBottom = Number(node?.dataset?.bottomOffset || node?.bottomOffset);
+      if (Number.isFinite(nodeBottom)) {
+        return Math.max(0, nodeBottom);
       }
-      const nextChat = { ...chat };
-      if (preserveActivationUnread) {
-        const localUnread = Math.max(0, Number(chats.get(key)?.unread_count || 0));
-        const incomingUnread = Math.max(0, Number(nextChat.unread_count || 0));
-        const activeUnreadAboveNewestMessage = Boolean(
-          key === normalizeChatId(getActiveChatId())
-          && localUnread > incomingUnread
-          && !hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
-        );
-        if ((activationReadThresholdState.has(key) || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
-          nextChat.unread_count = localUnread;
-        }
+
+      const containerRect = container?.getBoundingClientRect?.();
+      const nodeRect = node?.getBoundingClientRect?.();
+      const scrollTop = Number(container?.scrollTop);
+      const containerTop = Number(containerRect?.top);
+      const nodeRectBottom = Number(nodeRect?.bottom);
+      if (Number.isFinite(scrollTop) && Number.isFinite(containerTop) && Number.isFinite(nodeRectBottom)) {
+        return Math.max(0, scrollTop + (nodeRectBottom - containerTop));
       }
-      return nextChat;
+
+      return null;
     }
 
-    function upsertChatPreservingUnread(chat, options = {}) {
-      return upsertChat(buildChatPreservingUnread(chat, options));
+    function hasReachedNewestUnreadMessageBottom(chatId, { tolerance = 40 } = {}) {
+      const key = normalizeChatId(chatId);
+      const unread = getCurrentUnreadCount(key);
+      if (unread <= 0) return true;
+      const container = messagesContainer;
+      if (!container || typeof container.querySelectorAll !== 'function') {
+        return isNearBottomFn(messagesContainer, tolerance);
+      }
+
+      const assistantNodes = container.querySelectorAll('.message[data-role="assistant"]:not(.message--pending), .message[data-role="hermes"]:not(.message--pending)');
+      const newestUnreadNode = assistantNodes?.[assistantNodes.length - 1] || null;
+      if (!newestUnreadNode) {
+        return isNearBottomFn(messagesContainer, tolerance);
+      }
+
+      const viewportBottom = Number(container.scrollTop) + Number(container.clientHeight || container.offsetHeight || 0);
+      const messageBottom = getMessageBottomOffset(newestUnreadNode, container);
+      if (!Number.isFinite(viewportBottom) || !Number.isFinite(messageBottom)) {
+        return isNearBottomFn(messagesContainer, tolerance);
+      }
+      return viewportBottom + tolerance >= messageBottom;
     }
 
     function armActivationReadThreshold(chatId, unreadCount = null) {
@@ -313,83 +365,307 @@
       return true;
     }
 
-    function hasLocalPendingTranscript(history) {
-      const previous = Array.isArray(history) ? history : [];
-      return previous.some((item) => {
-        if (!item?.pending) return false;
-        const role = String(item?.role || '').toLowerCase();
-        return role === 'tool' || role === 'hermes' || role === 'assistant';
-      });
+    function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
+      if (!chat || typeof chat !== 'object') {
+        return chat;
+      }
+      const key = normalizeChatId(chat.id);
+      if (!key) {
+        return chat;
+      }
+      const nextChat = { ...chat };
+      if (preserveActivationUnread) {
+        const localUnread = Math.max(0, Number(chats.get(key)?.unread_count || 0));
+        const incomingUnread = Math.max(0, Number(nextChat.unread_count || 0));
+        const activeUnreadAboveNewestMessage = Boolean(
+          key === normalizeChatId(getActiveChatId())
+          && localUnread > incomingUnread
+          && !hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
+        );
+        if ((activationReadThresholdState.has(key) || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
+          nextChat.unread_count = localUnread;
+        }
+      }
+      return nextChat;
     }
 
-    function hasLocalPendingWithoutLiveStream(chatId, history) {
+    function upsertChatPreservingUnread(chat, options = {}) {
+      return upsertChat(buildChatPreservingUnread(chat, options));
+    }
+
+    async function markRead(chatId) {
       const key = normalizeChatId(chatId);
-      if (!key || hasLiveStreamController(key)) {
+      const data = await apiPost('/api/chats/mark-read', { chat_id: key });
+      finalizeUnreadClear(key);
+      const localChat = chats.get(key);
+      const shouldPreservePending = Boolean(
+        pendingChats.has(key)
+        || localChat?.pending
+        || hasLiveStreamController(key)
+      );
+      const nextChat = data?.chat && typeof data.chat === 'object'
+        ? { ...data.chat }
+        : data?.chat;
+      if (shouldPreservePending && nextChat && typeof nextChat === 'object') {
+        nextChat.pending = true;
+      }
+      upsertChat(nextChat);
+      renderTabs();
+      if (isActiveChat(key)) {
+        syncActivePendingStatus();
+        updateComposerState();
+      }
+    }
+
+    function shouldMarkReadNow(chatId, { force = false, requireUnread = true } = {}) {
+      const key = normalizeChatId(chatId);
+      if (!key || !getIsAuthenticated() || !isActiveChat(key)) {
         return false;
       }
-      return hasLocalPendingTranscript(history);
+      if (!force) {
+        if (unseenStreamChats.has(key)) return false;
+        if (requireUnread) {
+          const unread = getCurrentUnreadCount(key);
+          if (unread <= 0) return false;
+        }
+        const reachedBottom = hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 });
+        if (!hasSatisfiedActivationReadThreshold(key, { reachedBottom, force: false })) return false;
+        if (!reachedBottom) return false;
+      }
+      return true;
     }
 
-    function latestAssistantLikeBody(history, { pending } = {}) {
-      const entries = Array.isArray(history) ? history : [];
-      for (let index = entries.length - 1; index >= 0; index -= 1) {
-        const item = entries[index];
-        const role = String(item?.role || '').toLowerCase();
-        if (role !== 'assistant' && role !== 'hermes') continue;
-        if (Boolean(item?.pending) !== Boolean(pending)) continue;
-        const body = String(item?.body || '').trim();
-        if (!body) continue;
-        return body;
-      }
-      return '';
+    function rememberDeferredMarkRead(chatId, { force = false } = {}) {
+      const key = normalizeChatId(chatId);
+      const existing = deferredMarkReadRetry.get(key);
+      deferredMarkReadRetry.set(key, { force: Boolean(existing?.force || force) });
     }
 
-    function hydratedCompletionMatchesVisibleLocalPending(previousHistory, nextHistory) {
-      const completedBody = latestAssistantLikeBody(nextHistory, { pending: false });
-      if (!completedBody) return false;
-      const pendingBody = latestAssistantLikeBody(previousHistory, { pending: true });
-      if (pendingBody) {
-        return completedBody === pendingBody;
+    function consumeDeferredMarkRead(chatId) {
+      const key = normalizeChatId(chatId);
+      const deferred = deferredMarkReadRetry.get(key) || null;
+      deferredMarkReadRetry.delete(key);
+      return deferred;
+    }
+
+    function startMarkReadRequest(chatId, { force = false } = {}) {
+      const key = normalizeChatId(chatId);
+      clearUnreadCount(key);
+      renderTabs();
+      if (isActiveChat(key)) {
+        syncActivePendingStatus();
+        updateComposerState();
       }
-      const hydratedPendingTranscript = Array.isArray(nextHistory) && nextHistory.some((item) => {
-        if (!item?.pending) return false;
+      markReadInFlight.add(key);
+      void markRead(key)
+        .catch(() => {
+          restoreUnreadCount(key);
+          renderTabs();
+          if (isActiveChat(key)) {
+            syncActivePendingStatus();
+            updateComposerState();
+          }
+          // Best-effort read sync; retry on next visibility/scroll tick.
+        })
+        .finally(() => {
+          markReadInFlight.delete(key);
+          const deferred = consumeDeferredMarkRead(key);
+          if (deferred && shouldMarkReadNow(key, { ...deferred, requireUnread: false })) {
+            startMarkReadRequest(key, deferred);
+          }
+        });
+    }
+
+    function maybeMarkRead(chatId, { force = false } = {}) {
+      const key = normalizeChatId(chatId);
+      if (!shouldMarkReadNow(key, { force })) {
+        return;
+      }
+      if (markReadInFlight.has(key)) {
+        rememberDeferredMarkRead(key, { force });
+        return;
+      }
+      startMarkReadRequest(key, { force });
+    }
+
+    return {
+      buildChatPreservingUnread,
+      upsertChatPreservingUnread,
+      getCurrentUnreadCount,
+      armActivationReadThreshold,
+      ensureActivationReadThreshold,
+      markRead,
+      maybeMarkRead,
+      hasLocalPendingWithoutLiveStream(chatId, history) {
+        const key = normalizeChatId(chatId);
+        if (!key || hasLiveStreamController(key)) {
+          return false;
+        }
+        return hasLocalPendingTranscript(history);
+      },
+      finalizeHydratedPendingState(chatId) {
+        finalizeUnreadClear(chatId);
+      },
+    };
+  }
+
+  function createLocalMutationController(deps) {
+    const {
+      histories,
+      getActiveChatId,
+      messagesEl,
+      template,
+      nowStamp,
+      renderBody,
+      renderMessages,
+      persistPendingStreamSnapshot,
+      clearPendingStreamSnapshot,
+      enqueueUiMutation,
+      isActiveChat,
+    } = deps;
+
+    const activeRenderState = {
+      scheduled: false,
+      chatId: null,
+    };
+
+    function addLocalMessage(chatId, message) {
+      const key = normalizeChatId(chatId);
+      const history = histories.get(key) || [];
+      history.push(message);
+      histories.set(key, history);
+    }
+
+    function appendSystemMessage(text, chatIdOverride = null) {
+      const targetChatId = normalizeChatId(chatIdOverride) || normalizeChatId(getActiveChatId());
+      if (!targetChatId) {
+        messagesEl?.appendChild?.(createSystemMessageNode({
+          template,
+          nowStamp,
+          renderBody,
+          text,
+        }));
+        return;
+      }
+      addLocalMessage(targetChatId, { role: 'system', body: text, created_at: new Date().toISOString() });
+      if (targetChatId === normalizeChatId(getActiveChatId())) {
+        renderMessages(targetChatId);
+      }
+    }
+
+    function updatePendingAssistant(chatId, nextBody, pendingState = true) {
+      const key = normalizeChatId(chatId);
+      const history = histories.get(key) || [];
+      let pendingMessage = null;
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const item = history[index];
+        if (!item?.pending) continue;
         const role = String(item?.role || '').toLowerCase();
-        return role === 'tool' || role === 'hermes' || role === 'assistant';
+        if (role !== 'hermes' && role !== 'assistant') {
+          continue;
+        }
+        pendingMessage = item;
+        break;
+      }
+
+      if (!pendingMessage) {
+        const safeBody = String(nextBody || '').trim();
+        if (!safeBody && !pendingState) {
+          return;
+        }
+        history.push({
+          role: 'hermes',
+          body: nextBody,
+          created_at: new Date().toISOString(),
+          pending: pendingState,
+        });
+        histories.set(key, history);
+        persistPendingStreamSnapshot?.(key);
+        if (!pendingState) {
+          clearPendingStreamSnapshot?.(key);
+        }
+        return;
+      }
+
+      pendingMessage.body = nextBody;
+      pendingMessage.pending = pendingState;
+      histories.set(key, history);
+      persistPendingStreamSnapshot?.(key);
+      if (!pendingState) {
+        clearPendingStreamSnapshot?.(key);
+      }
+    }
+
+    function syncActiveMessageView(chatId, options = {}) {
+      if (!isActiveChat(chatId)) return;
+      renderMessages(chatId, options);
+    }
+
+    function scheduleActiveMessageView(chatId) {
+      if (!isActiveChat(chatId)) return;
+      activeRenderState.chatId = normalizeChatId(chatId);
+      if (activeRenderState.scheduled) return;
+      activeRenderState.scheduled = true;
+      enqueueUiMutation(() => {
+        activeRenderState.scheduled = false;
+        const targetChatId = activeRenderState.chatId;
+        activeRenderState.chatId = null;
+        if (targetChatId == null || !isActiveChat(targetChatId)) return;
+        renderMessages(targetChatId, { preserveViewport: true });
       });
-      if (hydratedPendingTranscript) {
-        return false;
-      }
-      return hasLocalPendingTranscript(previousHistory);
     }
 
-    function historiesDiffer(currentHistory, incomingHistory) {
-      const a = currentHistory || [];
-      const b = incomingHistory || [];
-      if (a.length !== b.length) return true;
-      if (!a.length) return false;
+    return {
+      addLocalMessage,
+      appendSystemMessage,
+      updatePendingAssistant,
+      syncActiveMessageView,
+      scheduleActiveMessageView,
+    };
+  }
 
-      const aLast = a[a.length - 1] || {};
-      const bLast = b[b.length - 1] || {};
-      return aLast.id !== bLast.id || aLast.body !== bLast.body || aLast.role !== bLast.role;
-    }
-
-    function historyRenderSignature(history) {
-      const entries = Array.isArray(history) ? history : [];
-      return entries.map((item, index) => {
-        const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
-        const fileRefSignature = fileRefs
-          .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
-          .join('|');
-        return [
-          index,
-          String(item?.role || ''),
-          String(item?.body || ''),
-          item?.pending ? 'pending' : 'final',
-          String(item?.created_at || ''),
-          fileRefSignature,
-        ].join('::');
-      }).join('||');
-    }
+  function createHistoryOpenController(deps) {
+    const {
+      apiPost,
+      histories,
+      chats,
+      prefetchingHistories,
+      setActiveChatMeta,
+      renderMessages,
+      hasLiveStreamController,
+      abortStreamController,
+      mergeHydratedHistory,
+      refreshTabNode,
+      getActiveChatId,
+      resumePendingChatStream,
+      getLastOpenChatRequestId,
+      setLastOpenChatRequestId,
+      scheduleTimeout,
+      requestIdle,
+      enqueueUiMutation,
+      syncChats,
+      syncPinnedChats,
+      renderTabs,
+      renderPinnedChats,
+      syncActivePendingStatus,
+      updateComposerState,
+      pendingChats,
+      shouldResumeOnVisibilityChange,
+      restorePendingStreamSnapshot,
+      hasFreshPendingStreamSnapshot,
+      finalizeHydratedPendingState,
+      shouldDeferNonCriticalCachedOpen,
+      traceChatHistory,
+      nowMs,
+      appendSystemMessage,
+      buildChatPreservingUnread,
+      upsertChatPreservingUnread,
+      armActivationReadThreshold,
+      ensureActivationReadThreshold,
+      maybeMarkRead,
+      isActiveChat,
+      hasLocalPendingWithoutLiveStream,
+    } = deps;
 
     async function loadChatHistory(chatId, { activate = true } = {}) {
       const targetChatId = normalizeChatId(chatId);
@@ -645,7 +921,7 @@
       });
       void loadChatHistory(key, { activate: false })
         .then((data) => {
-          upsertChat(data.chat);
+          upsertChatPreservingUnread(data.chat);
           histories.set(key, data.history || []);
           traceChatHistory('prefetch-finished', {
             chatId: key,
@@ -694,236 +970,6 @@
         return;
       }
       scheduleTimeout(() => warmNext(0), 120);
-    }
-
-    function addLocalMessage(chatId, message) {
-      const key = normalizeChatId(chatId);
-      const history = histories.get(key) || [];
-      history.push(message);
-      histories.set(key, history);
-    }
-
-    function appendSystemMessage(text, chatIdOverride = null) {
-      const targetChatId = normalizeChatId(chatIdOverride) || normalizeChatId(getActiveChatId());
-      if (!targetChatId) {
-        messagesEl?.appendChild?.(createSystemMessageNode({
-          template,
-          nowStamp,
-          renderBody,
-          text,
-        }));
-        return;
-      }
-      addLocalMessage(targetChatId, { role: 'system', body: text, created_at: new Date().toISOString() });
-      if (targetChatId === normalizeChatId(getActiveChatId())) {
-        renderMessages(targetChatId);
-      }
-    }
-
-    function updatePendingAssistant(chatId, nextBody, pendingState = true) {
-      const key = normalizeChatId(chatId);
-      const history = histories.get(key) || [];
-      let pendingMessage = null;
-      for (let index = history.length - 1; index >= 0; index -= 1) {
-        const item = history[index];
-        if (!item?.pending) continue;
-        const role = String(item?.role || '').toLowerCase();
-        if (role !== 'hermes' && role !== 'assistant') {
-          continue;
-        }
-        pendingMessage = item;
-        break;
-      }
-
-      if (!pendingMessage) {
-        const safeBody = String(nextBody || '').trim();
-        if (!safeBody && !pendingState) {
-          return;
-        }
-        history.push({
-          role: 'hermes',
-          body: nextBody,
-          created_at: new Date().toISOString(),
-          pending: pendingState,
-        });
-        histories.set(key, history);
-        persistPendingStreamSnapshot?.(key);
-        if (!pendingState) {
-          clearPendingStreamSnapshot?.(key);
-        }
-        return;
-      }
-
-      pendingMessage.body = nextBody;
-      pendingMessage.pending = pendingState;
-      histories.set(key, history);
-      persistPendingStreamSnapshot?.(key);
-      if (!pendingState) {
-        clearPendingStreamSnapshot?.(key);
-      }
-    }
-
-    function syncActiveMessageView(chatId, options = {}) {
-      if (!isActiveChat(chatId)) return;
-      renderMessages(chatId, options);
-    }
-
-    function scheduleActiveMessageView(chatId) {
-      if (!isActiveChat(chatId)) return;
-      activeRenderState.chatId = normalizeChatId(chatId);
-      if (activeRenderState.scheduled) return;
-      activeRenderState.scheduled = true;
-      enqueueUiMutation(() => {
-        activeRenderState.scheduled = false;
-        const targetChatId = activeRenderState.chatId;
-        activeRenderState.chatId = null;
-        if (targetChatId == null || !isActiveChat(targetChatId)) return;
-        renderMessages(targetChatId, { preserveViewport: true });
-      });
-    }
-
-    async function markRead(chatId) {
-      const key = normalizeChatId(chatId);
-      const data = await apiPost('/api/chats/mark-read', { chat_id: key });
-      finalizeUnreadClear(key);
-      const localChat = chats.get(key);
-      const shouldPreservePending = Boolean(
-        pendingChats.has(key)
-        || localChat?.pending
-        || hasLiveStreamController(key)
-      );
-      const nextChat = data?.chat && typeof data.chat === 'object'
-        ? { ...data.chat }
-        : data?.chat;
-      if (shouldPreservePending && nextChat && typeof nextChat === 'object') {
-        nextChat.pending = true;
-      }
-      upsertChat(nextChat);
-      renderTabs();
-      if (isActiveChat(key)) {
-        syncActivePendingStatus();
-        updateComposerState();
-      }
-    }
-
-    function getMessageBottomOffset(node, container) {
-      if (!node || !container) return null;
-
-      const offsetTop = Number(node?.offsetTop);
-      const offsetHeight = Number(node?.offsetHeight);
-      if (Number.isFinite(offsetTop) && Number.isFinite(offsetHeight)) {
-        return Math.max(0, offsetTop + offsetHeight);
-      }
-
-      const nodeBottom = Number(node?.dataset?.bottomOffset || node?.bottomOffset);
-      if (Number.isFinite(nodeBottom)) {
-        return Math.max(0, nodeBottom);
-      }
-
-      const containerRect = container?.getBoundingClientRect?.();
-      const nodeRect = node?.getBoundingClientRect?.();
-      const scrollTop = Number(container?.scrollTop);
-      const containerTop = Number(containerRect?.top);
-      const nodeRectBottom = Number(nodeRect?.bottom);
-      if (Number.isFinite(scrollTop) && Number.isFinite(containerTop) && Number.isFinite(nodeRectBottom)) {
-        return Math.max(0, scrollTop + (nodeRectBottom - containerTop));
-      }
-
-      return null;
-    }
-
-    function hasReachedNewestUnreadMessageBottom(chatId, { tolerance = 40 } = {}) {
-      const key = normalizeChatId(chatId);
-      const unread = getCurrentUnreadCount(key);
-      if (unread <= 0) return true;
-      const container = messagesContainer;
-      if (!container || typeof container.querySelectorAll !== 'function') {
-        return isNearBottomFn(messagesContainer, tolerance);
-      }
-
-      const assistantNodes = container.querySelectorAll('.message[data-role="assistant"]:not(.message--pending), .message[data-role="hermes"]:not(.message--pending)');
-      const newestUnreadNode = assistantNodes?.[assistantNodes.length - 1] || null;
-      if (!newestUnreadNode) {
-        return isNearBottomFn(messagesContainer, tolerance);
-      }
-
-      const viewportBottom = Number(container.scrollTop) + Number(container.clientHeight || container.offsetHeight || 0);
-      const messageBottom = getMessageBottomOffset(newestUnreadNode, container);
-      if (!Number.isFinite(viewportBottom) || !Number.isFinite(messageBottom)) {
-        return isNearBottomFn(messagesContainer, tolerance);
-      }
-      return viewportBottom + tolerance >= messageBottom;
-    }
-
-    function shouldMarkReadNow(chatId, { force = false, requireUnread = true } = {}) {
-      const key = normalizeChatId(chatId);
-      if (!key || !getIsAuthenticated() || !isActiveChat(key)) {
-        return false;
-      }
-      if (!force) {
-        if (unseenStreamChats.has(key)) return false;
-        if (requireUnread) {
-          const unread = getCurrentUnreadCount(key);
-          if (unread <= 0) return false;
-        }
-        const reachedBottom = hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 });
-        if (!hasSatisfiedActivationReadThreshold(key, { reachedBottom, force: false })) return false;
-        if (!reachedBottom) return false;
-      }
-      return true;
-    }
-
-    function rememberDeferredMarkRead(chatId, { force = false } = {}) {
-      const key = normalizeChatId(chatId);
-      const existing = deferredMarkReadRetry.get(key);
-      deferredMarkReadRetry.set(key, { force: Boolean(existing?.force || force) });
-    }
-
-    function consumeDeferredMarkRead(chatId) {
-      const key = normalizeChatId(chatId);
-      const deferred = deferredMarkReadRetry.get(key) || null;
-      deferredMarkReadRetry.delete(key);
-      return deferred;
-    }
-
-    function startMarkReadRequest(chatId, { force = false } = {}) {
-      const key = normalizeChatId(chatId);
-      clearUnreadCount(key);
-      renderTabs();
-      if (isActiveChat(key)) {
-        syncActivePendingStatus();
-        updateComposerState();
-      }
-      markReadInFlight.add(key);
-      void markRead(key)
-        .catch(() => {
-          restoreUnreadCount(key);
-          renderTabs();
-          if (isActiveChat(key)) {
-            syncActivePendingStatus();
-            updateComposerState();
-          }
-          // Best-effort read sync; retry on next visibility/scroll tick.
-        })
-        .finally(() => {
-          markReadInFlight.delete(key);
-          const deferred = consumeDeferredMarkRead(key);
-          if (deferred && shouldMarkReadNow(key, { ...deferred, requireUnread: false })) {
-            startMarkReadRequest(key, deferred);
-          }
-        });
-    }
-
-    function maybeMarkRead(chatId, { force = false } = {}) {
-      const key = normalizeChatId(chatId);
-      if (!shouldMarkReadNow(key, { force })) {
-        return;
-      }
-      if (markReadInFlight.has(key)) {
-        rememberDeferredMarkRead(key, { force });
-        return;
-      }
-      startMarkReadRequest(key, { force });
     }
 
     function reconcilePendingStateFromStatus(statusChats = []) {
@@ -1018,25 +1064,170 @@
     }
 
     return {
-      historiesDiffer,
       loadChatHistory,
       hydrateChatFromServer,
       openChat,
       prefetchChatHistory,
       warmChatHistoryCache,
-      addLocalMessage,
-      appendSystemMessage,
-      updatePendingAssistant,
-      syncActiveMessageView,
-      scheduleActiveMessageView,
-      markRead,
-      maybeMarkRead,
-      armActivationReadThreshold,
-      ensureActivationReadThreshold,
       refreshChats,
       syncVisibleActiveChat,
     };
   }
+
+  function createController(deps) {
+    const {
+      apiPost,
+      histories,
+      chats,
+      prefetchingHistories,
+      upsertChat,
+      setActiveChatMeta,
+      renderMessages,
+      hasLiveStreamController,
+      abortStreamController,
+      mergeHydratedHistory,
+      refreshTabNode,
+      getActiveChatId,
+      resumePendingChatStream,
+      messagesEl,
+      template,
+      nowStamp,
+      renderBody,
+      getLastOpenChatRequestId,
+      setLastOpenChatRequestId,
+      scheduleTimeout,
+      requestIdle,
+      runAfterUiMutation,
+      getIsAuthenticated = () => true,
+      isNearBottomFn,
+      messagesContainer,
+      unseenStreamChats,
+      markReadInFlight,
+      renderTabs,
+      syncChats,
+      syncPinnedChats,
+      renderPinnedChats,
+      syncActivePendingStatus,
+      updateComposerState,
+      pendingChats,
+      shouldResumeOnVisibilityChange,
+      restorePendingStreamSnapshot,
+      hasFreshPendingStreamSnapshot,
+      persistPendingStreamSnapshot,
+      clearPendingStreamSnapshot,
+      finalizeHydratedPendingState,
+      shouldDeferNonCriticalCachedOpen = () => false,
+      renderTraceLog = () => {},
+      nowMs = () => Date.now(),
+    } = deps;
+
+    const enqueueUiMutation = typeof runAfterUiMutation === 'function'
+      ? runAfterUiMutation
+      : (callback) => scheduleTimeout(callback, 0);
+
+    function isActiveChat(chatId) {
+      return normalizeChatId(chatId) === normalizeChatId(getActiveChatId());
+    }
+
+    function traceChatHistory(eventName, details = null) {
+      renderTraceLog(`chat-history-${eventName}`, details);
+    }
+
+    const readSyncController = createReadSyncController({
+      apiPost,
+      chats,
+      upsertChat,
+      getActiveChatId,
+      getIsAuthenticated,
+      isNearBottomFn,
+      messagesContainer,
+      unseenStreamChats,
+      markReadInFlight,
+      renderTabs,
+      syncActivePendingStatus,
+      updateComposerState,
+      pendingChats,
+      hasLiveStreamController,
+    });
+
+    const mutationController = createLocalMutationController({
+      histories,
+      getActiveChatId,
+      messagesEl,
+      template,
+      nowStamp,
+      renderBody,
+      renderMessages,
+      persistPendingStreamSnapshot,
+      clearPendingStreamSnapshot,
+      enqueueUiMutation,
+      isActiveChat,
+    });
+
+    const historyController = createHistoryOpenController({
+      apiPost,
+      histories,
+      chats,
+      prefetchingHistories,
+      setActiveChatMeta,
+      renderMessages,
+      hasLiveStreamController,
+      abortStreamController,
+      mergeHydratedHistory,
+      refreshTabNode,
+      getActiveChatId,
+      resumePendingChatStream,
+      getLastOpenChatRequestId,
+      setLastOpenChatRequestId,
+      scheduleTimeout,
+      requestIdle,
+      enqueueUiMutation,
+      syncChats,
+      syncPinnedChats,
+      renderTabs,
+      renderPinnedChats,
+      syncActivePendingStatus,
+      updateComposerState,
+      pendingChats,
+      shouldResumeOnVisibilityChange,
+      restorePendingStreamSnapshot,
+      hasFreshPendingStreamSnapshot,
+      finalizeHydratedPendingState,
+      shouldDeferNonCriticalCachedOpen,
+      traceChatHistory,
+      nowMs,
+      appendSystemMessage: mutationController.appendSystemMessage,
+      buildChatPreservingUnread: readSyncController.buildChatPreservingUnread,
+      upsertChatPreservingUnread: readSyncController.upsertChatPreservingUnread,
+      armActivationReadThreshold: readSyncController.armActivationReadThreshold,
+      ensureActivationReadThreshold: readSyncController.ensureActivationReadThreshold,
+      maybeMarkRead: readSyncController.maybeMarkRead,
+      isActiveChat,
+      hasLocalPendingWithoutLiveStream: readSyncController.hasLocalPendingWithoutLiveStream,
+    });
+
+    return {
+      historiesDiffer,
+      loadChatHistory: historyController.loadChatHistory,
+      hydrateChatFromServer: historyController.hydrateChatFromServer,
+      openChat: historyController.openChat,
+      prefetchChatHistory: historyController.prefetchChatHistory,
+      warmChatHistoryCache: historyController.warmChatHistoryCache,
+      addLocalMessage: mutationController.addLocalMessage,
+      appendSystemMessage: mutationController.appendSystemMessage,
+      updatePendingAssistant: mutationController.updatePendingAssistant,
+      syncActiveMessageView: mutationController.syncActiveMessageView,
+      scheduleActiveMessageView: mutationController.scheduleActiveMessageView,
+      markRead: readSyncController.markRead,
+      maybeMarkRead: readSyncController.maybeMarkRead,
+      getCurrentUnreadCount: readSyncController.getCurrentUnreadCount,
+      armActivationReadThreshold: readSyncController.armActivationReadThreshold,
+      ensureActivationReadThreshold: readSyncController.ensureActivationReadThreshold,
+      refreshChats: historyController.refreshChats,
+      syncVisibleActiveChat: historyController.syncVisibleActiveChat,
+    };
+  }
+
 
   const api = { createController, createMetaController };
   if (typeof module !== 'undefined' && module.exports) {

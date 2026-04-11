@@ -258,6 +258,38 @@ def test_dev_auth_rejects_wrong_secret(monkeypatch, tmp_path) -> None:
     assert response.status_code == 401
 
 
+def test_dev_auth_rejects_invalid_allow_empty_flag(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
+    monkeypatch.setenv("MINIAPP_DEV_SECRET", "expected-secret")
+    server = load_server(monkeypatch, tmp_path, isolate_dev_env=False)
+    client = server.app.test_client()
+
+    response = client.post(
+        "/api/dev/auth",
+        json={"user_id": 9001, "display_name": "Desktop Tester", "allow_empty": "yes"},
+        headers={"X-Dev-Auth": "expected-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Invalid allow_empty flag. Expected boolean."
+
+
+def test_dev_auth_rejects_invalid_user_id(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
+    monkeypatch.setenv("MINIAPP_DEV_SECRET", "expected-secret")
+    server = load_server(monkeypatch, tmp_path, isolate_dev_env=False)
+    client = server.app.test_client()
+
+    response = client.post(
+        "/api/dev/auth",
+        json={"user_id": "abc", "display_name": "Desktop Tester"},
+        headers={"X-Dev-Auth": "expected-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Invalid dev user id."
+
+
 def test_dev_auth_sets_cookie_and_reuses_authenticated_endpoints(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINIAPP_DEV_BYPASS", "1")
     monkeypatch.setenv("MINIAPP_DEV_SECRET", "expected-secret")
