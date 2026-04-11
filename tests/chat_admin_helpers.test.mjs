@@ -92,14 +92,19 @@ function buildHarness(overrides = {}) {
       return false;
     },
   };
-  const chatTabContextFork = overrides.chatTabContextFork || {
+  const createContextButton = (provided = null) => provided || {
     disabled: false,
     title: '',
+    textContent: '',
     attributes: new Map(),
     setAttribute(name, value) {
       this.attributes.set(name, value);
     },
   };
+  const chatTabContextRename = createContextButton(overrides.chatTabContextRename);
+  const chatTabContextPin = createContextButton(overrides.chatTabContextPin);
+  const chatTabContextClose = createContextButton(overrides.chatTabContextClose);
+  const chatTabContextFork = createContextButton(overrides.chatTabContextFork);
   const chatTitleInput = {
     value: '',
     focusCalls: 0,
@@ -123,6 +128,7 @@ function buildHarness(overrides = {}) {
   const renderedPinnedChats = [];
   const clearedStreamState = [];
   const openChatCalls = [];
+  const movedChatIds = [];
   const setActiveCalls = [];
   const setNoActiveCalls = [];
   const syncPinCalls = [];
@@ -145,6 +151,7 @@ function buildHarness(overrides = {}) {
       },
       ...(overrides.windowObject || {}),
     },
+    tabActionsMenuEnabled: overrides.tabActionsMenuEnabled ?? true,
     settingsModal,
     chatTitleModal,
     chatTitleForm,
@@ -156,6 +163,9 @@ function buildHarness(overrides = {}) {
     chatTitleTagRow: { hidden: false },
     chatTitleTagButtons,
     chatTabContextMenu,
+    chatTabContextRename,
+    chatTabContextPin,
+    chatTabContextClose,
     chatTabContextFork,
     apiPost: async (path, payload) => {
       apiCalls.push({ path, payload });
@@ -234,6 +244,7 @@ function buildHarness(overrides = {}) {
     renderTabs: () => renderedTabs.push('tabs'),
     renderPinnedChats: () => renderedPinnedChats.push('pinned'),
     syncPinChatButton: () => syncPinCalls.push('pin'),
+    moveChatToEnd: (chatId) => movedChatIds.push(Number(chatId)),
     chatLabel: (chatId) => chats.get(Number(chatId))?.title || `Chat ${chatId}`,
     getActiveChatId: () => activeChatId,
     openChat: async (chatId) => {
@@ -262,6 +273,9 @@ function buildHarness(overrides = {}) {
     chatTitleModal,
     chatTitleForm,
     chatTabContextMenu,
+    chatTabContextRename,
+    chatTabContextPin,
+    chatTabContextClose,
     chatTabContextFork,
     chatTitleInput,
     chatTitleTagButtons,
@@ -273,6 +287,7 @@ function buildHarness(overrides = {}) {
     renderedPinnedChats,
     clearedStreamState,
     openChatCalls,
+    movedChatIds,
     setActiveCalls,
     setNoActiveCalls,
     syncPinCalls,
@@ -650,18 +665,38 @@ test('forkChatFrom rejects chats marked pending by server state before calling t
   assert.deepEqual(harness.setActiveCalls, []);
 });
 
-test('openPinnedChat reopens missing pinned chats before delegating to openChat', async () => {
+test('openPinnedChat reopens missing pinned chats on the right before delegating to openChat', async () => {
   const harness = buildHarness();
 
   await harness.controller.openPinnedChat(11);
 
-  assert.deepEqual(harness.apiCalls[0], {
-    path: '/api/chats/reopen',
-    payload: { chat_id: 11 },
-  });
+  assert.deepEqual(harness.apiCalls, [{ path: '/api/chats/reopen', payload: { chat_id: 11 } }]);
+  assert.deepEqual(harness.syncedChats, [[{ id: 11, title: 'Pinned only', is_pinned: true }]]);
+  assert.deepEqual(harness.syncedPinnedChats, [[{ id: 11, title: 'Pinned only', is_pinned: true }]]);
+  assert.deepEqual(harness.upsertedChats, [{ id: 11, title: 'Pinned only', is_pinned: true }]);
+  assert.deepEqual(harness.movedChatIds, [11]);
   assert.deepEqual(harness.renderedTabs, ['tabs']);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
   assert.deepEqual(harness.openChatCalls, [11]);
+});
+
+test('removePinnedChatById unpins before removing so pinned cleanup disappears from the list', async () => {
+  const harness = buildHarness();
+
+  await harness.controller.removePinnedChatById(11);
+
+  assert.deepEqual(harness.apiCalls.slice(0, 2), [
+    { path: '/api/chats/unpin', payload: { chat_id: 11 } },
+    {
+      path: '/api/chats/remove',
+      payload: {
+        chat_id: 11,
+        allow_empty: true,
+        include_full_state: true,
+      },
+    },
+  ]);
+  assert.equal(harness.renderedPinnedChats.length >= 1, true);
 });
 
 test('forkChatFrom clones selected chat into a new active tab and hydrates history', async () => {
@@ -728,19 +763,22 @@ test('chat tab context menu open/close clamps viewport coordinates', () => {
   assert.equal(harness.chatTabContextFork.disabled, false);
   assert.equal(harness.chatTabContextFork.attributes.get('aria-disabled'), 'false');
   assert.equal(harness.chatTabContextMenu.style.left, '30px');
-  assert.equal(harness.chatTabContextMenu.style.top, '68px');
+  assert.equal(harness.chatTabContextMenu.style.top, '8px');
 
   harness.controller.closeChatTabContextMenu();
   assert.equal(harness.chatTabContextMenu.hidden, true);
 });
 
-test('chat tab context menu stays hidden and disables fork action for pending chats', () => {
+test('chat tab context menu stays open and disables only blocked actions for pending chats', () => {
   const harness = buildHarness();
   harness.chats.set(7, { ...harness.chats.get(7), pending: true });
 
   harness.controller.openChatTabContextMenu(7, 40, 40);
 
-  assert.equal(harness.chatTabContextMenu.hidden, true);
+  assert.equal(harness.chatTabContextMenu.hidden, false);
+  assert.equal(harness.chatTabContextRename.disabled, false);
+  assert.equal(harness.chatTabContextPin.disabled, false);
+  assert.equal(harness.chatTabContextClose.disabled, true);
   assert.equal(harness.chatTabContextFork.disabled, true);
   assert.equal(harness.chatTabContextFork.attributes.get('aria-disabled'), 'true');
   assert.match(harness.chatTabContextFork.title, /Wait for Hermes to finish/);
@@ -755,7 +793,7 @@ test('getNextBranchTitle follows Hermes lineage numbering semantics', () => {
   assert.equal(harness.controller.getNextBranchTitle('Current #2'), 'Current #4');
 });
 
-test('handleTabOverflowTriggerClick opens/toggles only for active chat tab', () => {
+test('handleTabOverflowTriggerClick opens/toggles for any chat tab when the feature is enabled', () => {
   const harness = buildHarness();
   const trigger = {
     closest(selector) {
@@ -793,9 +831,12 @@ test('handleTabOverflowTriggerClick opens/toggles only for active chat tab', () 
       if (selector === '.chat-tab') return { dataset: { chatId: '11' } };
       return null;
     },
+    getBoundingClientRect() {
+      return { right: 120, bottom: 84 };
+    },
   };
   harness.controller.handleTabOverflowTriggerClick({ target: inactiveTrigger, preventDefault() {}, stopPropagation() {} });
-  assert.equal(harness.chatTabContextMenu.hidden, true);
+  assert.equal(harness.chatTabContextMenu.hidden, false);
 });
 
 test('tab-context fork and global-dismiss handlers close menu and preserve inside clicks', async () => {

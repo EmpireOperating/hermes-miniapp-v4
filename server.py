@@ -17,6 +17,8 @@ from auth_session import verify_from_payload as auth_verify_from_payload
 from blueprints import create_api_blueprint, create_public_blueprint
 from hermes_client import HermesClient
 from miniapp_config import MiniAppConfig, normalize_origin
+from miniapp_presence import MiniAppPresenceTracker
+from miniapp_telegram_notifications import TelegramNotificationSender, TelegramUnreadReplyNotifier
 from request_context import (
     json_user_id_or_error as request_json_user_id_or_error,
     verify_for_json as request_verify_for_json,
@@ -101,6 +103,7 @@ OPERATOR_DEBUG = CONFIG.operator_debug
 REQUEST_DEBUG = CONFIG.request_debug
 STREAM_TIMING_DEBUG = CONFIG.stream_timing_debug
 MOBILE_TAB_CAROUSEL_ENABLED = CONFIG.mobile_tab_carousel_enabled
+TAB_ACTIONS_MENU_ENABLED = CONFIG.tab_actions_menu_enabled
 DEV_AUTH_SECRET = CONFIG.dev_auth_secret
 JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
 JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
@@ -238,6 +241,16 @@ _RUNTIME_DEPS = create_runtime_dependencies(
     session_id_builder=_session_id_for,
 )
 runtime = _RUNTIME_DEPS.runtime
+PRESENCE_LEASE_TTL_SECONDS = 45
+presence_tracker = MiniAppPresenceTracker(default_ttl_seconds=PRESENCE_LEASE_TTL_SECONDS)
+runtime.telegram_unread_reply_notifier = TelegramUnreadReplyNotifier(
+    store=store,
+    sender=TelegramNotificationSender(
+        bot_token=BOT_TOKEN,
+        timeout_seconds=CONFIG.telegram_notification_send_timeout_seconds,
+    ),
+    presence=presence_tracker,
+)
 _JOB_WAKE_EVENT = runtime.wake_event
 _RATE_LIMITER = _RUNTIME_DEPS.rate_limiter
 
@@ -498,6 +511,7 @@ register_public_routes(
     request_debug=REQUEST_DEBUG,
     dev_auth_enabled_fn=_dev_auth_enabled,
     mobile_tab_carousel_enabled=MOBILE_TAB_CAROUSEL_ENABLED,
+    tab_actions_menu_enabled=TAB_ACTIONS_MENU_ENABLED,
     file_preview_enabled=_FILE_PREVIEW_ENABLED,
     file_preview_allowed_roots=_FILE_PREVIEW_ALLOWED_ROOTS,
     static_no_store_filenames=STATIC_NO_STORE_FILENAMES,
@@ -523,6 +537,8 @@ register_auth_routes(
     auth_session_max_age_seconds=AUTH_SESSION_MAX_AGE_SECONDS,
     build_job_log_fn=build_job_log,
     logger=app.logger,
+    presence_tracker=presence_tracker,
+    presence_lease_ttl_seconds=PRESENCE_LEASE_TTL_SECONDS,
     dev_auth_enabled_fn=_dev_auth_enabled,
     dev_auth_secret=DEV_AUTH_SECRET,
 )

@@ -18,8 +18,9 @@ const devAuthHashSecret = desktopTestingRequested && currentLocationHash.startsW
   : "";
 const filePreviewConfig = window.__HERMES_FILE_PREVIEW__ || { enabled: false, allowedRoots: [] };
 const filePreviewFeatureEnabled = Boolean(filePreviewConfig.enabled);
-const featureConfig = window.__HERMES_FEATURES__ || { mobileTabCarousel: false };
+const featureConfig = window.__HERMES_FEATURES__ || { mobileTabCarousel: false, tabActionsMenu: false };
 const mobileTabCarouselFeatureEnabled = Boolean(featureConfig.mobileTabCarousel);
+const tabActionsMenuFeatureEnabled = Boolean(featureConfig.tabActionsMenu);
 const filePreviewAllowedRoots = filePreviewFeatureEnabled && Array.isArray(filePreviewConfig.allowedRoots)
   ? filePreviewConfig.allowedRoots
       .map((value) => String(value || "").trim())
@@ -324,6 +325,9 @@ const skinSyncChannel = (() => {
 if (body && !body.dataset.skin) {
   body.dataset.skin = bootSkin;
 }
+if (body) {
+  body.dataset.tabActionsMenu = tabActionsMenuFeatureEnabled ? "true" : "false";
+}
 const messagesEl = document.getElementById("messages");
 const tabsEl = document.getElementById("chat-tabs");
 const tabOverviewEl = document.getElementById("chat-tabs-overview");
@@ -350,6 +354,7 @@ const devSignInButton = document.getElementById("dev-signin-button");
 const renderTraceBadge = document.getElementById("render-trace-badge");
 const settingsModal = document.getElementById("settings-modal");
 const settingsClose = document.getElementById("settings-close");
+const telegramUnreadNotificationsToggle = document.getElementById("telegram-unread-notifications-toggle");
 const devAuthModal = document.getElementById("dev-auth-modal");
 const devAuthForm = document.getElementById("dev-auth-form");
 const devAuthSecretInput = document.getElementById("dev-auth-secret");
@@ -379,11 +384,17 @@ const filePreviewLoadFull = document.getElementById("file-preview-load-full");
 const filePreviewExpandDown = document.getElementById("file-preview-expand-down");
 const filePreviewClose = document.getElementById("file-preview-close");
 const chatTabContextMenu = document.getElementById("chat-tab-context-menu");
+const chatTabContextRename = document.getElementById("chat-tab-context-rename");
+const chatTabContextPin = document.getElementById("chat-tab-context-pin");
+const chatTabContextClose = document.getElementById("chat-tab-context-close");
 const chatTabContextFork = document.getElementById("chat-tab-context-fork");
+const pinnedChatContextMenu = document.getElementById("pinned-chat-context-menu");
+const pinnedChatContextRemove = document.getElementById("pinned-chat-context-remove");
 
 let initData = tg?.initData || "";
 let isAuthenticated = false;
 let currentSkin = bootSkin;
+let telegramUnreadNotificationsEnabled = false;
 let activeChatId = null;
 let operatorDisplayName = "Operator";
 let currentFilePreviewRequest = null;
@@ -990,6 +1001,7 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   getIsAuthenticated: () => isAuthenticated,
   setIsAuthenticated: (value) => {
     isAuthenticated = Boolean(value);
+    syncTelegramUnreadNotificationsToggle();
   },
   sessionStorageRef: window.sessionStorage,
   devAuthModal,
@@ -1011,6 +1023,9 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   operatorName,
   messagesEl,
   setSkin,
+  setTelegramUnreadNotificationsEnabled: (value) => {
+    setTelegramUnreadNotificationsEnabled(value);
+  },
   syncChats,
   syncPinnedChats,
   histories,
@@ -1203,6 +1218,54 @@ function setChatTitleSelectedTag(nextTag) {
 
 async function askForChatTitle({ mode, currentTitle = "", defaultTitle = "New chat" }) {
   return chatAdminController.askForChatTitle({ mode, currentTitle, defaultTitle });
+}
+
+function closeChatTabContextMenu() {
+  return chatAdminController.closeChatTabContextMenu();
+}
+
+function openChatTabContextMenu(chatId, clientX, clientY) {
+  return chatAdminController.openChatTabContextMenu(chatId, clientX, clientY);
+}
+
+function closePinnedChatContextMenu() {
+  return chatAdminController.closePinnedChatContextMenu();
+}
+
+function openPinnedChatContextMenu(chatId, clientX, clientY) {
+  return chatAdminController.openPinnedChatContextMenu(chatId, clientX, clientY);
+}
+
+function handleTabOverflowTriggerClick(event) {
+  return chatAdminController.handleTabOverflowTriggerClick(event);
+}
+
+function handlePinnedOverflowTriggerClick(event) {
+  return chatAdminController.handlePinnedOverflowTriggerClick(event);
+}
+
+async function handleTabContextRenameClick(event) {
+  return chatAdminController.handleTabContextRenameClick(event);
+}
+
+async function handleTabContextPinClick(event) {
+  return chatAdminController.handleTabContextPinClick(event);
+}
+
+async function handleTabContextCloseClick(event) {
+  return chatAdminController.handleTabContextCloseClick(event);
+}
+
+async function handleTabContextForkClick(event) {
+  return chatAdminController.handleTabContextForkClick(event);
+}
+
+async function handlePinnedContextRemoveClick(event) {
+  return chatAdminController.handlePinnedContextRemoveClick(event);
+}
+
+function handleGlobalChatContextMenuDismiss(event) {
+  return chatAdminController.handleGlobalChatContextMenuDismiss(event);
 }
 
 function unwrapLegacyQuoteBlock(text) {
@@ -1603,6 +1666,25 @@ function syncSkinFromStorage() {
   return visibilitySkinController.syncSkinFromStorage();
 }
 
+async function syncUnreadNotificationPresence(options = {}) {
+  return visibilitySkinController.syncUnreadNotificationPresence(options);
+}
+
+function syncTelegramUnreadNotificationsToggle() {
+  if (!telegramUnreadNotificationsToggle) return;
+  telegramUnreadNotificationsToggle.checked = Boolean(telegramUnreadNotificationsEnabled);
+  telegramUnreadNotificationsToggle.disabled = !isAuthenticated;
+}
+
+function setTelegramUnreadNotificationsEnabled(value) {
+  telegramUnreadNotificationsEnabled = Boolean(value);
+  syncTelegramUnreadNotificationsToggle();
+}
+
+function getTelegramUnreadNotificationsEnabled() {
+  return Boolean(telegramUnreadNotificationsEnabled);
+}
+
 function syncActivePendingStatus() {
   return streamActivityController.syncActivePendingStatus();
 }
@@ -1753,6 +1835,7 @@ chatHistoryController = chatHistoryHelpers.createController({
 
 const chatAdminController = chatAdminHelpers.createController({
   windowObject: window,
+  tabActionsMenuEnabled: tabActionsMenuFeatureEnabled,
   settingsModal,
   chatTitleModal,
   chatTitleForm,
@@ -1764,7 +1847,12 @@ const chatAdminController = chatAdminHelpers.createController({
   chatTitleTagRow,
   chatTitleTagButtons,
   chatTabContextMenu,
+  chatTabContextRename,
+  chatTabContextPin,
+  chatTabContextClose,
   chatTabContextFork,
+  pinnedChatContextMenu,
+  pinnedChatContextRemove,
   apiPost,
   chats,
   pinnedChats,
@@ -1784,6 +1872,7 @@ const chatAdminController = chatAdminHelpers.createController({
   renderTabs,
   renderPinnedChats,
   syncPinChatButton,
+  moveChatToEnd: (chatId) => chatTabsController.moveChatToEnd(chatId),
   chatLabel,
   getActiveChatId: () => Number(activeChatId),
   openChat,
@@ -1904,6 +1993,7 @@ const startupBindingsController = startupBindingsHelpers.createController({
   devSignInButton,
   settingsClose,
   settingsModal,
+  telegramUnreadNotificationsToggle,
   authStatusEl: authStatus,
   operatorNameEl: operatorName,
   formEl: form,
@@ -1954,7 +2044,9 @@ const startupBindingsController = startupBindingsHelpers.createController({
   syncDevAuthUi,
   reportUiError,
   getIsAuthenticated: () => isAuthenticated,
+  getTelegramUnreadNotificationsEnabled,
   saveSkinPreference,
+  saveTelegramUnreadNotificationsPreference,
   createChat,
   renameActiveChat,
   toggleActiveChatPin,
@@ -1982,6 +2074,7 @@ const startupBindingsController = startupBindingsHelpers.createController({
   restorePendingStreamSnapshot,
   renderMessages,
   updateComposerState,
+  syncUnreadNotificationPresence,
   revealShell,
   recordBootMetric,
   summarizeBootMetrics,
@@ -2349,6 +2442,7 @@ const keyboardShortcutsController = keyboardShortcutsHelpers.createController({
   messagesEl,
   promptEl,
   settingsModal,
+  telegramUnreadNotificationsToggle,
   jumpLatestButton,
   jumpLastStartButton,
   chats,

@@ -83,7 +83,7 @@ test('syncActiveTabSelection refreshes previous and next tabs when both exist', 
   assert.deepEqual(refreshed, [1, 2]);
 });
 
-test('applyTabNodeState shows overflow trigger only on active non-pending tab', () => {
+test('applyTabNodeState keeps overflow trigger visible for every tab state', () => {
   const badge = {
     classList: { remove() {}, add() {} },
     removeAttribute() {},
@@ -121,7 +121,7 @@ test('applyTabNodeState shows overflow trigger only on active non-pending tab', 
     pendingChats: new Set(),
     unseenStreamChats: new Set(),
   });
-  assert.equal(overflow.hidden, true);
+  assert.equal(overflow.hidden, false);
 
   chatUi.applyTabNodeState({
     node,
@@ -130,7 +130,7 @@ test('applyTabNodeState shows overflow trigger only on active non-pending tab', 
     pendingChats: new Set(),
     unseenStreamChats: new Set(),
   });
-  assert.equal(overflow.hidden, true);
+  assert.equal(overflow.hidden, false);
 });
 
 test('createController reuses custom badge delegates and renders pinned chats from injected state', () => {
@@ -233,7 +233,12 @@ test('createController reuses custom badge delegates and renders pinned chats fr
   assert.equal(pinnedChatsWrap.hidden, false);
   assert.equal(pinnedChatsEl.replaced, true);
   assert.equal(pinnedAppendedNodes.length, 1);
-  assert.equal(createdButtons[0].dataset.chatId, '7');
+  const pinnedItem = createdButtons.find((node) => node.className === 'pinned-chat-item');
+  const openButton = createdButtons.find((node) => node.className === 'pinned-chat-item__open');
+  const overflowButton = createdButtons.find((node) => node.dataset?.pinnedChatMenuTrigger === 'true');
+  assert.equal(pinnedItem?.dataset?.chatId, '7');
+  assert.equal(openButton?.className, 'pinned-chat-item__open');
+  assert.equal(overflowButton?.dataset?.pinnedChatMenuTrigger, 'true');
 });
 
 test('createController syncActiveTabSelection only falls back to full render when a node is missing', () => {
@@ -278,4 +283,61 @@ test('createController syncActiveTabSelection only falls back to full render whe
   tabNodes.delete(2);
   controller.syncActiveTabSelection(1, 2);
   assert.equal(cloneCalls, 1);
+});
+
+test('renderTabs re-appends existing tab nodes in sorted order so DOM order stays aligned with chat order', () => {
+  const chats = new Map([
+    [9, { id: 9, title: 'Nine', is_pinned: false }],
+    [3, { id: 3, title: 'Three', is_pinned: false }],
+    [7, { id: 7, title: 'Seven', is_pinned: false }],
+  ]);
+  const tabNodes = new Map();
+  const appendOrder = [];
+  const tabsEl = {
+    appendChild(node) {
+      appendOrder.push(Number(node?.dataset?.chatId || 0));
+      node.parentElement = tabsEl;
+    },
+  };
+  const controller = chatUi.createController({
+    chats,
+    pinnedChats: new Map(),
+    pendingChats: new Set(),
+    unseenStreamChats: new Set(),
+    tabNodes,
+    tabTemplate: {
+      content: {
+        firstElementChild: {
+          cloneNode() {
+            return {
+              dataset: {},
+              classList: { toggle() {} },
+              setAttribute() {},
+              querySelector() {
+                if (arguments[0] === '.chat-tab__badge') return { classList: { remove() {}, add() {} }, removeAttribute() {}, setAttribute() {}, textContent: '' };
+                if (arguments[0] === '.chat-tab__title') return { textContent: '' };
+                if (arguments[0] === '.chat-tab__pin') return { textContent: '' };
+                if (arguments[0] === '[data-chat-tab-menu-trigger]') return { hidden: true };
+                return null;
+              },
+            };
+          },
+        },
+      },
+    },
+    tabsEl,
+    pinnedChatsWrap: { hidden: true },
+    pinnedChatsEl: { replaceChildren() {} },
+    getActiveChatId: () => 7,
+    getTabBadgeState() {
+      return { text: '', classes: [], ariaLabel: '' };
+    },
+    applyTabBadgeState() {},
+  });
+
+  controller.renderTabs();
+  appendOrder.splice(0, appendOrder.length);
+  controller.renderTabs();
+
+  assert.deepEqual(appendOrder, [3, 7, 9]);
 });

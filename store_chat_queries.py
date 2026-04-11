@@ -107,6 +107,27 @@ def select_chat_rows(
     return conn.execute(query, tuple(params)).fetchall()
 
 
+def select_pinned_chat_summary_rows(conn: Connection, *, user_id: str):
+    return conn.execute(
+        """
+        SELECT
+            ct.id,
+            ct.title,
+            ct.parent_chat_id,
+            ct.updated_at,
+            ct.created_at,
+            ct.is_pinned,
+            0 AS unread_count,
+            0 AS pending
+        FROM chat_threads ct
+        WHERE ct.user_id = ?
+          AND ct.is_pinned = 1
+        ORDER BY ct.id ASC
+        """,
+        (user_id,),
+    ).fetchall()
+
+
 def hydrate_chat_turns(rows) -> list[ChatTurn]:
     ordered = reversed(rows)
     hydrated: list[ChatTurn] = []

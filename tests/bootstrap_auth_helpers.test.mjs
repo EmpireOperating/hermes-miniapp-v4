@@ -270,6 +270,35 @@ test('applyAuthBootstrap updates auth-facing UI and history state', () => {
   assert.deepEqual(harness.getResumeCalls(), []);
 });
 
+test('applyAuthBootstrap scrubs stale signing-in system messages from local history after successful auth', () => {
+  const harness = buildHarness();
+
+  harness.histories.set(5, [{
+    role: 'system',
+    body: 'Still signing you in. Try again in a moment.',
+    created_at: '2026-04-11T07:19:00Z',
+  }]);
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    skin: 'oracle',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: false }],
+    pinned_chats: [],
+    history: [{
+      role: 'system',
+      body: 'Still signing you in. Try again in a moment.',
+      created_at: '2026-04-11T07:19:01Z',
+    }],
+  }, { preferredUsername: 'Desktop' });
+
+  assert.deepEqual(harness.histories.get(5), [{
+    role: 'system',
+    body: "You're all set. This chat is empty.",
+    created_at: harness.histories.get(5)[0].created_at,
+  }]);
+});
+
 test('applyAuthBootstrap arms the active unread threshold for the bootstrap-selected chat', () => {
   const harness = buildHarness({
     chats: new Map([[5, { id: 5, pending: false, unread_count: 3 }]]),
@@ -305,9 +334,10 @@ test('applyAuthBootstrap avoids forced virtualization on mobile bootstrap opens 
   assert.deepEqual(harness.getRenderedMessageOptions(), [{ forceVirtualize: false }]);
 });
 
-test('applyAuthBootstrap skips open-time history warming on mobile', () => {
+test('applyAuthBootstrap delays history warming on mobile so reopen stays light but switching smooths out shortly after', async () => {
   const harness = buildHarness({
     isMobileQuoteMode: () => true,
+    mobileBootstrapWarmDelayMs: 280,
   });
 
   harness.controller.applyAuthBootstrap({
@@ -320,7 +350,18 @@ test('applyAuthBootstrap skips open-time history warming on mobile', () => {
   }, { preferredUsername: 'Desktop' });
 
   assert.equal(harness.getWarmCalls(), 0);
-  assert.equal(harness.getBootStages().some((entry) => entry.stage === 'warm-history-cache-triggered'), false);
+  assert.deepEqual(
+    harness.getBootStages().filter((entry) => entry.stage === 'warm-history-cache-triggered'),
+    [{
+      stage: 'warm-history-cache-triggered',
+      details: { activeChatId: 5, mode: 'mobile-delayed', delayMs: 280 },
+    }],
+  );
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(harness.getWarmCalls(), 1);
 });
 
 test('applyAuthBootstrap supports explicit no-active-chat state', () => {

@@ -141,6 +141,47 @@
       }
     }
 
+    let orderedChatIds = [];
+
+    function syncOrderedChatIds({ prependChatIds = [], appendChatIds = [] } = {}) {
+      const nextOrderedChatIds = [];
+      const seenChatIds = new Set();
+      const openChatIds = [...chats.keys()]
+        .map((chatId) => Number(chatId))
+        .filter((chatId) => chatId > 0);
+
+      const pushChatId = (chatId) => {
+        const normalizedId = Number(chatId || 0);
+        if (!normalizedId || !chats.has(normalizedId) || seenChatIds.has(normalizedId)) {
+          return;
+        }
+        seenChatIds.add(normalizedId);
+        nextOrderedChatIds.push(normalizedId);
+      };
+
+      prependChatIds.forEach(pushChatId);
+      orderedChatIds.forEach(pushChatId);
+      openChatIds.sort((a, b) => a - b).forEach(pushChatId);
+      appendChatIds.forEach((chatId) => {
+        const normalizedId = Number(chatId || 0);
+        if (!normalizedId || !seenChatIds.has(normalizedId)) {
+          return;
+        }
+        const existingIndex = nextOrderedChatIds.indexOf(normalizedId);
+        if (existingIndex < 0) {
+          return;
+        }
+        nextOrderedChatIds.splice(existingIndex, 1);
+        nextOrderedChatIds.push(normalizedId);
+      });
+      orderedChatIds = nextOrderedChatIds;
+      return orderedChatIds.slice();
+    }
+
+    function moveChatToEnd(chatId) {
+      syncOrderedChatIds({ appendChatIds: [chatId] });
+    }
+
     function upsertChat(chat) {
       const normalized = normalizeChat(chat);
       chats.set(Number(normalized.id), normalized);
@@ -149,6 +190,7 @@
       } else {
         pinnedChats.delete(Number(normalized.id));
       }
+      syncOrderedChatIds();
       applyResumeCooldownPendingSuppression(normalized.id);
       return normalized;
     }
@@ -192,6 +234,7 @@
         }
       });
       const nextChats = (chatList || []).map(upsertChat);
+      syncOrderedChatIds();
       reapplyResumeCooldownPendingSuppression();
       return nextChats;
     }
@@ -255,7 +298,9 @@
     }
 
     function getOrderedChats() {
-      return [...chats.values()].sort((a, b) => a.id - b.id);
+      return syncOrderedChatIds()
+        .map((chatId) => chats.get(chatId))
+        .filter(Boolean);
     }
 
     function hiddenUnreadSummaryText(count) {
@@ -332,9 +377,7 @@
         return '⋯';
       }
       if (state === 'unread') {
-        const unread = getEffectiveUnreadCount(chat?.id);
-        const displayUnread = Math.max(1, unread);
-        return displayUnread > 9 ? '9+' : String(displayUnread);
+        return '';
       }
       return '•';
     }
@@ -511,6 +554,7 @@
         tabNodes,
         tabTemplate,
         tabsEl,
+        orderedChats: getOrderedChats(),
         applyTabNodeState,
       });
       syncMobileTabCarouselUi();
@@ -643,6 +687,7 @@
 
     return {
       normalizeChat,
+      moveChatToEnd,
       upsertChat,
       syncPinnedChats,
       syncChats,

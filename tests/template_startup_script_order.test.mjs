@@ -27,6 +27,7 @@ test('render trace startup helpers load before app.js so transcript rendering is
     '/static/render_trace_message_helpers.js?v={{ render_trace_message_helpers_version }}',
     '/static/render_trace_history_helpers.js?v={{ render_trace_history_helpers_version }}',
     '/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}',
+    '/static/interaction_helpers.js?v={{ interaction_helpers_version }}',
   ];
   renderTraceHelpers.forEach((fragment) => {
     assert.ok(
@@ -41,7 +42,6 @@ test('non-critical startup helpers load after app.js', () => {
 
   const deferredHelpers = [
     '/static/chat_admin_helpers.js?v={{ chat_admin_helpers_version }}',
-    '/static/interaction_helpers.js?v={{ interaction_helpers_version }}',
     '/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}',
     '/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}',
     '/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}',

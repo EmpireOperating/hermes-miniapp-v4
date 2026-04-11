@@ -1,5 +1,11 @@
 (function initHermesMiniappStartupBindings(globalScope) {
-  function createController(deps) {
+  function getCurrentSelection({ windowObject, documentObject }) {
+    const windowSelection = windowObject?.getSelection?.();
+    if (windowSelection) return windowSelection;
+    return documentObject?.getSelection?.() || null;
+  }
+
+  function createTranscriptBindingsController(deps) {
     const {
       windowObject,
       documentObject,
@@ -9,25 +15,6 @@
       messagesEl,
       jumpLatestButton,
       jumpLastStartButton,
-      skinButtons,
-      newChatButton,
-      renameChatButton,
-      pinChatButton,
-      removeChatButton,
-      fullscreenAppTopButton,
-      closeAppTopButton,
-      renderTraceBadge,
-      settingsButton,
-      devSignInButton,
-      settingsClose,
-      settingsModal,
-      authStatusEl,
-      operatorNameEl,
-      formEl,
-      promptEl,
-      sendButton,
-      templateEl,
-      tg,
       getActiveChatId,
       getRenderedChatId,
       isNearBottomFn,
@@ -35,8 +22,6 @@
       chatStickToBottom,
       unseenStreamChats,
       histories,
-      chats,
-      pendingChats,
       shouldVirtualizeHistoryFn,
       scheduleActiveMessageView,
       refreshTabNode,
@@ -49,6 +34,7 @@
       clearSelectionQuoteState,
       hasMessageSelectionFn,
       scheduleSelectionQuoteSync,
+      scheduleSelectionQuoteClear,
       mobileQuoteMode = false,
       noteMobileCarouselInteraction,
       handleTabClick,
@@ -61,66 +47,22 @@
       handleGlobalControlEnterDefuse,
       handleGlobalControlMouseDownFocusGuard,
       handleGlobalControlClickFocusCleanup,
-      handleFullscreenToggle,
-      handleCloseApp,
-      handleRenderTraceBadgeClick,
-      openSettingsModal,
-      closeSettingsModal,
-      signInWithDevAuth,
-      appendSystemMessage,
-      syncDevAuthUi,
-      reportUiError,
-      getIsAuthenticated,
-      saveSkinPreference,
-      createChat,
-      renameActiveChat,
-      toggleActiveChatPin,
-      removeActiveChat,
-      syncRenderTraceBadge,
-      loadDraftsFromStorage,
-      syncClosingConfirmation,
-      syncFullscreenControlState,
-      setInitData,
-      getInitData,
-      getRenderTraceDebugEnabled,
-      renderTraceLog,
-      maybeRefreshForBootstrapVersionMismatch,
-      isMobileBootstrapPath = () => false,
-      logBootStage,
-      syncBootLatencyChip,
-      fetchAuthBootstrapWithRetry,
-      desktopTestingEnabled,
-      desktopTestingRequested,
-      devConfig,
-      applyAuthBootstrap,
-      hasFreshPendingStreamSnapshot,
-      restorePendingStreamSnapshot,
-      renderMessages,
-      updateComposerState,
-      revealShell,
-      recordBootMetric,
-      summarizeBootMetrics,
-      getChatsSize,
-      isActiveChatPending,
-      refreshChats,
-      syncVisibleActiveChat,
-      getStreamAbortControllers,
     } = deps;
 
-    function getCurrentSelection() {
-      const windowSelection = windowObject?.getSelection?.();
-      if (windowSelection) return windowSelection;
-      return documentObject.getSelection?.() || null;
-    }
-
     function handleMessagesScroll() {
-      const selection = getCurrentSelection();
+      const selection = getCurrentSelection({ windowObject, documentObject });
       const hasActiveMessageSelection = Boolean(hasMessageSelectionFn?.(selection));
       cancelSelectionQuoteSync();
       cancelSelectionQuoteSettle();
       cancelSelectionQuoteClear();
       if (hasActiveMessageSelection) {
         scheduleSelectionQuoteSync?.(mobileQuoteMode ? 220 : 120);
+      } else if (mobileQuoteMode) {
+        // Mobile WebViews can briefly report an empty/collapsed selection while
+        // the page scrolls under native drag handles. Clearing immediately here
+        // makes the Quote affordance disappear mid-adjustment; defer the clear so
+        // selectionchange/touchend can restore the popup if the selection returns.
+        scheduleSelectionQuoteClear?.(220);
       } else {
         clearSelectionQuoteState();
       }
@@ -169,18 +111,6 @@
       updateJumpLatestVisibility();
     }
 
-    function bindAsyncClick(button, action) {
-      button?.addEventListener('click', () => {
-        void (async () => {
-          try {
-            await action();
-          } catch (error) {
-            reportUiError(error);
-          }
-        })();
-      });
-    }
-
     function installCoreEventBindings() {
       tabsEl.addEventListener('click', handleTabClick);
       tabsEl.addEventListener('scroll', noteMobileCarouselInteraction, { passive: true });
@@ -200,6 +130,47 @@
       jumpLastStartButton?.addEventListener('click', handleJumpLastStart);
     }
 
+    return {
+      handleMessagesScroll,
+      handleJumpLatest,
+      handleJumpLastStart,
+      installCoreEventBindings,
+    };
+  }
+
+  function createActionBindingsController(deps) {
+    const {
+      skinButtons,
+      telegramUnreadNotificationsToggle,
+      newChatButton,
+      renameChatButton,
+      pinChatButton,
+      removeChatButton,
+      getIsAuthenticated,
+      getTelegramUnreadNotificationsEnabled,
+      appendSystemMessage,
+      saveSkinPreference,
+      saveTelegramUnreadNotificationsPreference,
+      closeSettingsModal,
+      createChat,
+      renameActiveChat,
+      toggleActiveChatPin,
+      removeActiveChat,
+      reportUiError,
+    } = deps;
+
+    function bindAsyncClick(button, action) {
+      button?.addEventListener('click', () => {
+        void (async () => {
+          try {
+            await action();
+          } catch (error) {
+            reportUiError(error);
+          }
+        })();
+      });
+    }
+
     function installActionButtonBindings() {
       skinButtons.forEach((button) => {
         bindAsyncClick(button, async () => {
@@ -212,35 +183,81 @@
         });
       });
 
+      telegramUnreadNotificationsToggle?.addEventListener('change', () => {
+        void (async () => {
+          const previousValue = Boolean(getTelegramUnreadNotificationsEnabled?.());
+          const nextValue = Boolean(telegramUnreadNotificationsToggle.checked);
+          if (!getIsAuthenticated()) {
+            telegramUnreadNotificationsToggle.checked = previousValue;
+            appendSystemMessage('Still signing you in. Try again in a moment.');
+            return;
+          }
+          try {
+            await saveTelegramUnreadNotificationsPreference?.(nextValue);
+          } catch (error) {
+            telegramUnreadNotificationsToggle.checked = previousValue;
+            reportUiError(error);
+          }
+        })();
+      });
+
       bindAsyncClick(newChatButton, createChat);
       bindAsyncClick(renameChatButton, renameActiveChat);
       bindAsyncClick(pinChatButton, toggleActiveChatPin);
       bindAsyncClick(removeChatButton, removeActiveChat);
     }
 
-    function installShellModalBindings() {
-      fullscreenAppTopButton?.addEventListener('click', handleFullscreenToggle);
-      closeAppTopButton?.addEventListener('click', handleCloseApp);
-      renderTraceBadge?.addEventListener('click', handleRenderTraceBadgeClick);
-      settingsButton?.addEventListener('click', openSettingsModal);
-      devSignInButton?.addEventListener('click', () => {
-        void (async () => {
-          try {
-            await signInWithDevAuth();
-          } catch (error) {
-            authStatusEl.textContent = 'Dev sign-in error';
-            appendSystemMessage(`Dev sign-in failed: ${error?.message || String(error)}`);
-            syncDevAuthUi();
-          }
-        })();
-      });
+    return {
+      bindAsyncClick,
+      installActionButtonBindings,
+    };
+  }
 
-      settingsClose?.addEventListener('click', closeSettingsModal);
-      settingsModal?.addEventListener?.('cancel', (event) => {
-        event.preventDefault();
-        closeSettingsModal();
-      });
-    }
+  function createStartupBootstrapController(deps) {
+    const {
+      windowObject,
+      documentObject,
+      messagesEl,
+      authStatusEl,
+      operatorNameEl,
+      tabsEl,
+      formEl,
+      promptEl,
+      sendButton,
+      templateEl,
+      tg,
+      appendSystemMessage,
+      syncDevAuthUi,
+      getIsAuthenticated,
+      syncRenderTraceBadge,
+      loadDraftsFromStorage,
+      syncClosingConfirmation,
+      syncFullscreenControlState,
+      setInitData,
+      getInitData,
+      getRenderTraceDebugEnabled,
+      renderTraceLog,
+      maybeRefreshForBootstrapVersionMismatch,
+      isMobileBootstrapPath = () => false,
+      logBootStage,
+      syncBootLatencyChip,
+      fetchAuthBootstrapWithRetry,
+      desktopTestingEnabled,
+      desktopTestingRequested,
+      devConfig,
+      applyAuthBootstrap,
+      signInWithDevAuth,
+      hasFreshPendingStreamSnapshot,
+      restorePendingStreamSnapshot,
+      renderMessages,
+      updateComposerState,
+      syncUnreadNotificationPresence,
+      revealShell,
+      recordBootMetric,
+      summarizeBootMetrics,
+      getChatsSize,
+      isActiveChatPending,
+    } = deps;
 
     function getMissingBootstrapBindings() {
       const requiredBindings = [
@@ -365,6 +382,9 @@
           chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
         });
         const activeChatId = Number(data?.active_chat_id || 0);
+        if (activeChatId > 0 && documentObject.visibilityState === 'visible') {
+          await syncUnreadNotificationPresence?.({ visible: true, chatId: activeChatId });
+        }
         const serverPendingActiveChat = activeChatId > 0 && Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === activeChatId)?.pending);
         const localPendingSnapshot = activeChatId > 0 && typeof hasFreshPendingStreamSnapshot === 'function'
           ? Boolean(hasFreshPendingStreamSnapshot(activeChatId))
@@ -390,7 +410,7 @@
         logBootStage?.('bootstrap-finished', { authenticated: Boolean(getIsAuthenticated()) });
         summarizeBootMetrics?.({
           authenticated: Boolean(getIsAuthenticated()),
-          activeChatId: Number(getActiveChatId?.() || 0),
+          activeChatId: Number(deps.getActiveChatId?.() || 0),
           chatCount: Number(getChatsSize?.() || 0),
           pendingActiveChat: Boolean(isActiveChatPending?.()),
           mobileBootstrapPath,
@@ -402,6 +422,72 @@
         });
       }
     }
+
+    return {
+      getMissingBootstrapBindings,
+      reportBootstrapMismatch,
+      bootstrap,
+    };
+  }
+
+  function createShellModalController(deps) {
+    const {
+      fullscreenAppTopButton,
+      closeAppTopButton,
+      renderTraceBadge,
+      settingsButton,
+      devSignInButton,
+      settingsClose,
+      settingsModal,
+      handleFullscreenToggle,
+      handleCloseApp,
+      handleRenderTraceBadgeClick,
+      openSettingsModal,
+      closeSettingsModal,
+      signInWithDevAuth,
+      authStatusEl,
+      appendSystemMessage,
+      syncDevAuthUi,
+    } = deps;
+
+    function installShellModalBindings() {
+      fullscreenAppTopButton?.addEventListener('click', handleFullscreenToggle);
+      closeAppTopButton?.addEventListener('click', handleCloseApp);
+      renderTraceBadge?.addEventListener('click', handleRenderTraceBadgeClick);
+      settingsButton?.addEventListener('click', openSettingsModal);
+      devSignInButton?.addEventListener('click', () => {
+        void (async () => {
+          try {
+            await signInWithDevAuth();
+          } catch (error) {
+            authStatusEl.textContent = 'Dev sign-in error';
+            appendSystemMessage(`Dev sign-in failed: ${error?.message || String(error)}`);
+            syncDevAuthUi();
+          }
+        })();
+      });
+
+      settingsClose?.addEventListener('click', closeSettingsModal);
+      settingsModal?.addEventListener?.('cancel', (event) => {
+        event.preventDefault();
+        closeSettingsModal();
+      });
+    }
+
+    return { installShellModalBindings };
+  }
+
+  function createPendingWatchdogController(deps) {
+    const {
+      windowObject,
+      documentObject,
+      pendingChats,
+      getIsAuthenticated,
+      getActiveChatId,
+      refreshChats,
+      syncVisibleActiveChat,
+      getStreamAbortControllers,
+    } = deps;
 
     function installPendingCompletionWatchdog() {
       const intervalMs = 8000;
@@ -423,22 +509,39 @@
       }, intervalMs);
     }
 
+    return { installPendingCompletionWatchdog };
+  }
+
+  function createController(deps) {
+    const transcriptBindingsController = createTranscriptBindingsController(deps);
+    const actionBindingsController = createActionBindingsController(deps);
+    const startupBootstrapController = createStartupBootstrapController(deps);
+    const shellModalController = createShellModalController(deps);
+    const pendingWatchdogController = createPendingWatchdogController(deps);
+
     return {
-      handleMessagesScroll,
-      handleJumpLatest,
-      handleJumpLastStart,
-      bindAsyncClick,
-      installCoreEventBindings,
-      installActionButtonBindings,
-      installShellModalBindings,
-      getMissingBootstrapBindings,
-      reportBootstrapMismatch,
-      bootstrap,
-      installPendingCompletionWatchdog,
+      handleMessagesScroll: transcriptBindingsController.handleMessagesScroll,
+      handleJumpLatest: transcriptBindingsController.handleJumpLatest,
+      handleJumpLastStart: transcriptBindingsController.handleJumpLastStart,
+      bindAsyncClick: actionBindingsController.bindAsyncClick,
+      installCoreEventBindings: transcriptBindingsController.installCoreEventBindings,
+      installActionButtonBindings: actionBindingsController.installActionButtonBindings,
+      installShellModalBindings: shellModalController.installShellModalBindings,
+      getMissingBootstrapBindings: startupBootstrapController.getMissingBootstrapBindings,
+      reportBootstrapMismatch: startupBootstrapController.reportBootstrapMismatch,
+      bootstrap: startupBootstrapController.bootstrap,
+      installPendingCompletionWatchdog: pendingWatchdogController.installPendingCompletionWatchdog,
     };
   }
 
-  const api = { createController };
+  const api = {
+    createTranscriptBindingsController,
+    createActionBindingsController,
+    createStartupBootstrapController,
+    createShellModalController,
+    createPendingWatchdogController,
+    createController,
+  };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
   }

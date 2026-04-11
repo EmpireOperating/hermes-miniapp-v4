@@ -87,9 +87,31 @@ def test_auth_reopens_last_active_chat(monkeypatch, tmp_path) -> None:
     pending_chat = next(chat for chat in data["chats"] if chat["id"] == alt_chat.id)
     assert pending_chat["pending"] is True
     assert pending_chat["is_pinned"] is True
-    assert [chat["id"] for chat in data["pinned_chats"]] == [alt_chat.id]
+    pinned_chat = next(chat for chat in data["pinned_chats"] if chat["id"] == alt_chat.id)
+    assert pinned_chat["title"] == "Alt"
+    assert pinned_chat["is_pinned"] is True
+    assert pinned_chat["unread_count"] == 0
+    assert pinned_chat["pending"] is False
     assert any(chat["id"] == main_chat_id for chat in data["chats"])
     assert "hermes_skin=terminal" in response.headers.get("Set-Cookie", "")
+
+
+def test_auth_includes_closed_pinned_chats_in_bootstrap(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    main_chat_id = server.store.ensure_default_chat("123")
+    archived_pinned = server.store.create_chat("123", "Archived pinned")
+    server.store.set_chat_pinned("123", archived_pinned.id, is_pinned=True)
+    next_active_chat_id = server.store.remove_chat("123", archived_pinned.id)
+
+    response = client.post("/api/auth", json={"init_data": "ok"})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["active_chat_id"] == next_active_chat_id == main_chat_id
+    assert [chat["id"] for chat in data["chats"]] == [main_chat_id]
+    assert [chat["id"] for chat in data["pinned_chats"]] == [archived_pinned.id]
+    assert data["pinned_chats"][0]["is_pinned"] is True
 
 
 def test_auth_includes_runtime_pending_tool_and_assistant_state_for_active_pending_chat(monkeypatch, tmp_path) -> None:
@@ -216,6 +238,41 @@ def test_set_skin_sets_cookie(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert response.get_json()["skin"] == "oracle"
     assert "hermes_skin=oracle" in response.headers.get("Set-Cookie", "")
+
+
+def test_auth_includes_telegram_unread_notification_preference(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+    server.store.set_telegram_unread_notifications_enabled("123", True)
+
+    response = client.post("/api/auth", json={"init_data": "ok"})
+
+    assert response.status_code == 200
+    assert response.get_json()["telegram_unread_notifications_enabled"] is True
+
+
+def test_set_telegram_unread_notifications_preference(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/api/preferences/telegram-unread-notifications",
+        json={"init_data": "ok", "enabled": True},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "telegram_unread_notifications_enabled": True}
+    assert server.store.get_telegram_unread_notifications_enabled("123") is True
+
+
+def test_set_telegram_unread_notifications_rejects_non_boolean_enabled(monkeypatch, tmp_path) -> None:
+    _server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/api/preferences/telegram-unread-notifications",
+        json={"init_data": "ok", "enabled": "yes"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "Invalid enabled flag. Expected boolean."
 
 
 def test_dev_auth_returns_404_when_bypass_disabled(monkeypatch, tmp_path) -> None:

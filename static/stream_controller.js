@@ -527,6 +527,8 @@
       getActiveChatId,
       clearStreamCursor,
       clearPendingStreamSnapshot,
+      clearReconnectResumeBlock,
+      resetReconnectResumeBudget,
       upsertChat,
       histories,
       mergeHydratedHistory,
@@ -544,6 +546,10 @@
       if (!key || typeof loadChatHistory !== "function") return;
       clearStreamCursor?.(key);
       clearPendingStreamSnapshot?.(key);
+      if (forceCompleted) {
+        clearReconnectResumeBlock?.(key);
+        resetReconnectResumeBudget?.(key);
+      }
       try {
         const hydrated = await loadChatHistory(key, { activate: Number(getActiveChatId()) === key });
         const hydratedChat = hydrated && typeof hydrated === "object" && hydrated.chat && typeof hydrated.chat === "object"
@@ -1342,10 +1348,7 @@
       }
       resetReconnectResumeBudget?.(chatId);
       const serverPending = Boolean(chats.get(chatId)?.pending);
-      if (pendingChats.has(chatId) || serverPending) {
-        appendSystemMessage(`Still replying in '${chatLabel(chatId)}'.`);
-        return;
-      }
+      const interruptRequested = pendingChats.has(chatId) || serverPending;
 
       markChatStreamPending?.({
         chatId,
@@ -1385,7 +1388,11 @@
         const response = await fetchImpl("/api/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(authPayload({ chat_id: chatId, message: cleaned })),
+          body: JSON.stringify(authPayload({
+            chat_id: chatId,
+            message: cleaned,
+            interrupt: interruptRequested,
+          })),
           signal: streamController.signal,
         });
 

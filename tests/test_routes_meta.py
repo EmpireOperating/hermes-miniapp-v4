@@ -346,7 +346,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     file_preview_pos = page.rindex(file_preview_src)
     visibility_skin_pos = page.rindex(visibility_skin_src)
 
-    assert runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_bindings_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < app_pos < chat_admin_pos < interaction_pos < actions_pos < keyboard_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
+    assert runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_bindings_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < interaction_pos < app_pos < chat_admin_pos < actions_pos < keyboard_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
 
 
 def test_app_hides_dev_stream_and_source_pills_from_main_ui(monkeypatch, tmp_path) -> None:
@@ -1180,6 +1180,8 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     assert "function renderPinnedChats" in chat_ui_script
     assert "HermesMiniappChatTabs" in chat_tabs_script
     assert "function syncChats" in chat_tabs_script
+    assert "function syncOrderedChatIds" in chat_tabs_script
+    assert "function moveChatToEnd" in chat_tabs_script
     assert "function syncPinnedChatsCollapseUi" in chat_tabs_script
     assert "HermesMiniappChatAdmin" in chat_admin_script
     assert "function syncPinnedChats" in script
@@ -1205,19 +1207,25 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     assert 'id="chat-tabs-hidden-unread"' in template
     assert 'window.__HERMES_FEATURES__ = {' in template
     assert 'mobileTabCarousel: {{ \'true\' if mobile_tab_carousel_enabled else \'false\' }}' in template
+    assert 'tabActionsMenu: {{ \'true\' if tab_actions_menu_enabled else \'false\' }}' in template
     assert 'chat-tabs--mobile-carousel' in chat_tabs_script
     assert 'renderMobileTabOverview' in chat_tabs_script
+    assert 'orderedChats: getOrderedChats(),' in chat_tabs_script
+    assert 'moveChatToEnd?.(targetChatId);' in chat_admin_script
     assert 'openChat = async () => {}' in chat_tabs_script
 
     # Close tab should be silent (no confirm helper UX); it only removes from active tabs via API.
-    # Pinned chats should remain visible in the pinned section after close.
+    # Closed chats should disappear from the current pinned list.
     assert 'const ok = await confirmAction(`Close chat' not in script
     assert "async function removeActiveChat()" in chat_admin_script
+    assert "async function removeChatById(chatId)" in chat_admin_script
+    assert "async function renameChatById(chatId)" in chat_admin_script
+    assert "async function toggleChatPin(chatId)" in chat_admin_script
     assert "data = await apiPost('/api/chats/remove', {" in chat_admin_script
     assert 'chat_id: activeChatId,' in chat_admin_script
     assert 'allow_empty: true,' in chat_admin_script
-    assert 'const removedChatSnapshot = chats.get(activeChatId) || pinnedChats.get(activeChatId) || null;' in chat_admin_script
-    assert 'if ((hasFullState || removedWasPinned) && !pinnedChats.has(activeChatId) && removedChatSnapshot) {' in chat_admin_script
+    assert "chatTabContextPin.textContent = isPinned ? 'Unpin chat' : 'Pin chat';" in chat_admin_script
+    assert 'overflowTrigger.hidden = false;' in chat_ui_script
 
 
 def test_message_action_copy_helpers_are_split_to_module() -> None:

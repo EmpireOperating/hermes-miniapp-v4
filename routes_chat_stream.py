@@ -50,11 +50,20 @@ def register_stream_routes(
 
         request_id = str(getattr(g, "request_id", "")) or None
         store = context.store_getter()
+        interrupt_requested = service.interrupt_requested(payload)
         open_job = store.get_open_job(user_id=user_id, chat_id=chat_id)
-        if open_job:
+        if open_job and not interrupt_requested:
             service.recover_stale_open_job_if_needed(user_id=user_id, chat_id=chat_id, request_id=request_id)
             open_job = store.get_open_job(user_id=user_id, chat_id=chat_id)
-            if open_job:
+        if open_job:
+            if interrupt_requested:
+                service.interrupt_open_job_for_replacement(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    open_job=open_job,
+                    request_id=request_id,
+                )
+            else:
                 return sse_error_fn("Hermes is already working on this chat.", 409, chat_id=chat_id)
 
         operator_message_id, not_found_error = service.sse_try_not_found(

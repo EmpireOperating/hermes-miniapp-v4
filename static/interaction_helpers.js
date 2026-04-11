@@ -317,6 +317,7 @@
     mobileQuoteMode,
     windowObject = (typeof window !== "undefined" ? window : null),
     form,
+    messagesEl,
     clearSelectionQuoteState,
   } = {}, { lockPlacement = false } = {}) {
     if (!selectionQuoteButton || !windowObject || !selectionQuoteState || !clearSelectionQuoteState) return;
@@ -342,13 +343,19 @@
 
     let top = rect.top - buttonHeight - 10;
     if (mobileQuoteMode) {
+      const messagesRect = messagesEl?.getBoundingClientRect?.() || null;
+      const transcriptTop = Number(messagesRect?.top);
       const mobileToolbarUnsafeTop = Math.max(56, Math.round(viewportHeight * 0.18));
+      const safeTop = Math.max(
+        mobileToolbarUnsafeTop,
+        Number.isFinite(transcriptTop) ? transcriptTop + 8 : mobileToolbarUnsafeTop,
+      );
       const composerTop = Number(form?.getBoundingClientRect?.().top || viewportHeight);
-      const safeBottom = Math.max(mobileToolbarUnsafeTop + buttonHeight + 8, Math.min(viewportHeight - buttonHeight - 8, composerTop - buttonHeight - 12));
+      const safeBottom = Math.max(safeTop + buttonHeight + 8, Math.min(viewportHeight - buttonHeight - 8, composerTop - buttonHeight - 12));
       const belowSelection = rect.bottom + 12;
       top = belowSelection;
-      if (top < mobileToolbarUnsafeTop) {
-        top = mobileToolbarUnsafeTop;
+      if (top < safeTop) {
+        top = safeTop;
       }
       if (top > safeBottom) {
         top = safeBottom;
@@ -463,8 +470,8 @@
           selectionQuoteState,
         });
         if (!textToQuote) return;
-        applyQuoteIntoPrompt(textToQuote);
         dismissSelectionQuoteAction({ clearNativeSelection: true });
+        applyQuoteIntoPrompt(textToQuote);
       },
 
       handleQuoteButtonPointerDown(event) {
@@ -511,7 +518,8 @@
         const active = documentObject.activeElement;
         const selection = getActiveSelection({ windowObject, documentObject });
         const inMessages = hasMessageSelection(selection, { messagesEl });
-        if (active === promptEl && !inMessages) {
+        const quoteButtonFocused = active === selectionQuoteButton || selectionQuoteButton?.contains?.(active);
+        if ((active === promptEl || quoteButtonFocused) && !inMessages) {
           return;
         }
 
@@ -568,6 +576,13 @@
         const target = event.target;
         if (!target) return;
         if (target === selectionQuoteButton || selectionQuoteButton?.contains?.(target)) return;
+        if (messagesEl?.contains?.(target)) {
+          const selection = getActiveSelection({ windowObject, documentObject });
+          const hasActiveMessageSelection = hasMessageSelection(selection, { messagesEl });
+          if (hasActiveMessageSelection) {
+            return;
+          }
+        }
         dismissSelectionQuoteAction({ clearNativeSelection: true });
       },
 

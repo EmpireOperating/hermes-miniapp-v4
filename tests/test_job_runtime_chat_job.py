@@ -288,6 +288,41 @@ def test_execute_chat_job_stops_consuming_stream_immediately_after_terminal_done
     assert any(name == "done" and payload.get("reply") == "hello world" for _, name, payload in runtime.published)
 
 
+def test_execute_chat_job_stops_consuming_stream_when_job_is_interrupted_mid_stream() -> None:
+    closed = {"value": False}
+    yielded_trailing = {"value": False}
+    runtime = _FakeRuntime(events=[])
+    job = {"id": 320, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    def _events(**_kwargs):
+        try:
+            yield {"type": "tool", "display": "read_file"}
+            runtime.store.job_state = {"status": "dead", "error": "interrupted_by_new_message"}
+            yielded_trailing["value"] = True
+            yield {"type": "chunk", "text": "should-not-render"}
+            yield {"type": "done", "reply": "should-not-save", "latency_ms": 5}
+        finally:
+            closed["value"] = True
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+        stream_events_fn=_events,
+    )
+
+    assert yielded_trailing["value"] is True
+    assert closed["value"] is True
+    assert runtime.store.completed == []
+    assert not any(name == "done" for _, name, _ in runtime.published)
+    assert not any(name == "chunk" for _, name, _ in runtime.published)
+    assert not any(role == "hermes" for _, _, role, _ in runtime.store.messages)
+    assert runtime.store.checkpoint_writes[-1]["pending_tool_lines"] == ["read_file"]
+    assert runtime.store.checkpoint_writes[-1]["pending_assistant"] == ""
+
+
 def test_execute_chat_job_raises_retryable_when_stream_emits_chunks_without_done() -> None:
     runtime = _FakeRuntime(
         events=[

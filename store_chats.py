@@ -11,6 +11,7 @@ from store_chat_queries import (
     hydrate_chat_turns,
     list_recoverable_pending_turns as query_recoverable_pending_turns,
     select_chat_rows,
+    select_pinned_chat_summary_rows,
 )
 from store_models import (
     MAX_ASSISTANT_MESSAGE_LEN,
@@ -30,6 +31,27 @@ class StoreChatsMixin:
                 (user_id,),
             ).fetchone()
         return str(row["skin"]) if row else "terminal"
+
+    def get_telegram_unread_notifications_enabled(self, user_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT telegram_unread_notifications_enabled FROM user_preferences WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return bool(int(row["telegram_unread_notifications_enabled"] or 0)) if row else False
+
+    def set_telegram_unread_notifications_enabled(self, user_id: str, enabled: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_preferences (user_id, skin, telegram_unread_notifications_enabled, updated_at)
+                VALUES (?, COALESCE((SELECT skin FROM user_preferences WHERE user_id = ?), 'terminal'), ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id)
+                DO UPDATE SET telegram_unread_notifications_enabled = excluded.telegram_unread_notifications_enabled,
+                              updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, user_id, 1 if enabled else 0),
+            )
 
     def set_skin(self, user_id: str, skin: str) -> None:
         with self._connect() as conn:
@@ -377,6 +399,11 @@ class StoreChatsMixin:
                 include_archived=True,
                 pinned_only=True,
             )
+        return [self._hydrate_chat_thread(row) for row in rows]
+
+    def list_pinned_chat_summaries(self, user_id: str) -> list[ChatThread]:
+        with self._connect() as conn:
+            rows = select_pinned_chat_summary_rows(conn, user_id=user_id)
         return [self._hydrate_chat_thread(row) for row in rows]
 
     def set_chat_pinned(self, user_id: str, chat_id: int, *, is_pinned: bool) -> ChatThread:

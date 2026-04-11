@@ -54,6 +54,7 @@ class _StoreStub:
     def __init__(self) -> None:
         self.active_chat_calls: list[tuple[str, int]] = []
         self.dead_letter_calls: list[tuple[str, int, int, str]] = []
+        self.interrupt_calls: list[tuple[str, int, str]] = []
         self.skin = "obsidian"
         self.job_state = {
             "status": "running",
@@ -84,6 +85,10 @@ class _StoreStub:
     def get_skin(self, user_id: str) -> str:
         return self.skin
 
+    def interrupt_open_jobs_for_chat(self, user_id: str, chat_id: int, *, reason: str):
+        self.interrupt_calls.append((user_id, chat_id, reason))
+        return [{"id": 91, "user_id": user_id, "chat_id": chat_id, "operator_message_id": 77, "status": "running", "attempts": 1, "max_attempts": 3}]
+
     def get_job_state(self, job_id: int):
         return dict(self.job_state)
 
@@ -92,6 +97,8 @@ class _RuntimeStub:
     def __init__(self) -> None:
         self.job_stall_timeout_seconds = 5
         self.unsubscribe_calls: list[tuple[int, object]] = []
+        self.terminated_jobs: list[tuple[int, str]] = []
+        self.finished_jobs: list[tuple[int, str]] = []
 
     def subscribe_job_events(self, job_id: int, after_event_id: int = 0):
         return _AlwaysEmptySubscriber()
@@ -99,13 +106,24 @@ class _RuntimeStub:
     def unsubscribe_job_events(self, job_id: int, subscriber: object) -> None:
         self.unsubscribe_calls.append((job_id, subscriber))
 
+    def _terminate_job_children(self, *, job_id: int, reason: str) -> None:
+        self.terminated_jobs.append((int(job_id), str(reason)))
+
+    def _finish_job_runner(self, job_id: int, *, outcome: str = "finished") -> None:
+        self.finished_jobs.append((int(job_id), str(outcome)))
+
 
 class _ClientStub:
     def __init__(self, warm_candidate=None) -> None:
         self._warm_candidate = warm_candidate
+        self.evicted_sessions: list[tuple[str, str]] = []
 
     def select_warm_session_candidate(self, session_id: str):
         return self._warm_candidate
+
+    def evict_session(self, session_id: str, *, reason: str = "explicit_eviction") -> bool:
+        self.evicted_sessions.append((str(session_id), str(reason)))
+        return True
 
 
 def _build_service(store, runtime, client, logger):
@@ -157,6 +175,40 @@ def test_recover_stale_open_job_if_needed_dead_letters_with_min_timeout_and_logs
     ]
     assert logger.calls == [
         "event=stream_stale_open_job_dead_lettered request_id=req-1 chat_id=9 job_id=33 extra={'user_id': '123'}"
+    ]
+
+
+def test_interrupt_requested_accepts_common_truthy_values() -> None:
+    service = _build_service(_StoreStub(), _RuntimeStub(), _ClientStub(), _Logger())
+
+    assert service.interrupt_requested({}) is False
+    assert service.interrupt_requested({"interrupt": False}) is False
+    assert service.interrupt_requested({"interrupt": True}) is True
+    assert service.interrupt_requested({"interrupt": "true"}) is True
+    assert service.interrupt_requested({"interrupt": "1"}) is True
+
+
+def test_interrupt_open_job_for_replacement_cancels_runtime_and_warm_session() -> None:
+    store = _StoreStub()
+    runtime = _RuntimeStub()
+    client = _ClientStub()
+    logger = _Logger()
+    service = _build_service(store, runtime, client, logger)
+
+    interrupted = service.interrupt_open_job_for_replacement(
+        user_id="123",
+        chat_id=9,
+        open_job={"id": 91, "user_id": "123", "chat_id": 9, "status": "running"},
+        request_id="req-2",
+    )
+
+    assert interrupted is not None
+    assert store.interrupt_calls == [("123", 9, "interrupted_by_new_message")]
+    assert runtime.terminated_jobs == [(91, "interrupted_by_new_message")]
+    assert runtime.finished_jobs == [(91, "interrupted_by_new_message")]
+    assert client.evicted_sessions == [("miniapp-123-9", "interrupted_by_new_message")]
+    assert logger.calls == [
+        "event=stream_job_interrupted_for_replacement request_id=req-2 chat_id=9 job_id=91 extra={'user_id': '123'}"
     ]
 
 

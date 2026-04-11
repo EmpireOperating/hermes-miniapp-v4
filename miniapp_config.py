@@ -47,6 +47,7 @@ class MiniAppConfig:
     job_stall_timeout_seconds: int
     telegram_init_data_max_age_seconds: int
     auth_session_max_age_seconds: int
+    telegram_notification_send_timeout_seconds: int
     force_secure_cookies: bool
     trust_proxy_headers: bool
     allowed_origins: set[str]
@@ -61,6 +62,7 @@ class MiniAppConfig:
     stream_efficiency_mode: bool
     stream_metrics_refresh_seconds: int
     mobile_tab_carousel_enabled: bool
+    tab_actions_menu_enabled: bool
     dev_auth_enabled: bool
     dev_auth_secret: str
     dev_auth_expires_at_epoch: int | None
@@ -226,6 +228,12 @@ class MiniAppConfig:
             ),
             telegram_init_data_max_age_seconds=_as_int_in_range("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", 21600, min_value=60, max_value=604800),
             auth_session_max_age_seconds=_as_int_in_range("AUTH_SESSION_MAX_AGE_SECONDS", 60 * 60 * 24 * 7, min_value=60, max_value=60 * 60 * 24 * 90),
+            telegram_notification_send_timeout_seconds=_as_int_in_range(
+                "MINI_APP_TELEGRAM_NOTIFICATION_TIMEOUT_SECONDS",
+                8,
+                min_value=1,
+                max_value=60,
+            ),
             force_secure_cookies=_as_bool("MINI_APP_FORCE_SECURE_COOKIES", default=True),
             trust_proxy_headers=_as_bool("MINI_APP_TRUST_PROXY_HEADERS", default=False),
             allowed_origins=_parse_allowed_origins(os.environ.get("MINI_APP_ALLOWED_ORIGINS", "")),
@@ -242,6 +250,11 @@ class MiniAppConfig:
             mobile_tab_carousel_enabled=_as_bool_any(
                 "MINI_APP_MOBILE_TAB_CAROUSEL",
                 "MINIAPP_MOBILE_TAB_CAROUSEL",
+                default=False,
+            ),
+            tab_actions_menu_enabled=_as_bool_any(
+                "MINI_APP_TAB_ACTIONS_MENU",
+                "MINIAPP_TAB_ACTIONS_MENU",
                 default=False,
             ),
             dev_auth_enabled=_as_bool_any("MINIAPP_DEV_BYPASS", "MINI_APP_DEV_BYPASS", default=False),

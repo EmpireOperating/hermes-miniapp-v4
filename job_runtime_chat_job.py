@@ -155,6 +155,10 @@ def execute_chat_job(
                 job_id=job_id,
                 session_id=session_id,
             )
+        def _job_still_running() -> bool:
+            state = runtime.store.get_job_state(job_id)
+            return bool(state) and str(state.get("status") or "") == "running"
+
         try:
             event_iter = iter(
                 stream_events(
@@ -165,6 +169,9 @@ def execute_chat_job(
                 )
             )
             for event in event_iter:
+                if not _job_still_running():
+                    return False, reply_text, latency_ms, tool_trace_lines, runtime_checkpoint, last_event_source
+
                 event_session_id = str(event.get("session_id") or "").strip()
                 if event_session_id and event_session_id != session_id:
                     raise client_error_cls(
@@ -293,13 +300,37 @@ def execute_chat_job(
             tool_trace_text = tool_trace_text[:keep].rstrip() + suffix
         runtime.store.add_message(user_id=user_id, chat_id=chat_id, role="tool", body=tool_trace_text)
 
+    try:
+        prior_chat_state = runtime.store.get_chat(user_id, chat_id)
+        prior_unread_count = int(getattr(prior_chat_state, "unread_count", 0) or 0)
+    except Exception:  # noqa: BLE001 - best-effort notification guard must not break job completion
+        prior_unread_count = 0
+
+    first_hermes_message_written = False
     if len(reply_parts) == 1:
         runtime.store.add_message(user_id=user_id, chat_id=chat_id, role="hermes", body=reply_parts[0])
+        first_hermes_message_written = True
     else:
         total = len(reply_parts)
         for index, part in enumerate(reply_parts, start=1):
             chunk_body = f"[part {index}/{total}]\n{part}"
             runtime.store.add_message(user_id=user_id, chat_id=chat_id, role="hermes", body=chunk_body)
+            if not first_hermes_message_written:
+                first_hermes_message_written = True
+
+    if first_hermes_message_written:
+        unread_reply_notifier = getattr(runtime, "telegram_unread_reply_notifier", None)
+        notify_if_needed = getattr(unread_reply_notifier, "notify_if_needed", None)
+        if callable(notify_if_needed):
+            try:
+                notify_if_needed(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    chat_title=str(chat_title or "").strip() or "Chat",
+                    prior_unread_count=prior_unread_count,
+                )
+            except Exception:  # noqa: BLE001 - best-effort notification must never fail the chat job
+                pass
 
     runtime.store.set_runtime_checkpoint(
         session_id=session_id,

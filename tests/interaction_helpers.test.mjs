@@ -132,6 +132,49 @@ test('clearSelectionQuoteState resets state and hides quote button', () => {
   assert.equal(selectionQuoteButton.hidden, true);
 });
 
+test('showSelectionQuoteAction keeps mobile quote button below the live transcript top when the carousel pushes messages down', () => {
+  const placements = [];
+  const selectionQuoteButton = {
+    hidden: true,
+    offsetWidth: 72,
+    offsetHeight: 36,
+    style: {},
+  };
+  const selectionQuoteState = {
+    placementKey: '',
+    setText: () => {},
+    setPlacement: (value) => placements.push(value),
+  };
+
+  interaction.showSelectionQuoteAction(
+    {
+      text: 'quoted text',
+      rect: { left: 28, top: 92, bottom: 108, width: 96, height: 16 },
+    },
+    {
+      selectionQuoteButton,
+      selectionQuoteState,
+      mobileQuoteMode: true,
+      windowObject: { innerWidth: 390, innerHeight: 844 },
+      messagesEl: {
+        getBoundingClientRect: () => ({ top: 188 }),
+      },
+      form: {
+        getBoundingClientRect: () => ({ top: 700 }),
+      },
+      clearSelectionQuoteState: () => {
+        throw new Error('should not clear');
+      },
+    },
+    { lockPlacement: true },
+  );
+
+  assert.equal(selectionQuoteButton.hidden, false);
+  assert.equal(selectionQuoteButton.style.top, '196px');
+  assert.match(selectionQuoteButton.style.left, /px$/);
+  assert.equal(placements.length, 1);
+});
+
 test('cancelSelectionQuoteTimer delegates to state cancelTimer', () => {
   const calls = [];
   interaction.cancelSelectionQuoteTimer('sync', {
@@ -463,29 +506,35 @@ test('selection quote controller uses window selection when document selection i
   assert.equal(selectionQuoteButton.hidden, true);
 });
 
-test('selection quote controller dismisses mobile quote popup on touch-away including transcript taps', () => {
+test('selection quote controller preserves active mobile transcript selections during touchstart but dismisses true touch-away taps', () => {
   const calls = [];
+  const transcriptTarget = { inMessages: true };
+  const outsideTarget = { inMessages: false };
   const messagesEl = {
-    contains: () => true,
+    contains: (target) => Boolean(target?.inMessages),
     addEventListener: () => {},
   };
   const selectionQuoteButton = {
     hidden: false,
     contains: () => false,
   };
+  let selection = {
+    rangeCount: 1,
+    isCollapsed: false,
+    anchorNode: transcriptTarget,
+    getRangeAt: () => ({ commonAncestorContainer: transcriptTarget }),
+  };
   const documentObject = {
     activeElement: {},
-    getSelection: () => ({
-      rangeCount: 1,
-      isCollapsed: false,
-      anchorNode: {},
-      getRangeAt: () => ({ commonAncestorContainer: {} }),
-    }),
+    getSelection: () => selection,
     addEventListener: () => {},
+  };
+  const windowSelection = {
+    removeAllRanges: () => calls.push('remove-ranges'),
   };
   const controller = interaction.createSelectionQuoteController({
     mobileQuoteMode: true,
-    windowObject: { getSelection: () => ({ removeAllRanges: () => calls.push('remove-ranges') }) },
+    windowObject: { getSelection: () => (selection ? { ...selection, removeAllRanges: windowSelection.removeAllRanges } : windowSelection) },
     documentObject,
     promptEl: {},
     messagesEl,
@@ -501,7 +550,11 @@ test('selection quote controller dismisses mobile quote popup on touch-away incl
     clearSelectionQuoteState: () => calls.push('clear-state'),
   });
 
-  controller.handleDocumentTouchStart({ target: {} });
+  controller.handleDocumentTouchStart({ target: transcriptTarget });
+  assert.deepEqual(calls, []);
+
+  selection = null;
+  controller.handleDocumentTouchStart({ target: outsideTarget });
   assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state']);
 });
 
@@ -628,7 +681,118 @@ test('selection quote button touchstart applies quote immediately in mobile mode
 
   assert.equal(prevented, true);
   assert.equal(stopped, true);
-  assert.deepEqual(calls, ['apply:quoted text', 'cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state']);
+  assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state', 'apply:quoted text']);
+});
+
+test('desktop quote button still inserts when selectionchange collapses onto the quote button before click fires', () => {
+  const calls = [];
+  const listeners = new Map();
+  const selectionQuoteButton = {
+    hidden: false,
+    addEventListener(type, handler) {
+      listeners.set(type, handler);
+    },
+    contains: (target) => target === selectionQuoteButton,
+  };
+  const messagesEl = {
+    contains: () => false,
+    addEventListener: () => {},
+  };
+  const documentObject = {
+    activeElement: selectionQuoteButton,
+    getSelection: () => null,
+    addEventListener: () => {},
+  };
+  const controller = interaction.createSelectionQuoteController({
+    mobileQuoteMode: false,
+    windowObject: { getSelection: () => ({ removeAllRanges: () => calls.push('remove-ranges') }) },
+    documentObject,
+    promptEl: {},
+    messagesEl,
+    selectionQuoteButton,
+    selectionQuoteState: { getText: () => 'quoted text', clearPlacement: () => calls.push('clear-placement') },
+    activeSelectionQuote: () => null,
+    cancelSelectionQuoteSync: () => calls.push('cancel-sync'),
+    cancelSelectionQuoteSettle: () => calls.push('cancel-settle'),
+    cancelSelectionQuoteClear: () => calls.push('cancel-clear'),
+    scheduleSelectionQuoteSync: () => calls.push('schedule-sync'),
+    scheduleSelectionQuoteClear: () => calls.push('schedule-clear'),
+    applyQuoteIntoPrompt: (text) => calls.push(`apply:${text}`),
+    clearSelectionQuoteState: () => calls.push('clear-state'),
+  });
+
+  controller.bind();
+  controller.handleDocumentSelectionChange();
+  listeners.get('click')?.();
+
+  assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state', 'apply:quoted text']);
+});
+
+test('mobile quote button still inserts after a transcript touch preserves selection but native selection disappears before the button tap resolves', () => {
+  const calls = [];
+  const listeners = new Map();
+  const transcriptTarget = { inMessages: true };
+  let selection = {
+    rangeCount: 1,
+    isCollapsed: false,
+    anchorNode: transcriptTarget,
+    getRangeAt: () => ({ commonAncestorContainer: transcriptTarget }),
+  };
+  const selectionQuoteButton = {
+    hidden: false,
+    contains: (target) => target === selectionQuoteButton,
+    addEventListener(type, handler) {
+      listeners.set(type, handler);
+    },
+  };
+  const messagesEl = {
+    contains: (target) => Boolean(target?.inMessages),
+    addEventListener: () => {},
+  };
+  const controller = interaction.createSelectionQuoteController({
+    mobileQuoteMode: true,
+    windowObject: {
+      getSelection: () => (selection ? { ...selection, removeAllRanges: () => calls.push('remove-ranges') } : { removeAllRanges: () => calls.push('remove-ranges') }),
+    },
+    documentObject: {
+      activeElement: {},
+      getSelection: () => selection,
+      addEventListener: () => {},
+    },
+    promptEl: {},
+    messagesEl,
+    selectionQuoteButton,
+    selectionQuoteState: { getText: () => 'quoted text', clearPlacement: () => calls.push('clear-placement') },
+    activeSelectionQuote: () => (selection ? { text: 'live quoted text' } : null),
+    cancelSelectionQuoteSync: () => calls.push('cancel-sync'),
+    cancelSelectionQuoteSettle: () => calls.push('cancel-settle'),
+    cancelSelectionQuoteClear: () => calls.push('cancel-clear'),
+    scheduleSelectionQuoteSync: () => calls.push('schedule-sync'),
+    scheduleSelectionQuoteClear: () => calls.push('schedule-clear'),
+    applyQuoteIntoPrompt: (text) => calls.push(`apply:${text}`),
+    clearSelectionQuoteState: () => calls.push('clear-state'),
+  });
+
+  controller.bind();
+  controller.handleDocumentTouchStart({ target: transcriptTarget });
+  assert.deepEqual(calls, []);
+
+  selection = null;
+
+  let prevented = false;
+  let stopped = false;
+  listeners.get('touchstart')?.({
+    preventDefault() {
+      prevented = true;
+    },
+    stopPropagation() {
+      stopped = true;
+    },
+  });
+
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state', 'apply:quoted text']);
 });
 
 test('syncSelectionQuoteAction accepts minor mobile selection rect jitter and still shows quote button', () => {
@@ -813,7 +977,7 @@ test('selection quote button pointerdown applies quote immediately for touch poi
 
   assert.equal(prevented, true);
   assert.equal(stopped, true);
-  assert.deepEqual(calls, ['apply:quoted text', 'cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state']);
+  assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state', 'apply:quoted text']);
 });
 
 test('interaction controller binds selection quote handlers once and reuses controller instance', () => {

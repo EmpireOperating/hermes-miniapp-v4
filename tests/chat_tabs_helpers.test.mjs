@@ -117,6 +117,7 @@ function createHarness({
   const resumeCycleCountByChat = new Map();
 
   const clearCalls = [];
+  const renderTabsCalls = [];
   const renderPinnedChatsCalls = [];
   const localStorageWrites = [];
 
@@ -176,7 +177,9 @@ function createHarness({
     },
     clearChatStreamState: (payload) => clearCalls.push(payload),
     chatUiHelpers: {
-      renderTabs() {},
+      renderTabs(payload) {
+        renderTabsCalls.push(payload);
+      },
       refreshTabNode() {},
       syncActiveTabSelection({ previousChatId, nextChatId, tabNodes: nextTabNodes, renderTabs, refreshTabNode }) {
         const prevKey = Number(previousChatId);
@@ -236,6 +239,7 @@ function createHarness({
     reconnectResumeBlockedChats,
     resumeCycleCountByChat,
     clearCalls,
+    renderTabsCalls,
     renderPinnedChatsCalls,
     localStorageWrites,
     tabsEl,
@@ -602,7 +606,30 @@ test('mobile carousel overview markers keep idle active chats dot-only and can j
   assert.deepEqual(h.openedChats, [3]);
 });
 
-test('mobile carousel overview markers keep showing unread counts for active unread chats and fall back to 1 for unread-activity badges without a count', () => {
+test('moveChatToEnd moves a reopened pinned chat to the right of tab and overview ordering', () => {
+  const h = createHarness({ activeChatId: 2, mobileTabCarouselEnabled: true, mobileViewport: true });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: false, is_pinned: false, title: 'Two' });
+  h.chats.set(7, { id: 7, unread_count: 0, pending: false, is_pinned: false, title: 'Seven' });
+  h.chats.set(11, { id: 11, unread_count: 0, pending: false, is_pinned: true, title: 'Pinned only' });
+
+  h.controller.renderTabs();
+  assert.deepEqual(h.renderTabsCalls.at(-1).orderedChats.map((chat) => Number(chat.id)), [2, 7, 11]);
+  assert.deepEqual(h.tabOverviewEl.children.map((child) => Number(child.dataset.chatId)), [2, 7, 11]);
+
+  h.controller.moveChatToEnd(11);
+  h.controller.renderTabs();
+
+  assert.deepEqual(h.renderTabsCalls.at(-1).orderedChats.map((chat) => Number(chat.id)), [2, 7, 11]);
+  assert.deepEqual(h.tabOverviewEl.children.map((child) => Number(child.dataset.chatId)), [2, 7, 11]);
+
+  h.controller.moveChatToEnd(2);
+  h.controller.renderTabs();
+
+  assert.deepEqual(h.renderTabsCalls.at(-1).orderedChats.map((chat) => Number(chat.id)), [7, 11, 2]);
+  assert.deepEqual(h.tabOverviewEl.children.map((child) => Number(child.dataset.chatId)), [7, 11, 2]);
+});
+
+test('mobile carousel overview unread markers stay dot-only even for active unread chats or unread activity without a count', () => {
   const effectiveUnreadByChat = new Map([[1, 0], [2, 4], [3, 0]]);
   const h = createHarness({
     activeChatId: 2,
@@ -618,10 +645,10 @@ test('mobile carousel overview markers keep showing unread counts for active unr
   h.controller.renderTabs();
 
   assert.equal(h.tabOverviewEl.children[0].dataset.state, 'unread');
-  assert.equal(h.tabOverviewEl.children[0].children[0].textContent, '1');
+  assert.equal(h.tabOverviewEl.children[0].children[0].textContent, '');
   assert.equal(h.tabOverviewEl.children[1].dataset.active, 'true');
   assert.equal(h.tabOverviewEl.children[1].dataset.state, 'unread');
-  assert.equal(h.tabOverviewEl.children[1].children[0].textContent, '4');
+  assert.equal(h.tabOverviewEl.children[1].children[0].textContent, '');
 });
 
 test('renderTabs leaves carousel disabled outside flagged mobile mode', () => {

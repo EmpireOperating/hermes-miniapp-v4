@@ -96,7 +96,7 @@
 
     const overflowTrigger = node.querySelector("[data-chat-tab-menu-trigger]");
     if (overflowTrigger) {
-      overflowTrigger.hidden = !isActive || isPending;
+      overflowTrigger.hidden = false;
     }
   }
 
@@ -109,8 +109,10 @@
     });
   }
 
-  function renderTabs({ chats, tabNodes, tabTemplate, tabsEl, applyTabNodeState: customApplyTabNodeState }) {
-    const ordered = [...chats.values()].sort((a, b) => a.id - b.id);
+  function renderTabs({ chats, tabNodes, tabTemplate, tabsEl, applyTabNodeState: customApplyTabNodeState, orderedChats = null }) {
+    const ordered = Array.isArray(orderedChats)
+      ? orderedChats
+      : [...chats.values()].sort((a, b) => a.id - b.id);
     const nextIds = new Set(ordered.map((chat) => Number(chat.id)));
     removeMissingTabNodes({ tabNodes, nextIds });
     ordered.forEach((chat) => {
@@ -121,19 +123,21 @@
       } else {
         applyTabNodeState({ node, chat });
       }
-      if (node.parentElement !== tabsEl) {
-        tabsEl.appendChild(node);
-      }
+      tabsEl.appendChild(node);
     });
   }
 
   function createPinnedChatItem(doc, chat) {
-    const button = doc.createElement("button");
-    button.type = "button";
-    button.className = "pinned-chat-item";
-    button.dataset.chatId = String(Number(chat.id));
-    button.setAttribute("role", "listitem");
-    button.title = chat.title || "Chat";
+    const item = doc.createElement("div");
+    item.className = "pinned-chat-item";
+    item.dataset.chatId = String(Number(chat.id));
+    item.setAttribute("role", "listitem");
+
+    const openButton = doc.createElement("button");
+    openButton.type = "button";
+    openButton.className = "pinned-chat-item__open";
+    openButton.dataset.chatId = String(Number(chat.id));
+    openButton.title = chat.title || "Chat";
 
     const pin = doc.createElement("span");
     pin.className = "pinned-chat-item__pin";
@@ -144,8 +148,16 @@
     title.className = "pinned-chat-item__title";
     title.textContent = chat.title || "Chat";
 
-    button.append(pin, title);
-    return button;
+    const overflow = doc.createElement("button");
+    overflow.type = "button";
+    overflow.className = "chat-tab__overflow pinned-chat-item__overflow";
+    overflow.dataset.pinnedChatMenuTrigger = "true";
+    overflow.setAttribute("aria-label", `Manage pinned chat ${chat.title || "Chat"}`);
+    overflow.textContent = "⋮";
+
+    openButton.append(pin, title);
+    item.append(openButton, overflow);
+    return item;
   }
 
   function renderPinnedChats({ pinnedChatsWrap, pinnedChatsEl, pinnedChats, doc = globalScope.document }) {

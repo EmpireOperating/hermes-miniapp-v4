@@ -179,8 +179,17 @@ class ChatManagementService:
         include_full_state: bool = True,
     ) -> tuple[dict[str, object], int]:
         store = self._store_getter()
+        previous_active_chat_id = store.get_active_chat(user_id)
         self.evict_chat_runtime(user_id=user_id, chat_id=chat_id, reason="invalidated_by_remove")
         next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id, allow_empty=allow_empty)
+        preserved_active_chat_id = previous_active_chat_id if previous_active_chat_id and previous_active_chat_id != chat_id else None
+        if preserved_active_chat_id is not None:
+            try:
+                store.get_chat(user_id=user_id, chat_id=preserved_active_chat_id)
+            except KeyError:
+                preserved_active_chat_id = None
+            else:
+                next_chat_id = preserved_active_chat_id
 
         if not next_chat_id:
             payload: dict[str, object] = {

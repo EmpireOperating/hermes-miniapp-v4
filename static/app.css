@@ -341,25 +341,73 @@ h1 {
   display: none;
 }
 .pinned-chat-item {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 34px;
+  min-height: 40px;
   border-radius: 10px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.01);
   color: var(--muted);
-  padding: 8px 10px;
+  padding: 4px 6px 4px 4px;
+}
+.pinned-chat-item__open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 4px 6px;
   text-align: left;
+  border-radius: 8px;
 }
 .pinned-chat-item__pin {
   flex: 0 0 auto;
 }
 .pinned-chat-item__title {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.pinned-chat-item__open:hover,
+.pinned-chat-item__open:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: none;
+}
+.pinned-chat-item__overflow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+.pinned-chat-item__overflow:hover,
+.pinned-chat-item__overflow:focus-visible {
+  background: transparent;
+  color: var(--muted);
+  outline: none;
+}
+body[data-tab-actions-menu="false"] .pinned-chat-item__overflow {
+  display: none;
 }
 button, .skin-toggle, .danger-button, .action-button {
   border: 1px solid var(--line-strong);
@@ -476,6 +524,26 @@ textarea:focus-visible {
   display: grid;
   gap: 10px;
 }
+.settings-modal__section {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.settings-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+.settings-toggle input:disabled + span {
+  color: var(--muted);
+}
 .chat-title-tags {
   display: flex;
   flex-wrap: wrap;
@@ -559,7 +627,11 @@ textarea:focus-visible {
   border-color: color-mix(in srgb, var(--line-strong) 28%, transparent);
 }
 .chat-tabs__overview-marker[data-state="unread"] .chat-tabs__overview-pill {
-  color: var(--ink);
+  min-width: 21px;
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  color: transparent;
   background: color-mix(in srgb, var(--accent) 84%, transparent);
   border-color: color-mix(in srgb, var(--accent) 98%, white 2%);
   box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 26%, transparent);
@@ -612,6 +684,7 @@ textarea:focus-visible {
 }
 .chat-tab__title {
   display: inline-block;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -662,7 +735,7 @@ textarea:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: 2px;
+  margin-left: auto;
   width: 24px;
   height: 24px;
   border-radius: 999px;
@@ -678,6 +751,9 @@ textarea:focus-visible {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--ink);
   outline: none;
+}
+body[data-tab-actions-menu="false"] .chat-tab__overflow {
+  display: none;
 }
 .chat-tab__overflow[hidden] {
   display: none;
@@ -719,6 +795,16 @@ textarea:focus-visible {
 .chat-tab-context-menu__item[disabled]:hover,
 .chat-tab-context-menu__item[disabled]:focus-visible {
   background: transparent;
+}
+.chat-tab-context-menu__item--danger {
+  color: color-mix(in srgb, var(--danger) 88%, var(--ink));
+}
+.chat-tab-context-menu__item--danger:hover,
+.chat-tab-context-menu__item--danger:focus-visible {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+.chat-tab-context-menu__item--danger[disabled] {
+  color: color-mix(in srgb, var(--danger) 55%, var(--muted));
 }
 @keyframes pulse {
   0%, 100% { opacity: 0.45; transform: scale(0.96); }
@@ -1018,7 +1104,7 @@ textarea:focus-visible {
 }
 .selection-quote-button {
   position: fixed;
-  z-index: 18;
+  z-index: 24;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 28%, rgba(10, 12, 16, 0.96));
@@ -1152,6 +1238,10 @@ textarea:disabled {
   opacity: 0.65;
 }
 @media (max-width: 860px) {
+  body[data-tab-actions-menu="true"] .chat-actions__chat-scoped {
+    display: none;
+  }
+
   /* Keep mobile composer focus from triggering viewport zoom in Telegram WebView. */
   textarea {
     font-size: 16px;

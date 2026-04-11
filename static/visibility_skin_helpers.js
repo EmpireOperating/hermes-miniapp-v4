@@ -29,6 +29,38 @@
       markVisibilityResume = null,
     } = deps;
 
+    async function syncUnreadNotificationPresence(options = {}) {
+      if (!getIsAuthenticated()) return null;
+      const {
+        visible = true,
+        chatId = Number(getActiveChatId()),
+      } = options;
+      if (!visible) {
+        try {
+          await fetchImpl('/api/presence/state', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-store',
+            },
+            credentials: 'same-origin',
+            keepalive: true,
+            body: JSON.stringify({ visible: false }),
+          });
+        } catch {
+          // best effort hidden-state sync
+        }
+        return null;
+      }
+      const normalizedChatId = Number(chatId || 0);
+      if (normalizedChatId <= 0) return null;
+      try {
+        return await apiPost('/api/presence/state', { visible: true, chat_id: normalizedChatId });
+      } catch {
+        return null;
+      }
+    }
+
     function normalizeSkin(value) {
       const candidate = String(value || '').trim().toLowerCase();
       return allowedSkins.has(candidate) ? candidate : null;
@@ -147,6 +179,7 @@
 
     async function handleVisibilityChange() {
       if (documentObject.visibilityState !== 'visible') {
+        await syncUnreadNotificationPresence({ visible: false });
         markBackgrounded?.({ trigger: 'visibilitychange' });
         return;
       }
@@ -156,6 +189,8 @@
       });
       syncSkinFromStorage();
       if (!getIsAuthenticated()) return;
+
+      await syncUnreadNotificationPresence({ visible: true });
 
       const activeId = Number(getActiveChatId());
       if (activeId > 0) {
@@ -199,8 +234,13 @@
         syncSkinFromStorage();
       });
       windowObject.addEventListener?.('pagehide', () => {
+        void syncUnreadNotificationPresence({ visible: false });
         markBackgrounded?.({ trigger: 'pagehide' });
       });
+      windowObject.setInterval(() => {
+        if (documentObject.visibilityState !== 'visible') return;
+        void syncUnreadNotificationPresence({ visible: true });
+      }, 15000);
 
       windowObject.addEventListener('storage', handleStorageEvent);
       skinSyncChannel?.addEventListener?.('message', handleSkinChannelMessage);
@@ -215,6 +255,7 @@
       shouldApplyDevReload,
       startDevAutoRefresh,
       syncVisibleActiveChat: syncVisibleActiveChatDelegate,
+      syncUnreadNotificationPresence,
       handleVisibilityChange,
       installLifecycleListeners,
     };

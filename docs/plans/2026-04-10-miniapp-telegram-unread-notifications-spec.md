@@ -95,15 +95,34 @@ This is intentionally strict because the user said: notify me when there is an u
 
 ### Telegram message shape
 
-Keep the alert short and plain text:
+Keep the alert short and plain text.
 
-Example:
-`Unread reply in Main\nHermes: I finished the draft and found 2 failing tests.`
+MVP exact format:
+`[Hermes Notify] [Main] New unread reply`
 
-Optional second line if configured:
-`Open: https://t.me/<bot_username>/<miniapp_short_name>?startapp=chat-73`
+Template:
+`[Hermes Notify] [<chat title>] New unread reply`
 
-Do not use Markdown formatting in the alert body.
+Rules:
+- no deep link line in MVP
+- no body preview in MVP
+- no Markdown formatting
+- always include the chat title so the user knows which tab/chat needs attention immediately from the Telegram push
+
+### Interaction with the existing Telegram bot chat
+
+For MVP, the notification is a normal outbound bot message sent into the user’s existing 1:1 Telegram chat with Hermes.
+
+Implications:
+- it should not interrupt or cancel any running miniapp/background work, because delivery is an independent Bot API `sendMessage` call, not a control action against the active job runtime
+- it should not directly disrupt an already-running Hermes Telegram background task in that same DM for the same reason: it is just one extra outbound bot message, not a session reset, interrupt, or command injection
+- it will appear as a normal new bot message in that Telegram DM, so the thread becomes slightly noisier
+- it should not try to masquerade as conversation content; keep the alert text system-like and short
+
+Future phase-2 options if DM noise becomes annoying:
+- dedicated alerts topic/thread when the Telegram surface supports it
+- digest/rate limiting
+- per-chat muting
 
 ---
 

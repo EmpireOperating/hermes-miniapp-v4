@@ -368,6 +368,7 @@
     authStatus,
     refreshOperatorRoleLabels,
     setSkin,
+    setTelegramUnreadNotificationsEnabled = null,
     syncChats,
     syncPinnedChats,
     histories,
@@ -385,13 +386,37 @@
     delayMs,
     isMobileBootstrapPath,
     syncDevAuthUi,
+    mobileBootstrapWarmDelayMs = 320,
   }) {
+    const staleSigningInMessage = "Still signing you in. Try again in a moment.";
+
+    function pruneStaleSigningMessages(history) {
+      if (!Array.isArray(history) || history.length === 0) {
+        return history;
+      }
+      return history.filter((item) => !(String(item?.role || "").toLowerCase() === "system"
+        && String(item?.body || "").trim() === staleSigningInMessage));
+    }
+
+    function scrubAllLocalSigningMessages() {
+      if (!histories || typeof histories.forEach !== "function") {
+        return;
+      }
+      histories.forEach((history, chatId) => {
+        const nextHistory = pruneStaleSigningMessages(history);
+        if (nextHistory !== history) {
+          histories.set(chatId, nextHistory);
+        }
+      });
+    }
+
     function applyAuthBootstrap(data, { preferredUsername = "" } = {}) {
       onBootstrapStage?.("auth-bootstrap-applied-start", {
         activeChatId: Number(data?.active_chat_id || 0),
         chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
       });
       setIsAuthenticated(true);
+      scrubAllLocalSigningMessages();
       const telegramUsername = normalizeHandle(preferredUsername);
       const apiUsername = normalizeHandle(data?.user?.username);
       const displayName = String(data?.user?.display_name || "").trim();
@@ -401,6 +426,7 @@
       authStatus.textContent = `Signed in as ${signedInName}`;
       refreshOperatorRoleLabels();
       setSkin(data.skin || "terminal");
+      setTelegramUnreadNotificationsEnabled?.(Boolean(data?.telegram_unread_notifications_enabled));
 
       onBootstrapStage?.("auth-bootstrap-sync-chats-start", {
         chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
@@ -432,7 +458,7 @@
         return;
       }
 
-      const bootstrapHistory = Array.isArray(data?.history) ? [...data.history] : [];
+      const bootstrapHistory = pruneStaleSigningMessages(Array.isArray(data?.history) ? [...data.history] : []);
       const mobileBootstrapPath = isMobileBootstrapPath();
       const bootstrapForceVirtualize = !mobileBootstrapPath && bootstrapHistory.length >= 96;
       const hasFreshPendingSnapshot = typeof hasFreshPendingStreamSnapshot === "function"
@@ -475,11 +501,16 @@
         historyCount: bootstrapHistory.length,
         restoredPendingSnapshot,
       });
-      if (!mobileBootstrapPath && bootstrapChats.length > 1) {
+      if (bootstrapChats.length > 1) {
+        const warmDelayMs = mobileBootstrapPath
+          ? Math.max(0, Number(mobileBootstrapWarmDelayMs) || 0)
+          : 0;
         onBootstrapStage?.("warm-history-cache-triggered", {
           activeChatId: activeId,
+          mode: mobileBootstrapPath ? "mobile-delayed" : "default",
+          delayMs: warmDelayMs,
         });
-        void delayMs(0).then(() => warmChatHistoryCache());
+        void delayMs(warmDelayMs).then(() => warmChatHistoryCache());
       }
       const shouldResumePending = (Boolean(chats.get(activeId)?.pending) || restoredPendingSnapshot) && !pendingChats.has(activeId);
       if (shouldResumePending) {
@@ -725,6 +756,7 @@
       authStatus,
       refreshOperatorRoleLabels: identityController.refreshOperatorRoleLabels,
       setSkin,
+      setTelegramUnreadNotificationsEnabled: deps.setTelegramUnreadNotificationsEnabled,
       syncChats,
       syncPinnedChats,
       histories,
@@ -742,6 +774,7 @@
       delayMs: delayController.delayMs,
       isMobileBootstrapPath: identityController.isMobileBootstrapPath,
       syncDevAuthUi: devAuthUiController.syncDevAuthUi,
+      mobileBootstrapWarmDelayMs: deps.mobileBootstrapWarmDelayMs,
     });
     const requestController = createRequestController({
       initData,

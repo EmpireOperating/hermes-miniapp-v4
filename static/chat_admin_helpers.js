@@ -4,6 +4,7 @@
   function createController(deps) {
     const {
       windowObject,
+      tabActionsMenuEnabled = false,
       settingsModal,
       chatTitleModal,
       chatTitleForm,
@@ -14,6 +15,9 @@
       chatTitleTagLabel,
       chatTitleTagRow,
       chatTitleTagButtons,
+      chatTabContextRename,
+      chatTabContextPin,
+      chatTabContextClose,
       chatTabContextFork,
       apiPost,
       chats,
@@ -33,16 +37,20 @@
       renderTabs,
       renderPinnedChats,
       syncPinChatButton,
+      moveChatToEnd,
       chatLabel,
       getActiveChatId,
       openChat,
       onLatencyByChatMutated,
       chatTabContextMenu,
+      pinnedChatContextMenu,
+      pinnedChatContextRemove,
       focusComposerForNewChat,
     } = deps;
 
     let chatTitleSelectedTag = 'none';
     let tabContextTargetChatId = null;
+    let pinnedContextTargetChatId = null;
 
     function parseTaggedChatTitle(rawTitle) {
       const title = String(rawTitle || '').trim();
@@ -209,18 +217,32 @@
       focusComposerForNewChat?.(data.chat.id);
     }
 
-    async function renameActiveChat() {
-      const activeChatId = Number(getActiveChatId());
-      if (!activeChatId) return;
-      const currentTitle = chatLabel(activeChatId);
+    function getChatRecord(chatId) {
+      const key = Number(chatId);
+      return chats.get(key) || pinnedChats.get(key) || null;
+    }
+
+    async function renameChatById(chatId) {
+      const targetChatId = Number(chatId);
+      if (!targetChatId) return;
+      const currentTitle = chatLabel(targetChatId);
       const nextTitle = await askForChatTitle({ mode: 'rename', currentTitle, defaultTitle: currentTitle });
       if (!nextTitle) return;
       const cleaned = nextTitle.trim() || currentTitle;
-      const data = await apiPost('/api/chats/rename', { chat_id: activeChatId, title: cleaned });
+      const data = await apiPost('/api/chats/rename', { chat_id: targetChatId, title: cleaned });
       upsertChat(data.chat);
-      setActiveChatMeta(activeChatId);
-      renderTabs();
+      if (targetChatId === Number(getActiveChatId())) {
+        setActiveChatMeta(targetChatId);
+      } else {
+        renderTabs();
+      }
       renderPinnedChats();
+    }
+
+    async function renameActiveChat() {
+      const activeChatId = Number(getActiveChatId());
+      if (!activeChatId) return;
+      await renameChatById(activeChatId);
     }
 
     function ensureSilentCloseTabAllowed(chatId) {
@@ -235,12 +257,54 @@
       return pendingChats.has(key) || Boolean(chats.get(key)?.pending);
     }
 
+    function syncContextActionButton(button, { disabled = false, title = '' } = {}) {
+      if (!button) return;
+      button.disabled = Boolean(disabled);
+      button.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+      button.title = title || '';
+    }
+
     function syncChatTabContextMenuState(chatId) {
-      if (!chatTabContextFork) return;
-      const blocked = isChatForkBlocked(chatId);
-      chatTabContextFork.disabled = blocked;
-      chatTabContextFork.setAttribute('aria-disabled', blocked ? 'true' : 'false');
-      chatTabContextFork.title = blocked ? 'Wait for Hermes to finish before branching this chat.' : 'Branch chat';
+      const targetChatId = Number(chatId);
+      if (!tabActionsMenuEnabled || !targetChatId) {
+        syncContextActionButton(chatTabContextRename, { disabled: true });
+        syncContextActionButton(chatTabContextPin, { disabled: true });
+        syncContextActionButton(chatTabContextClose, { disabled: true });
+        syncContextActionButton(chatTabContextFork, { disabled: true });
+        return;
+      }
+
+      const chat = getChatRecord(targetChatId);
+      const isPinned = Boolean(chat?.is_pinned);
+      const closeBlocked = pendingChats.has(targetChatId) || Boolean(chat?.pending);
+      const branchBlocked = isChatForkBlocked(targetChatId);
+      syncContextActionButton(chatTabContextRename, { disabled: false, title: 'Rename chat' });
+      if (chatTabContextPin) {
+        chatTabContextPin.textContent = isPinned ? 'Unpin chat' : 'Pin chat';
+      }
+      syncContextActionButton(chatTabContextPin, { disabled: false, title: isPinned ? 'Unpin chat' : 'Pin chat' });
+      syncContextActionButton(chatTabContextClose, {
+        disabled: closeBlocked,
+        title: closeBlocked ? 'Wait for Hermes to finish before closing this chat.' : 'Close chat',
+      });
+      syncContextActionButton(chatTabContextFork, {
+        disabled: branchBlocked,
+        title: branchBlocked ? 'Wait for Hermes to finish before branching this chat.' : 'Branch chat',
+      });
+    }
+
+    function syncPinnedChatContextMenuState(chatId) {
+      const targetChatId = Number(chatId);
+      if (!tabActionsMenuEnabled || !targetChatId) {
+        syncContextActionButton(pinnedChatContextRemove, { disabled: true });
+        return;
+      }
+      const chat = getChatRecord(targetChatId);
+      const removeBlocked = pendingChats.has(targetChatId) || Boolean(chat?.pending);
+      syncContextActionButton(pinnedChatContextRemove, {
+        disabled: removeBlocked,
+        title: removeBlocked ? 'Wait for Hermes to finish before removing this chat.' : 'Remove chat',
+      });
     }
 
     function ensureForkChatAllowed(chatId) {
@@ -303,12 +367,64 @@
         .sort((a, b) => a - b)[0] || 0;
     }
 
+    async function removeChatById(chatId) {
+      const targetChatId = Number(chatId);
+      if (!targetChatId) return;
+      if (targetChatId === Number(getActiveChatId())) {
+        return removeActiveChat();
+      }
+
+      ensureSilentCloseTabAllowed(targetChatId);
+      const data = await apiPost('/api/chats/remove', {
+        chat_id: targetChatId,
+        allow_empty: true,
+        include_full_state: true,
+      });
+      syncChats(data.chats || []);
+      syncPinnedChats(data.pinned_chats || []);
+      histories.delete(targetChatId);
+      clearChatStreamState({
+        chatId: targetChatId,
+        pendingChats,
+        streamPhaseByChat,
+        unseenStreamChats,
+      });
+      latencyByChat.delete(targetChatId);
+      onLatencyByChatMutated?.(latencyByChat);
+      renderTabs();
+      renderPinnedChats();
+      const activeChatId = Number(getActiveChatId());
+      if (activeChatId > 0 && activeChatId === Number(data.active_chat_id || 0) && chats.has(activeChatId)) {
+        syncPinChatButton?.();
+      }
+    }
+
+    async function removePinnedChatById(chatId) {
+      const targetChatId = Number(chatId);
+      if (!targetChatId) return;
+
+      const targetIsOpen = chats.has(targetChatId);
+      const targetIsPinned = Boolean(getChatRecord(targetChatId)?.is_pinned) || pinnedChats.has(targetChatId);
+      if (targetIsPinned) {
+        const data = await apiPost('/api/chats/unpin', { chat_id: targetChatId });
+        if (targetIsOpen && data?.chat) {
+          upsertChat(data.chat);
+        }
+        syncPinnedChats(data?.pinned_chats || []);
+        renderTabs();
+        renderPinnedChats();
+        if (targetChatId === Number(getActiveChatId())) {
+          syncPinChatButton?.();
+        }
+      }
+
+      await removeChatById(targetChatId);
+    }
+
     async function removeActiveChat() {
       const activeChatId = Number(getActiveChatId());
       if (!activeChatId) return;
       ensureSilentCloseTabAllowed(activeChatId);
-      const removedChatSnapshot = chats.get(activeChatId) || pinnedChats.get(activeChatId) || null;
-      const removedWasPinned = Boolean(removedChatSnapshot?.is_pinned);
       const optimisticNextChatId = getOptimisticNextActiveChatId(activeChatId);
       const optimisticSnapshot = {
         chats: snapshotMap(chats),
@@ -369,9 +485,6 @@
       if (Array.isArray(data.pinned_chats)) {
         syncPinnedChats(data.pinned_chats || []);
       }
-      if ((hasFullState || removedWasPinned) && !pinnedChats.has(activeChatId) && removedChatSnapshot) {
-        pinnedChats.set(activeChatId, { ...removedChatSnapshot, is_pinned: true });
-      }
       const removedChatId = Number(data.removed_chat_id || 0);
       histories.delete(removedChatId);
       if (removedChatId > 0 && removedChatId !== activeChatId) {
@@ -416,6 +529,7 @@
         syncChats(reopenData.chats || []);
         syncPinnedChats(reopenData.pinned_chats || []);
         upsertChat(reopenData.chat);
+        moveChatToEnd?.(targetChatId);
         renderTabs();
         renderPinnedChats();
       }
@@ -453,23 +567,25 @@
       chatTabContextMenu.hidden = true;
     }
 
+    function closePinnedChatContextMenu() {
+      pinnedContextTargetChatId = null;
+      if (!pinnedChatContextMenu) return;
+      pinnedChatContextMenu.hidden = true;
+    }
+
     function openChatTabContextMenu(chatId, clientX, clientY) {
-      if (!chatTabContextMenu) return;
+      if (!chatTabContextMenu || !tabActionsMenuEnabled) return;
       tabContextTargetChatId = Number(chatId) || null;
       if (!tabContextTargetChatId) {
         closeChatTabContextMenu();
         return;
       }
       syncChatTabContextMenuState(tabContextTargetChatId);
-      if (chatTabContextFork?.disabled) {
-        closeChatTabContextMenu();
-        return;
-      }
 
       const viewportWidth = Number(windowObject?.innerWidth || 0);
       const viewportHeight = Number(windowObject?.innerHeight || 0);
       const menuWidth = 172;
-      const menuHeight = 44;
+      const menuHeight = 196;
       const left = Math.max(8, Math.min(Number(clientX || 0), Math.max(8, viewportWidth - menuWidth - 8)));
       const top = Math.max(8, Math.min(Number(clientY || 0), Math.max(8, viewportHeight - menuHeight - 8)));
 
@@ -479,12 +595,13 @@
     }
 
     function handleTabOverflowTriggerClick(event) {
+      if (!tabActionsMenuEnabled) return;
       const trigger = event?.target?.closest?.('[data-chat-tab-menu-trigger]');
       if (!trigger) return;
 
       const tab = trigger.closest('.chat-tab');
       const chatId = Number(tab?.dataset?.chatId || 0);
-      if (!chatId || chatId !== Number(getActiveChatId())) {
+      if (!chatId) {
         closeChatTabContextMenu();
         return;
       }
@@ -503,11 +620,82 @@
       openChatTabContextMenu(chatId, rect.right - 6, rect.bottom + 6);
     }
 
+    function openPinnedChatContextMenu(chatId, clientX, clientY) {
+      if (!pinnedChatContextMenu || !tabActionsMenuEnabled) return;
+      pinnedContextTargetChatId = Number(chatId) || null;
+      if (!pinnedContextTargetChatId) {
+        closePinnedChatContextMenu();
+        return;
+      }
+      syncPinnedChatContextMenuState(pinnedContextTargetChatId);
+
+      const viewportWidth = Number(windowObject?.innerWidth || 0);
+      const viewportHeight = Number(windowObject?.innerHeight || 0);
+      const menuWidth = 172;
+      const menuHeight = 68;
+      const left = Math.max(8, Math.min(Number(clientX || 0), Math.max(8, viewportWidth - menuWidth - 8)));
+      const top = Math.max(8, Math.min(Number(clientY || 0), Math.max(8, viewportHeight - menuHeight - 8)));
+
+      pinnedChatContextMenu.style.left = `${left}px`;
+      pinnedChatContextMenu.style.top = `${top}px`;
+      pinnedChatContextMenu.hidden = false;
+    }
+
+    function handlePinnedOverflowTriggerClick(event) {
+      if (!tabActionsMenuEnabled) return;
+      const trigger = event?.target?.closest?.('[data-pinned-chat-menu-trigger]');
+      if (!trigger) return;
+
+      const item = trigger.closest('.pinned-chat-item');
+      const chatId = Number(item?.dataset?.chatId || 0);
+      if (!chatId) {
+        closePinnedChatContextMenu();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const existingTargetId = Number(pinnedContextTargetChatId || 0);
+      const isAlreadyOpenForSameChat = !pinnedChatContextMenu?.hidden && existingTargetId === chatId;
+      if (isAlreadyOpenForSameChat) {
+        closePinnedChatContextMenu();
+        return;
+      }
+
+      const rect = trigger.getBoundingClientRect();
+      openPinnedChatContextMenu(chatId, rect.right - 6, rect.bottom + 6);
+    }
+
     function handleGlobalChatContextMenuDismiss(event) {
-      if (chatTabContextMenu?.hidden) return;
       const target = event?.target || null;
-      if (target && chatTabContextMenu?.contains?.(target)) return;
+      if (target && (chatTabContextMenu?.contains?.(target) || pinnedChatContextMenu?.contains?.(target))) return;
       closeChatTabContextMenu();
+      closePinnedChatContextMenu();
+    }
+
+    async function handleTabContextRenameClick(event) {
+      event?.preventDefault?.();
+      const chatId = Number(tabContextTargetChatId || 0);
+      closeChatTabContextMenu();
+      if (!chatId) return;
+      await renameChatById(chatId);
+    }
+
+    async function handleTabContextPinClick(event) {
+      event?.preventDefault?.();
+      const chatId = Number(tabContextTargetChatId || 0);
+      closeChatTabContextMenu();
+      if (!chatId) return;
+      await toggleChatPin(chatId);
+    }
+
+    async function handleTabContextCloseClick(event) {
+      event?.preventDefault?.();
+      const chatId = Number(tabContextTargetChatId || 0);
+      closeChatTabContextMenu();
+      if (!chatId) return;
+      await removeChatById(chatId);
     }
 
     async function handleTabContextForkClick(event) {
@@ -518,10 +706,18 @@
       await forkChatFrom(chatId);
     }
 
-    async function toggleActiveChatPin() {
-      const targetChatId = Number(getActiveChatId());
+    async function handlePinnedContextRemoveClick(event) {
+      event?.preventDefault?.();
+      const chatId = Number(pinnedContextTargetChatId || 0);
+      closePinnedChatContextMenu();
+      if (!chatId) return;
+      await removePinnedChatById(chatId);
+    }
+
+    async function toggleChatPin(chatId) {
+      const targetChatId = Number(chatId);
       if (!targetChatId) return;
-      const chat = chats.get(targetChatId);
+      const chat = getChatRecord(targetChatId);
       const isPinned = Boolean(chat?.is_pinned);
       const endpoint = isPinned ? '/api/chats/unpin' : '/api/chats/pin';
       const data = await apiPost(endpoint, { chat_id: targetChatId });
@@ -529,7 +725,15 @@
       syncPinnedChats(data.pinned_chats || []);
       renderTabs();
       renderPinnedChats();
-      syncPinChatButton();
+      if (targetChatId === Number(getActiveChatId())) {
+        syncPinChatButton();
+      }
+    }
+
+    async function toggleActiveChatPin() {
+      const targetChatId = Number(getActiveChatId());
+      if (!targetChatId) return;
+      await toggleChatPin(targetChatId);
     }
 
     function openSettingsModal() {
@@ -557,17 +761,28 @@
       askForChatTitle,
       createChat,
       renameActiveChat,
+      renameChatById,
       ensureSilentCloseTabAllowed,
       removeActiveChat,
+      removeChatById,
+      removePinnedChatById,
       openPinnedChat,
       getNextBranchTitle,
       forkChatFrom,
       closeChatTabContextMenu,
       openChatTabContextMenu,
+      closePinnedChatContextMenu,
+      openPinnedChatContextMenu,
       handleTabOverflowTriggerClick,
+      handlePinnedOverflowTriggerClick,
       handleGlobalChatContextMenuDismiss,
+      handleTabContextRenameClick,
+      handleTabContextPinClick,
+      handleTabContextCloseClick,
       handleTabContextForkClick,
+      handlePinnedContextRemoveClick,
       toggleActiveChatPin,
+      toggleChatPin,
       openSettingsModal,
       closeSettingsModal,
     };

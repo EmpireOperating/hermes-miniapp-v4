@@ -1,5 +1,5 @@
 (function initHermesMiniappKeyboardShortcuts(globalScope) {
-  const CONTROL_FOCUS_SELECTOR = "button, [role='button'], .chat-tab, .pinned-chat-item";
+  const CONTROL_FOCUS_SELECTOR = "button, [role='button'], .chat-tab, .pinned-chat-item__open, [data-pinned-chat-menu-trigger]";
 
   function getOrderedChatIds(chatsMap) {
     return [...chatsMap.values()]
@@ -45,6 +45,7 @@
   }
 
   function handlePinnedChatClick(event, { activeChatId, chats, openPinnedChat }) {
+    if (event?.target?.closest?.("[data-pinned-chat-menu-trigger]")) return;
     const item = event.target.closest(".pinned-chat-item");
     if (!item) return;
     const chatId = Number(item.dataset.chatId);

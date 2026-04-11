@@ -27,6 +27,7 @@ class StoreSchemaMixin:
                     user_id TEXT PRIMARY KEY,
                     skin TEXT NOT NULL DEFAULT 'terminal',
                     active_chat_id INTEGER,
+                    telegram_unread_notifications_enabled INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -122,41 +123,39 @@ class StoreSchemaMixin:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chat_jobs_user_chat_status ON chat_jobs(user_id, chat_id, status, id)"
             )
-            # Crash-recovery for orphaned running jobs. We always requeue, but clamp
-            # exhausted attempt counters back to one-claim-remaining so startup recovery
-            # doesn't immediately dead-letter before the worker can run once more.
+            # Crash-recovery for orphaned running jobs. Do not silently requeue them on
+            # process restart: that can resurrect wedged mid-stream work into endless
+            # resume loops with stale pending state. Instead, mark them dead once and let
+            # the user explicitly retry from the thread.
             running_recovery_row = conn.execute(
                 """
-                SELECT
-                    COUNT(*) AS running_total,
-                    SUM(
-                        CASE
-                            WHEN COALESCE(attempts, 0) >= CASE WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0) ELSE 1 END
-                            THEN 1
-                            ELSE 0
-                        END
-                    ) AS clamped_total
+                SELECT COUNT(*) AS running_total
                 FROM chat_jobs
                 WHERE status = 'running'
                 """
             ).fetchone()
             running_total = int((running_recovery_row["running_total"] if running_recovery_row else 0) or 0)
-            clamped_total = int((running_recovery_row["clamped_total"] if running_recovery_row else 0) or 0)
+            clamped_total = 0
+            conn.execute(
+                """
+                INSERT INTO chat_job_dead_letters (
+                    job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
+                )
+                SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts,
+                       'interrupted_by_service_restart'
+                FROM chat_jobs
+                WHERE status = 'running'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM chat_job_dead_letters dl WHERE dl.job_id = chat_jobs.id
+                  )
+                """
+            )
             conn.execute(
                 """
                 UPDATE chat_jobs
-                SET status = 'queued',
-                    attempts = CASE
-                        WHEN COALESCE(attempts, 0) >= CASE WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0) ELSE 1 END
-                            THEN CASE
-                                WHEN (CASE WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0) ELSE 1 END) > 1
-                                    THEN (CASE WHEN COALESCE(max_attempts, 0) > 0 THEN COALESCE(max_attempts, 0) ELSE 1 END) - 1
-                                ELSE 0
-                            END
-                        ELSE COALESCE(attempts, 0)
-                    END,
-                    next_attempt_at = COALESCE(next_attempt_at, CURRENT_TIMESTAMP),
-                    started_at = NULL,
+                SET status = 'dead',
+                    error = 'interrupted_by_service_restart',
+                    finished_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE status = 'running'
                 """
@@ -193,6 +192,10 @@ class StoreSchemaMixin:
             }
             if "active_chat_id" not in user_pref_columns:
                 conn.execute("ALTER TABLE user_preferences ADD COLUMN active_chat_id INTEGER")
+            if "telegram_unread_notifications_enabled" not in user_pref_columns:
+                conn.execute(
+                    "ALTER TABLE user_preferences ADD COLUMN telegram_unread_notifications_enabled INTEGER NOT NULL DEFAULT 0"
+                )
 
             chat_job_columns = {
                 row["name"]

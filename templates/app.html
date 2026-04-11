@@ -109,9 +109,9 @@
           <div class="divider"></div>
           <div class="chat-actions">
             <button type="button" id="new-chat" class="action-button">New chat</button>
-            <button type="button" id="rename-chat" class="action-button">Rename chat</button>
-            <button type="button" id="pin-chat" class="action-button">Pin chat</button>
-            <button type="button" id="remove-chat" class="danger-button">Close chat</button>
+            <button type="button" id="rename-chat" class="action-button chat-actions__chat-scoped">Rename chat</button>
+            <button type="button" id="pin-chat" class="action-button chat-actions__chat-scoped">Pin chat</button>
+            <button type="button" id="remove-chat" class="danger-button chat-actions__chat-scoped">Close chat</button>
           </div>
 
           <div class="pinned-chats" id="pinned-chats-wrap" hidden>
@@ -123,6 +123,9 @@
               <button type="button" id="pinned-chats-toggle" class="pinned-chats__toggle" aria-controls="pinned-chats" aria-expanded="true">Hide</button>
             </div>
             <div id="pinned-chats" class="pinned-chats__list" role="list" aria-label="Pinned chats"></div>
+            <div id="pinned-chat-context-menu" class="chat-tab-context-menu" role="menu" aria-label="Pinned chat actions" hidden>
+              <button type="button" id="pinned-chat-context-remove" class="chat-tab-context-menu__item chat-tab-context-menu__item--danger" role="menuitem">Remove chat</button>
+            </div>
           </div>
 
         </aside>
@@ -140,7 +143,10 @@
             <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Chat tabs"></div>
             <div id="chat-tabs-hidden-unread" class="chat-tabs__hidden-unread" aria-live="polite" hidden></div>
             <div id="chat-tab-context-menu" class="chat-tab-context-menu" role="menu" aria-label="Chat tab actions" hidden>
+              <button type="button" id="chat-tab-context-rename" class="chat-tab-context-menu__item" role="menuitem">Rename chat</button>
+              <button type="button" id="chat-tab-context-pin" class="chat-tab-context-menu__item" role="menuitem">Pin chat</button>
               <button type="button" id="chat-tab-context-fork" class="chat-tab-context-menu__item" role="menuitem">Branch chat</button>
+              <button type="button" id="chat-tab-context-close" class="chat-tab-context-menu__item chat-tab-context-menu__item--danger" role="menuitem">Close chat</button>
             </div>
           </div>
 
@@ -194,6 +200,13 @@
           <button type="button" class="skin-toggle is-active" data-skin="terminal">Terminal</button>
           <button type="button" class="skin-toggle" data-skin="oracle">Oracle</button>
           <button type="button" class="skin-toggle" data-skin="obsidian">Obsidian</button>
+        </div>
+        <div class="settings-modal__section">
+          <p class="modal__hint">Notifications</p>
+          <label class="settings-toggle" for="telegram-unread-notifications-toggle">
+            <input type="checkbox" id="telegram-unread-notifications-toggle" />
+            <span>Telegram alerts for unread chats</span>
+          </label>
         </div>
         <div class="settings-modal__debug">
           <p class="modal__hint">Debug</p>
@@ -283,7 +296,8 @@
         allowedRoots: {{ file_preview_allowed_roots_json|safe }}
       };
       window.__HERMES_FEATURES__ = {
-        mobileTabCarousel: {{ 'true' if mobile_tab_carousel_enabled else 'false' }}
+        mobileTabCarousel: {{ 'true' if mobile_tab_carousel_enabled else 'false' }},
+        tabActionsMenu: {{ 'true' if tab_actions_menu_enabled else 'false' }}
       };
     </script>
     <script defer src="/static/runtime_unread_helpers.js?v={{ runtime_unread_helpers_version }}"></script>
@@ -305,9 +319,9 @@
     <script defer src="/static/render_trace_message_helpers.js?v={{ render_trace_message_helpers_version }}"></script>
     <script defer src="/static/render_trace_history_helpers.js?v={{ render_trace_history_helpers_version }}"></script>
     <script defer src="/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}"></script>
+    <script defer src="/static/interaction_helpers.js?v={{ interaction_helpers_version }}"></script>
     <script defer src="/static/app.js?v={{ app_js_version }}"></script>
     <script defer src="/static/chat_admin_helpers.js?v={{ chat_admin_helpers_version }}"></script>
-    <script defer src="/static/interaction_helpers.js?v={{ interaction_helpers_version }}"></script>
     <script defer src="/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}"></script>
     <script defer src="/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}"></script>
     <script defer src="/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}"></script>

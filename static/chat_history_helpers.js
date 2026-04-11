@@ -658,6 +658,8 @@
       traceChatHistory,
       nowMs,
       appendSystemMessage,
+      syncUnreadNotificationPresence,
+      getDocumentVisibilityState = () => 'visible',
       buildChatPreservingUnread,
       upsertChatPreservingUnread,
       armActivationReadThreshold,
@@ -683,6 +685,13 @@
           durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
           historyCount: Array.isArray(data?.history) ? data.history.length : 0,
         });
+        if (
+          Boolean(activate)
+          && typeof syncUnreadNotificationPresence === 'function'
+          && getDocumentVisibilityState() === 'visible'
+        ) {
+          void syncUnreadNotificationPresence({ visible: true, chatId: targetChatId });
+        }
         return data;
       } catch (error) {
         const message = String(error?.message || '');
@@ -753,7 +762,7 @@
         chatPending: preservePendingState,
       });
       histories.set(targetChatId, nextHistory);
-      if (matchedVisibleHydratedCompletion && typeof finalizeHydratedPendingState === 'function') {
+      if (!preservePendingState && typeof finalizeHydratedPendingState === 'function') {
         finalizeHydratedPendingState(targetChatId);
       }
       const restoredPendingSnapshot = preservePendingState && typeof restorePendingStreamSnapshot === 'function'
@@ -894,6 +903,9 @@
         return;
       }
 
+      setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: true });
+      renderMessages(targetChatId);
+
       try {
         await hydrateChatFromServer(targetChatId, requestId, false);
       } catch (error) {
@@ -1011,8 +1023,6 @@
       const activeId = normalizeChatId(activeChatId);
       if (!activeId) return;
 
-      ensureActivationReadThreshold(activeId);
-      maybeMarkRead(activeId);
       const data = await loadChatHistory(activeId, { activate: true });
       const latestActiveId = normalizeChatId(getActiveChatId());
       if (latestActiveId !== activeId) return;
@@ -1034,7 +1044,7 @@
         chatPending: preservePendingState,
       });
       histories.set(activeId, nextHistory);
-      if (matchedVisibleHydratedCompletion && typeof finalizeHydratedPendingState === 'function') {
+      if (!preservePendingState && typeof finalizeHydratedPendingState === 'function') {
         finalizeHydratedPendingState(activeId);
       }
       const restoredPendingSnapshot = preservePendingState && typeof restorePendingStreamSnapshot === 'function'
@@ -1048,6 +1058,8 @@
       if (shouldRenderActiveHistory) {
         renderMessages(activeId, { preserveViewport: true });
       }
+      ensureActivationReadThreshold(activeId, data.chat?.unread_count);
+      maybeMarkRead(activeId);
 
       const needsVisibilityResume = shouldResumeOnVisibilityChange({
         hidden: Boolean(hidden),

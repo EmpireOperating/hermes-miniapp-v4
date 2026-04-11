@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from routes_auth_service import AuthBootstrapService
 
@@ -22,10 +23,54 @@ class _StoreStub:
         return self._checkpoint_state
 
 
-def _service(*, checkpoint_state=None) -> AuthBootstrapService:
-    store = _StoreStub(checkpoint_state=checkpoint_state)
+class _PinnedSummaryStoreStub(_StoreStub):
+    def __init__(self):
+        super().__init__(checkpoint_state=None)
+        self.list_pinned_chat_summaries_calls = 0
+        self.list_pinned_chats_calls = 0
+
+    def prune_expired_auth_sessions(self, _now_ts: int) -> None:
+        return None
+
+    def list_chats(self, *, user_id: str):
+        assert user_id == "123"
+        return [{"id": 7, "title": "Main", "pending": False, "unread_count": 0, "is_pinned": False}]
+
+    def list_pinned_chat_summaries(self, *, user_id: str):
+        assert user_id == "123"
+        self.list_pinned_chat_summaries_calls += 1
+        return [{"id": 42, "title": "Pinned only", "pending": False, "unread_count": 0, "is_pinned": True}]
+
+    def list_pinned_chats(self, *, user_id: str):
+        assert user_id == "123"
+        self.list_pinned_chats_calls += 1
+        raise AssertionError("heavy pinned query should not be used for auth bootstrap")
+
+    def get_active_chat(self, user_id: str):
+        assert user_id == "123"
+        return None
+
+    def has_explicit_empty_chat_state(self, user_id: str) -> bool:
+        assert user_id == "123"
+        return False
+
+    def ensure_default_chat(self, user_id: str) -> int:
+        assert user_id == "123"
+        return 7
+
+    def get_skin(self, user_id: str) -> str:
+        assert user_id == "123"
+        return "terminal"
+
+    def get_telegram_unread_notifications_enabled(self, user_id: str) -> bool:
+        assert user_id == "123"
+        return False
+
+
+def _service(*, checkpoint_state=None, store=None) -> AuthBootstrapService:
+    active_store = store or _StoreStub(checkpoint_state=checkpoint_state)
     return AuthBootstrapService(
-        store_getter=lambda: store,
+        store_getter=lambda: active_store,
         runtime_getter=lambda: None,
         serialize_chat_fn=lambda chat: chat,
         session_id_builder_fn=lambda user_id, chat_id: f"miniapp-{user_id}-{chat_id}",
@@ -103,3 +148,20 @@ def test_serialize_turn_adds_file_refs_when_present() -> None:
     assert result["body"] == "Look at /tmp/demo.txt and /var/log/app.log"
     assert result["file_refs"][0]["path"] == "/tmp/demo.txt"
     assert result["file_refs"][1]["path"] == "/var/log/app.log"
+
+
+def test_auth_success_state_prefers_lightweight_pinned_chat_summaries() -> None:
+    store = _PinnedSummaryStoreStub()
+    service = _service(store=store)
+
+    result = service.auth_success_state(
+        SimpleNamespace(id=123, first_name="Operator", username="operator"),
+        auth_mode="telegram",
+        allow_empty=True,
+    )
+
+    assert result["payload"]["pinned_chats"] == [
+        {"id": 42, "title": "Pinned only", "pending": False, "unread_count": 0, "is_pinned": True}
+    ]
+    assert store.list_pinned_chat_summaries_calls == 1
+    assert store.list_pinned_chats_calls == 0

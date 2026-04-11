@@ -415,11 +415,57 @@ test('syncVisibleActiveChat preserves local unread for the active chat even if a
   });
   harness.chats.set(7, { id: 7, unread_count: 1, pending: false });
   harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
-  harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
+  harness.setMessageViewport({ scrollTop: 120, clientHeight: 260 });
 
   await harness.controller.syncVisibleActiveChat();
 
   assert.equal(harness.chats.get(7).unread_count, 1);
   assert.deepEqual(harness.markReadCalls, []);
+});
+
+test('syncVisibleActiveChat does not consume active-chat unread on visibility resume before hydrated history shows the new assistant message below the viewport', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 1 },
+          history: [{ id: 55, role: 'assistant', body: 'new unread reply' }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+    upsertChat: (chat) => {
+      harness.upsertedChats.push(chat);
+      const current = harness.chats.get(Number(chat.id)) || {};
+      harness.chats.set(Number(chat.id), {
+        ...current,
+        ...chat,
+        id: Number(chat.id),
+        unread_count: Number(chat.unread_count || 0),
+        pending: Boolean(chat.pending),
+      });
+    },
+    renderMessages: (chatId, options = {}) => {
+      harness.renderedMessages.push({ chatId: Number(chatId), options });
+      harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
+    },
+  });
+  harness.chats.set(7, { id: 7, unread_count: 1, pending: false });
+  harness.setRenderedAssistantNodes([{ offsetTop: 120, offsetHeight: 80 }]);
+  harness.setMessageViewport({ scrollTop: 0, clientHeight: 260 });
+
+  await harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(harness.chats.get(7).unread_count, 1);
+  assert.deepEqual(harness.markReadCalls, []);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
 });
 

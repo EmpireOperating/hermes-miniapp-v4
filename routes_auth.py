@@ -25,6 +25,8 @@ def register_auth_routes(
     auth_session_max_age_seconds: int,
     build_job_log_fn: Callable[..., str],
     logger,
+    presence_tracker=None,
+    presence_lease_ttl_seconds: int = 45,
     dev_auth_enabled_fn: Callable[[], bool] = lambda: False,
     dev_auth_secret: str = "",
 ) -> None:
@@ -150,3 +152,48 @@ def register_auth_routes(
         response = jsonify({"ok": True, "skin": skin})
         _set_skin_cookie(response, skin)
         return response
+
+    @api_bp.post("/preferences/telegram-unread-notifications")
+    def set_telegram_unread_notifications() -> Response | tuple[dict[str, object], int]:
+        store = store_getter()
+        payload = request_payload_fn()
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            return {"ok": False, "error": "Invalid enabled flag. Expected boolean."}, 400
+
+        verified, auth_error = verify_for_json_fn(payload)
+        if auth_error:
+            return auth_error
+
+        store.set_telegram_unread_notifications_enabled(user_id=str(verified.user.id), enabled=enabled)
+        return jsonify({"ok": True, "telegram_unread_notifications_enabled": enabled})
+
+    @api_bp.post("/presence/state")
+    def set_presence_state() -> Response | tuple[dict[str, object], int]:
+        payload = request_payload_fn()
+        visible = payload.get("visible")
+        if not isinstance(visible, bool):
+            return {"ok": False, "error": "Invalid visible flag. Expected boolean."}, 400
+
+        verified, auth_error = verify_for_json_fn(payload)
+        if auth_error:
+            return auth_error
+
+        user_id = str(verified.user.id)
+        if presence_tracker is None:
+            return jsonify({"ok": True, "visible": visible, "chat_id": None})
+
+        if not visible:
+            presence_tracker.mark_hidden(user_id=user_id)
+            return jsonify({"ok": True, "visible": False, "chat_id": None})
+
+        chat_id_raw = payload.get("chat_id")
+        try:
+            chat_id = int(chat_id_raw)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Invalid chat_id. Expected integer."}, 400
+        if chat_id <= 0:
+            return {"ok": False, "error": "Invalid chat_id. Expected positive integer."}, 400
+
+        presence_tracker.mark_visible(user_id=user_id, chat_id=chat_id, ttl_seconds=presence_lease_ttl_seconds)
+        return jsonify({"ok": True, "visible": True, "chat_id": chat_id})

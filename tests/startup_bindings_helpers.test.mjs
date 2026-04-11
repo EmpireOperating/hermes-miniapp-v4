@@ -5,6 +5,15 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const startupBindings = require('../static/startup_bindings_helpers.js');
 
+test('startup bindings helper exports focused controller factories alongside createController', () => {
+  assert.equal(typeof startupBindings.createTranscriptBindingsController, 'function');
+  assert.equal(typeof startupBindings.createActionBindingsController, 'function');
+  assert.equal(typeof startupBindings.createStartupBootstrapController, 'function');
+  assert.equal(typeof startupBindings.createShellModalController, 'function');
+  assert.equal(typeof startupBindings.createPendingWatchdogController, 'function');
+  assert.equal(typeof startupBindings.createController, 'function');
+});
+
 function createEventTarget(initial = {}) {
   const listeners = new Map();
   return {
@@ -67,6 +76,7 @@ function buildHarness({
   const appendMessages = [];
   const reportErrors = [];
   const selectionQuoteSyncCalls = [];
+  const selectionQuoteClearCalls = [];
   const clearSelectionQuoteStateCalls = [];
   const saveSkinCalls = [];
   const closeSettingsCalls = [];
@@ -77,6 +87,7 @@ function buildHarness({
   const authBootstrapCalls = [];
   const restoreSnapshotCalls = [];
   const renderMessagesCalls = [];
+  const unreadPresenceCalls = [];
   const recordBootMetricCalls = [];
   const summarizeBootMetricsCalls = [];
   const refreshChatsCalls = [];
@@ -210,6 +221,7 @@ function buildHarness({
     clearSelectionQuoteState: () => clearSelectionQuoteStateCalls.push(true),
     hasMessageSelectionFn: (selection) => (typeof hasMessageSelection === 'function' ? hasMessageSelection(selection) : hasMessageSelection),
     scheduleSelectionQuoteSync: (delay) => selectionQuoteSyncCalls.push(delay),
+    scheduleSelectionQuoteClear: (delay) => selectionQuoteClearCalls.push(delay),
     mobileQuoteMode,
     noteMobileCarouselInteraction,
     handleTabClick: () => {},
@@ -279,6 +291,10 @@ function buildHarness({
     },
     renderMessages: (chatId, options) => renderMessagesCalls.push([chatId, options]),
     updateComposerState: () => {},
+    syncUnreadNotificationPresence: async (options = {}) => {
+      unreadPresenceCalls.push(options);
+      return { ok: true };
+    },
     revealShell: () => logBootStages.push(['revealShell', null]),
     recordBootMetric: (name) => recordBootMetricCalls.push(name),
     summarizeBootMetrics: (payload) => summarizeBootMetricsCalls.push(payload),
@@ -317,6 +333,7 @@ function buildHarness({
     appendMessages,
     reportErrors,
     selectionQuoteSyncCalls,
+    selectionQuoteClearCalls,
     clearSelectionQuoteStateCalls,
     saveSkinCalls,
     closeSettingsCalls,
@@ -327,6 +344,7 @@ function buildHarness({
     authBootstrapCalls,
     restoreSnapshotCalls,
     renderMessagesCalls,
+    unreadPresenceCalls,
     recordBootMetricCalls,
     summarizeBootMetricsCalls,
     refreshChatsCalls,
@@ -381,6 +399,16 @@ test('handleMessagesScroll uses window selection when document selection is unav
 
   assert.deepEqual(harness.clearSelectionQuoteStateCalls, []);
   assert.deepEqual(harness.selectionQuoteSyncCalls, [220]);
+});
+
+test('handleMessagesScroll defers clearing mobile quote state when selection briefly disappears during scroll', () => {
+  const harness = buildHarness({ mobileQuoteMode: true, hasMessageSelection: false });
+
+  harness.controller.handleMessagesScroll();
+
+  assert.deepEqual(harness.selectionQuoteSyncCalls, []);
+  assert.deepEqual(harness.selectionQuoteClearCalls, [220]);
+  assert.deepEqual(harness.clearSelectionQuoteStateCalls, []);
 });
 
 test('handleMessagesScroll still checks exact unread-message threshold when not near chat bottom', () => {

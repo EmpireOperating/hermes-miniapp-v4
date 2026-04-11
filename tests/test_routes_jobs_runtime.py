@@ -5,6 +5,7 @@ import os
 import queue
 import sqlite3
 import time
+from types import SimpleNamespace
 
 from job_runtime import JobDuplicateRunnerSuppressed, JobRetryableError
 from job_runtime_diagnostics import build_runtime_diagnostics
@@ -277,6 +278,7 @@ def test_sweep_stale_running_jobs_clears_active_runner_record(monkeypatch, tmp_p
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
     server = load_server(monkeypatch, tmp_path)
     runtime = server.runtime
+    runtime.shutdown(reason="test-stale-sweep", join_timeout=0.2)
 
     assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
     terminated: list[tuple[int, str]] = []
@@ -565,6 +567,7 @@ def test_run_chat_job_skips_db_history_when_runtime_already_bootstrapped(monkeyp
 
 def test_run_chat_job_uses_runtime_checkpoint_when_bootstrapping(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
 
     user_id = "123"
     chat_id = server.store.ensure_default_chat(user_id)
@@ -582,8 +585,7 @@ def test_run_chat_job_uses_runtime_checkpoint_when_bootstrapping(monkeypatch, tm
     )
 
     server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
-    job = server.store.claim_next_job()
-    assert job is not None
+    job = _claim_or_get_open_job(server, user_id, chat_id)
 
     captured = {"history": None}
     monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: True)
@@ -631,8 +633,41 @@ def test_run_chat_job_persists_runtime_checkpoint_from_done_event(monkeypatch, t
     assert stored == checkpoint_history
 
 
+def test_run_chat_job_sends_telegram_unread_notification_for_new_unread_in_inactive_chat(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
+
+    user_id = "123"
+    main_chat_id = server.store.ensure_default_chat(user_id)
+    worker_chat = server.store.create_chat(user_id, "Worker")
+    server.store.set_active_chat(user_id, main_chat_id)
+    server.store.set_telegram_unread_notifications_enabled(user_id, True)
+    operator_message_id = server.store.add_message(user_id, worker_chat.id, "operator", "latest question")
+    server.store.enqueue_chat_job(user_id, worker_chat.id, operator_message_id, max_attempts=1)
+    job = _claim_or_get_open_job(server, user_id, worker_chat.id)
+
+    monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: False)
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        server.runtime.telegram_unread_reply_notifier.sender,
+        "send_text",
+        lambda **kwargs: sent.append(kwargs) or SimpleNamespace(ok=True, error=None),
+    )
+
+    def fake_stream_events(*, user_id, message, conversation_history, session_id):
+        yield {"type": "meta", "source": "agent-persistent"}
+        yield {"type": "done", "reply": "ok", "latency_ms": 1}
+
+    monkeypatch.setattr(server.client, "stream_events", fake_stream_events)
+
+    server._run_chat_job(job)
+
+    assert sent == [{"chat_id": user_id, "text": "🔔 Worker — New unread reply"}]
+
+
 def test_publish_job_event_throttles_touch_job_frequency(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-touch-throttle", join_timeout=0.2)
 
     user_id = "touch-user"
     chat_id = server.store.ensure_default_chat(user_id)
@@ -640,6 +675,7 @@ def test_publish_job_event_throttles_touch_job_frequency(monkeypatch, tmp_path) 
     job_id = server.store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
     claimed = _claim_or_get_open_job(server, user_id, chat_id)
 
+    server.runtime._clear_touch_tracking(job_id)
     server.runtime.job_touch_min_interval_seconds = 0.25
 
     touch_calls: list[tuple[int, float]] = []

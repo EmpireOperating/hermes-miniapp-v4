@@ -39,6 +39,7 @@ test('hydrateChatFromServer updates history and rerenders active chat', async ()
   assert.deepEqual(harness.histories.get(7), [{ id: 1, role: 'assistant', body: 'hello' }]);
   assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: false } }]);
   assert.deepEqual(harness.restoredSnapshots, []);
+  assert.deepEqual(harness.finalizedHydratedPendingChats, [7]);
 });
 
 test('hydrateChatFromServer preserves local unread count until mark-read threshold is reached', async () => {
@@ -283,6 +284,41 @@ test('openChat skips deferred cached transcript render after a newer tab switch 
 
   await scheduledHydrations[0].callback();
   assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), false);
+});
+
+test('openChat optimistically switches active meta and clears transcript before cold-open hydration finishes', async () => {
+  let resolveHistory;
+  const historyPromise = new Promise((resolve) => {
+    resolveHistory = resolve;
+  });
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        await historyPromise;
+        return {
+          chat: { id: Number(payload.chat_id), pending: false },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  const openPromise = harness.controller.openChat(8);
+
+  assert.deepEqual(harness.activeMeta[0], { chatId: 8, options: { fullTabRender: false, deferNonCritical: true } });
+  assert.deepEqual(harness.renderedMessages[0], { chatId: 8, options: {} });
+  assert.equal(harness.renderTraceLogs[0].eventName, 'chat-history-open-start');
+  assert.equal(harness.renderTraceLogs[1].eventName, 'chat-history-hydrate-start');
+
+  resolveHistory();
+  await openPromise;
+
+  assert.deepEqual(harness.renderedMessages, [
+    { chatId: 8, options: {} },
+    { chatId: 8, options: {} },
+  ]);
 });
 
 test('openChat emits cold-open timing breadcrumbs for first activation fetches', async () => {

@@ -126,6 +126,8 @@ function buildControllerHarness(overrides = {}) {
     renderMessages: (chatId, options = {}) => renderedMessages.push({ chatId: Number(chatId), options }),
     persistStreamCursor: (chatId, eventId) => persistedCursors.push({ chatId: Number(chatId), eventId: Number(eventId) }),
     clearStreamCursor: (chatId) => clearedCursors.push(Number(chatId)),
+    clearReconnectResumeBlock: (chatId) => clearedReconnectBlocks.push(Number(chatId)),
+    resetReconnectResumeBudget: (chatId) => timeoutCalls.push({ type: 'reset-budget', chatId: Number(chatId) }),
     markStreamComplete: (chatId, latencyText) => {
       const key = Number(chatId);
       const normalizedLatency = String(latencyText);
@@ -189,6 +191,8 @@ function buildControllerHarness(overrides = {}) {
     markStreamActiveCalls,
     markStreamErrorCalls,
     markStreamClosedEarlyCalls,
+    clearedReconnectBlocks,
+    timeoutCalls,
     systemMessages,
     histories,
     getPromptFocusCalls: () => promptFocusCalls,

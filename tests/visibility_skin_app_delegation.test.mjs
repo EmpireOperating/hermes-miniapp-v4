@@ -22,6 +22,7 @@ test('app.js visibility skin wrappers delegate to visibilitySkinController', asy
     ['setSkin', /return\s+visibilitySkinController\.setSkin\(skin, options\);/],
     ['syncSkinFromStorage', /return\s+visibilitySkinController\.syncSkinFromStorage\(\);/],
     ['saveSkinPreference', /return\s+visibilitySkinController\.saveSkinPreference\(skin\);/],
+    ['syncUnreadNotificationPresence', /return\s+visibilitySkinController\.syncUnreadNotificationPresence\(options\);/],
   ];
 
   for (const [fnName, delegatedCall] of delegateExpectations) {

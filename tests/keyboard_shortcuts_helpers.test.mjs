@@ -138,6 +138,28 @@ test('handleTabClick ignores overflow trigger clicks', () => {
   assert.deepEqual(opened, []);
 });
 
+test('handlePinnedChatClick ignores pinned overflow trigger clicks', () => {
+  const opened = [];
+  const event = {
+    target: {
+      closest(selector) {
+        if (selector === '[data-pinned-chat-menu-trigger]') {
+          return { dataset: { chatId: '11' } };
+        }
+        return null;
+      },
+    },
+  };
+
+  keyboard.handlePinnedChatClick(event, {
+    activeChatId: 7,
+    chats: new Map([[7, { id: 7 }]]),
+    openPinnedChat: (chatId) => opened.push(chatId),
+  });
+
+  assert.deepEqual(opened, []);
+});
+
 test('handleTabClick opens selected chat when clicking a non-active tab', () => {
   const opened = [];
   const tab = { dataset: { chatId: '8' } };

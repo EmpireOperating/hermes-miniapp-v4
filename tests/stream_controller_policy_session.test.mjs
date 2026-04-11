@@ -210,6 +210,93 @@ test('createStreamLifecycleController owns sendPrompt auth guard', async () => {
   assert.deepEqual(messages, ['Still signing you in. Try again in a moment.']);
 });
 
+test('createStreamLifecycleController marks replacement sends with interrupt when chat is already pending', async () => {
+  const fetchBodies = [];
+  const previousDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'visible', activeElement: null };
+  const sessionController = streamController.createStreamSessionController({
+    getActiveChatId: () => 7,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    persistStreamCursor: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    incrementUnread: () => {},
+    renderTabs: () => {},
+  });
+  const transcriptController = {
+    hydrateChatAfterGracefulResumeCompletion: async () => {},
+    consumeStreamWithReconnect: async () => false,
+  };
+  const lifecycleController = streamController.createStreamLifecycleController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: () => streamState.STREAM_PHASES.PENDING_TOOL,
+    setStreamPhase: () => {},
+    chats: new Map([[7, { pending: true }]]),
+    pendingChats: new Set([7]),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    syncActiveMessageView: () => {},
+    getActiveChatId: () => 7,
+    messagesEl: { scrollHeight: 0, clientHeight: 0, scrollTop: 0, focus: () => {} },
+    promptEl: { value: '', selectionStart: 0, selectionEnd: 0 },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    finalizeStreamPendingState: () => {},
+    renderTraceLog: () => {},
+    authPayload: (payload) => payload,
+    parseStreamErrorPayload: () => ({}),
+    summarizeUiFailure: () => 'failed',
+    getIsAuthenticated: () => true,
+    setIsAuthenticated: () => {},
+    authStatusEl: { textContent: '' },
+    dropPendingToolTraceMessages: () => {},
+    addLocalMessage: () => {},
+    setDraft: () => {},
+    resetToolStream: () => {},
+    clearReconnectResumeBlock: () => {},
+    resetReconnectResumeBudget: () => {},
+    consumeReconnectResumeBudget: () => ({ allowed: true, attempts: 1, maxAttempts: 6 }),
+    suppressBlockedChatPending: () => {},
+    blockReconnectResume: () => {},
+    isReconnectResumeBlocked: () => false,
+    resumeAttemptedAtByChat: new Map(),
+    resumeCooldownUntilByChat: new Map(),
+    resumeInFlightByChat: new Set(),
+    isTransientResumeRecoveryError: () => false,
+    nextResumeRecoveryDelayMs: () => 0,
+    delayMs: async () => {},
+    markChatStreamPending: () => {},
+    getStoredStreamCursor: () => null,
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    isNearBottom: () => true,
+    fetchImpl: async (_url, options) => {
+      fetchBodies.push(JSON.parse(String(options?.body || '{}')));
+      return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => '' };
+    },
+    setTimeoutFn: (fn) => fn(),
+    finalizeInlineToolTrace: () => {},
+    triggerIncomingMessageHaptic: () => {},
+  }, sessionController, transcriptController);
+
+  try {
+    await lifecycleController.sendPrompt('replacement');
+
+    assert.deepEqual(fetchBodies, [{ chat_id: 7, message: 'replacement', interrupt: true }]);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
 test('createStreamLifecycleController defers send-path resume handoff until after finalize to avoid recursive stack growth', async () => {
   const scheduled = [];
   const fetchCalls = [];

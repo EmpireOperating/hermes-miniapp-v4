@@ -104,6 +104,14 @@ class AuthBootstrapService:
     def _visible_chats(self, *, user_id: str) -> list[dict[str, object]]:
         return [self._serialize_chat_fn(chat) for chat in self._store_getter().list_chats(user_id=user_id)]
 
+    def _pinned_chats(self, *, user_id: str) -> list[dict[str, object]]:
+        store = self._store_getter()
+        if hasattr(store, "list_pinned_chat_summaries"):
+            pinned_chats = store.list_pinned_chat_summaries(user_id=user_id)
+        else:
+            pinned_chats = store.list_pinned_chats(user_id=user_id)
+        return [self._serialize_chat_fn(chat) for chat in pinned_chats]
+
     def _ensure_default_active_chat(
         self,
         *,
@@ -170,6 +178,7 @@ class AuthBootstrapService:
         display_name = verified_user.first_name or verified_user.username or "Operator"
 
         chats = self._visible_chats(user_id=user_id)
+        pinned_chats = self._pinned_chats(user_id=user_id)
         visible_chat_ids = {int(chat["id"]) for chat in chats}
         if any(bool(chat.get("pending")) for chat in chats):
             runtime.ensure_pending_jobs(user_id)
@@ -200,6 +209,7 @@ class AuthBootstrapService:
                 store.clear_active_chat(user_id=user_id)
 
         skin = store.get_skin(user_id=user_id)
+        telegram_unread_notifications_enabled = store.get_telegram_unread_notifications_enabled(user_id=user_id)
         return {
             "display_name": display_name,
             "payload": {
@@ -211,10 +221,11 @@ class AuthBootstrapService:
                     "username": verified_user.username,
                 },
                 "skin": skin,
+                "telegram_unread_notifications_enabled": telegram_unread_notifications_enabled,
                 "active_chat_id": active_chat_id,
                 "history": history,
                 "chats": chats,
-                "pinned_chats": [chat for chat in chats if bool(chat.get("is_pinned"))],
+                "pinned_chats": pinned_chats,
             },
         }
 

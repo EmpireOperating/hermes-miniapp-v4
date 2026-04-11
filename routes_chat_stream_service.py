@@ -133,6 +133,55 @@ class StreamRouteService:
             )
         return stale
 
+    def interrupt_requested(self, payload: dict[str, object]) -> bool:
+        raw_value = payload.get("interrupt")
+        if isinstance(raw_value, bool):
+            return raw_value
+        if raw_value is None:
+            return False
+        return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def interrupt_open_job_for_replacement(
+        self,
+        *,
+        user_id: str,
+        chat_id: int,
+        open_job: dict[str, object],
+        request_id: str | None,
+        reason: str = "interrupted_by_new_message",
+    ) -> dict[str, object] | None:
+        store = self._store_getter()
+        runtime = self._runtime_getter()
+        client = self._client_getter()
+        interrupted_jobs = store.interrupt_open_jobs_for_chat(user_id=user_id, chat_id=chat_id, reason=reason)
+        interrupted_job = next((job for job in interrupted_jobs if int(job.get("id") or 0) == int(open_job.get("id") or 0)), None)
+        if interrupted_job is None:
+            interrupted_job = dict(open_job)
+
+        job_id = int(interrupted_job.get("id") or 0)
+        if job_id:
+            terminate_job_children = getattr(runtime, "_terminate_job_children", None)
+            if callable(terminate_job_children):
+                terminate_job_children(job_id=job_id, reason=reason)
+            finish_job_runner = getattr(runtime, "_finish_job_runner", None)
+            if callable(finish_job_runner):
+                finish_job_runner(job_id, outcome=reason)
+
+        session_id = str(self._session_id_builder_fn(user_id, int(chat_id)) or "")
+        evict_session = getattr(client, "evict_session", None)
+        if session_id and callable(evict_session):
+            evict_session(session_id, reason=reason)
+
+        if job_id:
+            self.log_stream_job_event(
+                event="stream_job_interrupted_for_replacement",
+                user_id=user_id,
+                chat_id=chat_id,
+                job_id=job_id,
+                request_id=request_id,
+            )
+        return interrupted_job
+
     def log_stream_job_event(
         self,
         *,

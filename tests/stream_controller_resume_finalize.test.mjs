@@ -245,6 +245,23 @@ test('hydrateChatAfterGracefulResumeCompletion can force completed chat state du
   assert.deepEqual(renderedMessages.at(-1), { chatId: 9, options: { preserveViewport: true } });
 });
 
+test('hydrateChatAfterGracefulResumeCompletion clears reconnect recovery state when terminal reconciliation is forced', async () => {
+  const harness = buildControllerHarness({
+    loadChatHistory: async (chatId) => ({
+      chat: { id: Number(chatId), pending: true, title: `chat-${chatId}` },
+      history: [{ role: 'assistant', body: 'hydrated', pending: false }],
+    }),
+  });
+
+  await harness.controller.hydrateChatAfterGracefulResumeCompletion(9, { forceCompleted: true });
+
+  assert.deepEqual(harness.clearedReconnectBlocks, [9]);
+  assert.deepEqual(
+    harness.timeoutCalls.filter((entry) => entry.type === 'reset-budget'),
+    [{ type: 'reset-budget', chatId: 9 }],
+  );
+});
+
 test('hydrateChatAfterGracefulResumeCompletion preserves local final assistant when completed hydrate is temporarily stale', async () => {
   const phases = new Map();
   const histories = new Map([[9, [{ role: 'assistant', body: 'final local reply', pending: true }]]]);

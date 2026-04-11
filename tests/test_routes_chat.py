@@ -85,7 +85,7 @@ def test_remove_chat_can_return_no_active_chat_when_allow_empty_requested(monkey
     assert payload["chats"] == []
 
 
-def test_pin_close_and_reopen_chat(monkeypatch, tmp_path) -> None:
+def test_closing_pinned_chat_keeps_it_in_pinned_list_for_reopen(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
     main_chat_id = server.store.ensure_default_chat("123")
@@ -102,13 +102,16 @@ def test_pin_close_and_reopen_chat(monkeypatch, tmp_path) -> None:
     remove_payload = remove_response.get_json()
     assert remove_payload["active_chat_id"] == main_chat_id
     assert [chat["id"] for chat in remove_payload["pinned_chats"]] == [feature_chat.id]
+    assert remove_payload["pinned_chats"][0]["is_pinned"] is True
 
     reopen_response = client.post("/api/chats/reopen", json={"init_data": "ok", "chat_id": feature_chat.id})
     assert reopen_response.status_code == 200
     reopen_payload = reopen_response.get_json()
     assert reopen_payload["chat"]["id"] == feature_chat.id
+    assert reopen_payload["chat"]["is_pinned"] is True
     assert reopen_payload["active_chat_id"] == feature_chat.id
     assert any(chat["id"] == feature_chat.id for chat in reopen_payload["chats"])
+    assert [chat["id"] for chat in reopen_payload["pinned_chats"]] == [feature_chat.id]
 
 
 def test_reopen_chat_from_zero_tabs_does_not_create_main_backup_chat(monkeypatch, tmp_path) -> None:
@@ -530,6 +533,69 @@ def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None
     assert response.status_code == 409
     body = response.get_data(as_text=True)
     assert "already working" in body
+
+
+def test_stream_chat_interrupts_open_job_when_requested(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "already running")
+    first_job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+
+    class _SingleDoneSubscriber:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self._sent = False
+
+        def get(self, timeout=None):
+            if self._sent:
+                raise queue.Empty
+            self._sent = True
+            return {
+                "event": "done",
+                "event_id": 1,
+                "payload": dict(self._payload),
+            }
+
+    subscribers: dict[int, _SingleDoneSubscriber] = {}
+
+    def _subscribe_job_events(job_id: int, after_event_id: int = 0):
+        if after_event_id:
+            raise AssertionError("new stream should not request replay cursor")
+        subscribers[job_id] = _SingleDoneSubscriber(
+            {"chat_id": chat_id, "reply": "replacement ok", "latency_ms": 1}
+        )
+        return subscribers[job_id]
+
+    terminated: list[tuple[int, str]] = []
+    finished: list[tuple[int, str]] = []
+    evicted: list[tuple[str, str]] = []
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", _subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+    monkeypatch.setattr(server.runtime, "_terminate_job_children", lambda *, job_id, reason: terminated.append((int(job_id), str(reason))))
+    monkeypatch.setattr(server.runtime, "_finish_job_runner", lambda job_id, *, outcome="finished": finished.append((int(job_id), str(outcome))))
+    monkeypatch.setattr(server.client, "evict_session", lambda session_id, *, reason="explicit_eviction": evicted.append((str(session_id), str(reason))) or True)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": chat_id, "message": "replacement", "interrupt": True},
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"reply": "replacement ok"' in body
+    first_state = server.store.get_job_state(first_job_id)
+    assert first_state is not None
+    assert first_state["status"] == "dead"
+    assert first_state["error"] == "interrupted_by_new_message"
+    assert terminated == [(first_job_id, "interrupted_by_new_message")]
+    assert finished == [(first_job_id, "interrupted_by_new_message")]
+    assert evicted == [(f"miniapp-123-{chat_id}", "interrupted_by_new_message")]
+    replacement_open_job = server.store.get_open_job(user_id="123", chat_id=chat_id)
+    assert replacement_open_job is not None
+    assert int(replacement_open_job["id"]) != first_job_id
+
 
 
 def test_stream_chat_allows_other_chat_while_first_chat_has_open_job(monkeypatch, tmp_path) -> None:
