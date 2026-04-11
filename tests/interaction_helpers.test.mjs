@@ -463,11 +463,10 @@ test('selection quote controller uses window selection when document selection i
   assert.equal(selectionQuoteButton.hidden, true);
 });
 
-test('selection quote controller dismisses mobile quote popup on external touchstart', () => {
+test('selection quote controller dismisses mobile quote popup on touch-away including transcript taps', () => {
   const calls = [];
-  let inMessages = true;
   const messagesEl = {
-    contains: () => inMessages,
+    contains: () => true,
     addEventListener: () => {},
   };
   const selectionQuoteButton = {
@@ -502,10 +501,6 @@ test('selection quote controller dismisses mobile quote popup on external touchs
     clearSelectionQuoteState: () => calls.push('clear-state'),
   });
 
-  controller.handleDocumentTouchStart({ target: {} });
-  assert.deepEqual(calls, []);
-
-  inMessages = false;
   controller.handleDocumentTouchStart({ target: {} });
   assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state']);
 });
@@ -621,13 +616,18 @@ test('selection quote button touchstart applies quote immediately in mobile mode
   controller.bind();
 
   let prevented = false;
+  let stopped = false;
   listeners.get('touchstart')?.({
     preventDefault() {
       prevented = true;
     },
+    stopPropagation() {
+      stopped = true;
+    },
   });
 
   assert.equal(prevented, true);
+  assert.equal(stopped, true);
   assert.deepEqual(calls, ['apply:quoted text', 'cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state']);
 });
 
@@ -707,6 +707,7 @@ test('interaction controller resolves active chat lazily for composer submit', (
 test('selection quote controller accepts pointer event fallbacks for touch-style selections', () => {
   const calls = [];
   const listeners = new Map();
+  const documentListeners = new Map();
   const messagesEl = {
     contains: () => true,
     addEventListener(type, handler) {
@@ -716,7 +717,9 @@ test('selection quote controller accepts pointer event fallbacks for touch-style
   const documentObject = {
     activeElement: {},
     getSelection: () => ({ rangeCount: 1, isCollapsed: false, anchorNode: {} }),
-    addEventListener: () => {},
+    addEventListener(type, handler) {
+      documentListeners.set(type, handler);
+    },
   };
   const controller = interaction.createSelectionQuoteController({
     mobileQuoteMode: true,
@@ -740,6 +743,7 @@ test('selection quote controller accepts pointer event fallbacks for touch-style
   listeners.get('pointerdown')?.({ pointerType: 'touch' });
   listeners.get('pointerup')?.({ pointerType: 'touch' });
   listeners.get('pointercancel')?.({ pointerType: 'touch' });
+  documentListeners.get('pointerdown')?.({ pointerType: 'touch', target: {} });
 
   assert.deepEqual(calls, [
     'cancel-sync',
@@ -751,7 +755,65 @@ test('selection quote controller accepts pointer event fallbacks for touch-style
     'cancel-sync',
     'cancel-settle',
     'clear:220',
+    'cancel-sync',
+    'cancel-settle',
+    'cancel-clear',
+    'clear-state',
   ]);
+});
+
+test('selection quote button pointerdown applies quote immediately for touch pointers', () => {
+  const calls = [];
+  const listeners = new Map();
+  const selectionQuoteButton = {
+    hidden: false,
+    addEventListener(type, handler) {
+      listeners.set(type, handler);
+    },
+  };
+  const messagesEl = {
+    contains: () => false,
+    addEventListener: () => {},
+  };
+  const controller = interaction.createSelectionQuoteController({
+    mobileQuoteMode: true,
+    windowObject: { getSelection: () => ({ removeAllRanges: () => calls.push('remove-ranges') }) },
+    documentObject: {
+      activeElement: {},
+      getSelection: () => null,
+      addEventListener: () => {},
+    },
+    promptEl: {},
+    messagesEl,
+    selectionQuoteButton,
+    selectionQuoteState: { getText: () => 'quoted text', clearPlacement: () => calls.push('clear-placement') },
+    activeSelectionQuote: () => null,
+    cancelSelectionQuoteSync: () => calls.push('cancel-sync'),
+    cancelSelectionQuoteSettle: () => calls.push('cancel-settle'),
+    cancelSelectionQuoteClear: () => calls.push('cancel-clear'),
+    scheduleSelectionQuoteSync: () => calls.push('schedule-sync'),
+    scheduleSelectionQuoteClear: () => calls.push('schedule-clear'),
+    applyQuoteIntoPrompt: (text) => calls.push(`apply:${text}`),
+    clearSelectionQuoteState: () => calls.push('clear-state'),
+  });
+
+  controller.bind();
+
+  let prevented = false;
+  let stopped = false;
+  listeners.get('pointerdown')?.({
+    pointerType: 'touch',
+    preventDefault() {
+      prevented = true;
+    },
+    stopPropagation() {
+      stopped = true;
+    },
+  });
+
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.deepEqual(calls, ['apply:quoted text', 'cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state']);
 });
 
 test('interaction controller binds selection quote handlers once and reuses controller instance', () => {
@@ -796,7 +858,7 @@ test('interaction controller binds selection quote handlers once and reuses cont
   const second = controller.bindSelectionQuoteBindings();
 
   assert.equal(first, second);
-  assert.deepEqual(buttonListeners.map(([type]) => type), ['click', 'touchstart']);
+  assert.deepEqual(buttonListeners.map(([type]) => type), ['click', 'touchstart', 'pointerdown']);
   assert.deepEqual(messageListeners.map(([type]) => type), ['mouseup', 'touchstart', 'touchend', 'touchcancel', 'pointerdown', 'pointerup', 'pointercancel']);
-  assert.deepEqual(documentListeners.map(([type]) => type), ['selectionchange', 'mousedown', 'touchstart']);
+  assert.deepEqual(documentListeners.map(([type]) => type), ['selectionchange', 'mousedown', 'touchstart', 'pointerdown']);
 });

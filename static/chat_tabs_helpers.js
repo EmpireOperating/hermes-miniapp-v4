@@ -333,10 +333,8 @@
       }
       if (state === 'unread') {
         const unread = getEffectiveUnreadCount(chat?.id);
-        if (unread > 0) {
-          return unread > 9 ? '9+' : String(unread);
-        }
-        return '•';
+        const displayUnread = Math.max(1, unread);
+        return displayUnread > 9 ? '9+' : String(displayUnread);
       }
       return '•';
     }

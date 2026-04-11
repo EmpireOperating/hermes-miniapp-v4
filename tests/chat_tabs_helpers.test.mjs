@@ -450,6 +450,7 @@ test('renderTabs enables mobile carousel overview strip when feature flag is act
   assert.equal(h.tabOverviewEl.children[1].dataset.chatId, '2');
   assert.equal(h.tabOverviewEl.children[1].dataset.active, 'true');
   assert.equal(h.tabOverviewEl.children[1].dataset.state, 'idle');
+  assert.equal(h.tabOverviewEl.children[1].children[0].textContent, '•');
   assert.equal(h.tabOverviewEl.children[2].dataset.state, 'working');
   assert.equal(h.tabOverviewEl.children[3].dataset.state, 'unread');
   assert.equal(h.tabOverviewEl.children[4].dataset.state, 'idle');
@@ -558,6 +559,7 @@ test('mobile carousel overview strip updates marker state without relying on hid
     h.tabOverviewEl.children.map((child) => child.dataset.state),
     ['unread', 'working', 'idle', 'idle', 'unread'],
   );
+  assert.equal(h.tabOverviewEl.children[2].children[0].textContent, '•');
 
   h.chats.get(1).unread_count = 0;
   effectiveUnreadByChat.set(1, 0);
@@ -566,6 +568,7 @@ test('mobile carousel overview strip updates marker state without relying on hid
     h.tabOverviewEl.children.map((child) => child.dataset.state),
     ['idle', 'working', 'idle', 'idle', 'unread'],
   );
+  assert.equal(h.tabOverviewEl.children[2].children[0].textContent, '•');
 
   h.chats.get(5).unread_count = 0;
   effectiveUnreadByChat.set(5, 0);
@@ -574,9 +577,10 @@ test('mobile carousel overview strip updates marker state without relying on hid
     h.tabOverviewEl.children.map((child) => child.dataset.state),
     ['idle', 'working', 'idle', 'idle', 'idle'],
   );
+  assert.equal(h.tabOverviewEl.children[2].children[0].textContent, '•');
 });
 
-test('mobile carousel overview markers can jump directly to a non-active chat', async () => {
+test('mobile carousel overview markers keep idle active chats dot-only and can jump directly to a non-active chat', async () => {
   const effectiveUnreadByChat = new Map([[1, 1], [2, 0], [3, 2]]);
   const h = createHarness({
     activeChatId: 2,
@@ -590,11 +594,34 @@ test('mobile carousel overview markers can jump directly to a non-active chat', 
 
   h.controller.renderTabs();
   assert.equal(h.tabOverviewEl.children.length, 3);
+  assert.equal(h.tabOverviewEl.children[1].children[0].textContent, '•');
 
   h.tabOverviewEl.children[1].dispatchEvent({ type: 'click' });
   h.tabOverviewEl.children[2].dispatchEvent({ type: 'click' });
 
   assert.deepEqual(h.openedChats, [3]);
+});
+
+test('mobile carousel overview markers keep showing unread counts for active unread chats and fall back to 1 for unread-activity badges without a count', () => {
+  const effectiveUnreadByChat = new Map([[1, 0], [2, 4], [3, 0]]);
+  const h = createHarness({
+    activeChatId: 2,
+    mobileTabCarouselEnabled: true,
+    mobileViewport: true,
+    getCurrentUnreadCount: (chatId) => effectiveUnreadByChat.get(Number(chatId)) ?? 0,
+  });
+  h.chats.set(1, { id: 1, unread_count: 0, pending: false, is_pinned: false, title: 'One' });
+  h.chats.set(2, { id: 2, unread_count: 4, pending: false, is_pinned: false, title: 'Two' });
+  h.chats.set(3, { id: 3, unread_count: 0, pending: false, is_pinned: false, title: 'Three' });
+  h.unseenStreamChats.add(1);
+
+  h.controller.renderTabs();
+
+  assert.equal(h.tabOverviewEl.children[0].dataset.state, 'unread');
+  assert.equal(h.tabOverviewEl.children[0].children[0].textContent, '1');
+  assert.equal(h.tabOverviewEl.children[1].dataset.active, 'true');
+  assert.equal(h.tabOverviewEl.children[1].dataset.state, 'unread');
+  assert.equal(h.tabOverviewEl.children[1].children[0].textContent, '4');
 });
 
 test('renderTabs leaves carousel disabled outside flagged mobile mode', () => {

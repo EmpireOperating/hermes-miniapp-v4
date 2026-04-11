@@ -467,6 +467,14 @@
         dismissSelectionQuoteAction({ clearNativeSelection: true });
       },
 
+      handleQuoteButtonPointerDown(event) {
+        const pointerType = String(event?.pointerType || "").toLowerCase();
+        if (!mobileQuoteMode || !pointerType || pointerType === "mouse") return;
+        event?.preventDefault?.();
+        event?.stopPropagation?.();
+        this.handleQuoteButtonClick();
+      },
+
       handleMessagesMouseUp() {
         if (mobileQuoteMode) return;
         cancelSelectionQuoteClear();
@@ -559,9 +567,14 @@
         if (!mobileQuoteMode) return;
         const target = event.target;
         if (!target) return;
-        if (messagesEl.contains(target)) return;
         if (target === selectionQuoteButton || selectionQuoteButton?.contains?.(target)) return;
         dismissSelectionQuoteAction({ clearNativeSelection: true });
+      },
+
+      handleDocumentPointerEvent(event) {
+        const pointerType = String(event?.pointerType || "").toLowerCase();
+        if (!pointerType || pointerType === "mouse") return;
+        this.handleDocumentTouchStart(event);
       },
 
       bind() {
@@ -572,8 +585,10 @@
           // normally follows a tap. Apply the quote on touchstart so the action
           // still fires and the popup clears immediately.
           event?.preventDefault?.();
+          event?.stopPropagation?.();
           this.handleQuoteButtonClick();
         }, { passive: false });
+        selectionQuoteButton?.addEventListener("pointerdown", (event) => this.handleQuoteButtonPointerDown(event));
         messagesEl.addEventListener("mouseup", () => this.handleMessagesMouseUp());
         messagesEl.addEventListener("touchstart", () => this.handleMessagesTouchStart());
         messagesEl.addEventListener("touchend", () => this.handleMessagesTouchEnd());
@@ -593,6 +608,7 @@
         documentObject.addEventListener("selectionchange", () => this.handleDocumentSelectionChange());
         documentObject.addEventListener("mousedown", (event) => this.handleDocumentPointerDown(event));
         documentObject.addEventListener("touchstart", (event) => this.handleDocumentTouchStart(event));
+        documentObject.addEventListener("pointerdown", (event) => this.handleDocumentPointerEvent(event));
       },
     };
   }
