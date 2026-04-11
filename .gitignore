@@ -25,6 +25,7 @@ chats.db
 chats.db-shm
 chats.db-wal
 ops/camofox/cookies/
+var/client_boot_summaries.ndjson
 *.log
 tmp_*
 
