@@ -455,7 +455,7 @@ test('renderTabs enables mobile carousel overview strip when feature flag is act
   assert.equal(h.tabOverviewEl.children[1].dataset.active, 'true');
   assert.equal(h.tabOverviewEl.children[1].dataset.state, 'idle');
   assert.equal(h.tabOverviewEl.children[1].children[0].textContent, '•');
-  assert.equal(h.tabOverviewEl.children[2].dataset.state, 'working');
+  assert.equal(h.tabOverviewEl.children[2].dataset.state, 'unread');
   assert.equal(h.tabOverviewEl.children[3].dataset.state, 'unread');
   assert.equal(h.tabOverviewEl.children[4].dataset.state, 'idle');
   assert.equal(h.tabOverviewEl.classList.has('chat-tabs__overview--centered'), true);
@@ -604,6 +604,27 @@ test('mobile carousel overview markers keep idle active chats dot-only and can j
   h.tabOverviewEl.children[2].dispatchEvent({ type: 'click' });
 
   assert.deepEqual(h.openedChats, [3]);
+});
+
+test('mobile carousel overview markers prioritize unread over pending to match tab badges', () => {
+  const effectiveUnreadByChat = new Map([[1, 1], [2, 0], [3, 0]]);
+  const h = createHarness({
+    activeChatId: 2,
+    mobileTabCarouselEnabled: true,
+    mobileViewport: true,
+    getCurrentUnreadCount: (chatId) => effectiveUnreadByChat.get(Number(chatId)) ?? 0,
+  });
+  h.chats.set(1, { id: 1, unread_count: 1, pending: true, is_pinned: false, title: 'One' });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: false, is_pinned: false, title: 'Two' });
+  h.chats.set(3, { id: 3, unread_count: 0, pending: true, is_pinned: false, title: 'Three' });
+
+  h.controller.renderTabs();
+
+  assert.equal(h.tabOverviewEl.children[0].dataset.state, 'unread');
+  assert.equal(h.tabOverviewEl.children[0].children[0].textContent, '');
+  assert.equal(h.tabOverviewEl.children[0].getAttribute('aria-label'), 'Chat: One, 1 unread message');
+  assert.equal(h.tabOverviewEl.children[2].dataset.state, 'working');
+  assert.equal(h.tabOverviewEl.children[2].children[0].textContent, '⋯');
 });
 
 test('moveChatToEnd moves a reopened pinned chat to the right of tab and overview ordering', () => {

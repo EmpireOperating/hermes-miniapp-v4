@@ -28,6 +28,10 @@ test('syncVisibleActiveChat hydrates active history and resumes pending streams 
   });
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: {} }]);
   assert.deepEqual(harness.markReadCalls, []);
+  assert.deepEqual(harness.apiCalls.at(0), {
+    path: '/api/chats/history',
+    payload: { chat_id: 7, activate: false },
+  });
 });
 
 test('syncVisibleActiveChat resumes when server still reports pending and there is no live stream', async () => {
@@ -231,6 +235,39 @@ test('syncVisibleActiveChat skips rerender when hydrated active history is rende
   assert.deepEqual(harness.renderedMessages, []);
   assert.deepEqual(harness.resumedChats, []);
   assert.deepEqual(harness.refreshedTabs, [7]);
+});
+
+test('syncVisibleActiveChat rerenders identical active history when unread is preserved for the active chat', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'hello' }]);
+  harness.setIsNearBottom(false);
+
+  await harness.controller.syncVisibleActiveChat({
+    hidden: false,
+    streamAbortControllers: new Map(),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.equal(harness.chats.get(7).unread_count, 2);
+  assert.deepEqual(harness.markReadCalls, []);
+  assert.deepEqual(harness.resumedChats, []);
 });
 
 test('syncVisibleActiveChat skips rerender when hydrated active history only adds a server id to the same assistant text', async () => {
@@ -466,6 +503,10 @@ test('syncVisibleActiveChat does not consume active-chat unread on visibility re
 
   assert.equal(harness.chats.get(7).unread_count, 1);
   assert.deepEqual(harness.markReadCalls, []);
+  assert.deepEqual(harness.apiCalls.at(0), {
+    path: '/api/chats/history',
+    payload: { chat_id: 7, activate: false },
+  });
   assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
 });
 

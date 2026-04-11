@@ -346,7 +346,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     file_preview_pos = page.rindex(file_preview_src)
     visibility_skin_pos = page.rindex(visibility_skin_src)
 
-    assert runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_bindings_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < interaction_pos < app_pos < chat_admin_pos < actions_pos < keyboard_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
+    assert runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_bindings_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < app_pos < chat_admin_pos < actions_pos < keyboard_pos < interaction_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
 
 
 def test_app_hides_dev_stream_and_source_pills_from_main_ui(monkeypatch, tmp_path) -> None:
@@ -1208,6 +1208,7 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     assert 'window.__HERMES_FEATURES__ = {' in template
     assert 'mobileTabCarousel: {{ \'true\' if mobile_tab_carousel_enabled else \'false\' }}' in template
     assert 'tabActionsMenu: {{ \'true\' if tab_actions_menu_enabled else \'false\' }}' in template
+    assert '<body data-skin="{{ boot_skin }}" data-tab-actions-menu="{{ \'true\' if tab_actions_menu_enabled else \'false\' }}">' in template
     assert 'chat-tabs--mobile-carousel' in chat_tabs_script
     assert 'renderMobileTabOverview' in chat_tabs_script
     assert 'orderedChats: getOrderedChats(),' in chat_tabs_script

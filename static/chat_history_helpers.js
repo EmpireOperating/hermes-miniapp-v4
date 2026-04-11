@@ -144,10 +144,10 @@
     });
   }
 
-  function latestAssistantLikeBody(history, { pending } = {}) {
-    const entries = Array.isArray(history) ? history : [];
-    for (let index = entries.length - 1; index >= 0; index -= 1) {
-      const item = entries[index];
+  function latestAssistantLikeBody(entries, { pending } = {}) {
+    const items = Array.isArray(entries) ? entries : [];
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
       const role = String(item?.role || '').toLowerCase();
       if (role !== 'assistant' && role !== 'hermes') continue;
       if (Boolean(item?.pending) !== Boolean(pending)) continue;
@@ -156,6 +156,15 @@
       return body;
     }
     return '';
+  }
+
+  function hasVisibleAssistantLikeTranscript(entries) {
+    const items = Array.isArray(entries) ? entries : [];
+    return items.some((item) => {
+      const role = String(item?.role || '').toLowerCase();
+      if (role !== 'assistant' && role !== 'hermes') return false;
+      return String(item?.body || '').trim().length > 0;
+    });
   }
 
   function hydratedCompletionMatchesVisibleLocalPending(previousHistory, nextHistory) {
@@ -1023,7 +1032,7 @@
       const activeId = normalizeChatId(activeChatId);
       if (!activeId) return;
 
-      const data = await loadChatHistory(activeId, { activate: true });
+      const data = await loadChatHistory(activeId, { activate: false });
       const latestActiveId = normalizeChatId(getActiveChatId());
       if (latestActiveId !== activeId) return;
       const previousHistory = histories.get(activeId) || [];
@@ -1052,8 +1061,17 @@
         : false;
       const finalHistory = histories.get(activeId) || [];
       const nextRenderSignature = historyRenderSignature(finalHistory);
-      const shouldRenderActiveHistory = previousRenderSignature !== nextRenderSignature || restoredPendingSnapshot;
       upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
+      const currentUnread = Math.max(0, Number(chats.get(activeId)?.unread_count || 0));
+      const shouldForceUnreadTranscriptRender = Boolean(
+        !restoredPendingSnapshot
+        && previousRenderSignature === nextRenderSignature
+        && currentUnread > 0
+        && hasVisibleAssistantLikeTranscript(finalHistory)
+      );
+      const shouldRenderActiveHistory = previousRenderSignature !== nextRenderSignature
+        || restoredPendingSnapshot
+        || shouldForceUnreadTranscriptRender;
       refreshTabNode(activeId);
       if (shouldRenderActiveHistory) {
         renderMessages(activeId, { preserveViewport: true });

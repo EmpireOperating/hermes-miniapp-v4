@@ -42,5 +42,26 @@ test('app.js chat-tab context wrappers keep delegating to chatAdminController', 
       new RegExp(delegatedCall.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
       `${fnName} should delegate to chatAdminController`,
     );
+
+    const definitionMatches = source.match(new RegExp(String.raw`function\s+${fnName}\s*\(`, 'g')) || [];
+    assert.equal(definitionMatches.length, 1, `${fnName} should only be declared once in app.js`);
+  }
+
+  const bindingExpectations = [
+    /tabsEl\?\.addEventListener\?\.\("click",\s*handleTabOverflowTriggerClick,\s*true\)/,
+    /pinnedChatsEl\?\.addEventListener\?\.\("click",\s*handlePinnedOverflowTriggerClick,\s*true\)/,
+    /chatTabContextRename\?\.addEventListener\?\.\("click",\s*\(event\)\s*=>\s*\{\s*void handleTabContextRenameClick\(event\);\s*\}\);/s,
+    /chatTabContextPin\?\.addEventListener\?\.\("click",\s*\(event\)\s*=>\s*\{\s*void handleTabContextPinClick\(event\);\s*\}\);/s,
+    /chatTabContextClose\?\.addEventListener\?\.\("click",\s*\(event\)\s*=>\s*\{\s*void handleTabContextCloseClick\(event\);\s*\}\);/s,
+    /chatTabContextFork\?\.addEventListener\?\.\("click",\s*\(event\)\s*=>\s*\{\s*void handleTabContextForkClick\(event\);\s*\}\);/s,
+    /pinnedChatContextRemove\?\.addEventListener\?\.\("click",\s*\(event\)\s*=>\s*\{\s*void handlePinnedContextRemoveClick\(event\);\s*\}\);/s,
+    /function\s+closeAllChatContextMenus\s*\(\)\s*\{\s*closeChatTabContextMenu\(\);\s*closePinnedChatContextMenu\(\);\s*\}/s,
+    /window\?\.addEventListener\?\.\("blur",\s*closeAllChatContextMenus\);/,
+    /window\?\.addEventListener\?\.\("resize",\s*closeAllChatContextMenus\);/,
+    /window\?\.addEventListener\?\.\("scroll",\s*closeAllChatContextMenus,\s*true\);/,
+  ];
+
+  for (const expectation of bindingExpectations) {
+    assert.match(source, expectation, `app.js should preserve chat context menu binding ${expectation}`);
   }
 });

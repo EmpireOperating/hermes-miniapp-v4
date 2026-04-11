@@ -406,6 +406,23 @@ h1 {
   color: var(--muted);
   outline: none;
 }
+
+@media (hover: none) and (pointer: coarse) {
+  .pinned-chat-item__open:hover,
+  .pinned-chat-item__open:focus-visible,
+  .pinned-chat-item__overflow:hover,
+  .pinned-chat-item__overflow:focus-visible {
+    background: transparent;
+    color: inherit;
+    outline: none;
+  }
+
+  .pinned-chat-item__overflow:hover,
+  .pinned-chat-item__overflow:focus-visible {
+    color: var(--muted);
+  }
+}
+
 body[data-tab-actions-menu="false"] .pinned-chat-item__overflow {
   display: none;
 }

@@ -25,8 +25,17 @@ test('app.js visibility skin wrappers delegate to visibilitySkinController', asy
     ['syncUnreadNotificationPresence', /return\s+visibilitySkinController\.syncUnreadNotificationPresence\(options\);/],
   ];
 
+  const explicitAppWrappers = [
+    ['saveTelegramUnreadNotificationsPreference', /apiPost\('\/api\/preferences\/telegram-unread-notifications'/],
+  ];
+
   for (const [fnName, delegatedCall] of delegateExpectations) {
     const body = extractFunctionBody(source, fnName);
     assert.match(body, delegatedCall, `${fnName} should delegate through visibilitySkinController`);
+  }
+
+  for (const [fnName, delegatedCall] of explicitAppWrappers) {
+    const body = extractFunctionBody(source, fnName);
+    assert.match(body, delegatedCall, `${fnName} should preserve the explicit app-level wrapper logic`);
   }
 });

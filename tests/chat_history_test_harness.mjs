@@ -108,7 +108,13 @@ function buildHarness(overrides = {}) {
     histories,
     chats,
     prefetchingHistories,
-    upsertChat: (chat) => upsertedChats.push(chat),
+    upsertChat: (chat) => {
+      upsertedChats.push(chat);
+      const key = Number(chat?.id || 0);
+      if (key > 0 && chat && typeof chat === 'object') {
+        chats.set(key, { ...(chats.get(key) || {}), ...chat });
+      }
+    },
     setActiveChatMeta: (chatId, options = {}) => activeMeta.push({ chatId: Number(chatId), options }),
     renderMessages: (chatId, options = {}) => renderedMessages.push({ chatId: Number(chatId), options }),
     hasLiveStreamController: () => false,

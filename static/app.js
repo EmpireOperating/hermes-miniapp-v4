@@ -2226,6 +2226,14 @@ async function saveSkinPreference(skin) {
   return visibilitySkinController.saveSkinPreference(skin);
 }
 
+async function saveTelegramUnreadNotificationsPreference(enabled) {
+  const data = await apiPost('/api/preferences/telegram-unread-notifications', {
+    enabled: Boolean(enabled),
+  });
+  setTelegramUnreadNotificationsEnabled(Boolean(data?.telegram_unread_notifications_enabled));
+  return data;
+}
+
 const streamController = streamControllerHelpers.createController({
   parseSseEvent,
   formatLatency,
@@ -2458,26 +2466,6 @@ const keyboardShortcutsController = keyboardShortcutsHelpers.createController({
   removeActiveChat,
 });
 
-function closeChatTabContextMenu() {
-  return chatAdminController.closeChatTabContextMenu();
-}
-
-function openChatTabContextMenu(chatId, clientX, clientY) {
-  return chatAdminController.openChatTabContextMenu(chatId, clientX, clientY);
-}
-
-function handleTabOverflowTriggerClick(event) {
-  return chatAdminController.handleTabOverflowTriggerClick(event);
-}
-
-async function handleTabContextForkClick(event) {
-  return chatAdminController.handleTabContextForkClick(event);
-}
-
-function handleGlobalChatContextMenuDismiss(event) {
-  return chatAdminController.handleGlobalChatContextMenuDismiss(event);
-}
-
 function getOrderedChatIds() {
   return keyboardShortcutsController.getOrderedChatIds();
 }
@@ -2618,18 +2606,36 @@ function installPendingCompletionWatchdog() {
   return startupBindingsController.installPendingCompletionWatchdog();
 }
 
+function closeAllChatContextMenus() {
+  closeChatTabContextMenu();
+  closePinnedChatContextMenu();
+}
+
 tabsEl?.addEventListener?.("click", handleTabOverflowTriggerClick, true);
+pinnedChatsEl?.addEventListener?.("click", handlePinnedOverflowTriggerClick, true);
+chatTabContextRename?.addEventListener?.("click", (event) => {
+  void handleTabContextRenameClick(event);
+});
+chatTabContextPin?.addEventListener?.("click", (event) => {
+  void handleTabContextPinClick(event);
+});
+chatTabContextClose?.addEventListener?.("click", (event) => {
+  void handleTabContextCloseClick(event);
+});
 chatTabContextFork?.addEventListener?.("click", (event) => {
   void handleTabContextForkClick(event);
 });
+pinnedChatContextRemove?.addEventListener?.("click", (event) => {
+  void handlePinnedContextRemoveClick(event);
+});
 document?.addEventListener?.("pointerdown", handleGlobalChatContextMenuDismiss, true);
 document?.addEventListener?.("click", handleGlobalChatContextMenuDismiss, true);
-window?.addEventListener?.("blur", closeChatTabContextMenu);
-window?.addEventListener?.("resize", closeChatTabContextMenu);
-window?.addEventListener?.("scroll", closeChatTabContextMenu, true);
+window?.addEventListener?.("blur", closeAllChatContextMenus);
+window?.addEventListener?.("resize", closeAllChatContextMenus);
+window?.addEventListener?.("scroll", closeAllChatContextMenus, true);
 document?.addEventListener?.("keydown", (event) => {
   if (event.key === "Escape") {
-    closeChatTabContextMenu();
+    closeAllChatContextMenus();
   }
 });
 

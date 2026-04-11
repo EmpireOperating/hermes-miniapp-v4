@@ -125,6 +125,22 @@ def test_remove_chat_response_can_skip_full_state_payload(monkeypatch, tmp_path)
     assert serialized_calls == []
 
 
+def test_chat_history_payload_with_activate_false_preserves_unread_state(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    chat_id = server.store.ensure_default_chat("123")
+    server.store.add_message("123", chat_id, "hermes", "Unread reply")
+    before = server.store.get_chat("123", chat_id)
+    assert before.unread_count == 1
+
+    payload = service.chat_history_payload(user_id="123", chat_id=chat_id, activate=False)
+
+    after = server.store.get_chat("123", chat_id)
+    assert payload["chat"]["unread_count"] == 1
+    assert after.unread_count == 1
+
+
 def test_chat_history_payload_includes_runtime_pending_checkpoint_state(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
     service = _build_service(server)

@@ -363,11 +363,11 @@
     function getOverviewMarkerState(chat) {
       const chatId = Number(chat?.id || 0);
       if (!chatId) return 'idle';
-      if (pendingChats.has(chatId) || Boolean(chat?.pending)) {
-        return 'working';
-      }
       if (hasUnreadBadge(chatId)) {
         return 'unread';
+      }
+      if (pendingChats.has(chatId) || Boolean(chat?.pending)) {
+        return 'working';
       }
       return 'idle';
     }
