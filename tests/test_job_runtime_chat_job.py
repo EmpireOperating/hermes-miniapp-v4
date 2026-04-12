@@ -221,6 +221,32 @@ def test_execute_chat_job_persists_live_pending_tool_and_assistant_checkpoint_st
     assert runtime.store.checkpoint_writes[-1]["pending_assistant"] == ""
 
 
+def test_execute_chat_job_treats_worker_heartbeat_as_progress_meta() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "heartbeat", "session_id": "miniapp-u-9"},
+            {"type": "done", "reply": "ok", "latency_ms": 5},
+        ]
+    )
+    job = {"id": 31, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert any(
+        name == "meta"
+        and payload.get("source") == "worker-heartbeat"
+        and payload.get("detail") == "subprocess worker heartbeat"
+        for _, name, payload in runtime.published
+    )
+    assert any(name == "done" and payload.get("reply") == "ok" for _, name, payload in runtime.published)
+
+
 def test_execute_chat_job_scopes_ambiguous_followup_to_chat_title() -> None:
     runtime = _FakeRuntime(events=[{"type": "done", "reply": "ok", "latency_ms": 5}])
     runtime.store.operator_body = "Do it"

@@ -11,6 +11,7 @@
       virtualMetrics,
       renderedHistoryLength,
       renderedHistoryVirtualized,
+      renderedTranscriptSignatureByChat = null,
       unseenStreamChats,
       chatScrollTop,
       chatStickToBottom,
@@ -30,6 +31,24 @@
       createSpacerElementFn,
       createFragmentFn,
     } = deps || {};
+
+    function transcriptSignature(history) {
+      const entries = Array.isArray(history) ? history : [];
+      return entries.map((item, index) => {
+        const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
+        const fileRefSignature = fileRefs
+          .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
+          .join('|');
+        return [
+          index,
+          String(item?.role || ''),
+          String(item?.body || ''),
+          item?.pending ? 'pending' : 'final',
+          String(item?.created_at || ''),
+          fileRefSignature,
+        ].join('::');
+      }).join('||');
+    }
 
     function isNearBottom(element, threshold = 24) {
       if (!element) return true;
@@ -296,6 +315,7 @@
       setRenderedChatId?.(targetChatId);
       renderedHistoryLength.set(targetChatId, history.length);
       renderedHistoryVirtualized.set(targetChatId, Boolean(shouldVirtualize));
+      renderedTranscriptSignatureByChat?.set?.(Number(targetChatId), transcriptSignature(history));
       if (shouldVirtualize) {
         updateVirtualMetrics(targetChatId);
       }

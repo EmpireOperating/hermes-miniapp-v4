@@ -3,18 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import os
-import queue
 import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Protocol, TYPE_CHECKING
 
 import chat_worker_runner
+from job_runtime_worker_launcher_subprocess import SubprocessStreamLifecycle, SubprocessStreamState
 
 if TYPE_CHECKING:
     from job_runtime import JobRuntime
@@ -37,24 +36,6 @@ class JobWorkerLauncher(Protocol):
 
     def describe(self) -> dict[str, object]:
         ...
-
-
-@dataclass(slots=True)
-class _SubprocessStreamState:
-    saw_error_event: bool = False
-    timed_out: bool = False
-    detached_warm_worker: bool = False
-    saw_attach_ready: bool = False
-    saw_post_run_attach_ready: bool = False
-    saw_done_event: bool = False
-    saw_worker_terminal_success: bool = False
-    reply_chunks: list[str] = field(default_factory=list)
-    last_done_payload: dict[str, object] | None = None
-    return_code: int | None = None
-    stderr_excerpt: str | None = None
-    failure_kind: str | None = None
-    terminal_outcome: str | None = None
-    terminal_error: str | None = None
 
 
 @dataclass(slots=True)
@@ -118,6 +99,7 @@ class SubprocessJobWorkerLauncher:
             "script": str(self.script_path),
             "python": self.python_executable,
             "timeout_seconds": float(self.timeout_seconds),
+            "first_event_timeout_seconds": float(self._first_event_timeout_seconds()),
             "kill_grace_seconds": float(self.kill_grace_seconds),
             "limits": {
                 "memory_mb": int(self.memory_limit_mb),
@@ -142,10 +124,29 @@ class SubprocessJobWorkerLauncher:
         return f" stderr: {excerpt}"
 
     def _subprocess_timeout_message(self, *, stderr_excerpt: str | None = None) -> str:
+        return self._subprocess_timeout_message_for_phase(
+            first_event=False,
+            stderr_excerpt=stderr_excerpt,
+        )
+
+    def _subprocess_timeout_message_for_phase(
+        self,
+        *,
+        first_event: bool,
+        stderr_excerpt: str | None = None,
+    ) -> str:
+        if first_event:
+            return (
+                f"Subprocess worker produced no first event within {self._first_event_timeout_seconds():.1f}s"
+                f"{self._stderr_excerpt_suffix(stderr_excerpt)}"
+            )
         return (
             f"Subprocess worker timed out after {self.timeout_seconds:.1f}s"
             f"{self._stderr_excerpt_suffix(stderr_excerpt)}"
         )
+
+    def _first_event_timeout_seconds(self) -> float:
+        return max(1.0, min(30.0, float(self.timeout_seconds) / 4.0))
 
     def _subprocess_exit_message(self, *, return_code: int | None, stderr_excerpt: str | None = None) -> str:
         base = f"Subprocess worker exited rc={return_code}"
@@ -193,6 +194,23 @@ class SubprocessJobWorkerLauncher:
         if outcome in {"retryable_failure", "timeout_killed"}:
             raise retryable_error_cls(message)
         raise retryable_error_cls(f"Unknown subprocess terminal outcome: {outcome}. {message}")
+
+    def _subprocess_lifecycle(self) -> SubprocessStreamLifecycle:
+        return SubprocessStreamLifecycle(
+            transport=self.transport,
+            timeout_seconds=float(self.timeout_seconds),
+            first_event_timeout_seconds=float(self._first_event_timeout_seconds()),
+            kill_grace_seconds=float(self.kill_grace_seconds),
+            stderr_excerpt_bytes=int(self.stderr_excerpt_bytes),
+            decode_event=self._decode_subprocess_event,
+            stdout_line_queue=self._stdout_line_queue,
+            read_stderr_excerpt=_read_stderr_excerpt,
+            signal_process_tree=_signal_process_tree,
+            classify_limit_breach=_classify_limit_breach,
+            build_timeout_message=self._subprocess_timeout_message_for_phase,
+            build_exit_message=self._subprocess_exit_message,
+            monotonic_now=time.monotonic,
+        )
 
     def _build_stream_payload(
         self,
@@ -294,11 +312,15 @@ class SubprocessJobWorkerLauncher:
             return str(exc).strip() or "Subprocess worker exited before it could accept input."
         return None
 
-    def _stdout_line_queue(self, proc: subprocess.Popen[str]) -> queue.Queue[str | None]:
+    def _stdout_line_queue(self, proc: subprocess.Popen[str]):
+        import queue
+        import threading
+
         line_queue: queue.Queue[str | None] = queue.Queue()
 
         def _reader() -> None:
             try:
+                assert proc.stdout is not None
                 for raw_line in proc.stdout:
                     line_queue.put(raw_line)
             finally:
@@ -320,295 +342,6 @@ class SubprocessJobWorkerLauncher:
         if not isinstance(event, dict):
             return None
         return event
-
-    def _handle_child_spawn_event(
-        self,
-        runtime: "JobRuntime",
-        *,
-        proc: subprocess.Popen[str],
-        session_id: str,
-        event: dict[str, object],
-    ) -> bool:
-        event_type = str(event.get("type") or "")
-        if event_type == "child_spawn":
-            observe_descendant_spawn = getattr(runtime.client, "observe_descendant_spawn", None)
-            if callable(observe_descendant_spawn):
-                observe_descendant_spawn(
-                    transport=str(event.get("transport") or "unknown"),
-                    pid=int(event.get("pid") or 0),
-                    command=list(event.get("command") or []),
-                    session_id=str(event.get("session_id") or session_id or ""),
-                    parent_transport=self.transport,
-                    parent_pid=int(proc.pid),
-                )
-            return True
-        if event_type == "child_finish":
-            observe_descendant_finish = getattr(runtime.client, "observe_descendant_finish", None)
-            if callable(observe_descendant_finish):
-                observe_descendant_finish(
-                    pid=int(event.get("pid") or 0),
-                    outcome=str(event.get("outcome") or "unknown"),
-                    return_code=event.get("return_code"),
-                    signal=event.get("signal"),
-                    parent_transport=self.transport,
-                    parent_pid=int(proc.pid),
-                )
-            return True
-        return False
-
-    def _handle_attach_ready_event(
-        self,
-        runtime: "JobRuntime",
-        *,
-        proc: subprocess.Popen[str],
-        session_id: str,
-        state: _SubprocessStreamState,
-        event: dict[str, object],
-    ) -> bool:
-        if str(event.get("type") or "") != "attach_ready":
-            return False
-        if state.saw_attach_ready and (state.saw_done_event or state.saw_worker_terminal_success):
-            state.saw_post_run_attach_ready = True
-        state.saw_attach_ready = True
-        note_attach_ready = getattr(runtime.client, "note_warm_session_worker_attach_ready", None)
-        if callable(note_attach_ready):
-            note_attach_ready(
-                session_id=str(event.get("session_id") or session_id or ""),
-                owner_pid=int(proc.pid),
-                transport_kind=str(event.get("transport_kind") or "") or None,
-                worker_endpoint=str(event.get("worker_endpoint") or "") or None,
-                resume_token=str(event.get("resume_token") or "") or None,
-                resume_deadline_ms=event.get("resume_deadline_ms"),
-            )
-        if state.saw_post_run_attach_ready:
-            state.detached_warm_worker = True
-            state.failure_kind = "detached_warm_worker"
-            state.return_code = 0
-        return True
-
-    def _handle_worker_terminal_event(
-        self,
-        *,
-        session_id: str,
-        state: _SubprocessStreamState,
-        event: dict[str, object],
-    ) -> dict[str, object] | None:
-        if str(event.get("type") or "") != "worker_terminal":
-            return None
-        state.terminal_outcome = str(event.get("outcome") or "").strip().lower() or None
-        state.terminal_error = str(event.get("error") or "").strip() or None
-        if state.terminal_outcome == "success" and state.saw_attach_ready:
-            state.saw_worker_terminal_success = True
-            if not state.saw_done_event:
-                synthetic_done = {
-                    "type": "done",
-                    "reply": "".join(state.reply_chunks).strip(),
-                    "source": "agent-persistent",
-                    "latency_ms": 0,
-                    "session_id": str(session_id or ""),
-                    "persistent_mode": "warm-detached",
-                    "warm_handoff": True,
-                    "synthetic": True,
-                }
-                if synthetic_done.get("reply"):
-                    state.saw_done_event = True
-                    state.last_done_payload = dict(synthetic_done)
-                    return dict(synthetic_done)
-        return {}
-
-    def _record_stream_event(self, state: _SubprocessStreamState, event: dict[str, object]) -> None:
-        event_type = str(event.get("type") or "")
-        if event_type == "chunk":
-            chunk_text = str(event.get("text") or "")
-            if chunk_text:
-                state.reply_chunks.append(chunk_text)
-        elif event_type == "done":
-            state.saw_done_event = True
-            state.last_done_payload = dict(event)
-        if event_type == "error":
-            state.saw_error_event = True
-
-    def _iter_subprocess_events(
-        self,
-        runtime: "JobRuntime",
-        *,
-        proc: subprocess.Popen[str],
-        session_id: str,
-        state: _SubprocessStreamState,
-    ) -> Iterable[dict[str, object]]:
-        if proc.stdout is None:
-            state.saw_error_event = True
-            state.failure_kind = "stdout_missing"
-            yield {"type": "error", "error": "Subprocess worker produced no stdout stream."}
-            return
-
-        line_queue = self._stdout_line_queue(proc)
-        inactivity_timeout_seconds = max(1.0, float(self.timeout_seconds))
-        last_progress_at = time.monotonic()
-        while True:
-            now = time.monotonic()
-            idle_for = now - last_progress_at
-            remaining = inactivity_timeout_seconds - idle_for
-            if remaining <= 0:
-                state.timed_out = True
-                state.failure_kind = "timeout"
-                break
-            try:
-                raw_line = line_queue.get(timeout=min(0.2, remaining))
-            except queue.Empty:
-                if proc.poll() is not None:
-                    try:
-                        raw_line = line_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                else:
-                    continue
-            if raw_line is None:
-                break
-            event = self._decode_subprocess_event(raw_line)
-            if event is None:
-                continue
-            last_progress_at = time.monotonic()
-            terminal_event = self._handle_worker_terminal_event(session_id=session_id, state=state, event=event)
-            if terminal_event is not None:
-                if terminal_event:
-                    yield terminal_event
-                continue
-            if self._handle_child_spawn_event(runtime, proc=proc, session_id=session_id, event=event):
-                continue
-            if self._handle_attach_ready_event(runtime, proc=proc, session_id=session_id, state=state, event=event):
-                if state.detached_warm_worker:
-                    break
-                continue
-            self._record_stream_event(state, event)
-            yield event
-
-    def _emit_timeout_error(
-        self,
-        *,
-        proc: subprocess.Popen[str],
-        stderr_file,
-        state: _SubprocessStreamState,
-    ) -> dict[str, object] | None:
-        if not state.timed_out:
-            return None
-        try:
-            _signal_process_tree(proc, signal.SIGTERM)
-        except Exception:
-            LOGGER.debug("subprocess_worker_terminate_failed", exc_info=True)
-        state.stderr_excerpt = _read_stderr_excerpt(stderr_file, self.stderr_excerpt_bytes)
-        if state.saw_error_event:
-            return None
-        state.saw_error_event = True
-        return {
-            "type": "error",
-            "error": self._subprocess_timeout_message(stderr_excerpt=state.stderr_excerpt),
-        }
-
-    def _wait_for_subprocess_exit(self, proc: subprocess.Popen[str], *, state: _SubprocessStreamState) -> None:
-        if state.detached_warm_worker:
-            return
-        try:
-            state.return_code = int(proc.wait(timeout=max(0.1, float(self.kill_grace_seconds))))
-        except subprocess.TimeoutExpired:
-            state.timed_out = True
-            state.failure_kind = state.failure_kind or "kill_timeout"
-            try:
-                _signal_process_tree(proc, signal.SIGKILL)
-            except Exception:
-                LOGGER.debug("subprocess_worker_kill_failed", exc_info=True)
-            try:
-                state.return_code = int(proc.wait(timeout=1.0))
-            except Exception:
-                state.return_code = proc.returncode if isinstance(proc.returncode, int) else None
-        except Exception:
-            state.return_code = proc.returncode if isinstance(proc.returncode, int) else None
-
-    def _emit_nonzero_exit_error(self, state: _SubprocessStreamState) -> dict[str, object] | None:
-        if (
-            state.detached_warm_worker
-            or state.return_code in (0, None)
-            or state.saw_error_event
-            or state.saw_done_event
-        ):
-            return None
-        state.failure_kind = state.failure_kind or "nonzero_exit"
-        return {
-            "type": "error",
-            "error": self._subprocess_exit_message(return_code=state.return_code, stderr_excerpt=state.stderr_excerpt),
-        }
-
-    def _finalize_subprocess_stream(
-        self,
-        *,
-        proc: subprocess.Popen[str],
-        stderr_file,
-        state: _SubprocessStreamState,
-        deregister_child_spawn,
-    ) -> None:
-        if proc.poll() is None and not state.detached_warm_worker:
-            try:
-                _signal_process_tree(proc, signal.SIGKILL)
-            except Exception:
-                LOGGER.debug("subprocess_worker_kill_failed_finally", exc_info=True)
-            try:
-                proc.wait(timeout=1)
-            except Exception:
-                LOGGER.debug("subprocess_worker_wait_after_kill_failed", exc_info=True)
-
-        if state.stderr_excerpt is None:
-            state.stderr_excerpt = _read_stderr_excerpt(stderr_file, self.stderr_excerpt_bytes)
-        stderr_file.close()
-
-        if state.return_code is None and isinstance(proc.returncode, int):
-            state.return_code = proc.returncode
-        if state.failure_kind is None:
-            if state.timed_out:
-                state.failure_kind = "timeout"
-            elif state.return_code == 0:
-                state.failure_kind = "completed"
-            else:
-                state.failure_kind = "failed"
-        self._last_failure_kind = state.failure_kind
-        self._last_return_code = state.return_code
-        self._last_stderr_excerpt = state.stderr_excerpt
-        limit_breach, limit_detail = _classify_limit_breach(
-            failure_kind=state.failure_kind,
-            return_code=state.return_code,
-            stderr_excerpt=state.stderr_excerpt,
-            timed_out=state.timed_out,
-        )
-        self._last_limit_breach = limit_breach
-        self._last_limit_breach_detail = limit_detail
-
-        if state.terminal_outcome is None:
-            if state.timed_out:
-                state.terminal_outcome = "timeout_killed"
-            elif (state.return_code == 0 or state.saw_done_event) and not state.saw_error_event:
-                state.terminal_outcome = "success"
-            else:
-                state.terminal_outcome = "retryable_failure"
-        if state.terminal_error is None and state.timed_out:
-            state.terminal_error = self._subprocess_timeout_message(stderr_excerpt=state.stderr_excerpt)
-        if state.terminal_error is None and state.return_code not in (0, None) and not (state.saw_done_event and not state.saw_error_event):
-            state.terminal_error = self._subprocess_exit_message(return_code=state.return_code, stderr_excerpt=state.stderr_excerpt)
-
-        self._last_terminal_outcome = state.terminal_outcome
-        self._last_terminal_error = state.terminal_error
-
-        if callable(deregister_child_spawn):
-            try:
-                if state.detached_warm_worker:
-                    outcome = "detached_warm_worker"
-                else:
-                    outcome = "completed" if state.return_code == 0 and not state.timed_out else f"failed:{state.failure_kind}"
-                deregister_child_spawn(
-                    pid=int(proc.pid),
-                    outcome=f"{self.transport}:{outcome}",
-                    return_code=state.return_code,
-                )
-            except Exception:
-                LOGGER.debug("subprocess_worker_deregister_failed", exc_info=True)
 
     def _stream_events_via_subprocess(
         self,
@@ -651,7 +384,8 @@ class SubprocessJobWorkerLauncher:
             yield {"type": "error", "error": register_error}
             return
 
-        state = _SubprocessStreamState()
+        lifecycle = self._subprocess_lifecycle()
+        state = SubprocessStreamState()
         try:
             payload_error = self._write_payload(proc, payload)
             if payload_error:
@@ -662,14 +396,14 @@ class SubprocessJobWorkerLauncher:
                 yield {"type": "error", "error": payload_error}
                 return
 
-            for event in self._iter_subprocess_events(runtime, proc=proc, session_id=session_id, state=state):
+            for event in lifecycle.iter_events(runtime, proc=proc, session_id=session_id, state=state):
                 yield event
 
-            timeout_event = self._emit_timeout_error(proc=proc, stderr_file=stderr_file, state=state)
+            timeout_event = lifecycle.emit_timeout_error(proc=proc, stderr_file=stderr_file, state=state)
             if timeout_event is not None:
                 yield timeout_event
 
-            self._wait_for_subprocess_exit(proc, state=state)
+            lifecycle.wait_for_exit(proc, state=state)
             if state.stderr_excerpt is None:
                 state.stderr_excerpt = _read_stderr_excerpt(stderr_file, self.stderr_excerpt_bytes)
 
@@ -678,16 +412,24 @@ class SubprocessJobWorkerLauncher:
                 state.terminal_outcome = state.terminal_outcome or "success"
                 state.terminal_error = None
 
-            nonzero_exit_event = self._emit_nonzero_exit_error(state)
+            nonzero_exit_event = lifecycle.emit_nonzero_exit_error(state)
             if nonzero_exit_event is not None:
                 yield nonzero_exit_event
         finally:
-            self._finalize_subprocess_stream(
+            final_report = lifecycle.finalize(
                 proc=proc,
                 stderr_file=stderr_file,
                 state=state,
                 deregister_child_spawn=deregister_child_spawn,
             )
+            self._last_failure_kind = str(final_report.get("failure_kind") or "") or None
+            self._last_return_code = final_report.get("return_code") if isinstance(final_report.get("return_code"), int) else None
+            self._last_stderr_excerpt = str(final_report.get("stderr_excerpt") or "") or None
+            self._last_terminal_outcome = str(final_report.get("terminal_outcome") or "") or None
+            self._last_terminal_error = str(final_report.get("terminal_error") or "") or None
+            self._last_limit_breach = str(final_report.get("limit_breach") or "") or None
+            self._last_limit_breach_detail = str(final_report.get("limit_breach_detail") or "") or None
+
 
 
 def _read_stderr_excerpt(stderr_file, max_bytes: int) -> str | None:

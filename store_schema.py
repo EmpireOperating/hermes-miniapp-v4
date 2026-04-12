@@ -16,245 +16,261 @@ class StoreSchemaMixin:
         return connection
 
     def _init_db(self) -> None:
-        self._startup_recovery_stats = {
+        self._startup_recovery_stats = self._default_startup_recovery_stats()
+        with self._connect() as conn:
+            self._ensure_core_chat_schema(conn)
+            self._ensure_job_schema(conn)
+            self._recover_startup_running_jobs(conn)
+            self._ensure_chat_thread_schema(conn)
+            self._ensure_user_preferences_schema(conn)
+            self._ensure_chat_job_schema(conn)
+            self._ensure_runtime_checkpoint_schema(conn)
+            self._ensure_auth_session_schema(conn)
+            self._migrate_legacy_history(conn)
+
+    def _default_startup_recovery_stats(self) -> dict[str, int]:
+        return {
             "startup_recovered_running_total": 0,
             "startup_clamped_exhausted_total": 0,
         }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_preferences (
-                    user_id TEXT PRIMARY KEY,
-                    skin TEXT NOT NULL DEFAULT 'terminal',
-                    active_chat_id INTEGER,
-                    telegram_unread_notifications_enabled INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chat_threads (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    parent_chat_id INTEGER,
-                    is_archived INTEGER NOT NULL DEFAULT 0,
-                    is_pinned INTEGER NOT NULL DEFAULT 0,
-                    last_read_message_id INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(parent_chat_id) REFERENCES chat_threads(id) ON DELETE SET NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chat_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    chat_id INTEGER NOT NULL,
-                    role TEXT NOT NULL,
-                    body TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(chat_id) REFERENCES chat_threads(id) ON DELETE CASCADE
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_threads_user_id ON chat_threads(user_id, id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_messages_user_chat ON chat_messages(user_id, chat_id, id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_messages_user_chat_role ON chat_messages(user_id, chat_id, role, id)"
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chat_jobs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    chat_id INTEGER NOT NULL,
-                    operator_message_id INTEGER NOT NULL,
-                    status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'error', 'dead')),
-                    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-                    max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
-                    next_attempt_at TEXT,
-                    error TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    started_at TEXT,
-                    finished_at TEXT,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chat_job_dead_letters (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    job_id INTEGER NOT NULL,
-                    user_id TEXT NOT NULL,
-                    chat_id INTEGER NOT NULL,
-                    operator_message_id INTEGER NOT NULL,
-                    attempts INTEGER NOT NULL,
-                    max_attempts INTEGER NOT NULL,
-                    error TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                """
-                DELETE FROM chat_job_dead_letters
-                WHERE id NOT IN (
-                    SELECT MIN(id)
-                    FROM chat_job_dead_letters
-                    GROUP BY job_id
-                )
-                """
-            )
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_job_dead_letters_job_id ON chat_job_dead_letters(job_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_jobs_status_created ON chat_jobs(status, created_at, id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_jobs_user_chat_status ON chat_jobs(user_id, chat_id, status, id)"
-            )
-            # Crash-recovery for orphaned running jobs. Do not silently requeue them on
-            # process restart: that can resurrect wedged mid-stream work into endless
-            # resume loops with stale pending state. Instead, mark them dead once and let
-            # the user explicitly retry from the thread.
-            running_recovery_row = conn.execute(
-                """
-                SELECT COUNT(*) AS running_total
-                FROM chat_jobs
-                WHERE status = 'running'
-                """
-            ).fetchone()
-            running_total = int((running_recovery_row["running_total"] if running_recovery_row else 0) or 0)
-            clamped_total = 0
-            conn.execute(
-                """
-                INSERT INTO chat_job_dead_letters (
-                    job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
-                )
-                SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts,
-                       'interrupted_by_service_restart'
-                FROM chat_jobs
-                WHERE status = 'running'
-                  AND NOT EXISTS (
-                      SELECT 1 FROM chat_job_dead_letters dl WHERE dl.job_id = chat_jobs.id
-                  )
-                """
-            )
-            conn.execute(
-                """
-                UPDATE chat_jobs
-                SET status = 'dead',
-                    error = 'interrupted_by_service_restart',
-                    finished_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE status = 'running'
-                """
-            )
-            self._startup_recovery_stats = {
-                "startup_recovered_running_total": running_total,
-                "startup_clamped_exhausted_total": clamped_total,
-            }
-            columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
-            }
-            if "is_archived" not in columns:
-                conn.execute(
-                    "ALTER TABLE chat_threads ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0"
-                )
-            if "is_pinned" not in columns:
-                conn.execute(
-                    "ALTER TABLE chat_threads ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0"
-                )
-            if "parent_chat_id" not in columns:
-                conn.execute("ALTER TABLE chat_threads ADD COLUMN parent_chat_id INTEGER")
 
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_threads_user_flags ON chat_threads(user_id, is_archived, is_pinned, id)"
+    def _ensure_core_chat_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id TEXT PRIMARY KEY,
+                skin TEXT NOT NULL DEFAULT 'terminal',
+                active_chat_id INTEGER,
+                telegram_unread_notifications_enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_threads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                parent_chat_id INTEGER,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                last_read_message_id INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(parent_chat_id) REFERENCES chat_threads(id) ON DELETE SET NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(chat_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_threads_user_id ON chat_threads(user_id, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_user_chat ON chat_messages(user_id, chat_id, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_user_chat_role ON chat_messages(user_id, chat_id, role, id)"
+        )
+
+    def _ensure_job_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                operator_message_id INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'error', 'dead')),
+                attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+                max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
+                next_attempt_at TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                finished_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_job_dead_letters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                operator_message_id INTEGER NOT NULL,
+                attempts INTEGER NOT NULL,
+                max_attempts INTEGER NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            DELETE FROM chat_job_dead_letters
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM chat_job_dead_letters
+                GROUP BY job_id
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_job_dead_letters_job_id ON chat_job_dead_letters(job_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_jobs_status_created ON chat_jobs(status, created_at, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_jobs_user_chat_status ON chat_jobs(user_id, chat_id, status, id)"
+        )
+
+    def _recover_startup_running_jobs(self, conn: sqlite3.Connection) -> None:
+        # Crash-recovery for orphaned running jobs. Do not silently requeue them on
+        # process restart: that can resurrect wedged mid-stream work into endless
+        # resume loops with stale pending state. Instead, mark them dead once and let
+        # the user explicitly retry from the thread.
+        running_recovery_row = conn.execute(
+            """
+            SELECT COUNT(*) AS running_total
+            FROM chat_jobs
+            WHERE status = 'running'
+            """
+        ).fetchone()
+        running_total = int((running_recovery_row["running_total"] if running_recovery_row else 0) or 0)
+        conn.execute(
+            """
+            INSERT INTO chat_job_dead_letters (
+                job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
+            )
+            SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts,
+                   'interrupted_by_service_restart'
+            FROM chat_jobs
+            WHERE status = 'running'
+              AND NOT EXISTS (
+                  SELECT 1 FROM chat_job_dead_letters dl WHERE dl.job_id = chat_jobs.id
+              )
+            """
+        )
+        conn.execute(
+            """
+            UPDATE chat_jobs
+            SET status = 'dead',
+                error = 'interrupted_by_service_restart',
+                finished_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'running'
+            """
+        )
+        self._startup_recovery_stats = {
+            "startup_recovered_running_total": running_total,
+            "startup_clamped_exhausted_total": 0,
+        }
+
+    def _ensure_chat_thread_schema(self, conn: sqlite3.Connection) -> None:
+        columns = self._table_columns(conn, "chat_threads")
+        if "is_archived" not in columns:
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_threads_parent ON chat_threads(user_id, parent_chat_id, id)"
+                "ALTER TABLE chat_threads ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0"
+            )
+        if "is_pinned" not in columns:
+            conn.execute(
+                "ALTER TABLE chat_threads ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0"
+            )
+        if "parent_chat_id" not in columns:
+            conn.execute("ALTER TABLE chat_threads ADD COLUMN parent_chat_id INTEGER")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_threads_user_flags ON chat_threads(user_id, is_archived, is_pinned, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_threads_parent ON chat_threads(user_id, parent_chat_id, id)"
+        )
+
+    def _ensure_user_preferences_schema(self, conn: sqlite3.Connection) -> None:
+        user_pref_columns = self._table_columns(conn, "user_preferences")
+        if "active_chat_id" not in user_pref_columns:
+            conn.execute("ALTER TABLE user_preferences ADD COLUMN active_chat_id INTEGER")
+        if "telegram_unread_notifications_enabled" not in user_pref_columns:
+            conn.execute(
+                "ALTER TABLE user_preferences ADD COLUMN telegram_unread_notifications_enabled INTEGER NOT NULL DEFAULT 0"
             )
 
-            user_pref_columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(user_preferences)").fetchall()
-            }
-            if "active_chat_id" not in user_pref_columns:
-                conn.execute("ALTER TABLE user_preferences ADD COLUMN active_chat_id INTEGER")
-            if "telegram_unread_notifications_enabled" not in user_pref_columns:
-                conn.execute(
-                    "ALTER TABLE user_preferences ADD COLUMN telegram_unread_notifications_enabled INTEGER NOT NULL DEFAULT 0"
-                )
+    def _ensure_chat_job_schema(self, conn: sqlite3.Connection) -> None:
+        chat_job_columns = self._table_columns(conn, "chat_jobs")
+        if "attempts" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        if "max_attempts" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 4")
+        if "next_attempt_at" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN next_attempt_at TEXT")
 
-            chat_job_columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(chat_jobs)").fetchall()
-            }
-            if "attempts" not in chat_job_columns:
-                conn.execute("ALTER TABLE chat_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
-            if "max_attempts" not in chat_job_columns:
-                conn.execute("ALTER TABLE chat_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 4")
-            if "next_attempt_at" not in chat_job_columns:
-                conn.execute("ALTER TABLE chat_jobs ADD COLUMN next_attempt_at TEXT")
+        self._migrate_chat_jobs_invariants(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_jobs_next_attempt ON chat_jobs(status, next_attempt_at, id)"
+        )
 
-            self._migrate_chat_jobs_invariants(conn)
+    def _ensure_runtime_checkpoint_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_checkpoints (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                history_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runtime_checkpoints_user_chat ON runtime_checkpoints(user_id, chat_id)"
+        )
 
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chat_jobs_next_attempt ON chat_jobs(status, next_attempt_at, id)"
+    def _ensure_auth_session_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                nonce_hash TEXT NOT NULL,
+                display_name TEXT,
+                username TEXT,
+                expires_at INTEGER NOT NULL,
+                revoked_at INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS runtime_checkpoints (
-                    session_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    chat_id INTEGER NOT NULL,
-                    history_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_runtime_checkpoints_user_chat ON runtime_checkpoints(user_id, chat_id)"
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS auth_sessions (
-                    session_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    nonce_hash TEXT NOT NULL,
-                    display_name TEXT,
-                    username TEXT,
-                    expires_at INTEGER NOT NULL,
-                    revoked_at INTEGER,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id, expires_at)"
-            )
-            auth_session_columns = {
-                str(row["name"])
-                for row in conn.execute("PRAGMA table_info(auth_sessions)").fetchall()
-            }
-            if "display_name" not in auth_session_columns:
-                conn.execute("ALTER TABLE auth_sessions ADD COLUMN display_name TEXT")
-            if "username" not in auth_session_columns:
-                conn.execute("ALTER TABLE auth_sessions ADD COLUMN username TEXT")
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id, expires_at)"
+        )
+        auth_session_columns = self._table_columns(conn, "auth_sessions")
+        if "display_name" not in auth_session_columns:
+            conn.execute("ALTER TABLE auth_sessions ADD COLUMN display_name TEXT")
+        if "username" not in auth_session_columns:
+            conn.execute("ALTER TABLE auth_sessions ADD COLUMN username TEXT")
 
-            self._migrate_legacy_history(conn)
+    def _table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
+        return {
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
 
     def _migrate_chat_jobs_invariants(self, conn: sqlite3.Connection) -> None:
         table_sql_row = conn.execute(
@@ -435,10 +451,7 @@ class StoreSchemaMixin:
     def startup_recovery_stats(self) -> dict[str, int]:
         stats = getattr(self, "_startup_recovery_stats", None)
         if not isinstance(stats, dict):
-            return {
-                "startup_recovered_running_total": 0,
-                "startup_clamped_exhausted_total": 0,
-            }
+            return self._default_startup_recovery_stats()
         return {
             "startup_recovered_running_total": int(stats.get("startup_recovered_running_total", 0) or 0),
             "startup_clamped_exhausted_total": int(stats.get("startup_clamped_exhausted_total", 0) or 0),

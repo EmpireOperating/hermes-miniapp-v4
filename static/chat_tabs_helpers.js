@@ -1,55 +1,13 @@
 (function initHermesMiniappChatTabs(globalScope) {
-  function createController(deps) {
-    const {
-      localStorageRef,
-      pinnedChatsCollapsedStorageKey,
-      pinnedChatsAutoCollapseThreshold,
-      chats,
-      pinnedChats,
-      histories,
-      pendingChats,
-      streamPhaseByChat,
-      unseenStreamChats,
-      prefetchingHistories,
-      chatScrollTop,
-      chatStickToBottom,
-      virtualizationRanges,
-      virtualMetrics,
-      renderedHistoryLength,
-      renderedHistoryVirtualized,
-      tabNodes,
-      tabTemplate,
-      tabsEl,
-      hiddenUnreadLeftEl,
-      hiddenUnreadRightEl,
-      hiddenUnreadSummaryEl,
-      tabOverviewEl,
-      mobileTabCarouselEnabled = false,
-      getIsMobileCarouselViewport = () => false,
-      mobileTabCarouselInteractionGraceMs = 1200,
-      getCurrentUnreadCount = null,
-      openChat = async () => {},
-      clearChatStreamState,
-      chatUiHelpers,
-      pinnedChatsWrap,
-      pinnedChatsEl,
-      pinnedChatsCountEl,
-      pinnedChatsToggleButton,
-      pinChatButton,
-      documentObject,
-      renderTraceLog,
-      getActiveChatId,
-      getPinnedChatsCollapsed,
-      setPinnedChatsCollapsedState,
-      getHasPinnedChatsCollapsePreference,
-      setHasPinnedChatsCollapsePreference,
-      resumeCooldownUntilByChat,
-      reconnectResumeBlockedChats,
-      resumeCycleCountByChat,
-      maxAutoResumeCyclesPerChat = 6,
-      nowFn = () => Date.now(),
-    } = deps;
-
+  function createReconnectResumeController({
+    reconnectResumeBlockedChats,
+    pendingChats,
+    chats,
+    resumeCycleCountByChat,
+    maxAutoResumeCyclesPerChat,
+    resumeCooldownUntilByChat,
+    nowFn,
+  }) {
     function toPositiveInt(value) {
       const parsed = Number(value);
       return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -103,16 +61,6 @@
       return Boolean(key && reconnectResumeBlockedChats?.has?.(key));
     }
 
-    function normalizeChat(chat, { forcePinned = null } = {}) {
-      return {
-        ...chat,
-        id: Number(chat.id),
-        unread_count: Number(chat.unread_count || 0),
-        pending: Boolean(chat.pending),
-        is_pinned: forcePinned == null ? Boolean(chat.is_pinned) : Boolean(forcePinned),
-      };
-    }
-
     function applyResumeCooldownPendingSuppression(chatId) {
       const key = Number(chatId);
       const cooldownUntil = Number(resumeCooldownUntilByChat?.get?.(key) || 0);
@@ -139,6 +87,47 @@
       for (const blockedChatId of reconnectResumeBlockedChats || []) {
         suppressBlockedChatPending?.(blockedChatId);
       }
+    }
+
+    return {
+      suppressBlockedChatPending,
+      clearReconnectResumeBlock,
+      resetReconnectResumeBudget,
+      consumeReconnectResumeBudget,
+      blockReconnectResume,
+      isReconnectResumeBlocked,
+      applyResumeCooldownPendingSuppression,
+      reapplyResumeCooldownPendingSuppression,
+    };
+  }
+
+  function createChatStateController({
+    chats,
+    pinnedChats,
+    histories,
+    pendingChats,
+    streamPhaseByChat,
+    unseenStreamChats,
+    prefetchingHistories,
+    chatScrollTop,
+    chatStickToBottom,
+    virtualizationRanges,
+    virtualMetrics,
+    renderedHistoryLength,
+    renderedHistoryVirtualized,
+    tabNodes,
+    clearChatStreamState,
+    applyResumeCooldownPendingSuppression,
+    reapplyResumeCooldownPendingSuppression,
+  }) {
+    function normalizeChat(chat, { forcePinned = null } = {}) {
+      return {
+        ...chat,
+        id: Number(chat.id),
+        unread_count: Number(chat.unread_count || 0),
+        pending: Boolean(chat.pending),
+        is_pinned: forcePinned == null ? Boolean(chat.is_pinned) : Boolean(forcePinned),
+      };
     }
 
     let orderedChatIds = [];
@@ -239,68 +228,44 @@
       return nextChats;
     }
 
-    function getOrCreateTabNode(chatId) {
-      return chatUiHelpers.getOrCreateTabNode({
-        tabNodes,
-        tabTemplate,
-        chatId,
-      });
-    }
-
-    function getTabBadgeState(chat) {
-      const badgeState = chatUiHelpers.getTabBadgeState({
-        chat,
-        pendingChats,
-        unseenStreamChats,
-      });
-      const chatId = Number(chat?.id || 0);
-      if (chatId > 0) {
-        const unread = Math.max(0, Number(chat?.unread_count || 0));
-        const pending = pendingChats.has(chatId) || Boolean(chat?.pending);
-        const unseen = unseenStreamChats.has(chatId);
-        if (pending || unread > 0 || unseen || chatId === Number(getActiveChatId())) {
-          renderTraceLog?.('tab-badge-state', {
-            chatId,
-            activeChatId: Number(getActiveChatId()),
-            pending,
-            unread,
-            unseen,
-            badgeText: String(badgeState?.text || ''),
-            badgeClasses: Array.isArray(badgeState?.classes) ? badgeState.classes.slice() : [],
-          });
-        }
-      }
-      return badgeState;
-    }
-
-    function applyTabBadgeState(badge, badgeState) {
-      chatUiHelpers.applyTabBadgeState({ badge, badgeState });
-    }
-
-    function applyTabNodeState(node, chat) {
-      chatUiHelpers.applyTabNodeState({
-        node,
-        chat,
-        activeChatId: getActiveChatId(),
-        pendingChats,
-        unseenStreamChats,
-        getTabBadgeState,
-        applyTabBadgeState,
-      });
-    }
-
-    function removeMissingTabNodes(nextIds) {
-      chatUiHelpers.removeMissingTabNodes({ tabNodes, nextIds });
-    }
-
-    function isMobileTabCarouselActive() {
-      return Boolean(mobileTabCarouselEnabled && getIsMobileCarouselViewport?.());
-    }
-
     function getOrderedChats() {
       return syncOrderedChatIds()
         .map((chatId) => chats.get(chatId))
         .filter(Boolean);
+    }
+
+    return {
+      normalizeChat,
+      moveChatToEnd,
+      upsertChat,
+      syncPinnedChats,
+      syncChats,
+      getOrderedChats,
+    };
+  }
+
+  function createTabPresentationController({
+    mobileTabCarouselEnabled,
+    getIsMobileCarouselViewport,
+    tabOverviewEl,
+    documentObject,
+    getActiveChatId,
+    nowFn,
+    mobileTabCarouselInteractionGraceMs,
+    tabsEl,
+    hiddenUnreadLeftEl,
+    hiddenUnreadRightEl,
+    hiddenUnreadSummaryEl,
+    getOrderedChats,
+    getCurrentUnreadCount,
+    chats,
+    unseenStreamChats,
+    pendingChats,
+    openChat,
+    tabNodes,
+  }) {
+    function isMobileTabCarouselActive() {
+      return Boolean(mobileTabCarouselEnabled && getIsMobileCarouselViewport?.());
     }
 
     function hiddenUnreadSummaryText(count) {
@@ -455,22 +420,45 @@
       syncMobileTabOverviewAlignment();
     }
 
-    function getRelativeChatDirection(previousChatId, nextChatId, orderedChats = getOrderedChats()) {
-      const previousKey = Number(previousChatId) || 0;
-      const nextKey = Number(nextChatId) || 0;
-      if (!previousKey || !nextKey || previousKey === nextKey) return '';
-      const previousIndex = orderedChats.findIndex((chat) => Number(chat?.id) === previousKey);
-      const nextIndex = orderedChats.findIndex((chat) => Number(chat?.id) === nextKey);
-      if (previousIndex >= 0 && nextIndex >= 0) {
-        if (nextIndex < previousIndex) return 'left';
-        if (nextIndex > previousIndex) return 'right';
-        return '';
+    function syncHiddenUnreadDirectionEl(element, { visible = false, direction = '' } = {}) {
+      if (!element) return;
+      element.hidden = !visible;
+      element.textContent = visible ? '•' : '';
+      element.setAttribute('aria-hidden', 'true');
+      if (direction) {
+        element.setAttribute('data-direction', direction);
+      } else {
+        element.setAttribute('data-direction', '');
       }
-      if (nextKey < previousKey) return 'left';
-      if (nextKey > previousKey) return 'right';
-      return '';
     }
 
+    return {
+      isMobileTabCarouselActive,
+      hiddenUnreadSummaryText,
+      hasUnreadBadge,
+      countHiddenUnreadChats,
+      getHiddenUnreadDirections,
+      getOverviewMarkerState,
+      getOverviewMarkerText,
+      getOverviewMarkerAriaLabel,
+      renderMobileTabOverview,
+      syncHiddenUnreadDirectionEl,
+    };
+  }
+
+  function createMobileCarouselController({
+    isMobileTabCarouselActive,
+    getActiveChatId,
+    nowFn,
+    mobileTabCarouselInteractionGraceMs,
+    tabsEl,
+    hiddenUnreadLeftEl,
+    hiddenUnreadRightEl,
+    hiddenUnreadSummaryEl,
+    tabNodes,
+    renderMobileTabOverview,
+    syncHiddenUnreadDirectionEl,
+  }) {
     let lastMobileCarouselInteractionAt = null;
     let lastCenteredCarouselChatId = null;
     let wasMobileTabCarouselActive = false;
@@ -492,18 +480,6 @@
       const now = Number(nowFn()) || 0;
       const graceMs = Math.max(0, Number(mobileTabCarouselInteractionGraceMs) || 0);
       return graceMs > 0 && (now - lastMobileCarouselInteractionAt) < graceMs;
-    }
-
-    function syncHiddenUnreadDirectionEl(element, { visible = false, direction = '' } = {}) {
-      if (!element) return;
-      element.hidden = !visible;
-      element.textContent = visible ? '•' : '';
-      element.setAttribute('aria-hidden', 'true');
-      if (direction) {
-        element.setAttribute('data-direction', direction);
-      } else {
-        element.setAttribute('data-direction', '');
-      }
     }
 
     function syncMobileTabCarouselUi() {
@@ -548,58 +524,69 @@
       lastCenteredCarouselChatId = activeChatId;
     }
 
-    function renderTabs() {
-      chatUiHelpers.renderTabs({
-        chats,
-        tabNodes,
-        tabTemplate,
-        tabsEl,
-        orderedChats: getOrderedChats(),
-        applyTabNodeState,
-      });
-      syncMobileTabCarouselUi();
-      centerActiveTabInCarousel();
+    function resetManualScrollState() {
+      mobileCarouselManualScrollActiveChatId = null;
+      lastMobileCarouselInteractionAt = null;
     }
 
-    function refreshTabNode(chatId) {
-      const key = Number(chatId);
-      const chat = chats.get(key);
-      renderTraceLog?.('tab-refresh-request', {
-        chatId: key,
-        activeChatId: Number(getActiveChatId()),
-        pendingLocal: pendingChats.has(key),
-        pendingServer: Boolean(chat?.pending),
-        unread: Math.max(0, Number(chat?.unread_count || 0)),
-        unseen: unseenStreamChats.has(key),
+    return {
+      noteMobileCarouselInteraction,
+      shouldRespectMobileCarouselManualScroll,
+      syncMobileTabCarouselUi,
+      centerActiveTabInCarousel,
+      resetManualScrollState,
+    };
+  }
+
+  function createPinnedChatsController({
+    chatUiHelpers,
+    documentObject,
+    pinChatButton,
+    chats,
+    getActiveChatId,
+    pinnedChats,
+    pinnedCollapseController,
+    pinnedChatsWrap,
+    pinnedChatsEl,
+  }) {
+    function renderPinnedChats() {
+      pinnedCollapseController.maybeAutoCollapsePinnedChats();
+      chatUiHelpers.renderPinnedChats({
+        pinnedChatsWrap,
+        pinnedChatsEl,
+        pinnedChats,
+        doc: documentObject,
       });
-      chatUiHelpers.refreshTabNode({
-        chatId,
-        tabNodes,
-        chats,
-        applyTabNodeState,
-      });
-      syncMobileTabCarouselUi();
+      pinnedCollapseController.syncPinnedChatsCollapseUi();
     }
 
-    function syncActiveTabSelection(previousChatId, nextChatId) {
-      const previousKey = Number(previousChatId) || null;
-      const nextKey = Number(nextChatId) || null;
-      const didActiveChatChange = previousKey !== nextKey;
-      chatUiHelpers.syncActiveTabSelection({
-        previousChatId,
-        nextChatId,
-        tabNodes,
-        renderTabs,
-        refreshTabNode,
-      });
-      if (didActiveChatChange) {
-        mobileCarouselManualScrollActiveChatId = null;
-        lastMobileCarouselInteractionAt = null;
-      }
-      syncMobileTabCarouselUi();
-      centerActiveTabInCarousel({ force: didActiveChatChange });
+    function syncPinChatButton() {
+      if (!pinChatButton) return;
+      const chat = chats.get(Number(getActiveChatId()));
+      pinChatButton.textContent = chat?.is_pinned ? 'Unpin chat' : 'Pin chat';
     }
 
+    return {
+      renderPinnedChats,
+      syncPinChatButton,
+    };
+  }
+
+
+  function createPinnedCollapseController({
+    localStorageRef,
+    pinnedChatsCollapsedStorageKey,
+    getPinnedChatsCollapsed,
+    setPinnedChatsCollapsedState,
+    getHasPinnedChatsCollapsePreference,
+    setHasPinnedChatsCollapsePreference,
+    pinnedChats,
+    pinnedChatsAutoCollapseThreshold,
+    pinnedChatsToggleButton,
+    pinnedChatsWrap,
+    pinnedChatsEl,
+    pinnedChatsCountEl,
+  }) {
     function getStoredPinnedChatsCollapsed() {
       try {
         const value = localStorageRef.getItem(pinnedChatsCollapsedStorageKey);
@@ -648,12 +635,6 @@
       pinnedChatsToggleButton.textContent = pinnedChatsCollapsed ? 'Show' : 'Hide';
     }
 
-    function maybeAutoCollapsePinnedChats() {
-      if (getHasPinnedChatsCollapsePreference()) return;
-      if (pinnedChats.size < pinnedChatsAutoCollapseThreshold) return;
-      setPinnedChatsCollapsed(true, { persist: false });
-    }
-
     function setPinnedChatsCollapsed(nextCollapsed, { persist = true } = {}) {
       setPinnedChatsCollapsedState(Boolean(nextCollapsed));
       syncPinnedChatsCollapseUi();
@@ -663,27 +644,400 @@
       }
     }
 
+    function maybeAutoCollapsePinnedChats() {
+      if (getHasPinnedChatsCollapsePreference()) return;
+      if (pinnedChats.size < pinnedChatsAutoCollapseThreshold) return;
+      setPinnedChatsCollapsed(true, { persist: false });
+    }
+
     function togglePinnedChatsCollapsed() {
       if (pinnedChats.size === 0) return;
       setPinnedChatsCollapsed(!getPinnedChatsCollapsed());
     }
 
-    function renderPinnedChats() {
-      maybeAutoCollapsePinnedChats();
-      chatUiHelpers.renderPinnedChats({
-        pinnedChatsWrap,
-        pinnedChatsEl,
-        pinnedChats,
-        doc: documentObject,
+    return {
+      getStoredPinnedChatsCollapsed,
+      persistPinnedChatsCollapsed,
+      syncPinnedChatsCollapseUi,
+      maybeAutoCollapsePinnedChats,
+      setPinnedChatsCollapsed,
+      togglePinnedChatsCollapsed,
+    };
+  }
+
+  function createTabNodeController({
+    chatUiHelpers,
+    tabNodes,
+    tabTemplate,
+    pendingChats,
+    unseenStreamChats,
+    getActiveChatId,
+    renderTraceLog,
+    chats,
+  }) {
+    function getOrCreateTabNode(chatId) {
+      return chatUiHelpers.getOrCreateTabNode({
+        tabNodes,
+        tabTemplate,
+        chatId,
       });
-      syncPinnedChatsCollapseUi();
     }
 
-    function syncPinChatButton() {
-      if (!pinChatButton) return;
-      const chat = chats.get(Number(getActiveChatId()));
-      pinChatButton.textContent = chat?.is_pinned ? 'Unpin chat' : 'Pin chat';
+    function getTabBadgeState(chat) {
+      const badgeState = chatUiHelpers.getTabBadgeState({
+        chat,
+        pendingChats,
+        unseenStreamChats,
+      });
+      const chatId = Number(chat?.id || 0);
+      if (chatId > 0) {
+        const unread = Math.max(0, Number(chat?.unread_count || 0));
+        const pending = pendingChats.has(chatId) || Boolean(chat?.pending);
+        const unseen = unseenStreamChats.has(chatId);
+        if (pending || unread > 0 || unseen || chatId === Number(getActiveChatId())) {
+          renderTraceLog?.('tab-badge-state', {
+            chatId,
+            activeChatId: Number(getActiveChatId()),
+            pending,
+            unread,
+            unseen,
+            badgeText: String(badgeState?.text || ''),
+            badgeClasses: Array.isArray(badgeState?.classes) ? badgeState.classes.slice() : [],
+          });
+        }
+      }
+      return badgeState;
     }
+
+    function applyTabBadgeState(badge, badgeState) {
+      chatUiHelpers.applyTabBadgeState({ badge, badgeState });
+    }
+
+    function applyTabNodeState(node, chat) {
+      chatUiHelpers.applyTabNodeState({
+        node,
+        chat,
+        activeChatId: getActiveChatId(),
+        pendingChats,
+        unseenStreamChats,
+        getTabBadgeState,
+        applyTabBadgeState,
+      });
+    }
+
+    function removeMissingTabNodes(nextIds) {
+      chatUiHelpers.removeMissingTabNodes({ tabNodes, nextIds });
+    }
+
+    return {
+      getOrCreateTabNode,
+      getTabBadgeState,
+      applyTabBadgeState,
+      applyTabNodeState,
+      removeMissingTabNodes,
+    };
+  }
+
+  function createTabsRenderController({
+    chatUiHelpers,
+    chats,
+    tabNodes,
+    tabTemplate,
+    tabsEl,
+    getOrderedChats,
+    applyTabNodeState,
+    syncMobileTabCarouselUi,
+    centerActiveTabInCarousel,
+    getActiveChatId,
+    renderTraceLog,
+    pendingChats,
+    unseenStreamChats,
+    resetManualScrollState,
+  }) {
+    function renderTabs() {
+      chatUiHelpers.renderTabs({
+        chats,
+        tabNodes,
+        tabTemplate,
+        tabsEl,
+        orderedChats: getOrderedChats(),
+        applyTabNodeState,
+      });
+      syncMobileTabCarouselUi();
+      centerActiveTabInCarousel();
+    }
+
+    function refreshTabNode(chatId) {
+      const key = Number(chatId);
+      const chat = chats.get(key);
+      renderTraceLog?.('tab-refresh-request', {
+        chatId: key,
+        activeChatId: Number(getActiveChatId()),
+        pendingLocal: pendingChats.has(key),
+        pendingServer: Boolean(chat?.pending),
+        unread: Math.max(0, Number(chat?.unread_count || 0)),
+        unseen: unseenStreamChats.has(key),
+      });
+      chatUiHelpers.refreshTabNode({
+        chatId,
+        tabNodes,
+        chats,
+        applyTabNodeState,
+      });
+      syncMobileTabCarouselUi();
+    }
+
+    function syncActiveTabSelection(previousChatId, nextChatId) {
+      const previousKey = Number(previousChatId) || null;
+      const nextKey = Number(nextChatId) || null;
+      const didActiveChatChange = previousKey !== nextKey;
+      chatUiHelpers.syncActiveTabSelection({
+        previousChatId,
+        nextChatId,
+        tabNodes,
+        renderTabs,
+        refreshTabNode,
+      });
+      if (didActiveChatChange) {
+        resetManualScrollState();
+      }
+      syncMobileTabCarouselUi();
+      centerActiveTabInCarousel({ force: didActiveChatChange });
+    }
+
+    return {
+      renderTabs,
+      refreshTabNode,
+      syncActiveTabSelection,
+    };
+  }
+
+  function createController(deps) {
+    const {
+      localStorageRef,
+      pinnedChatsCollapsedStorageKey,
+      pinnedChatsAutoCollapseThreshold,
+      chats,
+      pinnedChats,
+      histories,
+      pendingChats,
+      streamPhaseByChat,
+      unseenStreamChats,
+      prefetchingHistories,
+      chatScrollTop,
+      chatStickToBottom,
+      virtualizationRanges,
+      virtualMetrics,
+      renderedHistoryLength,
+      renderedHistoryVirtualized,
+      tabNodes,
+      tabTemplate,
+      tabsEl,
+      hiddenUnreadLeftEl,
+      hiddenUnreadRightEl,
+      hiddenUnreadSummaryEl,
+      tabOverviewEl,
+      mobileTabCarouselEnabled = false,
+      getIsMobileCarouselViewport = () => false,
+      mobileTabCarouselInteractionGraceMs = 1200,
+      getCurrentUnreadCount = null,
+      openChat = async () => {},
+      clearChatStreamState,
+      chatUiHelpers,
+      pinnedChatsWrap,
+      pinnedChatsEl,
+      pinnedChatsCountEl,
+      pinnedChatsToggleButton,
+      pinChatButton,
+      documentObject,
+      renderTraceLog,
+      getActiveChatId,
+      getPinnedChatsCollapsed,
+      setPinnedChatsCollapsedState,
+      getHasPinnedChatsCollapsePreference,
+      setHasPinnedChatsCollapsePreference,
+      resumeCooldownUntilByChat,
+      reconnectResumeBlockedChats,
+      resumeCycleCountByChat,
+      maxAutoResumeCyclesPerChat = 6,
+      nowFn = () => Date.now(),
+    } = deps;
+
+    const reconnectResumeController = createReconnectResumeController({
+      reconnectResumeBlockedChats,
+      pendingChats,
+      chats,
+      resumeCycleCountByChat,
+      maxAutoResumeCyclesPerChat,
+      resumeCooldownUntilByChat,
+      nowFn,
+    });
+    const {
+      suppressBlockedChatPending,
+      clearReconnectResumeBlock,
+      resetReconnectResumeBudget,
+      consumeReconnectResumeBudget,
+      blockReconnectResume,
+      isReconnectResumeBlocked,
+      applyResumeCooldownPendingSuppression,
+      reapplyResumeCooldownPendingSuppression,
+    } = reconnectResumeController;
+
+    const chatStateController = createChatStateController({
+      chats,
+      pinnedChats,
+      histories,
+      pendingChats,
+      streamPhaseByChat,
+      unseenStreamChats,
+      prefetchingHistories,
+      chatScrollTop,
+      chatStickToBottom,
+      virtualizationRanges,
+      virtualMetrics,
+      renderedHistoryLength,
+      renderedHistoryVirtualized,
+      tabNodes,
+      clearChatStreamState,
+      applyResumeCooldownPendingSuppression,
+      reapplyResumeCooldownPendingSuppression,
+    });
+    const {
+      normalizeChat,
+      moveChatToEnd,
+      upsertChat,
+      syncPinnedChats,
+      syncChats,
+      getOrderedChats,
+    } = chatStateController;
+
+    const tabNodeController = createTabNodeController({
+      chatUiHelpers,
+      tabNodes,
+      tabTemplate,
+      pendingChats,
+      unseenStreamChats,
+      getActiveChatId,
+      renderTraceLog,
+      chats,
+    });
+    const {
+      getOrCreateTabNode,
+      getTabBadgeState,
+      applyTabBadgeState,
+      applyTabNodeState,
+      removeMissingTabNodes,
+    } = tabNodeController;
+
+    const tabPresentationController = createTabPresentationController({
+      mobileTabCarouselEnabled,
+      getIsMobileCarouselViewport,
+      tabOverviewEl,
+      documentObject,
+      getActiveChatId,
+      nowFn,
+      mobileTabCarouselInteractionGraceMs,
+      tabsEl,
+      hiddenUnreadLeftEl,
+      hiddenUnreadRightEl,
+      hiddenUnreadSummaryEl,
+      getOrderedChats,
+      getCurrentUnreadCount,
+      chats,
+      unseenStreamChats,
+      pendingChats,
+      openChat,
+      tabNodes,
+    });
+    const {
+      isMobileTabCarouselActive,
+      hiddenUnreadSummaryText,
+      hasUnreadBadge,
+      countHiddenUnreadChats,
+      getHiddenUnreadDirections,
+      getOverviewMarkerState,
+      getOverviewMarkerText,
+      getOverviewMarkerAriaLabel,
+      renderMobileTabOverview,
+      syncHiddenUnreadDirectionEl,
+    } = tabPresentationController;
+
+    const mobileCarouselController = createMobileCarouselController({
+      isMobileTabCarouselActive,
+      getActiveChatId,
+      nowFn,
+      mobileTabCarouselInteractionGraceMs,
+      tabsEl,
+      hiddenUnreadLeftEl,
+      hiddenUnreadRightEl,
+      hiddenUnreadSummaryEl,
+      tabNodes,
+      renderMobileTabOverview,
+      syncHiddenUnreadDirectionEl,
+    });
+    const {
+      noteMobileCarouselInteraction,
+      shouldRespectMobileCarouselManualScroll,
+      syncMobileTabCarouselUi,
+      centerActiveTabInCarousel,
+      resetManualScrollState,
+    } = mobileCarouselController;
+
+    const tabsRenderController = createTabsRenderController({
+      chatUiHelpers,
+      chats,
+      tabNodes,
+      tabTemplate,
+      tabsEl,
+      getOrderedChats,
+      applyTabNodeState,
+      syncMobileTabCarouselUi,
+      centerActiveTabInCarousel,
+      getActiveChatId,
+      renderTraceLog,
+      pendingChats,
+      unseenStreamChats,
+      resetManualScrollState,
+    });
+    const { renderTabs, refreshTabNode, syncActiveTabSelection } = tabsRenderController;
+
+    const pinnedCollapseController = createPinnedCollapseController({
+      localStorageRef,
+      pinnedChatsCollapsedStorageKey,
+      getPinnedChatsCollapsed,
+      setPinnedChatsCollapsedState,
+      getHasPinnedChatsCollapsePreference,
+      setHasPinnedChatsCollapsePreference,
+      pinnedChats,
+      pinnedChatsAutoCollapseThreshold,
+      pinnedChatsToggleButton,
+      pinnedChatsWrap,
+      pinnedChatsEl,
+      pinnedChatsCountEl,
+    });
+    const {
+      getStoredPinnedChatsCollapsed,
+      persistPinnedChatsCollapsed,
+      syncPinnedChatsCollapseUi,
+      maybeAutoCollapsePinnedChats,
+      setPinnedChatsCollapsed,
+      togglePinnedChatsCollapsed,
+    } = pinnedCollapseController;
+
+    const pinnedChatsController = createPinnedChatsController({
+      chatUiHelpers,
+      documentObject,
+      pinChatButton,
+      chats,
+      getActiveChatId,
+      pinnedChats,
+      pinnedCollapseController,
+      syncPinnedChatsCollapseUi,
+      maybeAutoCollapsePinnedChats,
+      pinnedChatsWrap,
+      pinnedChatsEl,
+    });
+    const { renderPinnedChats, syncPinChatButton } = pinnedChatsController;
 
     return {
       normalizeChat,
@@ -730,7 +1084,17 @@
     };
   }
 
-  const api = { createController };
+  const api = {
+    createController,
+    createReconnectResumeController,
+    createChatStateController,
+    createTabNodeController,
+    createTabsRenderController,
+    createTabPresentationController,
+    createMobileCarouselController,
+    createPinnedCollapseController,
+    createPinnedChatsController,
+  };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
   }

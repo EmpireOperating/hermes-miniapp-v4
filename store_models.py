@@ -27,6 +27,7 @@ class ChatThread:
     title: str
     parent_chat_id: int | None
     unread_count: int
+    newest_unread_message_id: int
     pending: bool
     is_pinned: bool
     updated_at: str

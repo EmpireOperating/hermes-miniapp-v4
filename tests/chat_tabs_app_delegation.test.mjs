@@ -16,6 +16,26 @@ function extractFunctionBody(source, functionName) {
 
 test('app.js chat tab wrappers delegate to chatTabsController', async () => {
   const source = await readFile(appJsUrl, 'utf8');
+  assert.match(
+    source,
+    /function\s+createChatTabsControllerDeps\s*\([\s\S]*?return\s+\{[\s\S]*?resumeCycleCountByChat,[\s\S]*?nowFn,[\s\S]*?\};\s*\}/m,
+    'app.js should build chat tab controller deps through a dedicated composition helper',
+  );
+  assert.match(
+    source,
+    /function\s+createChatTabsController\s*\(\)\s*\{[\s\S]*?chatTabsHelpers\.createController\(createChatTabsControllerDeps\(\{[\s\S]*?mobileTabCarouselEnabled:\s*mobileTabCarouselFeatureEnabled,[\s\S]*?\}\)\);[\s\S]*?\}/m,
+    'app.js should instantiate chatTabsController through createChatTabsController(...)',
+  );
+  assert.match(
+    source,
+    /const\s+chatTabsController\s*=\s*createChatTabsController\(\);/m,
+    'app.js should allocate chatTabsController through the createChatTabsController wrapper',
+  );
+  assert.match(
+    source,
+    /applyStoredPinnedChatsCollapsePreference\(\{[\s\S]*?chatTabsController,[\s\S]*?setPinnedChatsCollapsed:[\s\S]*?setHasPinnedChatsCollapsePreference:[\s\S]*?\}\);/m,
+    'app.js should apply stored pinned-collapse state through a dedicated helper',
+  );
   const delegateExpectations = [
     ['suppressBlockedChatPending', /return\s+chatTabsController\.suppressBlockedChatPending\(chatId\);/],
     ['clearReconnectResumeBlock', /return\s+chatTabsController\.clearReconnectResumeBlock\(chatId\);/],

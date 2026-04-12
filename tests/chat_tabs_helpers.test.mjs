@@ -278,6 +278,17 @@ test('syncPinnedChats normalizes values and enforces pinned state', () => {
   assert.equal(h.pinnedChats.get(4).pending, false);
 });
 
+test('chat tabs helper exposes split controller factories', () => {
+  assert.equal(typeof chatTabsHelpers.createReconnectResumeController, 'function');
+  assert.equal(typeof chatTabsHelpers.createChatStateController, 'function');
+  assert.equal(typeof chatTabsHelpers.createTabNodeController, 'function');
+  assert.equal(typeof chatTabsHelpers.createTabsRenderController, 'function');
+  assert.equal(typeof chatTabsHelpers.createTabPresentationController, 'function');
+  assert.equal(typeof chatTabsHelpers.createMobileCarouselController, 'function');
+  assert.equal(typeof chatTabsHelpers.createPinnedCollapseController, 'function');
+  assert.equal(typeof chatTabsHelpers.createPinnedChatsController, 'function');
+});
+
 test('syncChats removes stale chat state and upserts next chats', () => {
   const h = createHarness();
 

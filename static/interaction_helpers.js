@@ -202,10 +202,69 @@
     });
   }
 
+  function focusPromptAfterQuoteInsertion({
+    promptEl,
+    ensureComposerVisible = () => {},
+    mobileQuoteMode = false,
+    documentObject = (typeof document !== "undefined" ? document : null),
+    windowObject = (typeof window !== "undefined" ? window : null),
+  } = {}) {
+    if (!promptEl || promptEl.disabled) return;
+
+    const focusPrompt = ({ allowForce = false } = {}) => {
+      if (!allowForce) {
+        if (!promptEl || promptEl.disabled) return false;
+        if (documentObject?.querySelector?.('dialog[open]')) return false;
+        const activeEl = documentObject?.activeElement;
+        if (activeEl && activeEl !== promptEl && activeEl !== documentObject?.body && activeEl !== documentObject?.documentElement) {
+          return false;
+        }
+      }
+
+      ensureComposerVisible({ smooth: false });
+      if (mobileQuoteMode) {
+        promptEl.focus?.();
+      } else {
+        try {
+          promptEl.focus?.({ preventScroll: true });
+        } catch {
+          promptEl.focus?.();
+        }
+      }
+      const caret = Math.min(
+        Number.isInteger(promptEl.selectionEnd) ? promptEl.selectionEnd : String(promptEl.value || '').length,
+        String(promptEl.value || '').length,
+      );
+      try {
+        promptEl.setSelectionRange?.(caret, caret);
+      } catch {
+        // Some mobile webviews reject setSelectionRange during keyboard transitions.
+      }
+      ensureComposerVisible({ smooth: false });
+      return documentObject?.activeElement === promptEl || !documentObject;
+    };
+
+    focusPrompt({ allowForce: true });
+    const raf = windowObject?.requestAnimationFrame
+      || globalScope.requestAnimationFrame
+      || null;
+    if (typeof raf === 'function') {
+      raf(() => focusPrompt());
+    }
+    const scheduleTimeout = windowObject?.setTimeout?.bind(windowObject)
+      || globalScope.setTimeout
+      || null;
+    scheduleTimeout?.(() => focusPrompt(), 0);
+    scheduleTimeout?.(() => focusPrompt(), 180);
+  }
+
   function applyQuoteIntoPrompt(text, {
     promptEl,
     formatQuoteBlockFn = formatQuoteBlock,
     ensureComposerVisible = () => {},
+    mobileQuoteMode = false,
+    documentObject = (typeof document !== "undefined" ? document : null),
+    windowObject = (typeof window !== "undefined" ? window : null),
   } = {}) {
     if (!promptEl) return;
     const quoteBlock = formatQuoteBlockFn(text);
@@ -219,7 +278,6 @@
     promptEl.value = next.slice(0, maxLen);
 
     const nextCaret = Math.min(cursorStart + quoteBlock.length, promptEl.value.length);
-    promptEl.focus?.();
     promptEl.setSelectionRange?.(nextCaret, nextCaret);
     try {
       const eventCtor = promptEl.ownerDocument?.defaultView?.Event
@@ -230,7 +288,13 @@
     } catch {
       // Non-fatal: draft sync listeners may be unavailable in tests.
     }
-    ensureComposerVisible({ smooth: false });
+    focusPromptAfterQuoteInsertion({
+      promptEl,
+      ensureComposerVisible,
+      mobileQuoteMode,
+      documentObject,
+      windowObject,
+    });
   }
 
   function resolveSelectionAnchorElement(nodes, { textNodeType = (typeof Node !== "undefined" ? Node.TEXT_NODE : 3) } = {}) {

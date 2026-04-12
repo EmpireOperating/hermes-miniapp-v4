@@ -28,39 +28,21 @@ const filePreviewAllowedRoots = filePreviewFeatureEnabled && Array.isArray(fileP
   : [];
 const sharedUtils = window.HermesMiniappSharedUtils;
 
-function createDeferredControllerHelper(globalKey) {
-  const existing = window[globalKey];
-  if (existing) {
-    return existing;
-  }
+function createDeferredGlobalFacade({ windowObject = window, globalKey, facadeApi, handleSet = null }) {
+  Object.defineProperty(windowObject, globalKey, {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return facadeApi;
+    },
+    set(value) {
+      handleSet?.(value);
+    },
+  });
+}
 
-  let resolvedApi = null;
-  const controllerStates = new Set();
-  const shouldReplayMethod = (prop) => /^(bind|install|sync|start|set|save|handle)/.test(String(prop || ''));
-
-  function attachResolvedController(state) {
-    if (!state || state.realController || !resolvedApi || typeof resolvedApi.createController !== 'function') {
-      return;
-    }
-    try {
-      state.realController = resolvedApi.createController(state.deps) || null;
-    } catch {
-      state.realController = null;
-      return;
-    }
-    if (!state.realController || !Array.isArray(state.pendingCalls) || !state.pendingCalls.length) {
-      return;
-    }
-    const pendingCalls = state.pendingCalls.splice(0);
-    pendingCalls.forEach(({ prop, args }) => {
-      const method = state.realController?.[prop];
-      if (typeof method === 'function') {
-        method(...args);
-      }
-    });
-  }
-
-  const facadeApi = {
+function createDeferredControllerFacadeApi({ controllerStates, attachResolvedController, shouldReplayMethod }) {
+  return {
     createController(deps) {
       const state = {
         deps,
@@ -89,14 +71,51 @@ function createDeferredControllerHelper(globalKey) {
       });
     },
   };
+}
 
-  Object.defineProperty(window, globalKey, {
-    configurable: true,
-    enumerable: true,
-    get() {
-      return facadeApi;
-    },
-    set(value) {
+function createDeferredControllerHelper(globalKey) {
+  const existing = window[globalKey];
+  if (existing) {
+    return existing;
+  }
+
+  let resolvedApi = null;
+  const controllerStates = new Set();
+  const shouldReplayMethod = (prop) => /^(bind|bootstrap|install|sync|start|set|save|handle|report)/.test(String(prop || ''));
+
+  function attachResolvedController(state) {
+    if (!state || state.realController || !resolvedApi || typeof resolvedApi.createController !== 'function') {
+      return;
+    }
+    try {
+      state.realController = resolvedApi.createController(state.deps) || null;
+    } catch {
+      state.realController = null;
+      return;
+    }
+    if (!state.realController || !Array.isArray(state.pendingCalls) || !state.pendingCalls.length) {
+      return;
+    }
+    const pendingCalls = state.pendingCalls.splice(0);
+    pendingCalls.forEach(({ prop, args }) => {
+      const method = state.realController?.[prop];
+      if (typeof method === 'function') {
+        method(...args);
+      }
+    });
+  }
+
+  const facadeApi = createDeferredControllerFacadeApi({
+    controllerStates,
+    attachResolvedController,
+    shouldReplayMethod,
+  });
+
+  createDeferredGlobalFacade({
+    windowObject: window,
+    globalKey,
+    facadeApi,
+    handleSet(value) {
       resolvedApi = value;
       controllerStates.forEach((state) => attachResolvedController(state));
     },
@@ -137,13 +156,11 @@ function createDeferredApiHelper(globalKey, fallbackApi = {}) {
     },
   });
 
-  Object.defineProperty(window, globalKey, {
-    configurable: true,
-    enumerable: true,
-    get() {
-      return facadeApi;
-    },
-    set(value) {
+  createDeferredGlobalFacade({
+    windowObject: window,
+    globalKey,
+    facadeApi,
+    handleSet(value) {
       resolvedApi = value;
       if (value && typeof value.createController === 'function') {
         window[deferredControllerGlobalKey] = value;
@@ -251,44 +268,62 @@ const deferredInteractionFallbacks = {
   },
   showSelectionQuoteAction() {},
   syncSelectionQuoteAction() {},
+};
+
+function requireHelperGlobal(windowObject, globalKey) {
+  const value = windowObject?.[globalKey];
+  if (!value) {
+    throw new Error(`${globalKey} is required before app.js`);
+  }
+  return value;
+}
+
+function createDeferredHelperRegistry({
+  windowObject = window,
+  interactionFallbacks = deferredInteractionFallbacks,
+} = {}) {
+  return {
+    bootstrapAuthHelpers: requireHelperGlobal(windowObject, 'HermesMiniappBootstrapAuth'),
+    chatHistoryHelpers: requireHelperGlobal(windowObject, 'HermesMiniappChatHistory'),
+    chatUiHelpers: requireHelperGlobal(windowObject, 'HermesMiniappChatUI'),
+    chatTabsHelpers: requireHelperGlobal(windowObject, 'HermesMiniappChatTabs'),
+    composerStateHelpers: requireHelperGlobal(windowObject, 'HermesMiniappComposerState'),
+    chatAdminHelpers: windowObject.HermesMiniappChatAdmin || createDeferredControllerHelper('HermesMiniappChatAdmin'),
+    messageActionsHelpers: windowObject.HermesMiniappMessageActions || createDeferredControllerHelper('HermesMiniappMessageActions'),
+    keyboardShortcutsHelpers: windowObject.HermesMiniappKeyboardShortcuts || createDeferredControllerHelper('HermesMiniappKeyboardShortcuts'),
+    interactionHelpers: windowObject.HermesMiniappInteraction || createDeferredApiHelper('HermesMiniappInteraction', interactionFallbacks),
+    shellUiHelpers: windowObject.HermesMiniappShellUI || createDeferredControllerHelper('HermesMiniappShellUI'),
+    composerViewportHelpers: windowObject.HermesMiniappComposerViewport || createDeferredControllerHelper('HermesMiniappComposerViewport'),
+    visibilitySkinHelpers: windowObject.HermesMiniappVisibilitySkin || createDeferredControllerHelper('HermesMiniappVisibilitySkin'),
+    startupBindingsHelpers: windowObject.HermesMiniappStartupBindings || createDeferredApiHelper('HermesMiniappStartupBindings'),
+    renderTraceHelpers: windowObject.HermesMiniappRenderTrace || createDeferredRenderTraceApiHelper('HermesMiniappRenderTrace'),
+    filePreviewHelpers: windowObject.HermesMiniappFilePreview || createDeferredControllerHelper('HermesMiniappFilePreview'),
+  };
 }
 
 if (!sharedUtils) {
   throw new Error("HermesMiniappSharedUtils is required before app.js");
 }
-const bootstrapAuthHelpers = window.HermesMiniappBootstrapAuth;
-if (!bootstrapAuthHelpers) {
-  throw new Error("HermesMiniappBootstrapAuth is required before app.js");
-}
-const chatHistoryHelpers = window.HermesMiniappChatHistory;
-if (!chatHistoryHelpers) {
-  throw new Error("HermesMiniappChatHistory is required before app.js");
-}
-const chatAdminHelpers = window.HermesMiniappChatAdmin || createDeferredControllerHelper('HermesMiniappChatAdmin');
-const chatUiHelpers = window.HermesMiniappChatUI;
-if (!chatUiHelpers) {
-  throw new Error("HermesMiniappChatUI is required before app.js");
-}
-const chatTabsHelpers = window.HermesMiniappChatTabs;
-if (!chatTabsHelpers) {
-  throw new Error("HermesMiniappChatTabs is required before app.js");
-}
-const messageActionsHelpers = window.HermesMiniappMessageActions || createDeferredControllerHelper('HermesMiniappMessageActions');
-const composerStateHelpers = window.HermesMiniappComposerState;
-if (!composerStateHelpers) {
-  throw new Error("HermesMiniappComposerState is required before app.js");
-}
-const keyboardShortcutsHelpers = window.HermesMiniappKeyboardShortcuts || createDeferredControllerHelper('HermesMiniappKeyboardShortcuts');
-const interactionHelpers = window.HermesMiniappInteraction || createDeferredApiHelper('HermesMiniappInteraction', deferredInteractionFallbacks);
-const shellUiHelpers = window.HermesMiniappShellUI || createDeferredControllerHelper('HermesMiniappShellUI');
-const composerViewportHelpers = window.HermesMiniappComposerViewport || createDeferredControllerHelper('HermesMiniappComposerViewport');
-const visibilitySkinHelpers = window.HermesMiniappVisibilitySkin || createDeferredControllerHelper('HermesMiniappVisibilitySkin');
-const startupBindingsHelpers = window.HermesMiniappStartupBindings;
-if (!startupBindingsHelpers) {
-  throw new Error("HermesMiniappStartupBindings is required before app.js");
-}
-const renderTraceHelpers = window.HermesMiniappRenderTrace || createDeferredRenderTraceApiHelper('HermesMiniappRenderTrace');
-const filePreviewHelpers = window.HermesMiniappFilePreview || createDeferredControllerHelper('HermesMiniappFilePreview');
+const {
+  bootstrapAuthHelpers,
+  chatHistoryHelpers,
+  chatUiHelpers,
+  chatTabsHelpers,
+  composerStateHelpers,
+  chatAdminHelpers,
+  messageActionsHelpers,
+  keyboardShortcutsHelpers,
+  interactionHelpers,
+  shellUiHelpers,
+  composerViewportHelpers,
+  visibilitySkinHelpers,
+  startupBindingsHelpers,
+  renderTraceHelpers,
+  filePreviewHelpers,
+} = createDeferredHelperRegistry({
+  windowObject: window,
+  interactionFallbacks: deferredInteractionFallbacks,
+});
 const { parseSseEvent, formatMessageTime, nowStamp, formatLatency, escapeHtml, cleanDisplayText, copyTextToClipboard } = sharedUtils;
 const authStatus = document.getElementById("auth-status");
 const streamStatus = document.getElementById("stream-status");
@@ -433,6 +468,7 @@ const virtualizationRanges = new Map();
 const virtualMetrics = new Map();
 const renderedHistoryLength = new Map();
 const renderedHistoryVirtualized = new Map();
+const renderedTranscriptSignatureByChat = new Map();
 const unseenStreamChats = new Set();
 const markReadInFlight = new Set();
 const VIRTUALIZE_THRESHOLD = 220;
@@ -452,7 +488,116 @@ const {
 
 let chatHistoryController = null;
 
-const chatTabsController = chatTabsHelpers.createController({
+function createChatTabsControllerDeps({
+  localStorageRef,
+  pinnedChatsCollapsedStorageKey,
+  pinnedChatsAutoCollapseThreshold,
+  chats,
+  pinnedChats,
+  histories,
+  pendingChats,
+  streamPhaseByChat,
+  unseenStreamChats,
+  prefetchingHistories,
+  chatScrollTop,
+  chatStickToBottom,
+  virtualizationRanges,
+  virtualMetrics,
+  renderedHistoryLength,
+  renderedHistoryVirtualized,
+  tabNodes,
+  tabTemplate,
+  tabsEl,
+  hiddenUnreadLeftEl,
+  hiddenUnreadRightEl,
+  hiddenUnreadSummaryEl,
+  tabOverviewEl,
+  mobileTabCarouselEnabled,
+  getIsMobileCarouselViewport,
+  getCurrentUnreadCount,
+  openChat,
+  clearChatStreamState,
+  chatUiHelpers,
+  pinnedChatsWrap,
+  pinnedChatsEl,
+  pinnedChatsCountEl,
+  pinnedChatsToggleButton,
+  pinChatButton,
+  documentObject,
+  renderTraceLog,
+  getActiveChatId,
+  getPinnedChatsCollapsed,
+  setPinnedChatsCollapsedState,
+  getHasPinnedChatsCollapsePreference,
+  setHasPinnedChatsCollapsePreference,
+  resumeCooldownUntilByChat,
+  reconnectResumeBlockedChats,
+  resumeCycleCountByChat,
+  maxAutoResumeCyclesPerChat,
+  nowFn,
+}) {
+  return {
+    localStorageRef,
+    pinnedChatsCollapsedStorageKey,
+    pinnedChatsAutoCollapseThreshold,
+    chats,
+    pinnedChats,
+    histories,
+    pendingChats,
+    streamPhaseByChat,
+    unseenStreamChats,
+    prefetchingHistories,
+    chatScrollTop,
+    chatStickToBottom,
+    virtualizationRanges,
+    virtualMetrics,
+    renderedHistoryLength,
+    renderedHistoryVirtualized,
+    tabNodes,
+    tabTemplate,
+    tabsEl,
+    hiddenUnreadLeftEl,
+    hiddenUnreadRightEl,
+    hiddenUnreadSummaryEl,
+    tabOverviewEl,
+    mobileTabCarouselEnabled,
+    getIsMobileCarouselViewport,
+    getCurrentUnreadCount,
+    openChat,
+    clearChatStreamState,
+    chatUiHelpers,
+    pinnedChatsWrap,
+    pinnedChatsEl,
+    pinnedChatsCountEl,
+    pinnedChatsToggleButton,
+    pinChatButton,
+    documentObject,
+    renderTraceLog,
+    getActiveChatId,
+    getPinnedChatsCollapsed,
+    setPinnedChatsCollapsedState,
+    getHasPinnedChatsCollapsePreference,
+    setHasPinnedChatsCollapsePreference,
+    resumeCooldownUntilByChat,
+    reconnectResumeBlockedChats,
+    resumeCycleCountByChat,
+    maxAutoResumeCyclesPerChat,
+    nowFn,
+  };
+}
+
+function applyStoredPinnedChatsCollapsePreference({
+  chatTabsController,
+  setPinnedChatsCollapsed,
+  setHasPinnedChatsCollapsePreference,
+}) {
+  const storedPinnedChatsCollapsed = chatTabsController.getStoredPinnedChatsCollapsed();
+  setPinnedChatsCollapsed(storedPinnedChatsCollapsed ?? false);
+  setHasPinnedChatsCollapsePreference(storedPinnedChatsCollapsed !== null);
+}
+
+function createChatTabsController() {
+  return chatTabsHelpers.createController(createChatTabsControllerDeps({
   localStorageRef: localStorage,
   pinnedChatsCollapsedStorageKey: PINNED_CHATS_COLLAPSED_STORAGE_KEY,
   pinnedChatsAutoCollapseThreshold: PINNED_CHATS_AUTO_COLLAPSE_THRESHOLD,
@@ -508,11 +653,20 @@ const chatTabsController = chatTabsHelpers.createController({
   resumeCycleCountByChat,
   maxAutoResumeCyclesPerChat: MAX_AUTO_RESUME_CYCLES_PER_CHAT,
   nowFn: () => Date.now(),
-});
+}));
+}
 
-const storedPinnedChatsCollapsed = chatTabsController.getStoredPinnedChatsCollapsed();
-pinnedChatsCollapsed = storedPinnedChatsCollapsed ?? false;
-hasPinnedChatsCollapsePreference = storedPinnedChatsCollapsed !== null;
+const chatTabsController = createChatTabsController();
+
+applyStoredPinnedChatsCollapsePreference({
+  chatTabsController,
+  setPinnedChatsCollapsed: (value) => {
+    pinnedChatsCollapsed = Boolean(value);
+  },
+  setHasPinnedChatsCollapsePreference: (value) => {
+    hasPinnedChatsCollapsePreference = Boolean(value);
+  },
+});
 
 // Back-compat aliases kept for tests and grep-based checks.
 let selectionQuoteSyncTimer = null;
@@ -569,13 +723,29 @@ const LATENCY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const LATENCY_STORAGE_KEY = "hermes_miniapp_latency_by_chat_v1";
 let renderTraceDebugEnabled = false;
 
-const latencyPersistenceController = runtimeHelpers.createLatencyPersistenceController({
-  localStorageRef: localStorage,
-  storageKey: LATENCY_STORAGE_KEY,
-  latencyByChat,
-  maxAgeMs: LATENCY_MAX_AGE_MS,
-});
-latencyPersistenceController.loadLatencyByChatFromStorage();
+let latencyPersistenceControllerInstance = null;
+let latencyStorageLoaded = false;
+
+function getLatencyPersistenceController() {
+  if (!latencyPersistenceControllerInstance) {
+    latencyPersistenceControllerInstance = runtimeHelpers.createLatencyPersistenceController({
+      localStorageRef: localStorage,
+      storageKey: LATENCY_STORAGE_KEY,
+      latencyByChat,
+      maxAgeMs: LATENCY_MAX_AGE_MS,
+    });
+  }
+  return latencyPersistenceControllerInstance;
+}
+
+function ensureLatencyStorageLoaded() {
+  const controller = getLatencyPersistenceController();
+  if (!latencyStorageLoaded) {
+    controller.loadLatencyByChatFromStorage();
+    latencyStorageLoaded = true;
+  }
+  return controller;
+}
 
 const streamPersistenceController = streamStateHelpers.createPersistenceController({
   localStorageRef: localStorage,
@@ -614,92 +784,161 @@ const toolTraceController = streamControllerHelpers.createToolTraceController({
   persistPendingStreamSnapshot,
 });
 
-const renderTraceController = renderTraceHelpers.createController({
-  windowObject: window,
-  localStorageRef: localStorage,
-  renderTraceBadge,
-  storageKey: RENDER_TRACE_STORAGE_KEY,
-  getRenderTraceDebugEnabled: () => renderTraceDebugEnabled,
-  setRenderTraceDebugEnabledState: (value) => {
-    renderTraceDebugEnabled = Boolean(value);
+let renderTraceControllerInstance = null;
+let messageRenderControllerInstance = null;
+let historyRenderControllerInstance = null;
+let filePreviewControllerInstance = null;
+
+function getRenderTraceController() {
+  if (!renderTraceControllerInstance) {
+    renderTraceControllerInstance = renderTraceHelpers.createController({
+      windowObject: window,
+      localStorageRef: localStorage,
+      renderTraceBadge,
+      storageKey: RENDER_TRACE_STORAGE_KEY,
+      getRenderTraceDebugEnabled: () => renderTraceDebugEnabled,
+      setRenderTraceDebugEnabledState: (value) => {
+        renderTraceDebugEnabled = Boolean(value);
+      },
+      consoleRef: console,
+    });
+    renderTraceDebugEnabled = renderTraceControllerInstance.resolveRenderTraceDebugEnabled();
+  }
+  return renderTraceControllerInstance;
+}
+
+function getMessageRenderController() {
+  if (!messageRenderControllerInstance) {
+    messageRenderControllerInstance = renderTraceHelpers.createMessageRenderController({
+      cleanDisplayTextFn: cleanDisplayText,
+      escapeHtmlFn: escapeHtml,
+      getAllowedRoots: () => filePreviewAllowedRoots,
+      documentObject: document,
+      windowObject: window,
+      getOperatorDisplayName: () => operatorDisplayName,
+      formatMessageTimeFn: formatMessageTime,
+      templateElement: template,
+      getHistory: (chatId) => histories.get(Number(chatId)) || [],
+      getMessagesContainer: () => messagesEl,
+      getActiveChatId: () => activeChatId,
+      getStreamPhase,
+      isPatchPhaseAllowedFn: isPatchPhaseAllowed,
+      renderTraceLogFn: renderTraceLog,
+      preserveViewportDuringUiMutationFn: preserveViewportDuringUiMutation,
+    });
+  }
+  return messageRenderControllerInstance;
+}
+
+function createHistoryRenderControllerDeps({
+  getActiveChatId,
+  getRenderedChatId,
+  setRenderedChatId,
+} = {}) {
+  return {
+    messagesEl,
+    jumpLatestButton,
+    jumpLastStartButton,
+    histories,
+    virtualizationRanges,
+    virtualMetrics,
+    renderedHistoryLength,
+    renderedHistoryVirtualized,
+    renderedTranscriptSignatureByChat,
+    unseenStreamChats,
+    chatScrollTop,
+    chatStickToBottom,
+    historyCountEl: historyCount,
+    virtualizeThreshold: VIRTUALIZE_THRESHOLD,
+    estimatedMessageHeight: ESTIMATED_MESSAGE_HEIGHT,
+    virtualOverscan: VIRTUAL_OVERSCAN,
+    getActiveChatId,
+    getRenderedChatId,
+    setRenderedChatId,
+    refreshTabNode,
+    clearSelectionQuoteStateFn: clearSelectionQuoteState,
+    syncLiveToolStreamForChatFn: syncLiveToolStreamForChat,
+    appendMessagesFn: appendMessages,
+    shouldUseAppendOnlyRenderFn: runtimeHelpers.shouldUseAppendOnlyRender,
+    renderTraceLogFn: renderTraceLog,
+    createSpacerElementFn: () => document.createElement("div"),
+    createFragmentFn: () => document.createDocumentFragment(),
+  };
+}
+
+function getHistoryRenderController() {
+  if (!historyRenderControllerInstance) {
+    historyRenderControllerInstance = renderTraceHelpers.createHistoryRenderController(createHistoryRenderControllerDeps({
+      getActiveChatId: () => Number(activeChatId),
+      getRenderedChatId: () => Number(renderedChatId),
+      setRenderedChatId: (value) => {
+        renderedChatId = value;
+      },
+    }));
+  }
+  return historyRenderControllerInstance;
+}
+
+function getFilePreviewController() {
+  if (!filePreviewControllerInstance) {
+    filePreviewControllerInstance = filePreviewHelpers.createController({
+      documentObject: document,
+      requestAnimationFrameFn: (callback) => requestAnimationFrame(callback),
+      filePreviewModal,
+      filePreviewPath,
+      filePreviewStatus,
+      filePreviewLines,
+      filePreviewExpandUp,
+      filePreviewLoadFull,
+      filePreviewExpandDown,
+      filePreviewClose,
+      messagesEl,
+      apiPost,
+      getActiveChatId: () => activeChatId,
+      getCurrentFilePreviewRequest: () => currentFilePreviewRequest,
+      setCurrentFilePreviewRequest: (value) => {
+        currentFilePreviewRequest = value || null;
+      },
+      getCurrentFilePreview: () => currentFilePreview,
+      setCurrentFilePreview: (value) => {
+        currentFilePreview = value || null;
+      },
+    });
+  }
+  return filePreviewControllerInstance;
+}
+
+const renderTraceController = new Proxy({}, {
+  get(_target, prop) {
+    const controller = getRenderTraceController();
+    const value = controller?.[prop];
+    return typeof value === 'function' ? value.bind(controller) : value;
   },
-  consoleRef: console,
 });
 
-const messageRenderController = renderTraceHelpers.createMessageRenderController({
-  cleanDisplayTextFn: cleanDisplayText,
-  escapeHtmlFn: escapeHtml,
-  getAllowedRoots: () => filePreviewAllowedRoots,
-  documentObject: document,
-  windowObject: window,
-  getOperatorDisplayName: () => operatorDisplayName,
-  formatMessageTimeFn: formatMessageTime,
-  templateElement: template,
-  getHistory: (chatId) => histories.get(Number(chatId)) || [],
-  getMessagesContainer: () => messagesEl,
-  getActiveChatId: () => activeChatId,
-  getStreamPhase,
-  isPatchPhaseAllowedFn: isPatchPhaseAllowed,
-  renderTraceLogFn: renderTraceLog,
-  preserveViewportDuringUiMutationFn: preserveViewportDuringUiMutation,
-});
-
-const historyRenderController = renderTraceHelpers.createHistoryRenderController({
-  messagesEl,
-  jumpLatestButton,
-  jumpLastStartButton,
-  histories,
-  virtualizationRanges,
-  virtualMetrics,
-  renderedHistoryLength,
-  renderedHistoryVirtualized,
-  unseenStreamChats,
-  chatScrollTop,
-  chatStickToBottom,
-  historyCountEl: historyCount,
-  virtualizeThreshold: VIRTUALIZE_THRESHOLD,
-  estimatedMessageHeight: ESTIMATED_MESSAGE_HEIGHT,
-  virtualOverscan: VIRTUAL_OVERSCAN,
-  getActiveChatId: () => Number(activeChatId),
-  getRenderedChatId: () => Number(renderedChatId),
-  setRenderedChatId: (value) => {
-    renderedChatId = value;
-  },
-  refreshTabNode,
-  clearSelectionQuoteStateFn: clearSelectionQuoteState,
-  syncLiveToolStreamForChatFn: syncLiveToolStreamForChat,
-  appendMessagesFn: appendMessages,
-  shouldUseAppendOnlyRenderFn: runtimeHelpers.shouldUseAppendOnlyRender,
-  renderTraceLogFn: renderTraceLog,
-  createSpacerElementFn: () => document.createElement("div"),
-  createFragmentFn: () => document.createDocumentFragment(),
-});
-
-const filePreviewController = filePreviewHelpers.createController({
-  documentObject: document,
-  requestAnimationFrameFn: (callback) => requestAnimationFrame(callback),
-  filePreviewModal,
-  filePreviewPath,
-  filePreviewStatus,
-  filePreviewLines,
-  filePreviewExpandUp,
-  filePreviewLoadFull,
-  filePreviewExpandDown,
-  filePreviewClose,
-  messagesEl,
-  apiPost,
-  getActiveChatId: () => activeChatId,
-  getCurrentFilePreviewRequest: () => currentFilePreviewRequest,
-  setCurrentFilePreviewRequest: (value) => {
-    currentFilePreviewRequest = value || null;
-  },
-  getCurrentFilePreview: () => currentFilePreview,
-  setCurrentFilePreview: (value) => {
-    currentFilePreview = value || null;
+const messageRenderController = new Proxy({}, {
+  get(_target, prop) {
+    const controller = getMessageRenderController();
+    const value = controller?.[prop];
+    return typeof value === 'function' ? value.bind(controller) : value;
   },
 });
 
-renderTraceDebugEnabled = renderTraceController.resolveRenderTraceDebugEnabled();
+const historyRenderController = new Proxy({}, {
+  get(_target, prop) {
+    const controller = getHistoryRenderController();
+    const value = controller?.[prop];
+    return typeof value === 'function' ? value.bind(controller) : value;
+  },
+});
+
+const filePreviewController = new Proxy({}, {
+  get(_target, prop) {
+    const controller = getFilePreviewController();
+    const value = controller?.[prop];
+    return typeof value === 'function' ? value.bind(controller) : value;
+  },
+});
 
 function parseBooleanFlag(rawValue) {
   return renderTraceHelpers.parseBooleanFlag(rawValue);
@@ -747,11 +986,11 @@ function focusComposerForNewChat(chatId) {
 }
 
 function setChatLatency(chatId, text) {
-  return latencyViewController.setChatLatency(chatId, text);
+  return getLatencyViewController().setChatLatency(chatId, text);
 }
 
 function syncActiveLatencyChip() {
-  return latencyViewController.syncActiveLatencyChip();
+  return getLatencyViewController().syncActiveLatencyChip();
 }
 
 const startupMetricsHelpers = window.HermesMiniappStartupMetrics;
@@ -832,11 +1071,12 @@ function syncDebugOnlyPillVisibility() {
 }
 
 function loadLatencyByChatFromStorage() {
-  return latencyPersistenceController.loadLatencyByChatFromStorage();
+  latencyStorageLoaded = false;
+  return ensureLatencyStorageLoaded();
 }
 
 function persistLatencyByChatToStorage() {
-  return latencyPersistenceController.persistLatencyByChatToStorage();
+  return getLatencyPersistenceController().persistLatencyByChatToStorage();
 }
 
 function readStreamResumeCursorMap() {
@@ -991,7 +1231,164 @@ function handleMessageFileRefClick(event) {
   return filePreviewController.handleMessageFileRefClick(event);
 }
 
-const bootstrapAuthController = bootstrapAuthHelpers.createController({
+function createBootstrapAuthStageReporter({
+  recordBootMeta,
+  getBootMeta,
+  logBootStage,
+}) {
+  return (stage, details = {}) => {
+    const normalized = details && typeof details === 'object' ? details : {};
+    const bootMeta = getBootMeta?.() || {};
+    if (stage === 'auth-bootstrap-attempt-start') {
+      recordBootMeta?.('authBootstrapAttempts', Math.max(Number(normalized.attempt) || 0, Number(bootMeta?.authBootstrapAttempts || 0)));
+    } else if (stage === 'auth-bootstrap-retry-scheduled') {
+      const currentCount = Number(bootMeta?.authBootstrapRetryCount || 0);
+      const currentBackoff = Number(bootMeta?.authBootstrapRetryBackoffMsTotal || 0);
+      recordBootMeta?.({
+        authBootstrapRetryCount: currentCount + 1,
+        authBootstrapRetryBackoffMsTotal: currentBackoff + Math.max(0, Number(normalized.backoffMs) || 0),
+        authBootstrapLastBackoffMs: Math.max(0, Number(normalized.backoffMs) || 0),
+      });
+    } else if (stage === 'auth-bootstrap-ok' || stage === 'auth-bootstrap-failed') {
+      recordBootMeta?.({
+        authBootstrapFinalStatus: Number(normalized.status || 0),
+        authBootstrapSucceeded: stage === 'auth-bootstrap-ok',
+      });
+    } else if (stage === 'auth-bootstrap-attempt-error') {
+      recordBootMeta?.('authBootstrapLastError', String(normalized.message || ''));
+    } else if (stage === 'auth-bootstrap-applied-start') {
+      recordBootMeta?.({
+        bootstrapChatCount: Number(normalized.chatCount || 0),
+        bootstrapActiveChatId: Number(normalized.activeChatId || 0),
+      });
+    } else if (stage === 'initial-render-start') {
+      recordBootMeta?.({
+        bootstrapHistoryCount: Number(normalized.historyCount || 0),
+        restoredPendingSnapshot: Boolean(normalized.restoredPendingSnapshot),
+      });
+    } else if (stage === 'warm-history-cache-triggered') {
+      recordBootMeta?.('warmedHistoryOnOpen', true);
+    } else if (stage === 'pending-stream-resume-triggered') {
+      recordBootMeta?.('resumedPendingStreamOnOpen', true);
+    } else if (stage === 'auth-bootstrap-applied-finished') {
+      recordBootMeta?.('pendingResumeTriggered', Boolean(normalized.pendingResumeTriggered));
+    }
+    logBootStage(stage, normalized);
+  };
+}
+
+function createBootstrapAuthControllerDeps({
+  desktopTestingEnabled,
+  devAuthSessionStorageKey,
+  devAuthHashSecret,
+  devAuthControls,
+  devModeBadge,
+  devSignInButton,
+  getIsAuthenticated,
+  setIsAuthenticated,
+  sessionStorageRef,
+  devAuthModal,
+  devAuthForm,
+  devAuthSecretInput,
+  devAuthUserIdInput,
+  devAuthDisplayNameInput,
+  devAuthUsernameInput,
+  devAuthCancelButton,
+  authStatus,
+  appendSystemMessage,
+  fetchImpl,
+  initData,
+  parseSseEvent,
+  setOperatorDisplayName,
+  getOperatorDisplayName,
+  operatorName,
+  messagesEl,
+  setSkin,
+  setTelegramUnreadNotificationsEnabled,
+  syncChats,
+  syncPinnedChats,
+  histories,
+  setActiveChatMeta,
+  renderPinnedChats,
+  renderMessages,
+  warmChatHistoryCache,
+  chats,
+  pendingChats,
+  resumePendingChatStream,
+  hasFreshPendingStreamSnapshot,
+  restorePendingStreamSnapshot,
+  ensureActivationReadThreshold,
+  windowObject,
+  authBootstrapMaxAttempts,
+  authBootstrapBaseDelayMs,
+  authBootstrapRetryableStatus,
+  bootBootstrapVersion,
+  bootstrapVersionReloadStorageKey,
+  recordBootMetric,
+  syncBootLatencyChip,
+  updateComposerState,
+  isMobileQuoteMode,
+  markVersionSyncReloadIntent,
+  onBootstrapStage,
+}) {
+  return {
+    desktopTestingEnabled,
+    devAuthSessionStorageKey,
+    devAuthHashSecret,
+    devAuthControls,
+    devModeBadge,
+    devSignInButton,
+    getIsAuthenticated,
+    setIsAuthenticated,
+    sessionStorageRef,
+    devAuthModal,
+    devAuthForm,
+    devAuthSecretInput,
+    devAuthUserIdInput,
+    devAuthDisplayNameInput,
+    devAuthUsernameInput,
+    devAuthCancelButton,
+    authStatus,
+    appendSystemMessage,
+    fetchImpl,
+    initData,
+    parseSseEvent,
+    setOperatorDisplayName,
+    getOperatorDisplayName,
+    operatorName,
+    messagesEl,
+    setSkin,
+    setTelegramUnreadNotificationsEnabled,
+    syncChats,
+    syncPinnedChats,
+    histories,
+    setActiveChatMeta,
+    renderPinnedChats,
+    renderMessages,
+    warmChatHistoryCache,
+    chats,
+    pendingChats,
+    resumePendingChatStream,
+    hasFreshPendingStreamSnapshot,
+    restorePendingStreamSnapshot,
+    ensureActivationReadThreshold,
+    windowObject,
+    authBootstrapMaxAttempts,
+    authBootstrapBaseDelayMs,
+    authBootstrapRetryableStatus,
+    bootBootstrapVersion,
+    bootstrapVersionReloadStorageKey,
+    recordBootMetric,
+    syncBootLatencyChip,
+    updateComposerState,
+    isMobileQuoteMode,
+    markVersionSyncReloadIntent,
+    onBootstrapStage,
+  };
+}
+
+function createBootstrapAuthController() {
+  return bootstrapAuthHelpers.createController(createBootstrapAuthControllerDeps({
   desktopTestingEnabled,
   devAuthSessionStorageKey: DEV_AUTH_SESSION_STORAGE_KEY,
   devAuthHashSecret,
@@ -1050,45 +1447,15 @@ const bootstrapAuthController = bootstrapAuthHelpers.createController({
   updateComposerState,
   isMobileQuoteMode: () => mobileQuoteMode,
   markVersionSyncReloadIntent,
-  onBootstrapStage: (stage, details = {}) => {
-    const normalized = details && typeof details === 'object' ? details : {};
-    if (stage === 'auth-bootstrap-attempt-start') {
-      recordBootMeta?.('authBootstrapAttempts', Math.max(Number(normalized.attempt) || 0, Number(startupMetricsController.bootMeta?.authBootstrapAttempts || 0)));
-    } else if (stage === 'auth-bootstrap-retry-scheduled') {
-      const currentCount = Number(startupMetricsController.bootMeta?.authBootstrapRetryCount || 0);
-      const currentBackoff = Number(startupMetricsController.bootMeta?.authBootstrapRetryBackoffMsTotal || 0);
-      recordBootMeta?.({
-        authBootstrapRetryCount: currentCount + 1,
-        authBootstrapRetryBackoffMsTotal: currentBackoff + Math.max(0, Number(normalized.backoffMs) || 0),
-        authBootstrapLastBackoffMs: Math.max(0, Number(normalized.backoffMs) || 0),
-      });
-    } else if (stage === 'auth-bootstrap-ok' || stage === 'auth-bootstrap-failed') {
-      recordBootMeta?.({
-        authBootstrapFinalStatus: Number(normalized.status || 0),
-        authBootstrapSucceeded: stage === 'auth-bootstrap-ok',
-      });
-    } else if (stage === 'auth-bootstrap-attempt-error') {
-      recordBootMeta?.('authBootstrapLastError', String(normalized.message || ''));
-    } else if (stage === 'auth-bootstrap-applied-start') {
-      recordBootMeta?.({
-        bootstrapChatCount: Number(normalized.chatCount || 0),
-        bootstrapActiveChatId: Number(normalized.activeChatId || 0),
-      });
-    } else if (stage === 'initial-render-start') {
-      recordBootMeta?.({
-        bootstrapHistoryCount: Number(normalized.historyCount || 0),
-        restoredPendingSnapshot: Boolean(normalized.restoredPendingSnapshot),
-      });
-    } else if (stage === 'warm-history-cache-triggered') {
-      recordBootMeta?.('warmedHistoryOnOpen', true);
-    } else if (stage === 'pending-stream-resume-triggered') {
-      recordBootMeta?.('resumedPendingStreamOnOpen', true);
-    } else if (stage === 'auth-bootstrap-applied-finished') {
-      recordBootMeta?.('pendingResumeTriggered', Boolean(normalized.pendingResumeTriggered));
-    }
-    logBootStage(stage, normalized);
-  },
-});
+  onBootstrapStage: createBootstrapAuthStageReporter({
+    recordBootMeta,
+    getBootMeta: () => startupMetricsController.bootMeta,
+    logBootStage,
+  }),
+}));
+}
+
+const bootstrapAuthController = createBootstrapAuthController();
 
 function syncDevAuthUi() {
   const result = bootstrapAuthController.syncDevAuthUi();
@@ -1133,26 +1500,33 @@ function startDevAutoRefresh() {
 }
 
 const incomingMessageHapticKeys = new Set();
-const hapticUnreadController = runtimeHelpers.createHapticUnreadController({
-  tg,
-  histories,
-  incomingMessageHapticKeys,
-  chats,
-  getActiveChatId: () => activeChatId,
-  isDocumentHidden: () => document.visibilityState !== "visible",
-  renderTraceLog,
-});
+let hapticUnreadControllerInstance = null;
+
+function getHapticUnreadController() {
+  if (!hapticUnreadControllerInstance) {
+    hapticUnreadControllerInstance = runtimeHelpers.createHapticUnreadController({
+      tg,
+      histories,
+      incomingMessageHapticKeys,
+      chats,
+      getActiveChatId: () => activeChatId,
+      isDocumentHidden: () => document.visibilityState !== "visible",
+      renderTraceLog,
+    });
+  }
+  return hapticUnreadControllerInstance;
+}
 
 function latestCompletedAssistantHapticKey(chatId) {
-  return hapticUnreadController.latestCompletedAssistantHapticKey(chatId);
+  return getHapticUnreadController().latestCompletedAssistantHapticKey(chatId);
 }
 
 function triggerIncomingMessageHaptic(chatId, { messageKey = "", fallbackToLatestHistory = true } = {}) {
-  return hapticUnreadController.triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory });
+  return getHapticUnreadController().triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory });
 }
 
 function incrementUnread(chatId) {
-  return hapticUnreadController.incrementUnread(chatId);
+  return getHapticUnreadController().incrementUnread(chatId);
 }
 
 function loadDraftsFromStorage() {
@@ -1347,6 +1721,9 @@ function applyQuoteIntoPrompt(text) {
     promptEl,
     formatQuoteBlockFn: formatQuoteBlock,
     ensureComposerVisible,
+    mobileQuoteMode,
+    documentObject: document,
+    windowObject: window,
   });
 }
 
@@ -1373,6 +1750,7 @@ function showSelectionQuoteAction({ text, rect }, { lockPlacement = false } = {}
       mobileQuoteMode,
       windowObject: window,
       form,
+      messagesEl,
       clearSelectionQuoteState,
     },
     { lockPlacement },
@@ -1686,7 +2064,7 @@ function getTelegramUnreadNotificationsEnabled() {
 }
 
 function syncActivePendingStatus() {
-  return streamActivityController.syncActivePendingStatus();
+  return getStreamActivityController().syncActivePendingStatus();
 }
 
 const activeChatMetaController = chatHistoryHelpers.createMetaController({
@@ -1827,6 +2205,11 @@ chatHistoryController = chatHistoryHelpers.createController({
     return runtimeHelpers.shouldResumeOnVisibilityChange(args);
   },
   shouldDeferNonCriticalCachedOpen: () => !mobileQuoteMode && document.visibilityState === 'visible',
+  getRenderedTranscriptSignature: (chatId) => {
+    const key = Number(chatId);
+    if (!key || key !== Number(renderedChatId)) return '';
+    return String(renderedTranscriptSignatureByChat.get(key) || '');
+  },
   renderTraceLog,
   nowMs: () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
@@ -1910,36 +2293,50 @@ const composerViewportController = composerViewportHelpers.createController({
   updateJumpLatestVisibility,
 });
 
-const latencyViewController = runtimeHelpers.createLatencyController({
-  latencyByChat,
-  getActiveChatId: () => Number(activeChatId),
-  hasLiveStreamController,
-  setActivityChip,
-  preserveViewportDuringUiMutation,
-  latencyChip,
-  streamDebugLog,
-  onLatencyMapMutated: () => latencyPersistenceController.persistLatencyByChatToStorage(),
-  renderTraceLog,
-  getDocumentVisibilityState: () => document.visibilityState,
-});
+let latencyViewControllerInstance = null;
+let streamActivityControllerInstance = null;
 
-const streamActivityController = runtimeHelpers.createStreamActivityController({
-  chats,
-  getActiveChatId: () => Number(activeChatId),
-  hasLiveStreamController,
-  getChatLatencyText: (chatId) => latencyByChat.get(Number(chatId)) || '',
-  getStreamPhase,
-  streamPhases: STREAM_PHASES,
-  chatLabel,
-  compactChatLabel,
-  setStreamStatus,
-  setActivityChip,
-  streamChip,
-  latencyChip,
-  setChatLatency,
-  syncActiveLatencyChip,
-  formatLatency,
-});
+function getLatencyViewController() {
+  if (!latencyViewControllerInstance) {
+    ensureLatencyStorageLoaded();
+    latencyViewControllerInstance = runtimeHelpers.createLatencyController({
+      latencyByChat,
+      getActiveChatId: () => Number(activeChatId),
+      hasLiveStreamController,
+      setActivityChip,
+      preserveViewportDuringUiMutation,
+      latencyChip,
+      streamDebugLog,
+      onLatencyMapMutated: () => persistLatencyByChatToStorage(),
+      renderTraceLog,
+      getDocumentVisibilityState: () => document.visibilityState,
+    });
+  }
+  return latencyViewControllerInstance;
+}
+
+function getStreamActivityController() {
+  if (!streamActivityControllerInstance) {
+    streamActivityControllerInstance = runtimeHelpers.createStreamActivityController({
+      chats,
+      getActiveChatId: () => Number(activeChatId),
+      hasLiveStreamController,
+      getChatLatencyText: (chatId) => latencyByChat.get(Number(chatId)) || '',
+      getStreamPhase,
+      streamPhases: STREAM_PHASES,
+      chatLabel,
+      compactChatLabel,
+      setStreamStatus,
+      setActivityChip,
+      streamChip,
+      latencyChip,
+      setChatLatency,
+      syncActiveLatencyChip,
+      formatLatency,
+    });
+  }
+  return streamActivityControllerInstance;
+}
 
 const visibilitySkinController = visibilitySkinHelpers.createController({
   windowObject: window,
@@ -1972,118 +2369,148 @@ const visibilitySkinController = visibilitySkinHelpers.createController({
   markVisibilityResume,
 });
 
-const startupBindingsController = startupBindingsHelpers.createController({
-  windowObject: window,
-  documentObject: document,
-  tabsEl,
-  pinnedChatsEl,
-  pinnedChatsToggleButton,
-  messagesEl,
-  jumpLatestButton,
-  jumpLastStartButton,
-  skinButtons,
-  newChatButton,
-  renameChatButton,
-  pinChatButton,
-  removeChatButton,
-  fullscreenAppTopButton,
-  closeAppTopButton,
-  renderTraceBadge,
-  settingsButton,
-  devSignInButton,
-  settingsClose,
-  settingsModal,
-  telegramUnreadNotificationsToggle,
-  authStatusEl: authStatus,
-  operatorNameEl: operatorName,
-  formEl: form,
-  promptEl,
-  sendButton,
-  templateEl: template,
-  tg,
+function createStartupBindingsControllerDeps({
+  getActiveChatId,
+  getRenderedChatId,
+  getIsAuthenticated,
+  setInitData,
+  getInitData,
+  getRenderTraceDebugEnabled,
+  isMobileBootstrapPath,
+  getChatsSize,
+  isActiveChatPending,
+  getStreamAbortControllers,
+} = {}) {
+  return {
+    windowObject: window,
+    documentObject: document,
+    tabsEl,
+    pinnedChatsEl,
+    pinnedChatsToggleButton,
+    messagesEl,
+    jumpLatestButton,
+    jumpLastStartButton,
+    skinButtons,
+    newChatButton,
+    renameChatButton,
+    pinChatButton,
+    removeChatButton,
+    fullscreenAppTopButton,
+    closeAppTopButton,
+    renderTraceBadge,
+    settingsButton,
+    devSignInButton,
+    settingsClose,
+    settingsModal,
+    telegramUnreadNotificationsToggle,
+    authStatusEl: authStatus,
+    operatorNameEl: operatorName,
+    formEl: form,
+    promptEl,
+    sendButton,
+    templateEl: template,
+    tg,
+    getActiveChatId,
+    getRenderedChatId,
+    isNearBottomFn: isNearBottom,
+    chatScrollTop,
+    chatStickToBottom,
+    unseenStreamChats,
+    histories,
+    chats,
+    pendingChats,
+    shouldVirtualizeHistoryFn: shouldVirtualizeHistory,
+    scheduleActiveMessageView,
+    refreshTabNode,
+    maybeMarkRead,
+    updateJumpLatestVisibility,
+    syncActiveMessageView,
+    cancelSelectionQuoteSync,
+    cancelSelectionQuoteSettle,
+    cancelSelectionQuoteClear,
+    clearSelectionQuoteState,
+    hasMessageSelectionFn: (selection) => interactionHelpers.hasMessageSelection(selection, { messagesEl }),
+    scheduleSelectionQuoteSync,
+    mobileQuoteMode,
+    noteMobileCarouselInteraction: () => chatTabsController.noteMobileCarouselInteraction(),
+    handleTabClick,
+    handlePinnedChatClick,
+    togglePinnedChatsCollapsed,
+    handleGlobalTabCycle,
+    handleGlobalArrowJump,
+    handleGlobalComposerFocusShortcut,
+    handleGlobalChatActionShortcut,
+    handleGlobalControlEnterDefuse,
+    handleGlobalControlMouseDownFocusGuard,
+    handleGlobalControlClickFocusCleanup,
+    handleFullscreenToggle,
+    handleCloseApp,
+    handleRenderTraceBadgeClick,
+    openSettingsModal,
+    closeSettingsModal,
+    signInWithDevAuth,
+    appendSystemMessage,
+    syncDevAuthUi,
+    reportUiError,
+    getIsAuthenticated,
+    getTelegramUnreadNotificationsEnabled,
+    saveSkinPreference,
+    saveTelegramUnreadNotificationsPreference,
+    createChat,
+    renameActiveChat,
+    toggleActiveChatPin,
+    removeActiveChat,
+    syncRenderTraceBadge,
+    loadDraftsFromStorage,
+    syncClosingConfirmation,
+    syncFullscreenControlState,
+    setInitData,
+    getInitData,
+    getRenderTraceDebugEnabled,
+    renderTraceLog,
+    maybeRefreshForBootstrapVersionMismatch,
+    isMobileBootstrapPath,
+    logBootStage,
+    syncBootLatencyChip,
+    fetchAuthBootstrapWithRetry,
+    desktopTestingEnabled,
+    desktopTestingRequested,
+    devConfig,
+    applyAuthBootstrap,
+    hasFreshPendingStreamSnapshot,
+    restorePendingStreamSnapshot,
+    renderMessages,
+    updateComposerState,
+    syncUnreadNotificationPresence,
+    revealShell,
+    recordBootMetric,
+    summarizeBootMetrics,
+    getChatsSize,
+    isActiveChatPending,
+    refreshChats,
+    syncVisibleActiveChat,
+    getStreamAbortControllers,
+  };
+}
+
+function createStartupBindingsController() {
+  return startupBindingsHelpers.createController(createStartupBindingsControllerDeps({
   getActiveChatId: () => Number(activeChatId),
   getRenderedChatId: () => Number(renderedChatId),
-  isNearBottomFn: isNearBottom,
-  chatScrollTop,
-  chatStickToBottom,
-  unseenStreamChats,
-  histories,
-  chats,
-  pendingChats,
-  shouldVirtualizeHistoryFn: shouldVirtualizeHistory,
-  scheduleActiveMessageView,
-  refreshTabNode,
-  maybeMarkRead,
-  updateJumpLatestVisibility,
-  syncActiveMessageView,
-  cancelSelectionQuoteSync,
-  cancelSelectionQuoteSettle,
-  cancelSelectionQuoteClear,
-  clearSelectionQuoteState,
-  hasMessageSelectionFn: (selection) => interactionHelpers.hasMessageSelection(selection, { messagesEl }),
-  scheduleSelectionQuoteSync,
-  mobileQuoteMode,
-  noteMobileCarouselInteraction: () => chatTabsController.noteMobileCarouselInteraction(),
-  handleTabClick,
-  handlePinnedChatClick,
-  togglePinnedChatsCollapsed,
-  handleGlobalTabCycle,
-  handleGlobalArrowJump,
-  handleGlobalComposerFocusShortcut,
-  handleGlobalChatActionShortcut,
-  handleGlobalControlEnterDefuse,
-  handleGlobalControlMouseDownFocusGuard,
-  handleGlobalControlClickFocusCleanup,
-  handleFullscreenToggle,
-  handleCloseApp,
-  handleRenderTraceBadgeClick,
-  openSettingsModal,
-  closeSettingsModal,
-  signInWithDevAuth,
-  appendSystemMessage,
-  syncDevAuthUi,
-  reportUiError,
   getIsAuthenticated: () => isAuthenticated,
-  getTelegramUnreadNotificationsEnabled,
-  saveSkinPreference,
-  saveTelegramUnreadNotificationsPreference,
-  createChat,
-  renameActiveChat,
-  toggleActiveChatPin,
-  removeActiveChat,
-  syncRenderTraceBadge,
-  loadDraftsFromStorage,
-  syncClosingConfirmation,
-  syncFullscreenControlState,
   setInitData: (value) => {
     initData = String(value || "");
   },
   getInitData: () => initData,
   getRenderTraceDebugEnabled: () => renderTraceDebugEnabled,
-  renderTraceLog,
-  maybeRefreshForBootstrapVersionMismatch,
   isMobileBootstrapPath: () => mobileQuoteMode,
-  logBootStage,
-  syncBootLatencyChip,
-  fetchAuthBootstrapWithRetry,
-  desktopTestingEnabled,
-  desktopTestingRequested,
-  devConfig,
-  applyAuthBootstrap,
-  hasFreshPendingStreamSnapshot,
-  restorePendingStreamSnapshot,
-  renderMessages,
-  updateComposerState,
-  syncUnreadNotificationPresence,
-  revealShell,
-  recordBootMetric,
-  summarizeBootMetrics,
   getChatsSize: () => chats.size,
   isActiveChatPending: () => Boolean(activeChatId && chats.get(Number(activeChatId))?.pending),
-  refreshChats,
-  syncVisibleActiveChat,
   getStreamAbortControllers: () => streamController.getAbortControllers(),
-});
+}));
+}
+
+const startupBindingsController = createStartupBindingsController();
 
 function historiesDiffer(currentHistory, incomingHistory) {
   return chatHistoryController.historiesDiffer(currentHistory, incomingHistory);
@@ -2279,6 +2706,11 @@ const streamController = streamControllerHelpers.createController({
   histories,
   mergeHydratedHistory: runtimeHelpers.mergeHydratedHistory,
   renderMessages,
+  getRenderedTranscriptSignature: (chatId) => {
+    const key = Number(chatId);
+    if (!key || key !== Number(renderedChatId)) return '';
+    return String(renderedTranscriptSignatureByChat.get(key) || '');
+  },
   persistStreamCursor: setStoredStreamCursor,
   clearStreamCursor: clearStoredStreamCursor,
   clearPendingStreamSnapshot,
@@ -2389,27 +2821,35 @@ form.addEventListener("submit", (event) => {
   void submitPromptWithUiError();
 });
 
-const interactionController = interactionHelpers.createController({
-  mobileQuoteMode,
-  activeChatId: Number(activeChatId),
-  getActiveChatId: () => Number(activeChatId),
-  focusMessagesPaneIfActiveChat,
-  submitPromptWithUiError,
-  windowObject: window,
-  documentObject: document,
-  promptEl,
-  messagesEl,
-  selectionQuoteButton,
-  selectionQuoteState,
-  activeSelectionQuote,
-  cancelSelectionQuoteSync,
-  cancelSelectionQuoteSettle,
-  cancelSelectionQuoteClear,
-  scheduleSelectionQuoteSync,
-  scheduleSelectionQuoteClear,
-  applyQuoteIntoPrompt,
-  clearSelectionQuoteState,
-});
+function createInteractionControllerDeps({
+  activeChatIdProvider,
+} = {}) {
+  return {
+    mobileQuoteMode,
+    activeChatId: Number(activeChatId),
+    getActiveChatId: activeChatIdProvider,
+    focusMessagesPaneIfActiveChat,
+    submitPromptWithUiError,
+    windowObject: window,
+    documentObject: document,
+    promptEl,
+    messagesEl,
+    selectionQuoteButton,
+    selectionQuoteState,
+    activeSelectionQuote,
+    cancelSelectionQuoteSync,
+    cancelSelectionQuoteSettle,
+    cancelSelectionQuoteClear,
+    scheduleSelectionQuoteSync,
+    scheduleSelectionQuoteClear,
+    applyQuoteIntoPrompt,
+    clearSelectionQuoteState,
+  };
+}
+
+const interactionController = interactionHelpers.createController(createInteractionControllerDeps({
+  activeChatIdProvider: () => Number(activeChatId),
+}));
 
 function handleComposerSubmitShortcut(event) {
   return interactionController.handleComposerSubmitShortcut(event);

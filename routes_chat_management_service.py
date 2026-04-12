@@ -86,7 +86,6 @@ class ChatManagementService:
     def chat_history_payload(self, user_id: str, chat_id: int, *, activate: bool) -> dict[str, object]:
         store = self._store_getter()
         if activate:
-            store.mark_chat_read(user_id=user_id, chat_id=chat_id)
             store.set_active_chat(user_id=user_id, chat_id=chat_id)
         history = self.chat_history(user_id=user_id, chat_id=chat_id, limit=120)
         chat = store.get_chat(user_id=user_id, chat_id=chat_id)

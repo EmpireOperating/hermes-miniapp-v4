@@ -153,13 +153,6 @@ class AuthBootstrapService:
             history=history,
             chat_pending=bool(serialized_active_chat and serialized_active_chat.get("pending")),
         )
-        if serialized_active_chat and int(serialized_active_chat.get("unread_count") or 0) > 0:
-            latest_history_message_id = max((int(item.get("id") or 0) for item in history), default=0)
-            if latest_history_message_id > 0 and hasattr(store, "mark_chat_read_through"):
-                store.mark_chat_read_through(user_id=user_id, chat_id=active_chat_id, message_id=latest_history_message_id)
-            else:
-                store.mark_chat_read(user_id=user_id, chat_id=active_chat_id)
-            serialized_active_chat["unread_count"] = 0
         if store.get_active_chat(user_id) != int(active_chat_id):
             store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
         return int(active_chat_id), history

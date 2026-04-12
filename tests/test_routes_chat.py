@@ -1074,6 +1074,30 @@ def test_chat_history_endpoint_can_read_without_activating(monkeypatch, tmp_path
     assert server.store.get_chat("123", alt_chat.id).unread_count == 1
 
 
+
+def test_chat_history_endpoint_activate_true_sets_active_chat_without_consuming_unread(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    main_chat_id = server.store.ensure_default_chat("123")
+    alt_chat = server.store.create_chat("123", "Alt")
+    server.store.add_message("123", alt_chat.id, "hermes", "new reply")
+    server.store.set_active_chat("123", main_chat_id)
+
+    response = client.post(
+        "/api/chats/history",
+        json={"init_data": "ok", "chat_id": alt_chat.id, "activate": True},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["ok"] is True
+    assert data["chat"]["id"] == alt_chat.id
+    assert data["chat"]["unread_count"] == 1
+    assert data["chat"]["newest_unread_message_id"] > 0
+    assert server.store.get_active_chat("123") == alt_chat.id
+    assert server.store.get_chat("123", alt_chat.id).unread_count == 1
+
+
 def test_open_chat_returns_404_for_missing_chat(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 

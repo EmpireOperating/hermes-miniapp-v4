@@ -62,6 +62,47 @@ test('syncVisibleActiveChat resumes when server still reports pending and there 
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: {} }]);
 });
 
+test('syncVisibleActiveChat retries once when unread advances but first hydrate is transcript-identical', async () => {
+  let historyCalls = 0;
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        historyCalls += 1;
+        if (historyCalls === 1) {
+          return {
+            chat: { id: Number(payload.chat_id), pending: false, unread_count: 1, newest_unread_message_id: 2 },
+            history: [{ id: 1, role: 'assistant', body: 'old reply' }],
+          };
+        }
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 1, newest_unread_message_id: 2 },
+          history: [{ id: 2, role: 'assistant', body: 'fresh final reply' }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.chats.set(7, { id: 7, unread_count: 0, pending: false });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'old reply' }]);
+
+  await harness.controller.syncVisibleActiveChat({
+    hidden: false,
+    streamAbortControllers: new Map(),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(historyCalls, 2);
+  assert.deepEqual(harness.histories.get(7), [{ id: 2, role: 'assistant', body: 'fresh final reply' }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.resumedChats, []);
+});
+
 test('syncVisibleActiveChat finalizes stale local pending tool traces when hydrate already includes the completed assistant reply', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,
@@ -237,6 +278,37 @@ test('syncVisibleActiveChat skips rerender when hydrated active history is rende
   assert.deepEqual(harness.refreshedTabs, [7]);
 });
 
+test('syncVisibleActiveChat rerenders when rendered active transcript is stale even if hydrated history matches in-memory history', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    getRenderedTranscriptSignature: () => '0::assistant::older visible reply::final::::',
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'hello' }]);
+
+  await harness.controller.syncVisibleActiveChat({
+    hidden: false,
+    streamAbortControllers: new Map(),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.resumedChats, []);
+});
+
 test('syncVisibleActiveChat rerenders identical active history when unread is preserved for the active chat', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,
@@ -397,7 +469,7 @@ test('syncVisibleActiveChat preserves local unread when active history sync repo
       harness.apiCalls.push({ path, payload });
       if (path === '/api/chats/history') {
         return {
-          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0, newest_unread_message_id: 0 },
           history: [{ id: 1, role: 'assistant', body: 'hello again' }],
         };
       }
@@ -411,18 +483,20 @@ test('syncVisibleActiveChat preserves local unread when active history sync repo
         ...chat,
         id: Number(chat.id),
         unread_count: Number(chat.unread_count || 0),
+        newest_unread_message_id: Number(chat.newest_unread_message_id || 0),
         pending: Boolean(chat.pending),
       });
     },
   });
-  harness.chats.set(7, { id: 7, unread_count: 1, pending: false });
-  harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
+  harness.chats.set(7, { id: 7, unread_count: 1, newest_unread_message_id: 2, pending: false });
+  harness.setRenderedAssistantNodes([{ dataset: { messageId: '1' }, offsetTop: 420, offsetHeight: 140 }]);
   harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
 
   await harness.controller.openChat(7);
   await harness.controller.syncVisibleActiveChat();
 
   assert.equal(harness.chats.get(7).unread_count, 1);
+  assert.equal(harness.chats.get(7).newest_unread_message_id, 2);
   assert.deepEqual(harness.markReadCalls, []);
 });
 

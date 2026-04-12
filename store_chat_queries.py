@@ -31,6 +31,7 @@ def hydrate_chat_thread(row) -> ChatThread:
         title=str(row["title"]),
         parent_chat_id=int(row["parent_chat_id"]) if row["parent_chat_id"] not in (None, "") else None,
         unread_count=int(row["unread_count"] or 0),
+        newest_unread_message_id=int(row["newest_unread_message_id"] or 0),
         pending=bool(int(row["pending"] or 0)),
         is_pinned=bool(int(row["is_pinned"] or 0)),
         updated_at=str(row["updated_at"]),
@@ -75,7 +76,8 @@ def select_chat_rows(
             SELECT
                 ft.user_id,
                 ft.id AS chat_id,
-                SUM(CASE WHEN cm.role = 'hermes' AND cm.id > ft.last_read_message_id THEN 1 ELSE 0 END) AS unread_count
+                SUM(CASE WHEN cm.role = 'hermes' AND cm.id > ft.last_read_message_id THEN 1 ELSE 0 END) AS unread_count,
+                MAX(CASE WHEN cm.role = 'hermes' AND cm.id > ft.last_read_message_id THEN cm.id ELSE 0 END) AS newest_unread_message_id
             FROM filtered_threads ft
             LEFT JOIN chat_messages cm ON cm.user_id = ft.user_id AND cm.chat_id = ft.id
             GROUP BY ft.user_id, ft.id
@@ -97,6 +99,7 @@ def select_chat_rows(
             ft.created_at,
             ft.is_pinned,
             COALESCE(us.unread_count, 0) AS unread_count,
+            COALESCE(us.newest_unread_message_id, 0) AS newest_unread_message_id,
             CASE WHEN lm_row.role = 'operator' THEN 1 ELSE 0 END AS pending
         FROM filtered_threads ft
         LEFT JOIN unread_stats us ON us.user_id = ft.user_id AND us.chat_id = ft.id
@@ -118,6 +121,7 @@ def select_pinned_chat_summary_rows(conn: Connection, *, user_id: str):
             ct.created_at,
             ct.is_pinned,
             0 AS unread_count,
+            0 AS newest_unread_message_id,
             0 AS pending
         FROM chat_threads ct
         WHERE ct.user_id = ?

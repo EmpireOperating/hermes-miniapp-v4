@@ -88,78 +88,14 @@ class MiniAppConfig:
     @classmethod
     def from_env(cls) -> "MiniAppConfig":
         base_dir = Path(__file__).resolve().parent
-        max_content_length = _as_int("MAX_CONTENT_LENGTH", 1048576)
-        if max_content_length <= 0:
-            raise ValueError("MAX_CONTENT_LENGTH must be > 0")
-
-        operator_debug = _as_bool_any("MINI_APP_OPERATOR_DEBUG", "MINIAPP_OPERATOR_DEBUG", default=False)
-        request_debug = operator_debug and _as_bool_any("MINI_APP_REQUEST_DEBUG", "MINIAPP_REQUEST_DEBUG", default=False)
-        stream_timing_debug = operator_debug and _as_bool_any(
-            "MINI_APP_STREAM_TIMING_DEBUG",
-            "MINIAPP_STREAM_TIMING_DEBUG",
-            default=False,
-        )
-        stream_efficiency_mode = _as_bool_any(
-            "MINI_APP_STREAM_EFFICIENCY_MODE",
-            "MINIAPP_STREAM_EFFICIENCY_MODE",
-            default=False,
-        )
-        stream_metrics_refresh_seconds = _as_int_in_range(
-            "MINI_APP_STREAM_METRICS_REFRESH_SECONDS",
-            8,
-            min_value=1,
-            max_value=60,
-        )
-        job_worker_launcher = _as_choice("MINI_APP_JOB_WORKER_LAUNCHER", "inline", {"inline", "subprocess"})
-        persistent_runtime_ownership = _as_choice(
-            "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP",
-            "auto",
-            {"auto", "shared", "checkpoint_only"},
-        )
-        resolved_ownership = _resolve_persistent_runtime_ownership(
-            ownership_mode=persistent_runtime_ownership,
-            job_worker_launcher=job_worker_launcher,
-        )
-        warm_worker_reuse_enabled = _as_bool("MINI_APP_WARM_WORKER_REUSE", default=False)
-        warm_worker_same_chat_only = _as_bool("MINI_APP_WARM_WORKER_SAME_CHAT_ONLY", default=True)
-        warm_worker_idle_ttl_seconds = _as_int_in_range(
-            "MINI_APP_WARM_WORKER_IDLE_TTL_SECONDS",
-            180,
-            min_value=30,
-            max_value=3600,
-        )
-        warm_worker_max_idle = _as_int_in_range(
-            "MINI_APP_WARM_WORKER_MAX_IDLE",
-            2,
-            min_value=0,
-            max_value=128,
-        )
-        warm_worker_max_total = _as_int_in_range(
-            "MINI_APP_WARM_WORKER_MAX_TOTAL",
-            4,
-            min_value=1,
-            max_value=256,
-        )
-        warm_worker_retire_after_runs = _as_int_in_range(
-            "MINI_APP_WARM_WORKER_RETIRE_AFTER_RUNS",
-            3,
-            min_value=1,
-            max_value=128,
-        )
-        warm_worker_health_max_rss_mb = _as_int_in_range(
-            "MINI_APP_WARM_WORKER_HEALTH_MAX_RSS_MB",
-            1400,
-            min_value=128,
-            max_value=32768,
-        )
-        warm_worker_health_max_threads = _as_int_in_range(
-            "MINI_APP_WARM_WORKER_HEALTH_MAX_THREADS",
-            48,
-            min_value=4,
-            max_value=2048,
-        )
-        if warm_worker_max_total < max(1, warm_worker_max_idle):
-            raise ValueError("MINI_APP_WARM_WORKER_MAX_TOTAL must be >= MINI_APP_WARM_WORKER_MAX_IDLE")
+        max_content_length = _parse_max_content_length()
+        runtime_settings = _parse_runtime_debug_settings()
+        worker_settings = _parse_worker_settings()
+        telegram_auth_settings = _parse_telegram_auth_settings()
+        web_security_settings = _parse_web_security_settings()
+        ui_settings = _parse_ui_settings()
+        dev_auth_settings = _parse_dev_auth_settings()
+        job_history_settings = _parse_job_history_settings()
 
         return cls(
             port=_as_int("PORT", 8080),
@@ -174,118 +110,49 @@ class MiniAppConfig:
             job_max_attempts=_as_int_in_range("MINI_APP_JOB_MAX_ATTEMPTS", 4, min_value=1, max_value=20),
             job_retry_base_seconds=_as_int_in_range("MINI_APP_JOB_RETRY_BASE_SECONDS", 2, min_value=1, max_value=120),
             job_worker_concurrency=_as_int_in_range("MINI_APP_JOB_WORKER_CONCURRENCY", 6, min_value=1, max_value=64),
-            job_worker_launcher=job_worker_launcher,
-            job_worker_subprocess_timeout_seconds=_as_int_in_range(
-                "MINI_APP_JOB_WORKER_SUBPROCESS_TIMEOUT_SECONDS",
-                120,
-                min_value=1,
-                max_value=7200,
-            ),
-            job_worker_subprocess_kill_grace_seconds=_as_int_in_range(
-                "MINI_APP_JOB_WORKER_SUBPROCESS_KILL_GRACE_SECONDS",
-                2,
-                min_value=1,
-                max_value=60,
-            ),
-            job_worker_subprocess_stderr_excerpt_bytes=_as_int_in_range(
-                "MINI_APP_JOB_WORKER_SUBPROCESS_STDERR_EXCERPT_BYTES",
-                4096,
-                min_value=256,
-                max_value=65536,
-            ),
-            job_worker_subprocess_memory_limit_mb=_as_int_in_range(
-                "MINI_APP_JOB_WORKER_SUBPROCESS_MEMORY_LIMIT_MB",
-                1024,
-                min_value=128,
-                max_value=32768,
-            ),
-            job_worker_subprocess_max_tasks=_as_int_in_range(
-                "MINI_APP_JOB_WORKER_SUBPROCESS_MAX_TASKS",
-                64,
-                min_value=8,
-                max_value=2048,
-            ),
-            job_worker_subprocess_max_open_files=_as_int_in_range(
-                "MINI_APP_JOB_WORKER_SUBPROCESS_MAX_OPEN_FILES",
-                256,
-                min_value=64,
-                max_value=16384,
-            ),
-            persistent_runtime_ownership=persistent_runtime_ownership,
-            warm_worker_reuse_enabled=warm_worker_reuse_enabled,
-            warm_worker_same_chat_only=warm_worker_same_chat_only,
-            warm_worker_idle_ttl_seconds=warm_worker_idle_ttl_seconds,
-            warm_worker_max_idle=warm_worker_max_idle,
-            warm_worker_max_total=warm_worker_max_total,
-            warm_worker_retire_after_runs=warm_worker_retire_after_runs,
-            warm_worker_health_max_rss_mb=warm_worker_health_max_rss_mb,
-            warm_worker_health_max_threads=warm_worker_health_max_threads,
-            job_stall_timeout_seconds=_as_int_in_range(
-                "MINI_APP_JOB_STALL_TIMEOUT_SECONDS",
-                240,
-                min_value=MIN_JOB_STALL_TIMEOUT_SECONDS,
-                max_value=7200,
-            ),
-            telegram_init_data_max_age_seconds=_as_int_in_range("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", 21600, min_value=60, max_value=604800),
-            auth_session_max_age_seconds=_as_int_in_range("AUTH_SESSION_MAX_AGE_SECONDS", 60 * 60 * 24 * 7, min_value=60, max_value=60 * 60 * 24 * 90),
-            telegram_notification_send_timeout_seconds=_as_int_in_range(
-                "MINI_APP_TELEGRAM_NOTIFICATION_TIMEOUT_SECONDS",
-                8,
-                min_value=1,
-                max_value=60,
-            ),
-            force_secure_cookies=_as_bool("MINI_APP_FORCE_SECURE_COOKIES", default=True),
-            trust_proxy_headers=_as_bool("MINI_APP_TRUST_PROXY_HEADERS", default=False),
-            allowed_origins=_parse_allowed_origins(os.environ.get("MINI_APP_ALLOWED_ORIGINS", "")),
-            enforce_origin_check=_as_bool("MINI_APP_ENFORCE_ORIGIN_CHECK", default=False),
-            rate_limit_window_seconds=_as_int_in_range("MINI_APP_RATE_LIMIT_WINDOW_SECONDS", 60, min_value=5, max_value=3600),
-            rate_limit_api_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_API_REQUESTS", 180, min_value=1, max_value=10000),
-            rate_limit_stream_requests=_as_int_in_range("MINI_APP_RATE_LIMIT_STREAM_REQUESTS", 24, min_value=1, max_value=1000),
-            enable_hsts=_as_bool("MINI_APP_ENABLE_HSTS", default=False),
-            operator_debug=operator_debug,
-            request_debug=request_debug,
-            stream_timing_debug=stream_timing_debug,
-            stream_efficiency_mode=stream_efficiency_mode,
-            stream_metrics_refresh_seconds=stream_metrics_refresh_seconds,
-            mobile_tab_carousel_enabled=_as_bool_any(
-                "MINI_APP_MOBILE_TAB_CAROUSEL",
-                "MINIAPP_MOBILE_TAB_CAROUSEL",
-                default=False,
-            ),
-            tab_actions_menu_enabled=_as_bool_any(
-                "MINI_APP_TAB_ACTIONS_MENU",
-                "MINIAPP_TAB_ACTIONS_MENU",
-                default=False,
-            ),
-            dev_auth_enabled=_as_bool_any("MINIAPP_DEV_BYPASS", "MINI_APP_DEV_BYPASS", default=False),
-            dev_auth_secret=str(
-                os.environ.get("MINIAPP_DEV_SECRET")
-                or os.environ.get("MINI_APP_DEV_AUTH_SECRET")
-                or os.environ.get("MINI_APP_DEV_SECRET")
-                or ""
-            ).strip(),
-            dev_auth_expires_at_epoch=_as_optional_int_any(
-                "MINIAPP_DEV_BYPASS_EXPIRES_AT",
-                "MINI_APP_DEV_BYPASS_EXPIRES_AT",
-            ),
-            job_event_history_max_jobs=_as_int_in_range(
-                "MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS",
-                DEFAULT_JOB_EVENT_HISTORY_MAX_JOBS,
-                min_value=MIN_JOB_EVENT_HISTORY_MAX_JOBS,
-                max_value=10000,
-            ),
-            job_event_history_ttl_seconds=_as_int_in_range(
-                "MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS",
-                DEFAULT_JOB_EVENT_HISTORY_TTL_SECONDS,
-                min_value=MIN_JOB_EVENT_HISTORY_TTL_SECONDS,
-                max_value=86400,
-            ),
-            dev_reload_watch_paths=(
-                base_dir / "server.py",
-                base_dir / "templates" / "app.html",
-                base_dir / "static" / "app.css",
-                base_dir / "static" / "app.js",
-            ),
+            job_worker_launcher=worker_settings["job_worker_launcher"],
+            job_worker_subprocess_timeout_seconds=worker_settings["job_worker_subprocess_timeout_seconds"],
+            job_worker_subprocess_kill_grace_seconds=worker_settings["job_worker_subprocess_kill_grace_seconds"],
+            job_worker_subprocess_stderr_excerpt_bytes=worker_settings["job_worker_subprocess_stderr_excerpt_bytes"],
+            job_worker_subprocess_memory_limit_mb=worker_settings["job_worker_subprocess_memory_limit_mb"],
+            job_worker_subprocess_max_tasks=worker_settings["job_worker_subprocess_max_tasks"],
+            job_worker_subprocess_max_open_files=worker_settings["job_worker_subprocess_max_open_files"],
+            persistent_runtime_ownership=worker_settings["persistent_runtime_ownership"],
+            warm_worker_reuse_enabled=worker_settings["warm_worker_reuse_enabled"],
+            warm_worker_same_chat_only=worker_settings["warm_worker_same_chat_only"],
+            warm_worker_idle_ttl_seconds=worker_settings["warm_worker_idle_ttl_seconds"],
+            warm_worker_max_idle=worker_settings["warm_worker_max_idle"],
+            warm_worker_max_total=worker_settings["warm_worker_max_total"],
+            warm_worker_retire_after_runs=worker_settings["warm_worker_retire_after_runs"],
+            warm_worker_health_max_rss_mb=worker_settings["warm_worker_health_max_rss_mb"],
+            warm_worker_health_max_threads=worker_settings["warm_worker_health_max_threads"],
+            job_stall_timeout_seconds=worker_settings["job_stall_timeout_seconds"],
+            telegram_init_data_max_age_seconds=telegram_auth_settings["telegram_init_data_max_age_seconds"],
+            auth_session_max_age_seconds=telegram_auth_settings["auth_session_max_age_seconds"],
+            telegram_notification_send_timeout_seconds=telegram_auth_settings[
+                "telegram_notification_send_timeout_seconds"
+            ],
+            force_secure_cookies=web_security_settings["force_secure_cookies"],
+            trust_proxy_headers=web_security_settings["trust_proxy_headers"],
+            allowed_origins=web_security_settings["allowed_origins"],
+            enforce_origin_check=web_security_settings["enforce_origin_check"],
+            rate_limit_window_seconds=web_security_settings["rate_limit_window_seconds"],
+            rate_limit_api_requests=web_security_settings["rate_limit_api_requests"],
+            rate_limit_stream_requests=web_security_settings["rate_limit_stream_requests"],
+            enable_hsts=web_security_settings["enable_hsts"],
+            operator_debug=runtime_settings["operator_debug"],
+            request_debug=runtime_settings["request_debug"],
+            stream_timing_debug=runtime_settings["stream_timing_debug"],
+            stream_efficiency_mode=runtime_settings["stream_efficiency_mode"],
+            stream_metrics_refresh_seconds=runtime_settings["stream_metrics_refresh_seconds"],
+            mobile_tab_carousel_enabled=ui_settings["mobile_tab_carousel_enabled"],
+            tab_actions_menu_enabled=ui_settings["tab_actions_menu_enabled"],
+            dev_auth_enabled=dev_auth_settings["dev_auth_enabled"],
+            dev_auth_secret=dev_auth_settings["dev_auth_secret"],
+            dev_auth_expires_at_epoch=dev_auth_settings["dev_auth_expires_at_epoch"],
+            job_event_history_max_jobs=job_history_settings["job_event_history_max_jobs"],
+            job_event_history_ttl_seconds=job_history_settings["job_event_history_ttl_seconds"],
+            dev_reload_watch_paths=_default_dev_reload_watch_paths(base_dir),
         )
 
 
@@ -309,6 +176,251 @@ def _parse_allowed_origins(raw: str) -> set[str]:
             raise ValueError(f"Invalid origin in MINI_APP_ALLOWED_ORIGINS: {value.strip()}")
         origins.add(candidate)
     return origins
+
+
+def _parse_max_content_length() -> int:
+    max_content_length = _as_int("MAX_CONTENT_LENGTH", 1048576)
+    if max_content_length <= 0:
+        raise ValueError("MAX_CONTENT_LENGTH must be > 0")
+    return max_content_length
+
+
+def _parse_runtime_debug_settings() -> dict[str, bool | int]:
+    operator_debug = _as_bool_any("MINI_APP_OPERATOR_DEBUG", "MINIAPP_OPERATOR_DEBUG", default=False)
+    request_debug = operator_debug and _as_bool_any("MINI_APP_REQUEST_DEBUG", "MINIAPP_REQUEST_DEBUG", default=False)
+    stream_timing_debug = operator_debug and _as_bool_any(
+        "MINI_APP_STREAM_TIMING_DEBUG",
+        "MINIAPP_STREAM_TIMING_DEBUG",
+        default=False,
+    )
+    return {
+        "operator_debug": operator_debug,
+        "request_debug": request_debug,
+        "stream_timing_debug": stream_timing_debug,
+        "stream_efficiency_mode": _as_bool_any(
+            "MINI_APP_STREAM_EFFICIENCY_MODE",
+            "MINIAPP_STREAM_EFFICIENCY_MODE",
+            default=False,
+        ),
+        "stream_metrics_refresh_seconds": _as_int_in_range(
+            "MINI_APP_STREAM_METRICS_REFRESH_SECONDS",
+            8,
+            min_value=1,
+            max_value=60,
+        ),
+    }
+
+
+def _parse_worker_settings() -> dict[str, str | bool | int]:
+    job_worker_launcher = _as_choice("MINI_APP_JOB_WORKER_LAUNCHER", "inline", {"inline", "subprocess"})
+    persistent_runtime_ownership = _as_choice(
+        "MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP",
+        "auto",
+        {"auto", "shared", "checkpoint_only"},
+    )
+    warm_worker_settings = _parse_warm_worker_settings()
+    return {
+        "job_worker_launcher": job_worker_launcher,
+        "job_worker_subprocess_timeout_seconds": _as_int_in_range(
+            "MINI_APP_JOB_WORKER_SUBPROCESS_TIMEOUT_SECONDS",
+            120,
+            min_value=1,
+            max_value=7200,
+        ),
+        "job_worker_subprocess_kill_grace_seconds": _as_int_in_range(
+            "MINI_APP_JOB_WORKER_SUBPROCESS_KILL_GRACE_SECONDS",
+            2,
+            min_value=1,
+            max_value=60,
+        ),
+        "job_worker_subprocess_stderr_excerpt_bytes": _as_int_in_range(
+            "MINI_APP_JOB_WORKER_SUBPROCESS_STDERR_EXCERPT_BYTES",
+            4096,
+            min_value=256,
+            max_value=65536,
+        ),
+        "job_worker_subprocess_memory_limit_mb": _as_int_in_range(
+            "MINI_APP_JOB_WORKER_SUBPROCESS_MEMORY_LIMIT_MB",
+            1024,
+            min_value=128,
+            max_value=32768,
+        ),
+        "job_worker_subprocess_max_tasks": _as_int_in_range(
+            "MINI_APP_JOB_WORKER_SUBPROCESS_MAX_TASKS",
+            64,
+            min_value=8,
+            max_value=2048,
+        ),
+        "job_worker_subprocess_max_open_files": _as_int_in_range(
+            "MINI_APP_JOB_WORKER_SUBPROCESS_MAX_OPEN_FILES",
+            256,
+            min_value=64,
+            max_value=16384,
+        ),
+        "persistent_runtime_ownership": persistent_runtime_ownership,
+        "job_stall_timeout_seconds": _as_int_in_range(
+            "MINI_APP_JOB_STALL_TIMEOUT_SECONDS",
+            240,
+            min_value=MIN_JOB_STALL_TIMEOUT_SECONDS,
+            max_value=7200,
+        ),
+        **warm_worker_settings,
+    }
+
+
+def _parse_warm_worker_settings() -> dict[str, bool | int]:
+    warm_worker_max_idle = _as_int_in_range(
+        "MINI_APP_WARM_WORKER_MAX_IDLE",
+        2,
+        min_value=0,
+        max_value=128,
+    )
+    warm_worker_max_total = _as_int_in_range(
+        "MINI_APP_WARM_WORKER_MAX_TOTAL",
+        4,
+        min_value=1,
+        max_value=256,
+    )
+    if warm_worker_max_total < max(1, warm_worker_max_idle):
+        raise ValueError("MINI_APP_WARM_WORKER_MAX_TOTAL must be >= MINI_APP_WARM_WORKER_MAX_IDLE")
+    return {
+        "warm_worker_reuse_enabled": _as_bool("MINI_APP_WARM_WORKER_REUSE", default=False),
+        "warm_worker_same_chat_only": _as_bool("MINI_APP_WARM_WORKER_SAME_CHAT_ONLY", default=True),
+        "warm_worker_idle_ttl_seconds": _as_int_in_range(
+            "MINI_APP_WARM_WORKER_IDLE_TTL_SECONDS",
+            180,
+            min_value=30,
+            max_value=3600,
+        ),
+        "warm_worker_max_idle": warm_worker_max_idle,
+        "warm_worker_max_total": warm_worker_max_total,
+        "warm_worker_retire_after_runs": _as_int_in_range(
+            "MINI_APP_WARM_WORKER_RETIRE_AFTER_RUNS",
+            3,
+            min_value=1,
+            max_value=128,
+        ),
+        "warm_worker_health_max_rss_mb": _as_int_in_range(
+            "MINI_APP_WARM_WORKER_HEALTH_MAX_RSS_MB",
+            1400,
+            min_value=128,
+            max_value=32768,
+        ),
+        "warm_worker_health_max_threads": _as_int_in_range(
+            "MINI_APP_WARM_WORKER_HEALTH_MAX_THREADS",
+            48,
+            min_value=4,
+            max_value=2048,
+        ),
+    }
+
+
+def _parse_telegram_auth_settings() -> dict[str, int]:
+    return {
+        "telegram_init_data_max_age_seconds": _as_int_in_range(
+            "TELEGRAM_INIT_DATA_MAX_AGE_SECONDS",
+            21600,
+            min_value=60,
+            max_value=604800,
+        ),
+        "auth_session_max_age_seconds": _as_int_in_range(
+            "AUTH_SESSION_MAX_AGE_SECONDS",
+            60 * 60 * 24 * 7,
+            min_value=60,
+            max_value=60 * 60 * 24 * 90,
+        ),
+        "telegram_notification_send_timeout_seconds": _as_int_in_range(
+            "MINI_APP_TELEGRAM_NOTIFICATION_TIMEOUT_SECONDS",
+            8,
+            min_value=1,
+            max_value=60,
+        ),
+    }
+
+
+def _parse_web_security_settings() -> dict[str, bool | int | set[str]]:
+    return {
+        "force_secure_cookies": _as_bool("MINI_APP_FORCE_SECURE_COOKIES", default=True),
+        "trust_proxy_headers": _as_bool("MINI_APP_TRUST_PROXY_HEADERS", default=False),
+        "allowed_origins": _parse_allowed_origins(os.environ.get("MINI_APP_ALLOWED_ORIGINS", "")),
+        "enforce_origin_check": _as_bool("MINI_APP_ENFORCE_ORIGIN_CHECK", default=False),
+        "rate_limit_window_seconds": _as_int_in_range(
+            "MINI_APP_RATE_LIMIT_WINDOW_SECONDS",
+            60,
+            min_value=5,
+            max_value=3600,
+        ),
+        "rate_limit_api_requests": _as_int_in_range(
+            "MINI_APP_RATE_LIMIT_API_REQUESTS",
+            180,
+            min_value=1,
+            max_value=10000,
+        ),
+        "rate_limit_stream_requests": _as_int_in_range(
+            "MINI_APP_RATE_LIMIT_STREAM_REQUESTS",
+            24,
+            min_value=1,
+            max_value=1000,
+        ),
+        "enable_hsts": _as_bool("MINI_APP_ENABLE_HSTS", default=False),
+    }
+
+
+def _parse_ui_settings() -> dict[str, bool]:
+    return {
+        "mobile_tab_carousel_enabled": _as_bool_any(
+            "MINI_APP_MOBILE_TAB_CAROUSEL",
+            "MINIAPP_MOBILE_TAB_CAROUSEL",
+            default=False,
+        ),
+        "tab_actions_menu_enabled": _as_bool_any(
+            "MINI_APP_TAB_ACTIONS_MENU",
+            "MINIAPP_TAB_ACTIONS_MENU",
+            default=False,
+        ),
+    }
+
+
+def _parse_dev_auth_settings() -> dict[str, bool | str | int | None]:
+    return {
+        "dev_auth_enabled": _as_bool_any("MINIAPP_DEV_BYPASS", "MINI_APP_DEV_BYPASS", default=False),
+        "dev_auth_secret": str(
+            os.environ.get("MINIAPP_DEV_SECRET")
+            or os.environ.get("MINI_APP_DEV_AUTH_SECRET")
+            or os.environ.get("MINI_APP_DEV_SECRET")
+            or ""
+        ).strip(),
+        "dev_auth_expires_at_epoch": _as_optional_int_any(
+            "MINIAPP_DEV_BYPASS_EXPIRES_AT",
+            "MINI_APP_DEV_BYPASS_EXPIRES_AT",
+        ),
+    }
+
+
+def _parse_job_history_settings() -> dict[str, int]:
+    return {
+        "job_event_history_max_jobs": _as_int_in_range(
+            "MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS",
+            DEFAULT_JOB_EVENT_HISTORY_MAX_JOBS,
+            min_value=MIN_JOB_EVENT_HISTORY_MAX_JOBS,
+            max_value=10000,
+        ),
+        "job_event_history_ttl_seconds": _as_int_in_range(
+            "MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS",
+            DEFAULT_JOB_EVENT_HISTORY_TTL_SECONDS,
+            min_value=MIN_JOB_EVENT_HISTORY_TTL_SECONDS,
+            max_value=86400,
+        ),
+    }
+
+
+def _default_dev_reload_watch_paths(base_dir: Path) -> tuple[Path, ...]:
+    return (
+        base_dir / "server.py",
+        base_dir / "templates" / "app.html",
+        base_dir / "static" / "app.css",
+        base_dir / "static" / "app.js",
+    )
 
 
 def _as_int(name: str, default: int) -> int:

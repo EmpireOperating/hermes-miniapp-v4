@@ -320,6 +320,7 @@ def _serialize_chat(chat: ChatThread) -> dict[str, object]:
         "title": chat.title,
         "parent_chat_id": chat.parent_chat_id,
         "unread_count": chat.unread_count,
+        "newest_unread_message_id": chat.newest_unread_message_id,
         "pending": chat.pending,
         "is_pinned": chat.is_pinned,
         "updated_at": chat.updated_at,

@@ -13,6 +13,7 @@ def _serialize_chat(chat) -> dict[str, object]:
         "title": chat.title,
         "parent_chat_id": chat.parent_chat_id,
         "unread_count": chat.unread_count,
+        "newest_unread_message_id": chat.newest_unread_message_id,
         "pending": chat.pending,
         "is_pinned": chat.is_pinned,
         "updated_at": chat.updated_at,
@@ -160,3 +161,21 @@ def test_chat_history_payload_includes_runtime_pending_checkpoint_state(monkeypa
     pending_entries = [item for item in payload["history"] if item.get("pending")]
     assert any(item["role"] == "tool" and item["body"] == "read_file\nsearch_files" for item in pending_entries)
     assert any(item["role"] == "assistant" and item["body"] == "Thinking" for item in pending_entries)
+
+
+def test_chat_history_payload_with_activate_true_sets_active_chat_without_consuming_unread(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    main_chat_id = server.store.ensure_default_chat("123")
+    alt_chat = server.store.create_chat("123", "Alt")
+    server.store.add_message("123", alt_chat.id, "hermes", "Unread reply")
+    server.store.set_active_chat("123", main_chat_id)
+
+    payload = service.chat_history_payload(user_id="123", chat_id=alt_chat.id, activate=True)
+
+    after = server.store.get_chat("123", alt_chat.id)
+    assert payload["chat"]["unread_count"] == 1
+    assert payload["chat"]["newest_unread_message_id"] > 0
+    assert after.unread_count == 1
+    assert server.store.get_active_chat("123") == alt_chat.id

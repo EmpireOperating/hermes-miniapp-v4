@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildHarness, runtimeHistory } from './chat_history_test_harness.mjs';
+import { buildHarness, chatHistory, runtimeHistory } from './chat_history_test_harness.mjs';
+
+test('chat history exports hydration helper subcontrollers with stable ownership seams', () => {
+  assert.equal(typeof chatHistory.createUnreadAnchorController, 'function');
+  assert.equal(typeof chatHistory.createActivationReadThresholdController, 'function');
+  assert.equal(typeof chatHistory.createHistoryPendingStateController, 'function');
+  assert.equal(typeof chatHistory.createHistoryRenderDecisionController, 'function');
+  assert.equal(typeof chatHistory.createUnreadHydrationRetryController, 'function');
+  assert.equal(typeof chatHistory.createCachedOpenController, 'function');
+});
 
 test('historiesDiffer only flags meaningful tail changes', () => {
   const harness = buildHarness();
@@ -35,7 +44,7 @@ test('hydrateChatFromServer updates history and rerenders active chat', async ()
 
   await harness.controller.hydrateChatFromServer(7, 0, false);
 
-  assert.deepEqual(harness.upsertedChats, [{ id: 7, pending: false }]);
+  assert.deepEqual(harness.upsertedChats, [{ id: 7, pending: false, newest_unread_message_id: 0 }]);
   assert.deepEqual(harness.histories.get(7), [{ id: 1, role: 'assistant', body: 'hello' }]);
   assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: false } }]);
   assert.deepEqual(harness.restoredSnapshots, []);
@@ -49,6 +58,37 @@ test('hydrateChatFromServer preserves local unread count until mark-read thresho
 
   assert.equal(harness.chats.get(7).unread_count, 2);
   assert.deepEqual(harness.refreshedTabs, [7]);
+});
+
+test('hydrateChatFromServer retries once when unread advances but first hydrate is transcript-identical', async () => {
+  let historyCalls = 0;
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        historyCalls += 1;
+        if (historyCalls === 1) {
+          return {
+            chat: { id: Number(payload.chat_id), pending: false, unread_count: 1, newest_unread_message_id: 2 },
+            history: [{ id: 1, role: 'assistant', body: 'old reply' }],
+          };
+        }
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 1, newest_unread_message_id: 2 },
+          history: [{ id: 2, role: 'assistant', body: 'fresh final reply' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.chats.set(7, { id: 7, unread_count: 0, pending: false });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'old reply' }]);
+
+  await harness.controller.hydrateChatFromServer(7, 0, true);
+
+  assert.equal(historyCalls, 2);
+  assert.deepEqual(harness.histories.get(7), [{ id: 2, role: 'assistant', body: 'fresh final reply' }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
 });
 
 test('hydrateChatFromServer restores pending snapshot for pending chats before resuming', async () => {
@@ -404,6 +444,28 @@ test('openChat keeps unread dot state while opening cached unread chat', async (
   assert.equal(harness.chats.get(7).unread_count, 2);
 });
 
+test('hydrateChatFromServer rerenders identical active history when unread is preserved for cached open', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          history: [{ id: 1, role: 'assistant', body: 'hello' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'hello' }]);
+  harness.setIsNearBottom(false);
+
+  await harness.controller.hydrateChatFromServer(7, 0, true);
+
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.equal(harness.chats.get(7).unread_count, 2);
+});
+
 test('openChat does not clear unread just by switching into an unread chat that is already bottom-pinned', async () => {
   const harness = buildHarness();
   harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
@@ -557,8 +619,8 @@ test('refreshChats preserves local unread while activation threshold is still ar
   await harness.controller.openChat(7);
   await harness.controller.refreshChats();
 
-  assert.deepEqual(harness.statusSyncCalls, [[{ id: 7, unread_count: 2, pending: false }]]);
-  assert.deepEqual(harness.pinnedStatusSyncCalls, [[{ id: 7, unread_count: 2, pending: false }]]);
+  assert.deepEqual(harness.statusSyncCalls, [[{ id: 7, unread_count: 2, pending: false, newest_unread_message_id: 0 }]]);
+  assert.deepEqual(harness.pinnedStatusSyncCalls, [[{ id: 7, unread_count: 2, pending: false, newest_unread_message_id: 0 }]]);
   assert.equal(harness.chats.get(7).unread_count, 2);
   assert.deepEqual(harness.markReadCalls, []);
 });

@@ -133,6 +133,127 @@ test('createStreamTranscriptController owns transcript signatures and active-cha
   assert.deepEqual(scheduledCalls, [12]);
 });
 
+test('stream controller exports transcript and lifecycle subcontrollers with stable ownership seams', () => {
+  assert.equal(typeof streamController.createVisibleStreamStatusController, 'function');
+  assert.equal(typeof streamController.createReplayCursorController, 'function');
+  assert.equal(typeof streamController.createStreamAbortRegistry, 'function');
+  assert.equal(typeof streamController.createFirstAssistantNotificationController, 'function');
+  assert.equal(typeof streamController.createStreamEventDispatchController, 'function');
+  assert.equal(typeof streamController.createSseStreamReadController, 'function');
+  assert.equal(typeof streamController.createVisibleTranscriptFallbackController, 'function');
+  assert.equal(typeof streamController.createStreamTerminalEventController, 'function');
+  assert.equal(typeof streamController.createStreamNonTerminalEventController, 'function');
+  assert.equal(typeof streamController.createStreamSendRequestController, 'function');
+  assert.equal(typeof streamController.createStreamResumeAttemptController, 'function');
+
+  const syncCalls = [];
+  const scheduledCalls = [];
+  const fallbackController = streamController.createVisibleTranscriptFallbackController({
+    getActiveChatId: () => 9,
+    syncActiveMessageView: (chatId, options = {}) => syncCalls.push({ chatId: Number(chatId), options }),
+    scheduleActiveMessageView: (chatId) => scheduledCalls.push(Number(chatId)),
+  });
+
+  fallbackController.reconcileVisibleTranscriptFallback(9);
+  fallbackController.reconcileVisibleTranscriptFallback(12);
+  assert.deepEqual(syncCalls, [{ chatId: 9, options: { preserveViewport: true } }]);
+  assert.deepEqual(scheduledCalls, [12]);
+
+  const pendingAssistantUpdates = [];
+  const latencyUpdates = [];
+  const streamStatuses = [];
+  const streamChips = [];
+  const finalizedToolTraces = [];
+  const patchedAssistantCalls = [];
+  const patchedToolCalls = [];
+  const hydrationCalls = [];
+  const fallbackReconciles = [];
+  const doneSessionController = {
+    immediateFinalizedChats: new Set(),
+    consumeFirstAssistantNotification: () => ({ messageKey: '', unreadIncremented: false }),
+    setStreamStatusForVisibleChat: (chatId, text) => streamStatuses.push({ chatId: Number(chatId), text }),
+    setStreamChipForVisibleChat: (chatId, text) => streamChips.push({ chatId: Number(chatId), text }),
+  };
+  const terminalController = streamController.createStreamTerminalEventController({
+    formatLatency: sharedUtils.formatLatency,
+    getActiveChatId: () => 9,
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    finalizeInlineToolTrace: (chatId) => finalizedToolTraces.push(Number(chatId)),
+    updatePendingAssistant: (chatId, text, isStreaming) => pendingAssistantUpdates.push({ chatId: Number(chatId), text, isStreaming }),
+    markStreamUpdate: () => {},
+    patchVisiblePendingAssistant: (chatId, text, isStreaming) => {
+      patchedAssistantCalls.push({ chatId: Number(chatId), text, isStreaming });
+      return false;
+    },
+    patchVisibleToolTrace: (chatId) => {
+      patchedToolCalls.push(Number(chatId));
+      return false;
+    },
+    renderTraceLog: () => {},
+    syncActiveMessageView: () => {
+      throw new Error('terminal controller should use fallback controller when visible patching misses');
+    },
+    setChatLatency: (chatId, text) => latencyUpdates.push({ chatId: Number(chatId), text }),
+    incrementUnread: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    renderTabs: () => {},
+    finalizeStreamPendingState: () => {},
+    clearPendingStreamSnapshot: () => {},
+  }, doneSessionController, {
+    hydrateChatAfterGracefulResumeCompletion: async (chatId, options = {}) => hydrationCalls.push({ chatId: Number(chatId), options }),
+  }, {
+    reconcileVisibleTranscriptFallback: (chatId) => fallbackReconciles.push(Number(chatId)),
+  });
+
+  terminalController.applyDonePayload(9, { reply: 'done', latency_ms: 42 }, { value: '' });
+  assert.deepEqual(finalizedToolTraces, [9]);
+  assert.deepEqual(pendingAssistantUpdates, [{ chatId: 9, text: 'done', isStreaming: false }]);
+  assert.deepEqual(patchedAssistantCalls, [{ chatId: 9, text: 'done', isStreaming: false }]);
+  assert.deepEqual(patchedToolCalls, [9]);
+  assert.deepEqual(fallbackReconciles, [9]);
+  assert.deepEqual(hydrationCalls, [{ chatId: 9, options: { forceCompleted: true } }]);
+  assert.deepEqual(latencyUpdates, [{ chatId: 9, text: '1s' }]);
+  assert.deepEqual(streamStatuses, [{ chatId: 9, text: 'Reply received in chat-9' }]);
+  assert.deepEqual(streamChips, [{ chatId: 9, text: 'stream: complete · #9' }]);
+});
+
+test('stream session helper bands expose replay-cursor, abort-registry, and first-assistant notification ownership directly', () => {
+  const persisted = [];
+  const replay = streamController.createReplayCursorController({
+    persistStreamCursor: (chatId, eventId) => persisted.push({ chatId: Number(chatId), eventId: Number(eventId) }),
+  });
+  assert.equal(replay.shouldSkipReplayedEvent(5, { _event_id: 2 }), false);
+  replay.commitProcessedStreamEvent(5, { _event_id: 2 });
+  assert.equal(replay.shouldSkipReplayedEvent(5, { _event_id: 2 }), true);
+  assert.deepEqual(persisted, [{ chatId: 5, eventId: 2 }]);
+
+  const aborted = [];
+  const abortRegistry = streamController.createStreamAbortRegistry();
+  const first = { signal: { aborted: false }, abort: () => aborted.push('first') };
+  const second = { signal: { aborted: false }, abort: () => aborted.push('second') };
+  abortRegistry.setStreamAbortController(5, first);
+  abortRegistry.setStreamAbortController(5, second);
+  assert.deepEqual(aborted, ['first']);
+  assert.equal(abortRegistry.hasLiveStreamController(5), true);
+  abortRegistry.clearStreamAbortController(5, second);
+  assert.equal(abortRegistry.hasLiveStreamController(5), false);
+
+  const unread = [];
+  const notification = streamController.createFirstAssistantNotificationController({
+    getActiveChatId: () => 9,
+    triggerIncomingMessageHaptic: () => {},
+    incrementUnread: (chatId) => unread.push(Number(chatId)),
+    renderTabs: () => unread.push('render'),
+  });
+  assert.equal(notification.notifyFirstAssistantChunk(12), true);
+  assert.deepEqual(unread, [12, 'render']);
+  assert.deepEqual(notification.consumeFirstAssistantNotification(12), {
+    messageKey: 'chat:12:assistant-stream:1',
+    unreadIncremented: true,
+  });
+});
+
 test('createStreamLifecycleController owns sendPrompt auth guard', async () => {
   const messages = [];
   const sessionController = streamController.createStreamSessionController({

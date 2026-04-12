@@ -234,6 +234,30 @@ def test_isolated_worker_reusable_candidate_expires() -> None:
     assert any(event["event"] == "candidate_expired" for event in owner_state["recent_events"])
 
 
+def test_isolated_worker_registry_owner_state_payload_and_detail_helpers() -> None:
+    registry = hermes_client.IsolatedWorkerWarmSessionRegistryScaffold(reusable_candidate_ttl_ms=1000)
+    registry.note_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)
+    registry.note_worker_attach_ready(
+        session_id="miniapp-123-55",
+        owner_pid=44001,
+        transport_kind="unix_socket_jsonl",
+        worker_endpoint="/tmp/miniapp-attach.sock",
+        resume_token="token-123",
+        resume_deadline_ms=123456,
+    )
+
+    records = [record.as_dict() for record in registry._owner_records.values()]
+    recent_events = [item.as_dict() for item in registry._owner_events[-16:]]
+    payload = registry._build_owner_state_payload(records=records, recent_events=recent_events)
+
+    assert payload["owner_class"] == "IsolatedWorkerWarmSessionRegistryScaffold"
+    assert payload["active_owner_count"] == 1
+    assert payload["attachable_owner_count"] == 1
+    assert payload["live_attach_ready_count"] == 1
+    detail = registry._build_worker_event_detail(chat_id=55, job_id=991, owner_pid=44001, outcome="completed")
+    assert detail == "chat_id=55 job_id=991 owner_pid=44001 outcome=completed"
+
+
 def test_isolated_worker_attachable_candidate_expires_by_resume_deadline() -> None:
     registry = hermes_client.IsolatedWorkerWarmSessionRegistryScaffold(reusable_candidate_ttl_ms=1000)
     registry.note_worker_started(session_id="miniapp-123-55", chat_id=55, job_id=991, owner_pid=44001)

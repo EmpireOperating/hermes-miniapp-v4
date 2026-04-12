@@ -346,7 +346,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     file_preview_pos = page.rindex(file_preview_src)
     visibility_skin_pos = page.rindex(visibility_skin_src)
 
-    assert runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_bindings_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < app_pos < chat_admin_pos < actions_pos < keyboard_pos < interaction_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
+    assert shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < interaction_pos < runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < startup_bindings_pos < app_pos < chat_admin_pos < actions_pos < keyboard_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
 
 
 def test_app_hides_dev_stream_and_source_pills_from_main_ui(monkeypatch, tmp_path) -> None:
@@ -910,7 +910,8 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert 'const desktopTestingEnabled = Boolean(devConfig.devAuthEnabled) && desktopTestingRequested;' in app_script
     assert 'const devAuthHashSecret = desktopTestingRequested && currentLocationHash.startsWith(`${devAuthRevealHash}:`)' in app_script
     assert "appendSystemMessage('Dev auth is currently disabled. Enable the bypass flag, then reload /app#dev-auth.');" in startup_bindings_script
-    assert "bootstrapAuthHelpers.createController({" in app_script
+    assert "function createBootstrapAuthController()" in app_script
+    assert "bootstrapAuthHelpers.createController(createBootstrapAuthControllerDeps({" in app_script
     assert "bootstrapAuthController.normalizeHandle(value)" in app_script
     assert "bootstrapAuthController.fallbackHandleFromDisplayName(value)" in app_script
     assert "bootstrapAuthController.refreshOperatorRoleLabels()" in app_script
@@ -928,11 +929,12 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "function apiPost(url, payload)" in app_script
     assert "function fetchAuthBootstrapWithRetry()" in app_script
     assert "function maybeRefreshForBootstrapVersionMismatch()" in app_script
-    assert 'throw new Error("HermesMiniappBootstrapAuth is required before app.js")' in app_script
+    assert "bootstrapAuthHelpers: requireHelperGlobal(windowObject, 'HermesMiniappBootstrapAuth')" in app_script
     assert "HermesMiniappChatTabs" in chat_tabs_script
     assert "function createController(deps)" in chat_tabs_script
-    assert "chatTabsHelpers.createController({" in app_script
-    assert 'throw new Error("HermesMiniappChatTabs is required before app.js")' in app_script
+    assert "function createChatTabsController()" in app_script
+    assert "chatTabsHelpers.createController(createChatTabsControllerDeps({" in app_script
+    assert "chatTabsHelpers: requireHelperGlobal(windowObject, 'HermesMiniappChatTabs')" in app_script
     assert "HermesMiniappChatHistory" in chat_history_script
     assert "function createController(deps)" in chat_history_script
     assert "function createMetaController(deps)" in chat_history_script
@@ -952,7 +954,7 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "chatHistoryController.syncActiveMessageView(chatId, options)" in app_script
     assert "chatHistoryController.scheduleActiveMessageView(chatId)" in app_script
     assert "chatHistoryController.maybeMarkRead(chatId, options)" in app_script
-    assert 'throw new Error("HermesMiniappChatHistory is required before app.js")' in app_script
+    assert "chatHistoryHelpers: requireHelperGlobal(windowObject, 'HermesMiniappChatHistory')" in app_script
     assert "HermesMiniappChatAdmin" in chat_admin_script
     assert "function createController(deps)" in chat_admin_script
     assert "async function askForChatTitle" in chat_admin_script
@@ -985,9 +987,9 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "function createLatencyPersistenceController({" in runtime_latency_script
     assert "function createLatencyController({" in runtime_latency_script
     assert "runtimeHelpers.createLatencyPersistenceController({" in app_script
-    assert "latencyPersistenceController.loadLatencyByChatFromStorage()" in app_script
-    assert "latencyPersistenceController.persistLatencyByChatToStorage()" in app_script
-    assert "latencyViewController.setChatLatency(chatId, text)" in app_script
+    assert "function loadLatencyByChatFromStorage()" in app_script
+    assert "getLatencyPersistenceController().persistLatencyByChatToStorage()" in app_script
+    assert "getLatencyViewController().setChatLatency(chatId, text)" in app_script
     assert "HermesMiniappVisibilitySkin" in visibility_skin_script
     assert "function createController(deps)" in visibility_skin_script
     assert "async function saveSkinPreference(skin)" in visibility_skin_script
@@ -1002,8 +1004,9 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "function reportBootstrapMismatch(reason, details = [])" in startup_bindings_script
     assert "async function bootstrap()" in startup_bindings_script
     assert "function installPendingCompletionWatchdog()" in startup_bindings_script
-    assert "startupBindingsHelpers.createController({" in app_script
-    assert 'throw new Error("HermesMiniappStartupBindings is required before app.js")' in app_script
+    assert "function createStartupBindingsController()" in app_script
+    assert "startupBindingsHelpers.createController(createStartupBindingsControllerDeps({" in app_script
+    assert "startupBindingsHelpers: windowObject.HermesMiniappStartupBindings || createDeferredApiHelper('HermesMiniappStartupBindings')" in app_script
     assert "HermesMiniappRenderTraceText" in render_trace_text_script
     assert "function parseInlinePathRef(rawText)" in render_trace_text_script
     assert "function renderBody(container, rawText" in render_trace_text_script
@@ -1251,7 +1254,8 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert "HermesMiniappInteraction" in interaction_script
     assert "function createSelectionQuoteController" in interaction_script
     assert "function createController({" in interaction_script
-    assert "interactionHelpers.createController({" in script
+    assert "function createInteractionControllerDeps({" in script
+    assert "interactionHelpers.createController(createInteractionControllerDeps({" in script
     assert "interactionController.handleComposerSubmitShortcut(event)" in script
     assert "function installSelectionQuoteBindings()" in script
     assert "interactionController.bindSelectionQuoteBindings()" in script

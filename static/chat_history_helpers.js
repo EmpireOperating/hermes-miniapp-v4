@@ -214,31 +214,15 @@
     }).join('||');
   }
 
-  function createReadSyncController(deps) {
+  function createUnreadStateController(deps) {
     const {
-      apiPost,
       chats,
       upsertChat,
       getActiveChatId,
-      getIsAuthenticated,
-      isNearBottomFn,
-      messagesContainer,
-      unseenStreamChats,
-      markReadInFlight,
-      renderTabs,
-      syncActivePendingStatus,
-      updateComposerState,
-      pendingChats,
-      hasLiveStreamController,
+      hasReachedNewestUnreadMessageBottom,
     } = deps;
 
-    const deferredMarkReadRetry = new Map();
     const optimisticUnreadClears = new Map();
-    const activationReadThresholdState = new Map();
-
-    function isActiveChat(chatId) {
-      return normalizeChatId(chatId) === normalizeChatId(getActiveChatId());
-    }
 
     function getCurrentUnreadCount(chatId) {
       const key = normalizeChatId(chatId);
@@ -272,7 +256,53 @@
     function finalizeUnreadClear(chatId) {
       const key = normalizeChatId(chatId);
       optimisticUnreadClears.delete(key);
-      activationReadThresholdState.delete(key);
+    }
+
+    function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
+      if (!chat || typeof chat !== 'object') {
+        return chat;
+      }
+      const key = normalizeChatId(chat.id);
+      if (!key) {
+        return chat;
+      }
+      const nextChat = { ...chat };
+      if (preserveActivationUnread) {
+        const localChat = chats.get(key) || null;
+        const localUnread = Math.max(0, Number(localChat?.unread_count || 0));
+        const localUnreadAnchor = Math.max(0, Number(localChat?.newest_unread_message_id || 0));
+        const incomingUnread = Math.max(0, Number(nextChat.unread_count || 0));
+        const activeUnreadAboveNewestMessage = Boolean(
+          key === normalizeChatId(getActiveChatId())
+          && localUnread > incomingUnread
+          && !hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
+        );
+        if (activeUnreadAboveNewestMessage && localUnread > incomingUnread) {
+          nextChat.unread_count = localUnread;
+          nextChat.newest_unread_message_id = localUnreadAnchor;
+        }
+      }
+      return nextChat;
+    }
+
+    function upsertChatPreservingUnread(chat, options = {}) {
+      return upsertChat(buildChatPreservingUnread(chat, options));
+    }
+
+    return {
+      getCurrentUnreadCount,
+      clearUnreadCount,
+      restoreUnreadCount,
+      finalizeUnreadClear,
+      buildChatPreservingUnread,
+      upsertChatPreservingUnread,
+    };
+  }
+
+  function createUnreadAnchorController({ chats, isNearBottomFn, messagesContainer }) {
+    function getUnreadAnchorMessageId(chatId) {
+      const key = normalizeChatId(chatId);
+      return Math.max(0, Number(chats.get(key)?.newest_unread_message_id || 0));
     }
 
     function getMessageBottomOffset(node, container) {
@@ -301,18 +331,42 @@
       return null;
     }
 
+    function findNewestUnreadMessageNode(chatId) {
+      const container = messagesContainer;
+      if (!container || typeof container.querySelectorAll !== 'function') {
+        return { node: null, anchorMessageId: getUnreadAnchorMessageId(chatId) };
+      }
+      const assistantNodes = container.querySelectorAll('.message[data-role="assistant"]:not(.message--pending), .message[data-role="hermes"]:not(.message--pending)');
+      const anchorMessageId = getUnreadAnchorMessageId(chatId);
+      if (anchorMessageId > 0) {
+        for (let index = assistantNodes.length - 1; index >= 0; index -= 1) {
+          const candidate = assistantNodes[index];
+          if (Number(candidate?.dataset?.messageId || 0) === anchorMessageId) {
+            return { node: candidate, anchorMessageId };
+          }
+        }
+        return { node: null, anchorMessageId };
+      }
+      return {
+        node: assistantNodes?.[assistantNodes.length - 1] || null,
+        anchorMessageId,
+      };
+    }
+
     function hasReachedNewestUnreadMessageBottom(chatId, { tolerance = 40 } = {}) {
       const key = normalizeChatId(chatId);
-      const unread = getCurrentUnreadCount(key);
+      const unread = Math.max(0, Number(chats.get(key)?.unread_count || 0));
       if (unread <= 0) return true;
       const container = messagesContainer;
       if (!container || typeof container.querySelectorAll !== 'function') {
         return isNearBottomFn(messagesContainer, tolerance);
       }
 
-      const assistantNodes = container.querySelectorAll('.message[data-role="assistant"]:not(.message--pending), .message[data-role="hermes"]:not(.message--pending)');
-      const newestUnreadNode = assistantNodes?.[assistantNodes.length - 1] || null;
+      const { node: newestUnreadNode, anchorMessageId } = findNewestUnreadMessageNode(key);
       if (!newestUnreadNode) {
+        if (anchorMessageId > 0) {
+          return false;
+        }
         return isNearBottomFn(messagesContainer, tolerance);
       }
 
@@ -324,34 +378,60 @@
       return viewportBottom + tolerance >= messageBottom;
     }
 
+    return {
+      getUnreadAnchorMessageId,
+      hasReachedNewestUnreadMessageBottom,
+    };
+  }
+
+  function createActivationReadThresholdController({ chats }, anchorController) {
+    const activationReadThresholdState = new Map();
+    const {
+      getUnreadAnchorMessageId,
+      hasReachedNewestUnreadMessageBottom,
+    } = anchorController;
+
+    function clearActivationReadThreshold(chatId) {
+      activationReadThresholdState.delete(normalizeChatId(chatId));
+    }
+
     function armActivationReadThreshold(chatId, unreadCount = null) {
       const key = normalizeChatId(chatId);
       if (!key) return;
       const unread = unreadCount == null
-        ? getCurrentUnreadCount(key)
+        ? Math.max(0, Number(chats.get(key)?.unread_count || 0))
         : Math.max(0, Number(unreadCount || 0));
       if (unread > 0) {
         const reachedBottomAtActivation = hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 });
-        activationReadThresholdState.set(key, { hasBeenAboveThreshold: !reachedBottomAtActivation });
+        activationReadThresholdState.set(key, {
+          anchorMessageId: getUnreadAnchorMessageId(key),
+          hasBeenAboveThreshold: !reachedBottomAtActivation,
+        });
         return;
       }
-      activationReadThresholdState.delete(key);
+      clearActivationReadThreshold(key);
     }
 
     function ensureActivationReadThreshold(chatId, unreadCount = null) {
       const key = normalizeChatId(chatId);
       if (!key) return false;
-      if (activationReadThresholdState.has(key)) {
-        return true;
-      }
       const unread = unreadCount == null
-        ? getCurrentUnreadCount(key)
+        ? Math.max(0, Number(chats.get(key)?.unread_count || 0))
         : Math.max(0, Number(unreadCount || 0));
       if (unread <= 0) {
+        clearActivationReadThreshold(key);
         return false;
       }
+      const anchorMessageId = getUnreadAnchorMessageId(key);
+      const existing = activationReadThresholdState.get(key);
+      if (existing && Number(existing.anchorMessageId || 0) === anchorMessageId) {
+        return true;
+      }
       const reachedBottomAtActivation = hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 });
-      activationReadThresholdState.set(key, { hasBeenAboveThreshold: !reachedBottomAtActivation });
+      activationReadThresholdState.set(key, {
+        anchorMessageId,
+        hasBeenAboveThreshold: !reachedBottomAtActivation,
+      });
       return true;
     }
 
@@ -360,8 +440,17 @@
       const state = activationReadThresholdState.get(key);
       if (!state) return true;
       if (force) {
-        activationReadThresholdState.delete(key);
+        clearActivationReadThreshold(key);
         return true;
+      }
+      const currentAnchorMessageId = getUnreadAnchorMessageId(key);
+      if (Number(state.anchorMessageId || 0) !== currentAnchorMessageId) {
+        const reachedBottomAtActivation = hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 });
+        activationReadThresholdState.set(key, {
+          anchorMessageId: currentAnchorMessageId,
+          hasBeenAboveThreshold: !reachedBottomAtActivation,
+        });
+        return false;
       }
       if (!reachedBottom) {
         state.hasBeenAboveThreshold = true;
@@ -370,42 +459,84 @@
       if (!state.hasBeenAboveThreshold) {
         return false;
       }
-      activationReadThresholdState.delete(key);
+      clearActivationReadThreshold(key);
       return true;
     }
 
-    function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
-      if (!chat || typeof chat !== 'object') {
-        return chat;
-      }
-      const key = normalizeChatId(chat.id);
-      if (!key) {
-        return chat;
-      }
-      const nextChat = { ...chat };
-      if (preserveActivationUnread) {
-        const localUnread = Math.max(0, Number(chats.get(key)?.unread_count || 0));
-        const incomingUnread = Math.max(0, Number(nextChat.unread_count || 0));
-        const activeUnreadAboveNewestMessage = Boolean(
-          key === normalizeChatId(getActiveChatId())
-          && localUnread > incomingUnread
-          && !hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
-        );
-        if ((activationReadThresholdState.has(key) || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
-          nextChat.unread_count = localUnread;
-        }
-      }
-      return nextChat;
-    }
+    return {
+      clearActivationReadThreshold,
+      armActivationReadThreshold,
+      ensureActivationReadThreshold,
+      hasSatisfiedActivationReadThreshold,
+      hasActivationReadThreshold(chatId) {
+        return activationReadThresholdState.has(normalizeChatId(chatId));
+      },
+    };
+  }
 
-    function upsertChatPreservingUnread(chat, options = {}) {
-      return upsertChat(buildChatPreservingUnread(chat, options));
+  function createReadThresholdController(deps, unreadStateController) {
+    const {
+      chats,
+      isNearBottomFn,
+      messagesContainer,
+    } = deps;
+
+    const anchorController = createUnreadAnchorController({
+      chats,
+      isNearBottomFn,
+      messagesContainer,
+    });
+    const activationController = createActivationReadThresholdController({ chats }, anchorController);
+
+    return {
+      getUnreadAnchorMessageId: anchorController.getUnreadAnchorMessageId,
+      hasReachedNewestUnreadMessageBottom: anchorController.hasReachedNewestUnreadMessageBottom,
+      clearActivationReadThreshold: activationController.clearActivationReadThreshold,
+      hasActivationReadThreshold: activationController.hasActivationReadThreshold,
+      armActivationReadThreshold: activationController.armActivationReadThreshold,
+      ensureActivationReadThreshold: activationController.ensureActivationReadThreshold,
+      hasSatisfiedActivationReadThreshold: activationController.hasSatisfiedActivationReadThreshold,
+    };
+  }
+
+  function createReadRequestController(deps, unreadStateController, thresholdController) {
+    const {
+      apiPost,
+      chats,
+      getActiveChatId,
+      getIsAuthenticated,
+      unseenStreamChats,
+      markReadInFlight,
+      renderTabs,
+      syncActivePendingStatus,
+      updateComposerState,
+      pendingChats,
+      hasLiveStreamController,
+      upsertChat,
+    } = deps;
+    const {
+      getCurrentUnreadCount,
+      clearUnreadCount,
+      restoreUnreadCount,
+      finalizeUnreadClear,
+    } = unreadStateController;
+    const {
+      clearActivationReadThreshold,
+      hasReachedNewestUnreadMessageBottom,
+      hasSatisfiedActivationReadThreshold,
+    } = thresholdController;
+
+    const deferredMarkReadRetry = new Map();
+
+    function isActiveChat(chatId) {
+      return normalizeChatId(chatId) === normalizeChatId(getActiveChatId());
     }
 
     async function markRead(chatId) {
       const key = normalizeChatId(chatId);
       const data = await apiPost('/api/chats/mark-read', { chat_id: key });
       finalizeUnreadClear(key);
+      clearActivationReadThreshold(key);
       const localChat = chats.get(key);
       const shouldPreservePending = Boolean(
         pendingChats.has(key)
@@ -474,7 +605,6 @@
             syncActivePendingStatus();
             updateComposerState();
           }
-          // Best-effort read sync; retry on next visibility/scroll tick.
         })
         .finally(() => {
           markReadInFlight.delete(key);
@@ -498,13 +628,91 @@
     }
 
     return {
-      buildChatPreservingUnread,
-      upsertChatPreservingUnread,
-      getCurrentUnreadCount,
-      armActivationReadThreshold,
-      ensureActivationReadThreshold,
       markRead,
       maybeMarkRead,
+      isActiveChat,
+    };
+  }
+
+  function createReadSyncController(deps) {
+    const {
+      chats,
+      upsertChat,
+      getActiveChatId,
+      getIsAuthenticated,
+      isNearBottomFn,
+      messagesContainer,
+      unseenStreamChats,
+      markReadInFlight,
+      renderTabs,
+      syncActivePendingStatus,
+      updateComposerState,
+      pendingChats,
+      hasLiveStreamController,
+    } = deps;
+
+    const thresholdControllerRef = { current: null };
+    const unreadStateController = createUnreadStateController({
+      chats,
+      upsertChat,
+      getActiveChatId,
+      hasReachedNewestUnreadMessageBottom: (...args) => thresholdControllerRef.current.hasReachedNewestUnreadMessageBottom(...args),
+    });
+    const thresholdController = createReadThresholdController({
+      chats,
+      isNearBottomFn,
+      messagesContainer,
+    }, unreadStateController);
+    thresholdControllerRef.current = thresholdController;
+    const requestController = createReadRequestController({
+      ...deps,
+      getIsAuthenticated,
+      unseenStreamChats,
+      markReadInFlight,
+      renderTabs,
+      syncActivePendingStatus,
+      updateComposerState,
+      pendingChats,
+      hasLiveStreamController,
+    }, unreadStateController, thresholdController);
+
+    function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
+      if (!preserveActivationUnread) {
+        return unreadStateController.buildChatPreservingUnread(chat, { preserveActivationUnread: false });
+      }
+      const nextChat = unreadStateController.buildChatPreservingUnread(chat, { preserveActivationUnread });
+      const key = normalizeChatId(nextChat?.id);
+      if (!key) {
+        return nextChat;
+      }
+      const localChat = chats.get(key) || null;
+      const localUnread = Math.max(0, Number(localChat?.unread_count || 0));
+      const localUnreadAnchor = Math.max(0, Number(localChat?.newest_unread_message_id || 0));
+      const incomingUnread = Math.max(0, Number(nextChat?.unread_count || 0));
+      const activeUnreadAboveNewestMessage = Boolean(
+        key === normalizeChatId(getActiveChatId())
+        && localUnread > incomingUnread
+        && !thresholdController.hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
+      );
+      if ((thresholdController.hasActivationReadThreshold(key) || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
+        nextChat.unread_count = localUnread;
+        nextChat.newest_unread_message_id = localUnreadAnchor;
+      }
+      return nextChat;
+    }
+
+    function upsertChatPreservingUnread(chat, options = {}) {
+      return upsertChat(buildChatPreservingUnread(chat, options));
+    }
+
+    return {
+      buildChatPreservingUnread,
+      upsertChatPreservingUnread,
+      getCurrentUnreadCount: unreadStateController.getCurrentUnreadCount,
+      armActivationReadThreshold: thresholdController.armActivationReadThreshold,
+      ensureActivationReadThreshold: thresholdController.ensureActivationReadThreshold,
+      markRead: requestController.markRead,
+      maybeMarkRead: requestController.maybeMarkRead,
       hasLocalPendingWithoutLiveStream(chatId, history) {
         const key = normalizeChatId(chatId);
         if (!key || hasLiveStreamController(key)) {
@@ -513,7 +721,8 @@
         return hasLocalPendingTranscript(history);
       },
       finalizeHydratedPendingState(chatId) {
-        finalizeUnreadClear(chatId);
+        unreadStateController.finalizeUnreadClear(chatId);
+        thresholdController.clearActivationReadThreshold(chatId);
       },
     };
   }
@@ -633,49 +842,21 @@
     };
   }
 
-  function createHistoryOpenController(deps) {
+  function createHistoryFetchController(deps) {
     const {
       apiPost,
       histories,
       chats,
       prefetchingHistories,
-      setActiveChatMeta,
-      renderMessages,
-      hasLiveStreamController,
-      abortStreamController,
-      mergeHydratedHistory,
-      refreshTabNode,
-      getActiveChatId,
-      resumePendingChatStream,
-      getLastOpenChatRequestId,
-      setLastOpenChatRequestId,
-      scheduleTimeout,
-      requestIdle,
-      enqueueUiMutation,
-      syncChats,
-      syncPinnedChats,
-      renderTabs,
-      renderPinnedChats,
-      syncActivePendingStatus,
-      updateComposerState,
-      pendingChats,
-      shouldResumeOnVisibilityChange,
-      restorePendingStreamSnapshot,
-      hasFreshPendingStreamSnapshot,
-      finalizeHydratedPendingState,
+      upsertChatPreservingUnread,
       shouldDeferNonCriticalCachedOpen,
       traceChatHistory,
       nowMs,
-      appendSystemMessage,
       syncUnreadNotificationPresence,
       getDocumentVisibilityState = () => 'visible',
-      buildChatPreservingUnread,
-      upsertChatPreservingUnread,
-      armActivationReadThreshold,
-      ensureActivationReadThreshold,
-      maybeMarkRead,
       isActiveChat,
-      hasLocalPendingWithoutLiveStream,
+      requestIdle,
+      scheduleTimeout,
     } = deps;
 
     async function loadChatHistory(chatId, { activate = true } = {}) {
@@ -731,205 +912,6 @@
       }
     }
 
-    async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) {
-      const hydrateStartedAtMs = nowMs();
-      traceChatHistory('hydrate-start', {
-        chatId: targetChatId,
-        requestId: Number(requestId) || 0,
-        hadCachedHistory: Boolean(hadCachedHistory),
-        activeAtStart: isActiveChat(targetChatId),
-      });
-      const data = await loadChatHistory(targetChatId, { activate: true });
-      upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
-
-      if (requestId !== getLastOpenChatRequestId()) {
-        traceChatHistory('hydrate-skipped-stale-request', {
-          chatId: targetChatId,
-          requestId: Number(requestId) || 0,
-          latestRequestId: Number(getLastOpenChatRequestId()) || 0,
-          hadCachedHistory: Boolean(hadCachedHistory),
-          durationMs: Math.max(0, Math.round(nowMs() - hydrateStartedAtMs)),
-        });
-        return;
-      }
-
-      const previousHistory = histories.get(targetChatId) || [];
-      const chatPending = Boolean(data.chat?.pending);
-      const localPendingWithoutLiveStream = hasLocalPendingWithoutLiveStream(targetChatId, previousHistory);
-      const hasFreshPendingSnapshot = typeof hasFreshPendingStreamSnapshot === 'function'
-        ? Boolean(hasFreshPendingStreamSnapshot(targetChatId))
-        : false;
-      const snapshotPendingWithoutLiveStream = hasFreshPendingSnapshot && !hasLiveStreamController(targetChatId);
-      const matchedVisibleHydratedCompletion = !chatPending
-        && hydratedCompletionMatchesVisibleLocalPending(previousHistory, data.history || []);
-      const preservePendingState = chatPending || ((localPendingWithoutLiveStream || snapshotPendingWithoutLiveStream) && !matchedVisibleHydratedCompletion);
-      const shouldResumePending = preservePendingState && !hasLiveStreamController(targetChatId);
-      const shouldForceResumePending = !chatPending && snapshotPendingWithoutLiveStream;
-      const nextHistory = mergeHydratedHistory({
-        previousHistory,
-        nextHistory: data.history || [],
-        chatPending: preservePendingState,
-      });
-      histories.set(targetChatId, nextHistory);
-      if (!preservePendingState && typeof finalizeHydratedPendingState === 'function') {
-        finalizeHydratedPendingState(targetChatId);
-      }
-      const restoredPendingSnapshot = preservePendingState && typeof restorePendingStreamSnapshot === 'function'
-        ? Boolean(restorePendingStreamSnapshot(targetChatId))
-        : false;
-      const finalHistory = histories.get(targetChatId) || [];
-      const historyChanged = historiesDiffer(previousHistory, finalHistory);
-
-      refreshTabNode(targetChatId);
-
-      traceChatHistory('hydrate-applied', {
-        chatId: targetChatId,
-        requestId: Number(requestId) || 0,
-        hadCachedHistory: Boolean(hadCachedHistory),
-        activeAtApply: isActiveChat(targetChatId),
-        previousHistoryCount: previousHistory.length,
-        nextHistoryCount: finalHistory.length,
-        historyChanged,
-        restoredPendingSnapshot: Boolean(restoredPendingSnapshot),
-        shouldResumePending: Boolean(shouldResumePending),
-        durationMs: Math.max(0, Math.round(nowMs() - hydrateStartedAtMs)),
-      });
-
-      if (!isActiveChat(targetChatId)) {
-        setActiveChatMeta(targetChatId);
-        renderMessages(targetChatId);
-        if (shouldResumePending) {
-          void resumePendingChatStream(
-            targetChatId,
-            shouldForceResumePending ? { force: true } : undefined,
-          );
-        }
-        return;
-      }
-
-      if (!hadCachedHistory || historyChanged || restoredPendingSnapshot) {
-        renderMessages(targetChatId, { preserveViewport: hadCachedHistory });
-      }
-      if (shouldResumePending) {
-        void resumePendingChatStream(
-          targetChatId,
-          shouldForceResumePending ? { force: true } : undefined,
-        );
-      }
-    }
-
-    async function openChat(chatId) {
-      const targetChatId = normalizeChatId(chatId);
-      const requestId = getLastOpenChatRequestId() + 1;
-      setLastOpenChatRequestId(requestId);
-      const hadCachedHistory = histories.has(targetChatId);
-      const openStartedAtMs = nowMs();
-      traceChatHistory('open-start', {
-        chatId: targetChatId,
-        requestId,
-        hadCachedHistory,
-      });
-      armActivationReadThreshold(targetChatId);
-
-      if (hadCachedHistory) {
-        const shouldDeferMeta = Boolean(shouldDeferNonCriticalCachedOpen(targetChatId));
-        setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: shouldDeferMeta });
-        const renderCachedChat = () => {
-          if (requestId !== getLastOpenChatRequestId()) {
-            traceChatHistory('cached-render-skipped-stale-request', {
-              chatId: targetChatId,
-              requestId,
-              latestRequestId: Number(getLastOpenChatRequestId()) || 0,
-            });
-            return;
-          }
-          if (!isActiveChat(targetChatId)) {
-            traceChatHistory('cached-render-skipped-inactive', {
-              chatId: targetChatId,
-              requestId,
-              activeChatId: normalizeChatId(getActiveChatId()),
-            });
-            return;
-          }
-          traceChatHistory('cached-render-commit', {
-            chatId: targetChatId,
-            requestId,
-            deferred: shouldDeferMeta,
-            durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
-          });
-          renderMessages(targetChatId);
-        };
-        if (shouldDeferMeta) {
-          enqueueUiMutation(renderCachedChat);
-        } else {
-          renderCachedChat();
-        }
-
-        const hydrateCachedChat = () => {
-          if (requestId !== getLastOpenChatRequestId()) {
-            traceChatHistory('cached-hydrate-skipped-stale-request', {
-              chatId: targetChatId,
-              requestId,
-              latestRequestId: Number(getLastOpenChatRequestId()) || 0,
-            });
-            return;
-          }
-          if (!isActiveChat(targetChatId)) {
-            traceChatHistory('cached-hydrate-skipped-inactive', {
-              chatId: targetChatId,
-              requestId,
-              activeChatId: normalizeChatId(getActiveChatId()),
-            });
-            return;
-          }
-          traceChatHistory('cached-hydrate-begin', {
-            chatId: targetChatId,
-            requestId,
-            durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
-          });
-          void hydrateChatFromServer(targetChatId, requestId, true).catch(() => {
-            // best-effort refresh while cached view is already visible
-          });
-        };
-
-        if (shouldDeferMeta && typeof requestIdle === 'function') {
-          traceChatHistory('cached-hydrate-scheduled', {
-            chatId: targetChatId,
-            requestId,
-            mode: 'idle',
-            timeoutMs: 250,
-          });
-          requestIdle(hydrateCachedChat, { timeout: 250 });
-        } else {
-          traceChatHistory('cached-hydrate-scheduled', {
-            chatId: targetChatId,
-            requestId,
-            mode: 'timeout',
-            delayMs: shouldDeferMeta ? 32 : 0,
-          });
-          scheduleTimeout(hydrateCachedChat, shouldDeferMeta ? 32 : 0);
-        }
-        return;
-      }
-
-      setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: true });
-      renderMessages(targetChatId);
-
-      try {
-        await hydrateChatFromServer(targetChatId, requestId, false);
-      } catch (error) {
-        traceChatHistory('open-failed', {
-          chatId: targetChatId,
-          requestId,
-          durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
-          message: String(error?.message || ''),
-        });
-        if (requestId === getLastOpenChatRequestId()) {
-          appendSystemMessage(error.message || 'Failed to open chat.', targetChatId);
-        }
-      }
-    }
-
     function prefetchChatHistory(chatId) {
       const key = normalizeChatId(chatId);
       if (!key || histories.has(key) || prefetchingHistories.has(key)) {
@@ -956,7 +938,6 @@
             durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
             message: String(error?.message || ''),
           });
-          // Best-effort warm cache
         })
         .finally(() => {
           prefetchingHistories.delete(key);
@@ -993,6 +974,506 @@
       scheduleTimeout(() => warmNext(0), 120);
     }
 
+    return {
+      loadChatHistory,
+      prefetchChatHistory,
+      warmChatHistoryCache,
+    };
+  }
+
+  function createHistoryPendingStateController(deps) {
+    const {
+      histories,
+      hasLiveStreamController,
+      mergeHydratedHistory,
+      restorePendingStreamSnapshot,
+      hasFreshPendingStreamSnapshot,
+      finalizeHydratedPendingState,
+      hasLocalPendingWithoutLiveStream,
+    } = deps;
+
+    function derivePendingState(targetChatId, previousHistory, data) {
+      const chatPending = Boolean(data.chat?.pending);
+      const localPendingWithoutLiveStream = hasLocalPendingWithoutLiveStream(targetChatId, previousHistory);
+      const hasFreshPendingSnapshot = typeof hasFreshPendingStreamSnapshot === 'function'
+        ? Boolean(hasFreshPendingStreamSnapshot(targetChatId))
+        : false;
+      const snapshotPendingWithoutLiveStream = hasFreshPendingSnapshot && !hasLiveStreamController(targetChatId);
+      const matchedVisibleHydratedCompletion = !chatPending
+        && hydratedCompletionMatchesVisibleLocalPending(previousHistory, data.history || []);
+      const preservePendingState = chatPending || ((localPendingWithoutLiveStream || snapshotPendingWithoutLiveStream) && !matchedVisibleHydratedCompletion);
+      return {
+        chatPending,
+        localPendingWithoutLiveStream,
+        snapshotPendingWithoutLiveStream,
+        matchedVisibleHydratedCompletion,
+        preservePendingState,
+        shouldResumePending: preservePendingState && !hasLiveStreamController(targetChatId),
+        shouldForceResumePending: !chatPending && snapshotPendingWithoutLiveStream,
+      };
+    }
+
+    function applyHydratedHistory(targetChatId, previousHistory, nextHistory, preservePendingState) {
+      histories.set(targetChatId, mergeHydratedHistory({
+        previousHistory,
+        nextHistory,
+        chatPending: preservePendingState,
+      }));
+      if (!preservePendingState && typeof finalizeHydratedPendingState === 'function') {
+        finalizeHydratedPendingState(targetChatId);
+      }
+      const restoredPendingSnapshot = preservePendingState && typeof restorePendingStreamSnapshot === 'function'
+        ? Boolean(restorePendingStreamSnapshot(targetChatId))
+        : false;
+      const finalHistory = histories.get(targetChatId) || [];
+      return {
+        restoredPendingSnapshot,
+        finalHistory,
+        historyChanged: historiesDiffer(previousHistory, finalHistory),
+      };
+    }
+
+    return {
+      derivePendingState,
+      applyHydratedHistory,
+    };
+  }
+
+  function createHistoryRenderDecisionController(deps) {
+    const {
+      chats,
+      getRenderedTranscriptSignature = null,
+    } = deps;
+
+    function buildHydrationRenderState({
+      targetChatId,
+      previousHistory,
+      finalHistory,
+      hadCachedHistory,
+      historyChanged,
+      restoredPendingSnapshot,
+    }) {
+      const nextRenderSignature = historyRenderSignature(finalHistory);
+      const previousRenderSignature = historyRenderSignature(previousHistory);
+      const renderedTranscriptSignature = typeof getRenderedTranscriptSignature === 'function'
+        ? String(getRenderedTranscriptSignature(targetChatId) || '')
+        : '';
+      const shouldForceStaleRenderedTranscriptRender = Boolean(
+        renderedTranscriptSignature
+        && renderedTranscriptSignature !== nextRenderSignature
+      );
+      const currentUnread = Math.max(0, Number(chats.get(targetChatId)?.unread_count || 0));
+      const shouldForceUnreadTranscriptRender = Boolean(
+        hadCachedHistory
+        && !historyChanged
+        && !restoredPendingSnapshot
+        && currentUnread > 0
+        && hasVisibleAssistantLikeTranscript(finalHistory)
+      );
+      const shouldRenderActiveHistory = previousRenderSignature !== nextRenderSignature
+        || restoredPendingSnapshot
+        || shouldForceUnreadTranscriptRender
+        || shouldForceStaleRenderedTranscriptRender;
+      return {
+        currentUnread,
+        nextRenderSignature,
+        previousRenderSignature,
+        renderedTranscriptSignature,
+        shouldForceUnreadTranscriptRender,
+        shouldForceStaleRenderedTranscriptRender,
+        shouldRenderActiveHistory,
+      };
+    }
+
+    return {
+      buildHydrationRenderState,
+    };
+  }
+
+  function createUnreadHydrationRetryController() {
+    function historyContainsMessageId(history, messageId) {
+      const targetId = Math.max(0, Number(messageId || 0));
+      if (targetId <= 0 || !Array.isArray(history)) {
+        return false;
+      }
+      return history.some((item) => Number(item?.id || 0) === targetId);
+    }
+
+    function shouldRetryUnreadHydrate({
+      incomingUnreadAnchorMessageId,
+      nextHistory,
+      preservePendingState,
+      restoredPendingSnapshot,
+    }) {
+      return !preservePendingState
+        && !restoredPendingSnapshot
+        && Math.max(0, Number(incomingUnreadAnchorMessageId || 0)) > 0
+        && !historyContainsMessageId(nextHistory, incomingUnreadAnchorMessageId);
+    }
+
+    return {
+      historyContainsMessageId,
+      shouldRetryUnreadHydrate,
+    };
+  }
+
+  function createCachedOpenController(deps, hydrationController) {
+    const {
+      setActiveChatMeta,
+      renderMessages,
+      getActiveChatId,
+      getLastOpenChatRequestId,
+      scheduleTimeout,
+      requestIdle,
+      enqueueUiMutation,
+      shouldDeferNonCriticalCachedOpen,
+      traceChatHistory,
+      nowMs,
+      isActiveChat,
+    } = deps;
+
+    function renderCachedChat({ targetChatId, requestId, openStartedAtMs, shouldDeferMeta }) {
+      if (requestId !== getLastOpenChatRequestId()) {
+        traceChatHistory('cached-render-skipped-stale-request', {
+          chatId: targetChatId,
+          requestId,
+          latestRequestId: Number(getLastOpenChatRequestId()) || 0,
+        });
+        return;
+      }
+      if (!isActiveChat(targetChatId)) {
+        traceChatHistory('cached-render-skipped-inactive', {
+          chatId: targetChatId,
+          requestId,
+          activeChatId: normalizeChatId(getActiveChatId()),
+        });
+        return;
+      }
+      traceChatHistory('cached-render-commit', {
+        chatId: targetChatId,
+        requestId,
+        deferred: shouldDeferMeta,
+        durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
+      });
+      renderMessages(targetChatId);
+    }
+
+    function hydrateCachedChat({ targetChatId, requestId, openStartedAtMs }) {
+      if (requestId !== getLastOpenChatRequestId()) {
+        traceChatHistory('cached-hydrate-skipped-stale-request', {
+          chatId: targetChatId,
+          requestId,
+          latestRequestId: Number(getLastOpenChatRequestId()) || 0,
+        });
+        return;
+      }
+      if (!isActiveChat(targetChatId)) {
+        traceChatHistory('cached-hydrate-skipped-inactive', {
+          chatId: targetChatId,
+          requestId,
+          activeChatId: normalizeChatId(getActiveChatId()),
+        });
+        return;
+      }
+      traceChatHistory('cached-hydrate-begin', {
+        chatId: targetChatId,
+        requestId,
+        durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
+      });
+      void hydrationController.hydrateChatFromServer(targetChatId, requestId, true).catch(() => {
+      });
+    }
+
+    function openCachedChat(targetChatId, requestId, openStartedAtMs) {
+      const shouldDeferMeta = Boolean(shouldDeferNonCriticalCachedOpen(targetChatId));
+      setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: shouldDeferMeta });
+      const renderCached = () => renderCachedChat({ targetChatId, requestId, openStartedAtMs, shouldDeferMeta });
+      if (shouldDeferMeta) {
+        enqueueUiMutation(renderCached);
+      } else {
+        renderCached();
+      }
+
+      const hydrate = () => hydrateCachedChat({ targetChatId, requestId, openStartedAtMs });
+      if (shouldDeferMeta && typeof requestIdle === 'function') {
+        traceChatHistory('cached-hydrate-scheduled', {
+          chatId: targetChatId,
+          requestId,
+          mode: 'idle',
+          timeoutMs: 250,
+        });
+        requestIdle(hydrate, { timeout: 250 });
+      } else {
+        traceChatHistory('cached-hydrate-scheduled', {
+          chatId: targetChatId,
+          requestId,
+          mode: 'timeout',
+          delayMs: shouldDeferMeta ? 32 : 0,
+        });
+        scheduleTimeout(hydrate, shouldDeferMeta ? 32 : 0);
+      }
+    }
+
+    return {
+      openCachedChat,
+    };
+  }
+
+  function createHistoryHydrationController(deps) {
+    const {
+      loadChatHistory,
+      histories,
+      chats,
+      hasLiveStreamController,
+      mergeHydratedHistory,
+      refreshTabNode,
+      getActiveChatId,
+      resumePendingChatStream,
+      getLastOpenChatRequestId,
+      setActiveChatMeta,
+      renderMessages,
+      pendingChats,
+      shouldResumeOnVisibilityChange,
+      restorePendingStreamSnapshot,
+      hasFreshPendingStreamSnapshot,
+      finalizeHydratedPendingState,
+      traceChatHistory,
+      nowMs,
+      syncUnreadNotificationPresence,
+      getDocumentVisibilityState = () => 'visible',
+      buildChatPreservingUnread,
+      upsertChatPreservingUnread,
+      ensureActivationReadThreshold,
+      maybeMarkRead,
+      isActiveChat,
+      hasLocalPendingWithoutLiveStream,
+      getRenderedTranscriptSignature = null,
+    } = deps;
+
+    const pendingStateController = createHistoryPendingStateController(deps);
+    const renderDecisionController = createHistoryRenderDecisionController(deps);
+    const retryController = createUnreadHydrationRetryController();
+
+    async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) {
+      const hydrateStartedAtMs = nowMs();
+      traceChatHistory('hydrate-start', {
+        chatId: targetChatId,
+        requestId: Number(requestId) || 0,
+        hadCachedHistory: Boolean(hadCachedHistory),
+        activeAtStart: isActiveChat(targetChatId),
+      });
+      let data = await loadChatHistory(targetChatId, { activate: true });
+      upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
+
+      if (requestId !== getLastOpenChatRequestId()) {
+        traceChatHistory('hydrate-skipped-stale-request', {
+          chatId: targetChatId,
+          requestId: Number(requestId) || 0,
+          latestRequestId: Number(getLastOpenChatRequestId()) || 0,
+          hadCachedHistory: Boolean(hadCachedHistory),
+          durationMs: Math.max(0, Math.round(nowMs() - hydrateStartedAtMs)),
+        });
+        return;
+      }
+
+      const previousHistory = histories.get(targetChatId) || [];
+      let pendingState = pendingStateController.derivePendingState(targetChatId, previousHistory, data);
+      let preservePendingState = pendingState.preservePendingState;
+      let shouldResumePending = pendingState.shouldResumePending;
+      let shouldForceResumePending = pendingState.shouldForceResumePending;
+      let localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
+      let snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
+      let matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
+      let {
+        restoredPendingSnapshot,
+        finalHistory,
+        historyChanged,
+      } = pendingStateController.applyHydratedHistory(targetChatId, previousHistory, data.history || [], preservePendingState);
+      const incomingUnreadAnchorMessageId = Math.max(0, Number(data.chat?.newest_unread_message_id || 0));
+      if (retryController.shouldRetryUnreadHydrate({
+        incomingUnreadAnchorMessageId,
+        nextHistory: finalHistory,
+        preservePendingState,
+        restoredPendingSnapshot,
+      })) {
+        traceChatHistory('hydrate-unread-retry', {
+          chatId: targetChatId,
+          requestId: Number(requestId) || 0,
+          incomingUnreadAnchorMessageId,
+        });
+        data = await loadChatHistory(targetChatId, { activate: false });
+        upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
+        pendingState = pendingStateController.derivePendingState(targetChatId, previousHistory, data);
+        preservePendingState = pendingState.preservePendingState;
+        shouldResumePending = pendingState.shouldResumePending;
+        shouldForceResumePending = pendingState.shouldForceResumePending;
+        localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
+        snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
+        matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
+        ({
+          restoredPendingSnapshot,
+          finalHistory,
+          historyChanged,
+        } = pendingStateController.applyHydratedHistory(targetChatId, previousHistory, data.history || [], preservePendingState));
+      }
+
+      refreshTabNode(targetChatId);
+      const renderState = renderDecisionController.buildHydrationRenderState({
+        targetChatId,
+        previousHistory,
+        finalHistory,
+        hadCachedHistory,
+        historyChanged,
+        restoredPendingSnapshot,
+      });
+      const {
+        shouldForceUnreadTranscriptRender,
+        shouldForceStaleRenderedTranscriptRender,
+      } = renderState;
+
+      traceChatHistory('hydrate-applied', {
+        chatId: targetChatId,
+        requestId: Number(requestId) || 0,
+        hadCachedHistory: Boolean(hadCachedHistory),
+        activeAtApply: isActiveChat(targetChatId),
+        previousHistoryCount: previousHistory.length,
+        nextHistoryCount: finalHistory.length,
+        historyChanged,
+        restoredPendingSnapshot: Boolean(restoredPendingSnapshot),
+        shouldForceUnreadTranscriptRender,
+        shouldForceStaleRenderedTranscriptRender,
+        shouldResumePending: Boolean(shouldResumePending),
+        durationMs: Math.max(0, Math.round(nowMs() - hydrateStartedAtMs)),
+      });
+
+      if (!isActiveChat(targetChatId)) {
+        setActiveChatMeta(targetChatId);
+        renderMessages(targetChatId);
+        if (shouldResumePending) {
+          void resumePendingChatStream(
+            targetChatId,
+            shouldForceResumePending ? { force: true } : undefined,
+          );
+        }
+        return;
+      }
+
+      if (!hadCachedHistory || historyChanged || restoredPendingSnapshot || shouldForceUnreadTranscriptRender || shouldForceStaleRenderedTranscriptRender) {
+        renderMessages(targetChatId, { preserveViewport: hadCachedHistory });
+      }
+      if (shouldResumePending) {
+        void resumePendingChatStream(
+          targetChatId,
+          shouldForceResumePending ? { force: true } : undefined,
+        );
+      }
+    }
+
+    async function syncVisibleActiveChat(options = {}) {
+      const {
+        hidden = false,
+        streamAbortControllers = new Map(),
+      } = options;
+      const activeChatId = getActiveChatId();
+      if (!activeChatId) return;
+
+      const activeId = normalizeChatId(activeChatId);
+      if (!activeId) return;
+
+      let data = await loadChatHistory(activeId, { activate: false });
+      const latestActiveId = normalizeChatId(getActiveChatId());
+      if (latestActiveId !== activeId) return;
+      const previousHistory = histories.get(activeId) || [];
+      let pendingState = pendingStateController.derivePendingState(activeId, previousHistory, data);
+      let chatPending = pendingState.chatPending;
+      let localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
+      let snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
+      let matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
+      let preservePendingState = pendingState.preservePendingState;
+      let {
+        restoredPendingSnapshot,
+        finalHistory,
+      } = pendingStateController.applyHydratedHistory(activeId, previousHistory, data.history || [], preservePendingState);
+      const incomingUnreadAnchorMessageId = Math.max(0, Number(data.chat?.newest_unread_message_id || 0));
+      if (retryController.shouldRetryUnreadHydrate({
+        incomingUnreadAnchorMessageId,
+        nextHistory: finalHistory,
+        preservePendingState,
+        restoredPendingSnapshot,
+      })) {
+        traceChatHistory('visibility-unread-retry', {
+          chatId: activeId,
+          incomingUnreadAnchorMessageId,
+        });
+        data = await loadChatHistory(activeId, { activate: false });
+        pendingState = pendingStateController.derivePendingState(activeId, previousHistory, data);
+        chatPending = pendingState.chatPending;
+        localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
+        snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
+        matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
+        preservePendingState = pendingState.preservePendingState;
+        ({
+          restoredPendingSnapshot,
+          finalHistory,
+        } = pendingStateController.applyHydratedHistory(activeId, previousHistory, data.history || [], preservePendingState));
+      }
+      upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
+      const renderState = renderDecisionController.buildHydrationRenderState({
+        targetChatId: activeId,
+        previousHistory,
+        finalHistory,
+        hadCachedHistory: true,
+        historyChanged: false,
+        restoredPendingSnapshot,
+      });
+      const {
+        shouldForceUnreadTranscriptRender,
+        shouldForceStaleRenderedTranscriptRender,
+        shouldRenderActiveHistory,
+      } = renderState;
+      refreshTabNode(activeId);
+      if (shouldRenderActiveHistory) {
+        renderMessages(activeId, { preserveViewport: true });
+      }
+      ensureActivationReadThreshold(activeId, data.chat?.unread_count);
+      maybeMarkRead(activeId);
+
+      const needsVisibilityResume = shouldResumeOnVisibilityChange({
+        hidden: Boolean(hidden),
+        activeChatId: activeId,
+        pendingChats,
+        streamAbortControllers,
+      });
+      const serverPendingWithoutLiveStream = chatPending && !hasLiveStreamController(activeId);
+      const needsSnapshotResume = snapshotPendingWithoutLiveStream && !matchedVisibleHydratedCompletion;
+      if (!matchedVisibleHydratedCompletion && (needsVisibilityResume || serverPendingWithoutLiveStream || localPendingWithoutLiveStream || needsSnapshotResume)) {
+        const shouldForceResume = localPendingWithoutLiveStream || needsSnapshotResume;
+        void resumePendingChatStream(activeId, shouldForceResume ? { force: true } : undefined);
+      }
+    }
+
+    return {
+      loadChatHistory,
+      hydrateChatFromServer,
+      syncVisibleActiveChat,
+    };
+  }
+
+  function createHistoryStatusController(deps) {
+    const {
+      apiPost,
+      buildChatPreservingUnread,
+      syncChats,
+      syncPinnedChats,
+      renderTabs,
+      renderPinnedChats,
+      syncActivePendingStatus,
+      updateComposerState,
+      hasLiveStreamController,
+      abortStreamController,
+      finalizeHydratedPendingState,
+    } = deps;
+
     function reconcilePendingStateFromStatus(statusChats = []) {
       const entries = Array.isArray(statusChats) ? statusChats : [];
       for (const chat of entries) {
@@ -1021,86 +1502,123 @@
       updateComposerState();
     }
 
-    async function syncVisibleActiveChat(options = {}) {
-      const {
-        hidden = false,
-        streamAbortControllers = new Map(),
-      } = options;
-      const activeChatId = getActiveChatId();
-      if (!activeChatId) return;
+    return {
+      refreshChats,
+    };
+  }
 
-      const activeId = normalizeChatId(activeChatId);
-      if (!activeId) return;
+  function createHistoryOpenController(deps) {
+    const {
+      histories,
+      setActiveChatMeta,
+      renderMessages,
+      getActiveChatId,
+      getLastOpenChatRequestId,
+      setLastOpenChatRequestId,
+      scheduleTimeout,
+      requestIdle,
+      enqueueUiMutation,
+      shouldDeferNonCriticalCachedOpen,
+      traceChatHistory,
+      nowMs,
+      appendSystemMessage,
+      buildChatPreservingUnread,
+      upsertChatPreservingUnread,
+      armActivationReadThreshold,
+      ensureActivationReadThreshold,
+      maybeMarkRead,
+      isActiveChat,
+      hasLocalPendingWithoutLiveStream,
+    } = deps;
 
-      const data = await loadChatHistory(activeId, { activate: false });
-      const latestActiveId = normalizeChatId(getActiveChatId());
-      if (latestActiveId !== activeId) return;
-      const previousHistory = histories.get(activeId) || [];
-      const localPendingWithoutLiveStream = hasLocalPendingWithoutLiveStream(activeId, previousHistory);
-      const hasFreshPendingSnapshot = typeof hasFreshPendingStreamSnapshot === 'function'
-        ? Boolean(hasFreshPendingStreamSnapshot(activeId))
-        : false;
-      const snapshotPendingWithoutLiveStream = hasFreshPendingSnapshot && !hasLiveStreamController(activeId);
+    const fetchController = createHistoryFetchController({
+      ...deps,
+      upsertChatPreservingUnread,
+      shouldDeferNonCriticalCachedOpen,
+      traceChatHistory,
+      nowMs,
+      isActiveChat,
+      requestIdle,
+      scheduleTimeout,
+    });
+    const hydrationController = createHistoryHydrationController({
+      ...deps,
+      loadChatHistory: fetchController.loadChatHistory,
+      setActiveChatMeta,
+      renderMessages,
+      getActiveChatId,
+      traceChatHistory,
+      nowMs,
+      buildChatPreservingUnread,
+      upsertChatPreservingUnread,
+      ensureActivationReadThreshold,
+      maybeMarkRead,
+      isActiveChat,
+      hasLocalPendingWithoutLiveStream,
+    });
+    const cachedOpenController = createCachedOpenController({
+      ...deps,
+      setActiveChatMeta,
+      renderMessages,
+      getActiveChatId,
+      getLastOpenChatRequestId,
+      scheduleTimeout,
+      requestIdle,
+      enqueueUiMutation,
+      shouldDeferNonCriticalCachedOpen,
+      traceChatHistory,
+      nowMs,
+      isActiveChat,
+    }, hydrationController);
+    const statusController = createHistoryStatusController({
+      ...deps,
+      buildChatPreservingUnread,
+    });
 
-      const chatPending = Boolean(data.chat?.pending);
-      const matchedVisibleHydratedCompletion = !chatPending
-        && hydratedCompletionMatchesVisibleLocalPending(previousHistory, data.history || []);
-      const preservePendingState = chatPending || ((localPendingWithoutLiveStream || snapshotPendingWithoutLiveStream) && !matchedVisibleHydratedCompletion);
-      const previousRenderSignature = historyRenderSignature(previousHistory);
-      const nextHistory = mergeHydratedHistory({
-        previousHistory,
-        nextHistory: data.history || [],
-        chatPending: preservePendingState,
+    async function openChat(chatId) {
+      const targetChatId = normalizeChatId(chatId);
+      const requestId = getLastOpenChatRequestId() + 1;
+      setLastOpenChatRequestId(requestId);
+      const hadCachedHistory = histories.has(targetChatId);
+      const openStartedAtMs = nowMs();
+      traceChatHistory('open-start', {
+        chatId: targetChatId,
+        requestId,
+        hadCachedHistory,
       });
-      histories.set(activeId, nextHistory);
-      if (!preservePendingState && typeof finalizeHydratedPendingState === 'function') {
-        finalizeHydratedPendingState(activeId);
-      }
-      const restoredPendingSnapshot = preservePendingState && typeof restorePendingStreamSnapshot === 'function'
-        ? Boolean(restorePendingStreamSnapshot(activeId))
-        : false;
-      const finalHistory = histories.get(activeId) || [];
-      const nextRenderSignature = historyRenderSignature(finalHistory);
-      upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
-      const currentUnread = Math.max(0, Number(chats.get(activeId)?.unread_count || 0));
-      const shouldForceUnreadTranscriptRender = Boolean(
-        !restoredPendingSnapshot
-        && previousRenderSignature === nextRenderSignature
-        && currentUnread > 0
-        && hasVisibleAssistantLikeTranscript(finalHistory)
-      );
-      const shouldRenderActiveHistory = previousRenderSignature !== nextRenderSignature
-        || restoredPendingSnapshot
-        || shouldForceUnreadTranscriptRender;
-      refreshTabNode(activeId);
-      if (shouldRenderActiveHistory) {
-        renderMessages(activeId, { preserveViewport: true });
-      }
-      ensureActivationReadThreshold(activeId, data.chat?.unread_count);
-      maybeMarkRead(activeId);
+      armActivationReadThreshold(targetChatId);
 
-      const needsVisibilityResume = shouldResumeOnVisibilityChange({
-        hidden: Boolean(hidden),
-        activeChatId: activeId,
-        pendingChats,
-        streamAbortControllers,
-      });
-      const serverPendingWithoutLiveStream = chatPending && !hasLiveStreamController(activeId);
-      const needsSnapshotResume = snapshotPendingWithoutLiveStream && !matchedVisibleHydratedCompletion;
-      if (!matchedVisibleHydratedCompletion && (needsVisibilityResume || serverPendingWithoutLiveStream || localPendingWithoutLiveStream || needsSnapshotResume)) {
-        const shouldForceResume = localPendingWithoutLiveStream || needsSnapshotResume;
-        void resumePendingChatStream(activeId, shouldForceResume ? { force: true } : undefined);
+      if (hadCachedHistory) {
+        cachedOpenController.openCachedChat(targetChatId, requestId, openStartedAtMs);
+        return;
+      }
+
+      setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: true });
+      renderMessages(targetChatId);
+
+      try {
+        await hydrationController.hydrateChatFromServer(targetChatId, requestId, false);
+      } catch (error) {
+        traceChatHistory('open-failed', {
+          chatId: targetChatId,
+          requestId,
+          durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
+          message: String(error?.message || ''),
+        });
+        if (requestId === getLastOpenChatRequestId()) {
+          appendSystemMessage(error.message || 'Failed to open chat.', targetChatId);
+        }
       }
     }
 
     return {
-      loadChatHistory,
-      hydrateChatFromServer,
+      loadChatHistory: fetchController.loadChatHistory,
+      hydrateChatFromServer: hydrationController.hydrateChatFromServer,
       openChat,
-      prefetchChatHistory,
-      warmChatHistoryCache,
-      refreshChats,
-      syncVisibleActiveChat,
+      prefetchChatHistory: fetchController.prefetchChatHistory,
+      warmChatHistoryCache: fetchController.warmChatHistoryCache,
+      refreshChats: statusController.refreshChats,
+      syncVisibleActiveChat: hydrationController.syncVisibleActiveChat,
     };
   }
 
@@ -1147,6 +1665,7 @@
       clearPendingStreamSnapshot,
       finalizeHydratedPendingState,
       shouldDeferNonCriticalCachedOpen = () => false,
+      getRenderedTranscriptSignature = null,
       renderTraceLog = () => {},
       nowMs = () => Date.now(),
     } = deps;
@@ -1234,6 +1753,7 @@
       maybeMarkRead: readSyncController.maybeMarkRead,
       isActiveChat,
       hasLocalPendingWithoutLiveStream: readSyncController.hasLocalPendingWithoutLiveStream,
+      getRenderedTranscriptSignature,
     });
 
     return {
@@ -1259,7 +1779,16 @@
   }
 
 
-  const api = { createController, createMetaController };
+  const api = {
+    createController,
+    createMetaController,
+    createUnreadAnchorController,
+    createActivationReadThresholdController,
+    createHistoryPendingStateController,
+    createHistoryRenderDecisionController,
+    createUnreadHydrationRetryController,
+    createCachedOpenController,
+  };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
   }

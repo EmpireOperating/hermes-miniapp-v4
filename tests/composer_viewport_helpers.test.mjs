@@ -25,7 +25,13 @@ function createEventTarget(initial = {}) {
   };
 }
 
-function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNearBottom = true } = {}) {
+function buildHarness({
+  mobileQuoteMode = false,
+  withVisualViewport = true,
+  isNearBottom = true,
+  promptRect = { top: 470, bottom: 540 },
+  formRect = { top: 430, bottom: 620 },
+} = {}) {
   let nearBottom = Boolean(isNearBottom);
   const scrollByCalls = [];
   const timeoutCalls = [];
@@ -67,13 +73,16 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
       this.selectionRanges.push([start, end]);
     },
     getBoundingClientRect() {
-      return { top: 470, bottom: 540 };
+      return promptRect;
     },
   });
   const form = {
     scrollIntoViewCalls: [],
     scrollIntoView(options) {
       this.scrollIntoViewCalls.push(options);
+    },
+    getBoundingClientRect() {
+      return formRect;
     },
   };
   const visualViewport = withVisualViewport
@@ -207,7 +216,7 @@ function buildHarness({ mobileQuoteMode = false, withVisualViewport = true, isNe
   };
 }
 
-test('ensureComposerVisible scrolls form into view and corrects viewport overflow', () => {
+test('ensureComposerVisible scrolls form into view and corrects composer overflow using the full form bounds', () => {
   const harness = buildHarness();
 
   harness.controller.ensureComposerVisible({ smooth: true });
@@ -216,7 +225,37 @@ test('ensureComposerVisible scrolls form into view and corrects viewport overflo
     { block: 'end', inline: 'nearest', behavior: 'smooth' },
   ]);
   assert.deepEqual(harness.scrollByCalls, [
-    { top: 50, left: 0, behavior: 'auto' },
+    { top: 130, left: 0, behavior: 'auto' },
+  ]);
+});
+
+test('ensureComposerVisible keeps a fully visible textarea stable when the overall composer is taller than the viewport', () => {
+  const harness = buildHarness({
+    promptRect: { top: 180, bottom: 250 },
+    formRect: { top: 40, bottom: 620 },
+  });
+
+  harness.controller.ensureComposerVisible();
+
+  assert.deepEqual(harness.form.scrollIntoViewCalls, [
+    { block: 'end', inline: 'nearest', behavior: 'auto' },
+  ]);
+  assert.deepEqual(harness.scrollByCalls, []);
+});
+
+test('ensureComposerVisible prioritizes the textarea bounds when the full composer cannot fit in the viewport', () => {
+  const harness = buildHarness({
+    promptRect: { top: 420, bottom: 530 },
+    formRect: { top: 220, bottom: 760 },
+  });
+
+  harness.controller.ensureComposerVisible();
+
+  assert.deepEqual(harness.form.scrollIntoViewCalls, [
+    { block: 'end', inline: 'nearest', behavior: 'auto' },
+  ]);
+  assert.deepEqual(harness.scrollByCalls, [
+    { top: 40, left: 0, behavior: 'auto' },
   ]);
 });
 

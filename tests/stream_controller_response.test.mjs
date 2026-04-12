@@ -275,7 +275,37 @@ test('consumeStreamResponse still immediately reconciles active chat when docume
   }
 });
 
-test('consumeStreamResponse skips immediate full reconcile on done when visible patching succeeds', async () => {
+test('consumeStreamResponse does not increment unread for the selected active chat even if document.visibilityState is hidden', async () => {
+  const originalDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'hidden' };
+  try {
+    const harness = buildControllerHarness();
+    const payload = [
+      'event: chunk',
+      'data: {"text":"hello"}',
+      '',
+      'event: done',
+      'data: {"reply":"hello","latency_ms":42,"turn_count":2}',
+      '',
+    ].join('\n');
+    const stream = makeSseResponse(payload);
+
+    const result = await harness.controller.consumeStreamResponse(9, stream.response, { value: '' }, {
+      fallbackTraceEvent: 'stream-fallback-patch',
+    });
+
+    assert.equal(result.terminalReceived, true);
+    assert.deepEqual(harness.unreadIncrements, []);
+  } finally {
+    if (typeof originalDocument === 'undefined') {
+      delete globalThis.document;
+    } else {
+      globalThis.document = originalDocument;
+    }
+  }
+});
+
+test('consumeStreamResponse immediately reconciles active chat on done even when visible patching succeeds', async () => {
   const phases = new Map();
   const syncedActiveRenders = [];
   const renderedMessages = [];
@@ -343,7 +373,7 @@ test('consumeStreamResponse skips immediate full reconcile on done when visible 
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.equal(result.terminalReceived, true);
-  assert.deepEqual(syncedActiveRenders, []);
+  assert.deepEqual(syncedActiveRenders, [9]);
   assert.deepEqual(renderedMessages, []);
 });
 

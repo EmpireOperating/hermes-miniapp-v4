@@ -8,7 +8,7 @@ const runtimeHistory = require('../static/runtime_history_helpers.js');
 
 function buildHarness(overrides = {}) {
   const histories = new Map();
-  const chats = new Map([[7, { id: 7, unread_count: 2, pending: false }]]);
+  const chats = new Map([[7, { id: 7, unread_count: 2, newest_unread_message_id: 0, pending: false }]]);
   const prefetchingHistories = new Set();
   const upsertedChats = [];
   const activeMeta = [];
@@ -81,20 +81,20 @@ function buildHarness(overrides = {}) {
       apiCalls.push({ path, payload });
       if (path === '/api/chats/history') {
         return {
-          chat: { id: Number(payload.chat_id), pending: false },
+          chat: { id: Number(payload.chat_id), pending: false, newest_unread_message_id: 0 },
           history: [{ id: 1, role: 'assistant', body: 'hello' }],
         };
       }
       if (path === '/api/chats/open') {
         return {
-          chat: { id: Number(payload.chat_id), pending: false },
+          chat: { id: Number(payload.chat_id), pending: false, newest_unread_message_id: 0 },
           history: [{ id: 2, role: 'assistant', body: 'opened' }],
         };
       }
       if (path === '/api/chats/mark-read') {
         markReadCalls.push(Number(payload.chat_id));
         return {
-          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 },
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0, newest_unread_message_id: 0 },
         };
       }
       if (path === '/api/chats/status') {
@@ -368,4 +368,4 @@ function buildMetaHarness() {
 }
 
 
-export { buildHarness, buildMetaHarness, runtimeHistory };
+export { buildHarness, buildMetaHarness, chatHistory, runtimeHistory };

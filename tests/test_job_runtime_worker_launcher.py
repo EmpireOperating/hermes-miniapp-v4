@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import chat_worker_runner
 import chat_worker_subprocess
+import job_runtime_worker_launcher_subprocess
 from job_runtime_worker_launcher import (
     InlineJobWorkerLauncher,
     SubprocessJobWorkerLauncher,
@@ -121,6 +122,59 @@ def test_chat_worker_subprocess_stream_request_emits_heartbeat_during_silent_wai
     assert result == 0
     assert any(event.get("type") == "heartbeat" for event in events)
     assert events[-1]["type"] == "done"
+
+
+def test_subprocess_stream_lifecycle_finalize_reports_limit_breach_and_terminal_error() -> None:
+    lifecycle = job_runtime_worker_launcher_subprocess.SubprocessStreamLifecycle(
+        transport='chat-worker-subprocess',
+        timeout_seconds=120.0,
+        first_event_timeout_seconds=30.0,
+        kill_grace_seconds=1.5,
+        stderr_excerpt_bytes=4096,
+        decode_event=lambda raw: {'type': 'done'} if raw else None,
+        stdout_line_queue=lambda proc: None,
+        read_stderr_excerpt=lambda stderr_file, max_bytes: 'MemoryError: out of memory',
+        signal_process_tree=lambda proc, sig: None,
+        classify_limit_breach=lambda **kwargs: ('memory', 'stderr_oom'),
+        build_timeout_message=lambda **kwargs: 'timeout happened',
+        build_exit_message=lambda **kwargs: f"exit rc={kwargs.get('return_code')}",
+        monotonic_now=lambda: 0.0,
+    )
+
+    class FakeProc:
+        pid = 101
+        returncode = -9
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    class FakeStderr:
+        def close(self):
+            return None
+
+    deregisters = []
+    state = job_runtime_worker_launcher_subprocess.SubprocessStreamState(
+        return_code=-9,
+        failure_kind='nonzero_exit',
+    )
+
+    result = lifecycle.finalize(
+        proc=FakeProc(),
+        stderr_file=FakeStderr(),
+        state=state,
+        deregister_child_spawn=lambda **kwargs: deregisters.append(dict(kwargs)),
+    )
+
+    assert result['limit_breach'] == 'memory'
+    assert result['limit_breach_detail'] == 'stderr_oom'
+    assert result['terminal_outcome'] == 'retryable_failure'
+    assert result['terminal_error'] == 'exit rc=-9'
+    assert deregisters == [
+        {'pid': 101, 'outcome': 'chat-worker-subprocess:failed:nonzero_exit', 'return_code': -9}
+    ]
 
 
 def test_inline_worker_launcher_delegates_to_chat_worker_runner(monkeypatch) -> None:
@@ -621,17 +675,80 @@ def test_subprocess_worker_timeout_forces_termination(monkeypatch, tmp_path) -> 
         )
     )
 
-    timeout_error = next(str(evt.get("error", "")) for evt in events if "timed out" in str(evt.get("error", "")))
+    timeout_error = next(str(evt.get("error", "")) for evt in events if "no first event" in str(evt.get("error", "")))
     assert "timed out stderr trail" in timeout_error
     assert fake_proc.terminated is True
     assert fake_proc.killed is True
-    assert finishes == [(92345, f"{launcher.transport}:failed:timeout", -9)]
+    assert finishes == [(92345, f"{launcher.transport}:failed:no_first_event_timeout", -9)]
     info = launcher.describe()
-    assert info["last_failure_kind"] == "timeout"
+    assert info["last_failure_kind"] == "no_first_event_timeout"
     assert info["last_return_code"] == -9
     assert "timed out stderr trail" in str(info["last_stderr_excerpt"])
     assert info["last_terminal_outcome"] == "timeout_killed"
     assert "timed out stderr trail" in str(info["last_terminal_error"])
+
+
+def test_subprocess_worker_times_out_distinctly_before_first_event(monkeypatch, tmp_path) -> None:
+    script_path = tmp_path / "chat_worker_subprocess.py"
+    script_path.write_text("# synthetic test script placeholder\n", encoding="utf-8")
+
+    launcher = SubprocessJobWorkerLauncher(
+        script_path=script_path,
+        python_executable="python3",
+        timeout_seconds=24.0,
+        kill_grace_seconds=0.01,
+    )
+
+    class HangingStdout:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            import time as _time
+
+            _time.sleep(60)
+            return ""
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.pid = 92347
+            self.stdin = io.StringIO()
+            self.stdout = HangingStdout()
+            self.returncode = None
+
+        def wait(self, timeout=None) -> int:
+            self.returncode = -9
+            return -9
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    monkeypatch.setattr("job_runtime_worker_launcher.subprocess.Popen", lambda *_args, **_kwargs: FakeProcess())
+    monotonic_values = iter([0.0, 2.0, 4.0, 6.1])
+    monkeypatch.setattr("job_runtime_worker_launcher.time.monotonic", lambda: next(monotonic_values, 6.1))
+
+    runtime = SimpleNamespace(client=SimpleNamespace(register_child_spawn=lambda **_kwargs: None, deregister_child_spawn=lambda **_kwargs: None))
+
+    events = list(
+        launcher._stream_events_via_subprocess(
+            runtime=runtime,
+            user_id="123",
+            message="hello",
+            conversation_history=[],
+            session_id="miniapp-123-57",
+        )
+    )
+
+    assert any("no first event" in str(event.get("error", "")) for event in events)
+    info = launcher.describe()
+    assert info["first_event_timeout_seconds"] == 6.0
+    assert info["last_failure_kind"] == "no_first_event_timeout"
 
 
 def test_subprocess_worker_timeout_tracks_inactivity_not_total_elapsed_time(monkeypatch, tmp_path) -> None:

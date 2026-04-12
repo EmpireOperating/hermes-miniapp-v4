@@ -173,7 +173,7 @@ test('maybeMarkRead enforces active/auth/visibility gating before calling markRe
 
   assert.equal(harness.markReadCalls.length, 1);
   assert.deepEqual(harness.markReadCalls, [7]);
-  assert.ok(nearBottomCalls.length >= 4);
+  assert.ok(nearBottomCalls.length >= 2);
   assert.deepEqual(nearBottomCalls[0], { container: harness.messagesContainer, threshold: 40 });
 });
 
@@ -189,7 +189,7 @@ test('maybeMarkRead force mode bypasses near-bottom/unread gates', async () => {
   assert.deepEqual(harness.markReadCalls, [7]);
 });
 
-test('maybeMarkRead waits for the bottom of the newest unread assistant message, not generic chat bottom proximity', async () => {
+test('maybeMarkRead waits for the bottom of the anchored newest unread assistant message, not generic chat bottom proximity', async () => {
   const nearBottomCalls = [];
   const harness = buildHarness({
     isNearBottomFn: (container, threshold) => {
@@ -199,9 +199,10 @@ test('maybeMarkRead waits for the bottom of the newest unread assistant message,
   });
 
   harness.chats.get(7).unread_count = 1;
+  harness.chats.get(7).newest_unread_message_id = 22;
   harness.setRenderedAssistantNodes([
-    { offsetTop: 120, offsetHeight: 80 },
-    { offsetTop: 420, offsetHeight: 140 },
+    { dataset: { messageId: '11' }, offsetTop: 120, offsetHeight: 80 },
+    { dataset: { messageId: '22' }, offsetTop: 420, offsetHeight: 140 },
   ]);
   harness.setMessageViewport({ scrollTop: 240, clientHeight: 240 });
 
@@ -214,6 +215,30 @@ test('maybeMarkRead waits for the bottom of the newest unread assistant message,
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.deepEqual(harness.markReadCalls, [7]);
+  assert.deepEqual(nearBottomCalls, []);
+});
+
+
+test('maybeMarkRead does not consume unread when the anchored unread message is still missing from the DOM', async () => {
+  const nearBottomCalls = [];
+  const harness = buildHarness({
+    isNearBottomFn: (container, threshold) => {
+      nearBottomCalls.push({ container, threshold });
+      return true;
+    },
+  });
+
+  harness.chats.get(7).unread_count = 1;
+  harness.chats.get(7).newest_unread_message_id = 22;
+  harness.setRenderedAssistantNodes([
+    { dataset: { messageId: '11' }, offsetTop: 420, offsetHeight: 140 },
+  ]);
+  harness.setMessageViewport({ scrollTop: 1000, clientHeight: 240 });
+
+  harness.controller.maybeMarkRead(7);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.markReadCalls, []);
   assert.deepEqual(nearBottomCalls, []);
 });
 

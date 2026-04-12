@@ -5,49 +5,14 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
-
-def build_reuse_contract(record: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(record, dict):
-        return None
-    required_now = [
-        "contract_version",
-        "session_id",
-        "owner_class",
-        "owner_pid",
-        "lifecycle_phase",
-        "reusability_reason",
-    ]
-    reserved_for_future = [
-        "resume_token",
-        "worker_endpoint",
-        "transport_kind",
-        "resume_deadline_ms",
-    ]
-    transport_kind = record.get("attach_transport_kind")
-    worker_endpoint = record.get("attach_worker_endpoint")
-    resume_token = record.get("attach_resume_token")
-    resume_deadline_ms = record.get("attach_resume_deadline_ms")
-    attach_available = bool(transport_kind and worker_endpoint and resume_token)
-    return {
-        "contract_version": "warm-reuse-v1",
-        "session_id": str(record.get("session_id") or ""),
-        "owner_class": str(record.get("owner_class") or "unknown"),
-        "owner_pid": record.get("owner_pid"),
-        "lifecycle_phase": str(record.get("lifecycle_phase") or "unknown"),
-        "reusability_reason": str(record.get("reusability_reason") or "unknown"),
-        "resume_supported": bool(attach_available),
-        "resume_capability": "worker_attach" if attach_available else "none",
-        "supported_resume_modes": ["worker_attach"] if attach_available else [],
-        "required_transport": "subprocess",
-        "attach_mechanism": "pid_only",
-        "required_now": required_now,
-        "reserved_for_future": reserved_for_future,
-        "resume_token": resume_token,
-        "worker_endpoint": worker_endpoint,
-        "transport_kind": transport_kind,
-        "resume_deadline_ms": resume_deadline_ms,
-    }
-
+from hermes_client_warm_session_helpers import (
+    build_owner_state_payload as helper_build_owner_state_payload,
+    build_owner_state_summary as helper_build_owner_state_summary,
+    build_reusable_candidate_payload as helper_build_reusable_candidate_payload,
+    build_reuse_contract,
+    build_worker_event_detail as helper_build_worker_event_detail,
+    classify_reusable_candidate_expiration,
+)
 
 
 class HermesClientError(RuntimeError):
@@ -256,6 +221,252 @@ class IsolatedWorkerWarmSessionRegistryScaffold:
     def _replace_record(self, record: WarmSessionOwnerRecord, **updates: Any) -> WarmSessionOwnerRecord:
         return replace(record, **updates)
 
+    def _monotonic_ms(self) -> int:
+        return int(time.monotonic() * 1000)
+
+    def _normalize_optional_int(self, value: Any) -> int | None:
+        return int(value) if value not in {None, ""} else None
+
+    def _normalize_optional_str(self, value: Any) -> str | None:
+        return str(value or "") or None
+
+    def _preserve_existing_runtime_fields(self, existing: WarmSessionOwnerRecord | None) -> dict[str, Any]:
+        if not isinstance(existing, WarmSessionOwnerRecord):
+            return {
+                "run_count": 1,
+                "last_health_monotonic_ms": None,
+                "last_known_rss_kb": None,
+                "last_known_thread_count": None,
+                "health_status": None,
+                "health_reason": None,
+            }
+        return {
+            "run_count": int(existing.run_count or 0),
+            "last_health_monotonic_ms": existing.last_health_monotonic_ms,
+            "last_known_rss_kb": existing.last_known_rss_kb,
+            "last_known_thread_count": existing.last_known_thread_count,
+            "health_status": existing.health_status,
+            "health_reason": existing.health_reason,
+        }
+
+    def _base_record_kwargs(self, session_key: str, existing: WarmSessionOwnerRecord | None) -> dict[str, Any]:
+        preserved = self._preserve_existing_runtime_fields(existing)
+        return {
+            "session_id": session_key,
+            "owner_class": type(self).__name__,
+            "last_health_monotonic_ms": preserved["last_health_monotonic_ms"],
+            "last_known_rss_kb": preserved["last_known_rss_kb"],
+            "last_known_thread_count": preserved["last_known_thread_count"],
+            "health_status": preserved["health_status"],
+            "health_reason": preserved["health_reason"],
+        }
+
+    def _build_started_record(
+        self,
+        *,
+        session_key: str,
+        chat_id: int | None,
+        job_id: int | None,
+        owner_pid: int | None,
+        started_ms: int,
+        existing: WarmSessionOwnerRecord | None,
+    ) -> WarmSessionOwnerRecord:
+        base = self._base_record_kwargs(session_key, existing)
+        preserved = self._preserve_existing_runtime_fields(existing)
+        return WarmSessionOwnerRecord(
+            **base,
+            state="running",
+            lifecycle_phase="active_attempt",
+            reusable=False,
+            reusability_reason="worker_attempt_in_progress",
+            chat_id=chat_id,
+            job_id=job_id,
+            owner_pid=owner_pid,
+            last_started_monotonic_ms=started_ms,
+            reusable_until_monotonic_ms=None,
+            attach_transport_kind=None,
+            attach_worker_endpoint=None,
+            attach_resume_token=None,
+            attach_resume_deadline_ms=None,
+            run_count=(preserved["run_count"] + 1) if isinstance(existing, WarmSessionOwnerRecord) else 1,
+        )
+
+    def _build_attach_ready_record(
+        self,
+        *,
+        session_key: str,
+        existing: WarmSessionOwnerRecord | None,
+        owner_pid: int | None,
+        transport_kind: str | None,
+        worker_endpoint: str | None,
+        resume_token: str | None,
+        resume_deadline_ms: int | None,
+    ) -> WarmSessionOwnerRecord:
+        if not isinstance(existing, WarmSessionOwnerRecord):
+            existing = WarmSessionOwnerRecord(
+                session_id=session_key,
+                owner_class=type(self).__name__,
+                state="running",
+                lifecycle_phase="active_attempt",
+                reusable=False,
+                reusability_reason="worker_attempt_in_progress",
+            )
+        return self._replace_record(
+            existing,
+            state="attachable_running",
+            reusable=True,
+            reusability_reason="worker_attach_live_available",
+            owner_pid=owner_pid if owner_pid is not None else existing.owner_pid,
+            attach_transport_kind=self._normalize_optional_str(transport_kind),
+            attach_worker_endpoint=self._normalize_optional_str(worker_endpoint),
+            attach_resume_token=self._normalize_optional_str(resume_token),
+            attach_resume_deadline_ms=self._normalize_optional_int(resume_deadline_ms),
+        )
+
+    def _build_finished_record(
+        self,
+        *,
+        session_key: str,
+        existing: WarmSessionOwnerRecord | None,
+        normalized_outcome: str,
+        chat_id: int | None,
+        job_id: int | None,
+        owner_pid: int | None,
+        started_ms: int | None,
+        finished_ms: int,
+    ) -> WarmSessionOwnerRecord:
+        if isinstance(existing, WarmSessionOwnerRecord) and str(existing.state or "") == "evicted":
+            return self._replace_record(
+                existing,
+                state="evicted",
+                lifecycle_phase="invalidated",
+                reusable=False,
+                chat_id=existing.chat_id if existing.chat_id is not None else chat_id,
+                job_id=existing.job_id if existing.job_id is not None else job_id,
+                owner_pid=existing.owner_pid if existing.owner_pid is not None else owner_pid,
+                last_outcome=normalized_outcome,
+                last_started_monotonic_ms=started_ms,
+                last_finished_monotonic_ms=finished_ms,
+            )
+        if (
+            isinstance(existing, WarmSessionOwnerRecord)
+            and str(existing.state or "") == "attachable_running"
+            and bool(existing.attach_worker_endpoint)
+            and bool(existing.attach_resume_token)
+        ):
+            return self._replace_record(
+                existing,
+                state="attachable_running",
+                reusable=True,
+                reusability_reason=existing.reusability_reason or "worker_attach_live_available",
+                chat_id=existing.chat_id if existing.chat_id is not None else chat_id,
+                job_id=existing.job_id if existing.job_id is not None else job_id,
+                owner_pid=existing.owner_pid if existing.owner_pid is not None else owner_pid,
+                last_outcome=normalized_outcome,
+                last_started_monotonic_ms=started_ms,
+                last_finished_monotonic_ms=finished_ms,
+            )
+        reusable = normalized_outcome in {"completed", "success", "warm_reusable_candidate"}
+        reusable_until = finished_ms + self._reusable_candidate_ttl_ms if reusable else None
+        reusability_reason = "isolated_worker_warm_reuse_not_implemented" if reusable else f"non_reusable_outcome:{normalized_outcome}"
+        base = self._base_record_kwargs(session_key, existing)
+        preserved = self._preserve_existing_runtime_fields(existing)
+        return WarmSessionOwnerRecord(
+            **base,
+            state="reusable_candidate" if reusable else "finished",
+            lifecycle_phase="post_attempt",
+            reusable=reusable,
+            reusability_reason=reusability_reason,
+            chat_id=chat_id,
+            job_id=job_id,
+            owner_pid=owner_pid,
+            last_outcome=normalized_outcome,
+            last_started_monotonic_ms=started_ms,
+            last_finished_monotonic_ms=finished_ms,
+            reusable_until_monotonic_ms=reusable_until,
+            attach_transport_kind=None,
+            attach_worker_endpoint=None,
+            attach_resume_token=None,
+            attach_resume_deadline_ms=None,
+            run_count=preserved["run_count"] if isinstance(existing, WarmSessionOwnerRecord) else 1,
+        )
+
+    def _build_owner_state_summary(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        return helper_build_owner_state_summary(records)
+
+    def _build_reusable_candidate_payload(self, record: WarmSessionOwnerRecord) -> dict[str, Any] | None:
+        return helper_build_reusable_candidate_payload(record)
+
+
+    def _build_owner_state_payload(
+        self,
+        *,
+        records: list[dict[str, Any]],
+        recent_events: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return helper_build_owner_state_payload(
+            owner_class=type(self).__name__,
+            records=records,
+            recent_events=recent_events,
+            reusable_candidate_ttl_ms=self._reusable_candidate_ttl_ms,
+            warm_worker_reuse_enabled=self._warm_worker_reuse_enabled,
+            same_chat_only=self._same_chat_only,
+            max_idle_workers=self._max_idle_workers,
+            max_total_workers=self._max_total_workers,
+        )
+
+    def _update_owner_record(self, session_key: str, record: WarmSessionOwnerRecord) -> WarmSessionOwnerRecord:
+        self._owner_records[session_key] = record
+        return record
+
+    def _build_worker_event_detail(
+        self,
+        *,
+        chat_id: int | None = None,
+        job_id: int | None = None,
+        owner_pid: int | None = None,
+        outcome: str | None = None,
+        transport_kind: str | None = None,
+        worker_endpoint: str | None = None,
+        resume_deadline_ms: int | None = None,
+        rss_kb: int | None = None,
+        thread_count: int | None = None,
+        health_status: str | None = None,
+        health_reason: str | None = None,
+    ) -> str:
+        return helper_build_worker_event_detail(
+            chat_id=chat_id,
+            job_id=job_id,
+            owner_pid=owner_pid,
+            outcome=outcome,
+            transport_kind=transport_kind,
+            worker_endpoint=worker_endpoint,
+            resume_deadline_ms=resume_deadline_ms,
+            rss_kb=rss_kb,
+            thread_count=thread_count,
+            health_status=health_status,
+            health_reason=health_reason,
+        )
+
+    def _record_owner_event_locked(self, *, event: str, session_id: str, detail: str = "") -> None:
+        self._owner_events.append(
+            WarmSessionOwnerEvent(
+                event=str(event or "unknown"),
+                session_id=str(session_id or ""),
+                owner_class=type(self).__name__,
+                monotonic_ms=int(time.monotonic() * 1000),
+                detail=str(detail or ""),
+            )
+        )
+        if len(self._owner_events) > self._owner_events_limit:
+            overflow = len(self._owner_events) - self._owner_events_limit
+            if overflow > 0:
+                del self._owner_events[:overflow]
+
+    def _record_owner_event(self, *, event: str, session_id: str, detail: str = "") -> None:
+        with self._lock:
+            self._record_owner_event_locked(event=event, session_id=session_id, detail=detail)
+
     def get_or_create(
         self,
         *,
@@ -312,79 +523,18 @@ class IsolatedWorkerWarmSessionRegistryScaffold:
 
     def owner_state(self) -> dict[str, Any]:
         with self._lock:
-            now_ms = int(time.monotonic() * 1000)
-            self._prune_reusable_candidates(now_ms)
+            self._prune_reusable_candidates(self._monotonic_ms())
             records = [record.as_dict() for _session_id, record in sorted(self._owner_records.items())]
-        active_session_ids = [
-            str(record["session_id"])
-            for record in records
-            if str(record.get("state") or "") in {"running", "attachable_running"}
-        ]
-        attachable_session_ids = [
-            str(record["session_id"])
-            for record in records
-            if str(record.get("state") or "") == "attachable_running"
-        ]
-        reusable_session_ids = [str(record["session_id"]) for record in records if bool(record.get("reusable"))]
-        live_attach_ready_session_ids = [
-            str(record["session_id"])
-            for record in records
-            if str(record.get("state") or "") == "attachable_running"
-            and bool(record.get("attach_worker_endpoint"))
-            and bool(record.get("attach_resume_token"))
-        ]
-        state_counts: dict[str, int] = {}
-        for record in records:
-            state = str(record.get("state") or "unknown")
-            state_counts[state] = int(state_counts.get(state, 0)) + 1
-        idle_session_ids = [
-            str(record["session_id"])
-            for record in records
-            if str(record.get("state") or "") in {"reusable_candidate", "attachable_running"}
-            and bool(record.get("reusable"))
-        ]
-        return {
-            "owner_class": type(self).__name__,
-            "active_owner_count": len(active_session_ids),
-            "active_session_ids": active_session_ids,
-            "attachable_owner_count": len(attachable_session_ids),
-            "attachable_session_ids": attachable_session_ids,
-            "live_attach_ready_count": len(live_attach_ready_session_ids),
-            "live_attach_ready_session_ids": live_attach_ready_session_ids,
-            "reusable_candidate_count": len(reusable_session_ids),
-            "reusable_candidate_session_ids": reusable_session_ids,
-            "idle_owner_count": len(idle_session_ids),
-            "idle_session_ids": idle_session_ids,
-            "owner_state_counts": state_counts,
-            "owner_records": records,
-            "idle_ttl_seconds": None,
-            "reusable_candidate_ttl_ms": int(self._reusable_candidate_ttl_ms),
-            "warm_worker_reuse_enabled": bool(self._warm_worker_reuse_enabled),
-            "same_chat_only": bool(self._same_chat_only),
-            "max_idle_workers": int(self._max_idle_workers),
-            "max_total_workers": int(self._max_total_workers),
-            "recent_events": [item.as_dict() for item in self._owner_events[-16:]],
-        }
+            recent_events = [item.as_dict() for item in self._owner_events[-16:]]
+        return self._build_owner_state_payload(records=records, recent_events=recent_events)
 
     def select_reusable_candidate(self, session_id: str) -> dict[str, Any] | None:
         with self._lock:
-            now_ms = int(time.monotonic() * 1000)
-            self._prune_reusable_candidates(now_ms)
+            self._prune_reusable_candidates(self._monotonic_ms())
             record = self._owner_records.get(str(session_id or ""))
             if not isinstance(record, WarmSessionOwnerRecord):
                 return None
-            contract = build_reuse_contract(record.as_dict()) or {}
-            attach_live_available = bool(
-                contract.get("resume_supported")
-                and contract.get("resume_capability") == "worker_attach"
-                and contract.get("worker_endpoint")
-                and contract.get("resume_token")
-            )
-            if not bool(record.reusable) and not attach_live_available:
-                return None
-            payload = record.as_dict()
-            payload["reuse_contract"] = contract
-            return payload
+            return self._build_reusable_candidate_payload(record)
 
     def note_worker_health(
         self,
@@ -400,54 +550,50 @@ class IsolatedWorkerWarmSessionRegistryScaffold:
             existing = self._owner_records.get(session_key)
             if not isinstance(existing, WarmSessionOwnerRecord):
                 return
-            sampled_at = int(time.monotonic() * 1000)
-            self._owner_records[session_key] = self._replace_record(
-                existing,
-                last_health_monotonic_ms=sampled_at,
-                last_known_rss_kb=int(rss_kb) if rss_kb not in {None, ""} else None,
-                last_known_thread_count=int(thread_count) if thread_count not in {None, ""} else None,
-                health_status=str(health_status or "") or None,
-                health_reason=str(health_reason or "") or None,
+            sampled_at = self._monotonic_ms()
+            self._update_owner_record(
+                session_key,
+                self._replace_record(
+                    existing,
+                    last_health_monotonic_ms=sampled_at,
+                    last_known_rss_kb=self._normalize_optional_int(rss_kb),
+                    last_known_thread_count=self._normalize_optional_int(thread_count),
+                    health_status=self._normalize_optional_str(health_status),
+                    health_reason=self._normalize_optional_str(health_reason),
+                ),
             )
-            self._record_owner_event(
+            self._record_owner_event_locked(
                 event="worker_health_sampled",
                 session_id=session_id,
-                detail=(
-                    f"rss_kb={rss_kb} thread_count={thread_count} "
-                    f"health_status={health_status} health_reason={health_reason}"
+                detail=self._build_worker_event_detail(
+                    rss_kb=rss_kb,
+                    thread_count=thread_count,
+                    health_status=health_status,
+                    health_reason=health_reason,
                 ),
             )
 
     def note_worker_started(self, *, session_id: str, chat_id: int | None = None, job_id: int | None = None, owner_pid: int | None = None) -> None:
         with self._lock:
-            detail = f"chat_id={chat_id} job_id={job_id} owner_pid={owner_pid}"
-            started_ms = int(time.monotonic() * 1000)
+            started_ms = self._monotonic_ms()
             session_key = str(session_id or "")
             existing = self._owner_records.get(session_key)
-            self._owner_records[session_key] = WarmSessionOwnerRecord(
-                session_id=session_key,
-                owner_class=type(self).__name__,
-                state="running",
-                lifecycle_phase="active_attempt",
-                reusable=False,
-                reusability_reason="worker_attempt_in_progress",
-                chat_id=chat_id,
-                job_id=job_id,
-                owner_pid=owner_pid,
-                last_started_monotonic_ms=started_ms,
-                reusable_until_monotonic_ms=None,
-                attach_transport_kind=None,
-                attach_worker_endpoint=None,
-                attach_resume_token=None,
-                attach_resume_deadline_ms=None,
-                run_count=(existing.run_count + 1) if isinstance(existing, WarmSessionOwnerRecord) else 1,
-                last_health_monotonic_ms=existing.last_health_monotonic_ms if isinstance(existing, WarmSessionOwnerRecord) else None,
-                last_known_rss_kb=existing.last_known_rss_kb if isinstance(existing, WarmSessionOwnerRecord) else None,
-                last_known_thread_count=existing.last_known_thread_count if isinstance(existing, WarmSessionOwnerRecord) else None,
-                health_status=existing.health_status if isinstance(existing, WarmSessionOwnerRecord) else None,
-                health_reason=existing.health_reason if isinstance(existing, WarmSessionOwnerRecord) else None,
+            self._update_owner_record(
+                session_key,
+                self._build_started_record(
+                    session_key=session_key,
+                    chat_id=chat_id,
+                    job_id=job_id,
+                    owner_pid=owner_pid,
+                    started_ms=started_ms,
+                    existing=existing,
+                ),
             )
-            self._record_owner_event(event="worker_started", session_id=session_id, detail=detail)
+            self._record_owner_event_locked(
+                event="worker_started",
+                session_id=session_id,
+                detail=self._build_worker_event_detail(chat_id=chat_id, job_id=job_id, owner_pid=owner_pid),
+            )
 
     def note_worker_finished(
         self,
@@ -459,76 +605,34 @@ class IsolatedWorkerWarmSessionRegistryScaffold:
         owner_pid: int | None = None,
     ) -> None:
         with self._lock:
-            detail = f"chat_id={chat_id} job_id={job_id} owner_pid={owner_pid} outcome={outcome}"
-            finished_ms = int(time.monotonic() * 1000)
+            finished_ms = self._monotonic_ms()
             session_key = str(session_id or "")
             existing = self._owner_records.get(session_key)
             started_ms = existing.last_started_monotonic_ms if isinstance(existing, WarmSessionOwnerRecord) else None
             normalized_outcome = str(outcome or "finished")
-            if isinstance(existing, WarmSessionOwnerRecord) and str(existing.state or "") == "evicted":
-                self._owner_records[session_key] = self._replace_record(
-                    existing,
-                    state="evicted",
-                    lifecycle_phase="invalidated",
-                    reusable=False,
-                    chat_id=existing.chat_id if existing.chat_id is not None else chat_id,
-                    job_id=existing.job_id if existing.job_id is not None else job_id,
-                    owner_pid=existing.owner_pid if existing.owner_pid is not None else owner_pid,
-                    last_outcome=normalized_outcome,
-                    last_started_monotonic_ms=started_ms,
-                    last_finished_monotonic_ms=finished_ms,
-                )
-                self._record_owner_event(event="worker_finished", session_id=session_id, detail=detail)
-                return
-            if (
-                isinstance(existing, WarmSessionOwnerRecord)
-                and str(existing.state or "") == "attachable_running"
-                and bool(existing.attach_worker_endpoint)
-                and bool(existing.attach_resume_token)
-            ):
-                self._owner_records[session_key] = self._replace_record(
-                    existing,
-                    state="attachable_running",
-                    reusable=True,
-                    reusability_reason=existing.reusability_reason or "worker_attach_live_available",
-                    chat_id=existing.chat_id if existing.chat_id is not None else chat_id,
-                    job_id=existing.job_id if existing.job_id is not None else job_id,
-                    owner_pid=existing.owner_pid if existing.owner_pid is not None else owner_pid,
-                    last_outcome=normalized_outcome,
-                    last_started_monotonic_ms=started_ms,
-                    last_finished_monotonic_ms=finished_ms,
-                )
-                self._record_owner_event(event="worker_finished", session_id=session_id, detail=detail)
-                return
-            reusable = normalized_outcome in {"completed", "success", "warm_reusable_candidate"}
-            reusable_until = finished_ms + self._reusable_candidate_ttl_ms if reusable else None
-            reusability_reason = "isolated_worker_warm_reuse_not_implemented" if reusable else f"non_reusable_outcome:{normalized_outcome}"
-            self._owner_records[session_key] = WarmSessionOwnerRecord(
-                session_id=session_key,
-                owner_class=type(self).__name__,
-                state="reusable_candidate" if reusable else "finished",
-                lifecycle_phase="post_attempt",
-                reusable=reusable,
-                reusability_reason=reusability_reason,
-                chat_id=chat_id,
-                job_id=job_id,
-                owner_pid=owner_pid,
-                last_outcome=normalized_outcome,
-                last_started_monotonic_ms=started_ms,
-                last_finished_monotonic_ms=finished_ms,
-                reusable_until_monotonic_ms=reusable_until,
-                attach_transport_kind=None,
-                attach_worker_endpoint=None,
-                attach_resume_token=None,
-                attach_resume_deadline_ms=None,
-                run_count=existing.run_count if isinstance(existing, WarmSessionOwnerRecord) else 1,
-                last_health_monotonic_ms=existing.last_health_monotonic_ms if isinstance(existing, WarmSessionOwnerRecord) else None,
-                last_known_rss_kb=existing.last_known_rss_kb if isinstance(existing, WarmSessionOwnerRecord) else None,
-                last_known_thread_count=existing.last_known_thread_count if isinstance(existing, WarmSessionOwnerRecord) else None,
-                health_status=existing.health_status if isinstance(existing, WarmSessionOwnerRecord) else None,
-                health_reason=existing.health_reason if isinstance(existing, WarmSessionOwnerRecord) else None,
+            self._update_owner_record(
+                session_key,
+                self._build_finished_record(
+                    session_key=session_key,
+                    existing=existing,
+                    normalized_outcome=normalized_outcome,
+                    chat_id=chat_id,
+                    job_id=job_id,
+                    owner_pid=owner_pid,
+                    started_ms=started_ms,
+                    finished_ms=finished_ms,
+                ),
             )
-            self._record_owner_event(event="worker_finished", session_id=session_id, detail=detail)
+            self._record_owner_event_locked(
+                event="worker_finished",
+                session_id=session_id,
+                detail=self._build_worker_event_detail(
+                    chat_id=chat_id,
+                    job_id=job_id,
+                    owner_pid=owner_pid,
+                    outcome=outcome,
+                ),
+            )
 
     def note_worker_attach_ready(
         self,
@@ -543,32 +647,26 @@ class IsolatedWorkerWarmSessionRegistryScaffold:
         with self._lock:
             session_key = str(session_id or "")
             existing = self._owner_records.get(session_key)
-            if not isinstance(existing, WarmSessionOwnerRecord):
-                existing = WarmSessionOwnerRecord(
-                    session_id=session_key,
-                    owner_class=type(self).__name__,
-                    state="running",
-                    lifecycle_phase="active_attempt",
-                    reusable=False,
-                    reusability_reason="worker_attempt_in_progress",
-                )
-            self._owner_records[session_key] = self._replace_record(
-                existing,
-                state="attachable_running",
-                reusable=True,
-                reusability_reason="worker_attach_live_available",
-                owner_pid=owner_pid if owner_pid is not None else existing.owner_pid,
-                attach_transport_kind=str(transport_kind or "") or None,
-                attach_worker_endpoint=str(worker_endpoint or "") or None,
-                attach_resume_token=str(resume_token or "") or None,
-                attach_resume_deadline_ms=int(resume_deadline_ms) if resume_deadline_ms not in {None, ""} else None,
+            self._update_owner_record(
+                session_key,
+                self._build_attach_ready_record(
+                    session_key=session_key,
+                    existing=existing,
+                    owner_pid=owner_pid,
+                    transport_kind=transport_kind,
+                    worker_endpoint=worker_endpoint,
+                    resume_token=resume_token,
+                    resume_deadline_ms=resume_deadline_ms,
+                ),
             )
-            self._record_owner_event(
+            self._record_owner_event_locked(
                 event="worker_attach_ready",
                 session_id=session_id,
-                detail=(
-                    f"owner_pid={owner_pid} transport_kind={transport_kind} "
-                    f"worker_endpoint={worker_endpoint} resume_deadline_ms={resume_deadline_ms}"
+                detail=self._build_worker_event_detail(
+                    owner_pid=owner_pid,
+                    transport_kind=transport_kind,
+                    worker_endpoint=worker_endpoint,
+                    resume_deadline_ms=resume_deadline_ms,
                 ),
             )
 
@@ -578,46 +676,22 @@ class IsolatedWorkerWarmSessionRegistryScaffold:
             for session_id, record in list(self._owner_records.items()):
                 if not isinstance(record, WarmSessionOwnerRecord):
                     continue
-                attach_deadline = record.attach_resume_deadline_ms
-                if attach_deadline is not None and int(attach_deadline) <= cutoff_ms:
-                    self._owner_records[session_id] = self._replace_record(
-                        record,
-                        state="expired",
-                        lifecycle_phase="expired_candidate",
-                        reusable=False,
-                        reusability_reason="attach_resume_deadline_expired",
-                    )
-                    self._record_owner_event(event="attach_expired", session_id=session_id, detail=f"expired_at={attach_deadline}")
-                    continue
-                if not bool(record.reusable):
-                    continue
-                expiry = record.reusable_until_monotonic_ms
-                if expiry is None or int(expiry) > cutoff_ms:
+                expiration = classify_reusable_candidate_expiration(record, cutoff_ms=cutoff_ms)
+                if not expiration:
                     continue
                 self._owner_records[session_id] = self._replace_record(
                     record,
                     state="expired",
                     lifecycle_phase="expired_candidate",
                     reusable=False,
-                    reusability_reason="candidate_ttl_expired",
+                    reusability_reason=str(expiration["reason"]),
                 )
-                self._record_owner_event(event="candidate_expired", session_id=session_id, detail=f"expired_at={expiry}")
+                self._record_owner_event(
+                    event=str(expiration["event"]),
+                    session_id=session_id,
+                    detail=str(expiration["detail"]),
+                )
 
-    def _record_owner_event(self, *, event: str, session_id: str, detail: str = "") -> None:
-        with self._lock:
-            self._owner_events.append(
-                WarmSessionOwnerEvent(
-                    event=str(event or "unknown"),
-                    session_id=str(session_id or ""),
-                    owner_class=type(self).__name__,
-                    monotonic_ms=int(time.monotonic() * 1000),
-                    detail=str(detail or ""),
-                )
-            )
-            if len(self._owner_events) > self._owner_events_limit:
-                overflow = len(self._owner_events) - self._owner_events_limit
-                if overflow > 0:
-                    del self._owner_events[:overflow]
 
 
 class PersistentSessionManager:

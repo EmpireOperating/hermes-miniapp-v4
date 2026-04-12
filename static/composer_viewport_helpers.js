@@ -78,15 +78,32 @@
         : Number(windowObject.innerHeight || 0);
 
       if (viewportBottom > viewportTop) {
-        const rect = promptEl.getBoundingClientRect();
+        const promptRect = typeof promptEl.getBoundingClientRect === 'function'
+          ? promptEl.getBoundingClientRect()
+          : null;
+        const formRect = typeof form.getBoundingClientRect === 'function'
+          ? form.getBoundingClientRect()
+          : null;
+        if (!promptRect && !formRect) return;
+
         const topSafe = viewportTop + 8;
         const bottomSafe = viewportBottom - 10;
+        const viewportSafeHeight = Math.max(0, bottomSafe - topSafe);
+        const formTop = Number(formRect?.top);
+        const formBottom = Number(formRect?.bottom);
+        const formHeight = formBottom - formTop;
+        const formFitsViewport = Number.isFinite(formHeight) && formHeight <= viewportSafeHeight;
+        const rect = formFitsViewport ? (formRect || promptRect) : (promptRect || formRect);
+        const rectTop = Number(rect?.top);
+        const rectBottom = Number(rect?.bottom);
 
-        if (rect.bottom > bottomSafe) {
-          const deltaDown = rect.bottom - bottomSafe;
+        if (Number.isFinite(rectBottom) && rectBottom > bottomSafe) {
+          const deltaDown = rectBottom - bottomSafe;
           windowObject.scrollBy({ top: deltaDown, left: 0, behavior: 'auto' });
-        } else if (rect.top < topSafe) {
-          const deltaUp = rect.top - topSafe;
+          return;
+        }
+        if (Number.isFinite(rectTop) && rectTop < topSafe) {
+          const deltaUp = rectTop - topSafe;
           windowObject.scrollBy({ top: deltaUp, left: 0, behavior: 'auto' });
         }
       }

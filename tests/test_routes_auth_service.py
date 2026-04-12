@@ -67,6 +67,68 @@ class _PinnedSummaryStoreStub(_StoreStub):
         return False
 
 
+class _UnreadBootstrapStoreStub(_StoreStub):
+    def __init__(self):
+        super().__init__(checkpoint_state=None)
+        self.mark_chat_read_calls = 0
+        self.mark_chat_read_through_calls = 0
+        self.active_chat_id = 7
+
+    def prune_expired_auth_sessions(self, _now_ts: int) -> None:
+        return None
+
+    def list_chats(self, *, user_id: str):
+        assert user_id == "123"
+        return [{
+            "id": 7,
+            "title": "Ideas",
+            "pending": False,
+            "unread_count": 1,
+            "newest_unread_message_id": 11,
+            "is_pinned": False,
+        }]
+
+    def list_pinned_chat_summaries(self, *, user_id: str):
+        assert user_id == "123"
+        return []
+
+    def get_active_chat(self, user_id: str):
+        assert user_id == "123"
+        return self.active_chat_id
+
+    def has_explicit_empty_chat_state(self, user_id: str) -> bool:
+        assert user_id == "123"
+        return False
+
+    def ensure_default_chat(self, user_id: str) -> int:
+        assert user_id == "123"
+        return 7
+
+    def get_skin(self, user_id: str) -> str:
+        assert user_id == "123"
+        return "terminal"
+
+    def get_telegram_unread_notifications_enabled(self, user_id: str) -> bool:
+        assert user_id == "123"
+        return False
+
+    def get_history(self, *, user_id: str, chat_id: int, limit: int = 120):
+        assert user_id == "123"
+        assert chat_id == 7
+        assert limit == 120
+        return [_Turn(id=11, chat_id=7, role="hermes", body="Final reply", created_at="2026-04-10T00:00:00Z")]
+
+    def set_active_chat(self, *, user_id: str, chat_id: int) -> None:
+        assert user_id == "123"
+        self.active_chat_id = chat_id
+
+    def mark_chat_read(self, *, user_id: str, chat_id: int) -> None:
+        self.mark_chat_read_calls += 1
+
+    def mark_chat_read_through(self, *, user_id: str, chat_id: int, message_id: int) -> None:
+        self.mark_chat_read_through_calls += 1
+
+
 def _service(*, checkpoint_state=None, store=None) -> AuthBootstrapService:
     active_store = store or _StoreStub(checkpoint_state=checkpoint_state)
     return AuthBootstrapService(
@@ -165,3 +227,24 @@ def test_auth_success_state_prefers_lightweight_pinned_chat_summaries() -> None:
     ]
     assert store.list_pinned_chat_summaries_calls == 1
     assert store.list_pinned_chats_calls == 0
+
+
+
+def test_auth_success_state_does_not_consume_active_chat_unread_on_bootstrap() -> None:
+    store = _UnreadBootstrapStoreStub()
+    service = _service(store=store)
+
+    result = service.auth_success_state(
+        SimpleNamespace(id=123, first_name="Operator", username="operator"),
+        auth_mode="telegram",
+        allow_empty=False,
+    )
+
+    payload = result["payload"]
+    assert payload["active_chat_id"] == 7
+    assert payload["history"][-1]["body"] == "Final reply"
+    active_chat = next(chat for chat in payload["chats"] if chat["id"] == 7)
+    assert active_chat["unread_count"] == 1
+    assert active_chat["newest_unread_message_id"] == 11
+    assert store.mark_chat_read_calls == 0
+    assert store.mark_chat_read_through_calls == 0

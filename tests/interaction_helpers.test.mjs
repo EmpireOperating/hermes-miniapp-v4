@@ -243,8 +243,19 @@ test('scheduleSelectionQuoteSync cancels pending timers and schedules sync actio
   assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'schedule:sync:140', 'sync-action']);
 });
 
-test('applyQuoteIntoPrompt inserts quote block at cursor, dispatches input, and keeps caret in sync', () => {
+test('applyQuoteIntoPrompt inserts quote block at cursor, dispatches input, and aggressively refocuses the composer in mobile quote mode', () => {
   const dispatched = [];
+  const focusCalls = [];
+  const timeoutDelays = [];
+  const timeoutCallbacks = [];
+  const rafCallbacks = [];
+  const docBody = { tag: 'body' };
+  const documentObject = {
+    activeElement: docBody,
+    body: docBody,
+    documentElement: { tag: 'html' },
+    querySelector: () => null,
+  };
   class FakeEvent {
     constructor(type, options = {}) {
       this.type = type;
@@ -257,7 +268,10 @@ test('applyQuoteIntoPrompt inserts quote block at cursor, dispatches input, and 
     selectionStart: 6,
     selectionEnd: 11,
     ownerDocument: { defaultView: { Event: FakeEvent } },
-    focus: () => {},
+    focus(...args) {
+      focusCalls.push(args);
+      documentObject.activeElement = promptEl;
+    },
     dispatchEvent(event) {
       dispatched.push([event.type, event.bubbles]);
     },
@@ -273,12 +287,92 @@ test('applyQuoteIntoPrompt inserts quote block at cursor, dispatches input, and 
     ensureComposerVisible: () => {
       visibleCalls += 1;
     },
+    mobileQuoteMode: true,
+    documentObject,
+    windowObject: {
+      requestAnimationFrame(callback) {
+        rafCallbacks.push(callback);
+      },
+      setTimeout(callback, delay) {
+        timeoutDelays.push(delay);
+        timeoutCallbacks.push(callback);
+        return delay;
+      },
+    },
   });
 
   assert.equal(promptEl.value.includes('┌ Quote\n│ quoted line\n└\n\n\n'), true);
   assert.equal(promptEl.selectionStart, promptEl.selectionEnd);
   assert.deepEqual(dispatched, [['input', true]]);
-  assert.equal(visibleCalls, 1);
+  assert.equal(focusCalls.length, 1);
+  assert.deepEqual(focusCalls[0], []);
+  assert.deepEqual(timeoutDelays, [0, 180]);
+  assert.equal(rafCallbacks.length, 1);
+
+  documentObject.activeElement = docBody;
+  rafCallbacks[0]();
+  timeoutCallbacks.forEach((callback) => {
+    documentObject.activeElement = docBody;
+    callback();
+  });
+
+  assert.equal(focusCalls.length, 4);
+  assert.equal(visibleCalls, 8);
+});
+
+test('applyQuoteIntoPrompt desktop focus retries respect active modal focus ownership after the initial forced focus', () => {
+  const focusCalls = [];
+  const timeoutCallbacks = [];
+  const rafCallbacks = [];
+  const modalInput = { tag: 'modal-input' };
+  const documentObject = {
+    activeElement: null,
+    body: { tag: 'body' },
+    documentElement: { tag: 'html' },
+    querySelector: () => modalInput,
+  };
+  const promptEl = {
+    value: '',
+    maxLength: 6000,
+    selectionStart: 0,
+    selectionEnd: 0,
+    ownerDocument: { defaultView: { Event: class Event { constructor(type, options = {}) { this.type = type; this.bubbles = Boolean(options.bubbles); } } } },
+    focus(...args) {
+      focusCalls.push(args);
+      documentObject.activeElement = promptEl;
+    },
+    dispatchEvent() {},
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
+    },
+  };
+
+  interaction.applyQuoteIntoPrompt('desktop quote', {
+    promptEl,
+    formatQuoteBlockFn: interaction.formatQuoteBlock,
+    ensureComposerVisible: () => {},
+    mobileQuoteMode: false,
+    documentObject,
+    windowObject: {
+      requestAnimationFrame(callback) {
+        rafCallbacks.push(callback);
+      },
+      setTimeout(callback, _delay) {
+        timeoutCallbacks.push(callback);
+        return 1;
+      },
+    },
+  });
+
+  assert.equal(focusCalls.length, 1);
+  assert.deepEqual(focusCalls[0], [{ preventScroll: true }]);
+
+  documentObject.activeElement = modalInput;
+  rafCallbacks[0]();
+  timeoutCallbacks.forEach((callback) => callback());
+
+  assert.equal(focusCalls.length, 1);
 });
 
 test('activeSelectionQuote and hasMessageSelection fall back to anchor nodes when range ancestor is a fragment', () => {

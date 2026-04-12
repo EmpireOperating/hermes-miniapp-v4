@@ -196,6 +196,16 @@ def execute_chat_job(
                     payload = {"chat_id": chat_id, **{k: v for k, v in event.items() if k != "type"}}
                     last_event_source = str(payload.get("source") or last_event_source).strip()
                     runtime.publish_job_event(job_id, "meta", payload)
+                elif event_type == "heartbeat":
+                    runtime.publish_job_event(
+                        job_id,
+                        "meta",
+                        {
+                            "chat_id": chat_id,
+                            "source": "worker-heartbeat",
+                            "detail": "subprocess worker heartbeat",
+                        },
+                    )
                 elif event_type == "tool":
                     payload = {"chat_id": chat_id, **{k: v for k, v in event.items() if k != "type"}}
                     display = str(payload.get("display") or payload.get("preview") or payload.get("tool_name") or "Tool running").strip()
