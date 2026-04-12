@@ -746,14 +746,22 @@ let renderTraceDebugEnabled = false;
 let latencyPersistenceControllerInstance = null;
 let latencyStorageLoaded = false;
 
+function createLatencyPersistenceControllerDeps() {
+  return {
+    localStorageRef: localStorage,
+    storageKey: LATENCY_STORAGE_KEY,
+    latencyByChat,
+    maxAgeMs: LATENCY_MAX_AGE_MS,
+  };
+}
+
+function createLatencyPersistenceController() {
+  return runtimeHelpers.createLatencyPersistenceController(createLatencyPersistenceControllerDeps());
+}
+
 function getLatencyPersistenceController() {
   if (!latencyPersistenceControllerInstance) {
-    latencyPersistenceControllerInstance = runtimeHelpers.createLatencyPersistenceController({
-      localStorageRef: localStorage,
-      storageKey: LATENCY_STORAGE_KEY,
-      latencyByChat,
-      maxAgeMs: LATENCY_MAX_AGE_MS,
-    });
+    latencyPersistenceControllerInstance = createLatencyPersistenceController();
   }
   return latencyPersistenceControllerInstance;
 }
@@ -767,85 +775,151 @@ function ensureLatencyStorageLoaded() {
   return controller;
 }
 
-const streamPersistenceController = streamStateHelpers.createPersistenceController({
-  localStorageRef: localStorage,
-  streamResumeCursorStorageKey: STREAM_RESUME_CURSOR_STORAGE_KEY,
-  pendingStreamSnapshotStorageKey: PENDING_STREAM_SNAPSHOT_STORAGE_KEY,
-  pendingStreamSnapshotMaxAgeMs: PENDING_STREAM_SNAPSHOT_MAX_AGE_MS,
-  histories,
-  chats,
-  nowFn: nowStamp,
-});
+function createStreamPersistenceControllerDeps() {
+  return {
+    localStorageRef: localStorage,
+    streamResumeCursorStorageKey: STREAM_RESUME_CURSOR_STORAGE_KEY,
+    pendingStreamSnapshotStorageKey: PENDING_STREAM_SNAPSHOT_STORAGE_KEY,
+    pendingStreamSnapshotMaxAgeMs: PENDING_STREAM_SNAPSHOT_MAX_AGE_MS,
+    histories,
+    chats,
+    nowFn: nowStamp,
+  };
+}
 
-const streamPhaseController = streamStateHelpers.createPhaseController({
-  streamPhaseByChat,
-  renderTraceLog,
-});
+function createStreamPersistenceController() {
+  return streamStateHelpers.createPersistenceController(createStreamPersistenceControllerDeps());
+}
 
-const streamLifecycleController = streamStateHelpers.createLifecycleController({
-  chats,
-  pendingChats,
-  unseenStreamChats,
-  getActiveChatId: () => Number(activeChatId),
-  setStreamPhase,
-  refreshTabNode,
-  renderTraceLog,
-});
+const streamPersistenceController = createStreamPersistenceController();
 
-const draftController = composerStateHelpers.createDraftController({
-  localStorageRef: localStorage,
-  draftStorageKey: DRAFT_STORAGE_KEY,
-  draftByChat,
-});
+function createStreamPhaseControllerDeps() {
+  return {
+    streamPhaseByChat,
+    renderTraceLog,
+  };
+}
 
-const toolTraceController = streamControllerHelpers.createToolTraceController({
-  histories,
-  cleanDisplayText,
-  persistPendingStreamSnapshot,
-});
+function createStreamPhaseController() {
+  return streamStateHelpers.createPhaseController(createStreamPhaseControllerDeps());
+}
+
+const streamPhaseController = createStreamPhaseController();
+
+function createStreamLifecycleControllerDeps() {
+  return {
+    chats,
+    pendingChats,
+    unseenStreamChats,
+    getActiveChatId: () => Number(activeChatId),
+    setStreamPhase,
+    refreshTabNode,
+    renderTraceLog,
+  };
+}
+
+function createStreamLifecycleController() {
+  return streamStateHelpers.createLifecycleController(createStreamLifecycleControllerDeps());
+}
+
+const streamLifecycleController = createStreamLifecycleController();
+
+function createDraftControllerDeps() {
+  return {
+    localStorageRef: localStorage,
+    draftStorageKey: DRAFT_STORAGE_KEY,
+    draftByChat,
+  };
+}
+
+function createDraftController() {
+  return composerStateHelpers.createDraftController(createDraftControllerDeps());
+}
+
+const draftController = createDraftController();
+
+function createToolTraceControllerDeps() {
+  return {
+    histories,
+    cleanDisplayText,
+    persistPendingStreamSnapshot,
+  };
+}
+
+function createToolTraceController() {
+  return streamControllerHelpers.createToolTraceController(createToolTraceControllerDeps());
+}
+
+const toolTraceController = createToolTraceController();
 
 let renderTraceControllerInstance = null;
 let messageRenderControllerInstance = null;
 let historyRenderControllerInstance = null;
 let filePreviewControllerInstance = null;
 
+function createLazyControllerProxy(getController) {
+  return new Proxy({}, {
+    get(_target, prop) {
+      const controller = getController();
+      const value = controller?.[prop];
+      return typeof value === 'function' ? value.bind(controller) : value;
+    },
+  });
+}
+
+function createRenderTraceControllerDeps() {
+  return {
+    windowObject: window,
+    localStorageRef: localStorage,
+    renderTraceBadge,
+    storageKey: RENDER_TRACE_STORAGE_KEY,
+    getRenderTraceDebugEnabled: () => renderTraceDebugEnabled,
+    setRenderTraceDebugEnabledState: (value) => {
+      renderTraceDebugEnabled = Boolean(value);
+    },
+    consoleRef: console,
+  };
+}
+
+function createRenderTraceController() {
+  return renderTraceHelpers.createController(createRenderTraceControllerDeps());
+}
+
 function getRenderTraceController() {
   if (!renderTraceControllerInstance) {
-    renderTraceControllerInstance = renderTraceHelpers.createController({
-      windowObject: window,
-      localStorageRef: localStorage,
-      renderTraceBadge,
-      storageKey: RENDER_TRACE_STORAGE_KEY,
-      getRenderTraceDebugEnabled: () => renderTraceDebugEnabled,
-      setRenderTraceDebugEnabledState: (value) => {
-        renderTraceDebugEnabled = Boolean(value);
-      },
-      consoleRef: console,
-    });
+    renderTraceControllerInstance = createRenderTraceController();
     renderTraceDebugEnabled = renderTraceControllerInstance.resolveRenderTraceDebugEnabled();
   }
   return renderTraceControllerInstance;
 }
 
+function createMessageRenderControllerDeps() {
+  return {
+    cleanDisplayTextFn: cleanDisplayText,
+    escapeHtmlFn: escapeHtml,
+    getAllowedRoots: () => filePreviewAllowedRoots,
+    documentObject: document,
+    windowObject: window,
+    getOperatorDisplayName: () => operatorDisplayName,
+    formatMessageTimeFn: formatMessageTime,
+    templateElement: template,
+    getHistory: (chatId) => histories.get(Number(chatId)) || [],
+    getMessagesContainer: () => messagesEl,
+    getActiveChatId: () => activeChatId,
+    getStreamPhase,
+    isPatchPhaseAllowedFn: isPatchPhaseAllowed,
+    renderTraceLogFn: renderTraceLog,
+    preserveViewportDuringUiMutationFn: preserveViewportDuringUiMutation,
+  };
+}
+
+function createMessageRenderController() {
+  return renderTraceHelpers.createMessageRenderController(createMessageRenderControllerDeps());
+}
+
 function getMessageRenderController() {
   if (!messageRenderControllerInstance) {
-    messageRenderControllerInstance = renderTraceHelpers.createMessageRenderController({
-      cleanDisplayTextFn: cleanDisplayText,
-      escapeHtmlFn: escapeHtml,
-      getAllowedRoots: () => filePreviewAllowedRoots,
-      documentObject: document,
-      windowObject: window,
-      getOperatorDisplayName: () => operatorDisplayName,
-      formatMessageTimeFn: formatMessageTime,
-      templateElement: template,
-      getHistory: (chatId) => histories.get(Number(chatId)) || [],
-      getMessagesContainer: () => messagesEl,
-      getActiveChatId: () => activeChatId,
-      getStreamPhase,
-      isPatchPhaseAllowedFn: isPatchPhaseAllowed,
-      renderTraceLogFn: renderTraceLog,
-      preserveViewportDuringUiMutationFn: preserveViewportDuringUiMutation,
-    });
+    messageRenderControllerInstance = createMessageRenderController();
   }
   return messageRenderControllerInstance;
 }
@@ -886,79 +960,68 @@ function createHistoryRenderControllerDeps({
   };
 }
 
+function createHistoryRenderControllerArgs() {
+  return {
+    getActiveChatId: () => Number(activeChatId),
+    getRenderedChatId: () => Number(renderedChatId),
+    setRenderedChatId: (value) => {
+      renderedChatId = value;
+    },
+  };
+}
+
+function createHistoryRenderController() {
+  return renderTraceHelpers.createHistoryRenderController(createHistoryRenderControllerDeps(createHistoryRenderControllerArgs()));
+}
+
 function getHistoryRenderController() {
   if (!historyRenderControllerInstance) {
-    historyRenderControllerInstance = renderTraceHelpers.createHistoryRenderController(createHistoryRenderControllerDeps({
-      getActiveChatId: () => Number(activeChatId),
-      getRenderedChatId: () => Number(renderedChatId),
-      setRenderedChatId: (value) => {
-        renderedChatId = value;
-      },
-    }));
+    historyRenderControllerInstance = createHistoryRenderController();
   }
   return historyRenderControllerInstance;
 }
 
+function createFilePreviewControllerDeps() {
+  return {
+    documentObject: document,
+    requestAnimationFrameFn: (callback) => requestAnimationFrame(callback),
+    filePreviewModal,
+    filePreviewPath,
+    filePreviewStatus,
+    filePreviewLines,
+    filePreviewExpandUp,
+    filePreviewLoadFull,
+    filePreviewExpandDown,
+    filePreviewClose,
+    messagesEl,
+    apiPost,
+    getActiveChatId: () => activeChatId,
+    getCurrentFilePreviewRequest: () => currentFilePreviewRequest,
+    setCurrentFilePreviewRequest: (value) => {
+      currentFilePreviewRequest = value || null;
+    },
+    getCurrentFilePreview: () => currentFilePreview,
+    setCurrentFilePreview: (value) => {
+      currentFilePreview = value || null;
+    },
+  };
+}
+
+function createFilePreviewController() {
+  return filePreviewHelpers.createController(createFilePreviewControllerDeps());
+}
+
 function getFilePreviewController() {
   if (!filePreviewControllerInstance) {
-    filePreviewControllerInstance = filePreviewHelpers.createController({
-      documentObject: document,
-      requestAnimationFrameFn: (callback) => requestAnimationFrame(callback),
-      filePreviewModal,
-      filePreviewPath,
-      filePreviewStatus,
-      filePreviewLines,
-      filePreviewExpandUp,
-      filePreviewLoadFull,
-      filePreviewExpandDown,
-      filePreviewClose,
-      messagesEl,
-      apiPost,
-      getActiveChatId: () => activeChatId,
-      getCurrentFilePreviewRequest: () => currentFilePreviewRequest,
-      setCurrentFilePreviewRequest: (value) => {
-        currentFilePreviewRequest = value || null;
-      },
-      getCurrentFilePreview: () => currentFilePreview,
-      setCurrentFilePreview: (value) => {
-        currentFilePreview = value || null;
-      },
-    });
+    filePreviewControllerInstance = createFilePreviewController();
   }
   return filePreviewControllerInstance;
 }
 
-const renderTraceController = new Proxy({}, {
-  get(_target, prop) {
-    const controller = getRenderTraceController();
-    const value = controller?.[prop];
-    return typeof value === 'function' ? value.bind(controller) : value;
-  },
-});
-
-const messageRenderController = new Proxy({}, {
-  get(_target, prop) {
-    const controller = getMessageRenderController();
-    const value = controller?.[prop];
-    return typeof value === 'function' ? value.bind(controller) : value;
-  },
-});
-
-const historyRenderController = new Proxy({}, {
-  get(_target, prop) {
-    const controller = getHistoryRenderController();
-    const value = controller?.[prop];
-    return typeof value === 'function' ? value.bind(controller) : value;
-  },
-});
-
-const filePreviewController = new Proxy({}, {
-  get(_target, prop) {
-    const controller = getFilePreviewController();
-    const value = controller?.[prop];
-    return typeof value === 'function' ? value.bind(controller) : value;
-  },
-});
+const renderTraceController = createLazyControllerProxy(getRenderTraceController);
+const messageRenderController = createLazyControllerProxy(getMessageRenderController);
+const historyRenderController = createLazyControllerProxy(getHistoryRenderController);
+const filePreviewController = createLazyControllerProxy(getFilePreviewController);
 
 function parseBooleanFlag(rawValue) {
   return renderTraceHelpers.parseBooleanFlag(rawValue);
@@ -1427,72 +1490,94 @@ function createBootstrapAuthControllerDeps(args) {
   };
 }
 
+function createBootstrapAuthControllerStateArgs() {
+  return {
+    desktopTestingEnabled,
+    devAuthSessionStorageKey: DEV_AUTH_SESSION_STORAGE_KEY,
+    devAuthHashSecret,
+    devAuthControls,
+    devModeBadge,
+    devSignInButton,
+    getIsAuthenticated: () => isAuthenticated,
+    setIsAuthenticated: (value) => {
+      isAuthenticated = Boolean(value);
+      syncTelegramUnreadNotificationsToggle();
+    },
+    sessionStorageRef: window.sessionStorage,
+    devAuthModal,
+    devAuthForm,
+    devAuthSecretInput,
+    devAuthUserIdInput,
+    devAuthDisplayNameInput,
+    devAuthUsernameInput,
+    devAuthCancelButton,
+    authStatus,
+    appendSystemMessage,
+    fetchImpl: (...args) => fetch(...args),
+    initData,
+    parseSseEvent,
+    setOperatorDisplayName: (value) => {
+      operatorDisplayName = String(value || "");
+    },
+    getOperatorDisplayName: () => operatorDisplayName,
+    operatorName,
+    messagesEl,
+  };
+}
+
+function createBootstrapAuthControllerAppArgs() {
+  return {
+    setSkin,
+    setTelegramUnreadNotificationsEnabled: (value) => {
+      setTelegramUnreadNotificationsEnabled(value);
+    },
+    syncChats,
+    syncPinnedChats,
+    histories,
+    setActiveChatMeta,
+    renderPinnedChats,
+    renderMessages,
+    warmChatHistoryCache,
+    chats,
+    pendingChats,
+    resumePendingChatStream,
+    hasFreshPendingStreamSnapshot,
+    restorePendingStreamSnapshot,
+    ensureActivationReadThreshold: (chatId, unreadCount) => chatHistoryController.ensureActivationReadThreshold(chatId, unreadCount),
+    windowObject: window,
+  };
+}
+
+function createBootstrapAuthControllerBootstrapArgs() {
+  return {
+    authBootstrapMaxAttempts: AUTH_BOOTSTRAP_MAX_ATTEMPTS,
+    authBootstrapBaseDelayMs: AUTH_BOOTSTRAP_BASE_DELAY_MS,
+    authBootstrapRetryableStatus: AUTH_BOOTSTRAP_RETRYABLE_STATUS,
+    bootBootstrapVersion,
+    bootstrapVersionReloadStorageKey: BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY,
+    recordBootMetric,
+    syncBootLatencyChip,
+    updateComposerState,
+    isMobileQuoteMode: () => mobileQuoteMode,
+    markVersionSyncReloadIntent,
+    onBootstrapStage: createBootstrapAuthStageReporter({
+      recordBootMeta,
+      getBootMeta: () => startupMetricsController.bootMeta,
+      logBootStage,
+    }),
+  };
+}
+
+function createBootstrapAuthControllerArgs() {
+  return {
+    ...createBootstrapAuthControllerStateArgs(),
+    ...createBootstrapAuthControllerAppArgs(),
+    ...createBootstrapAuthControllerBootstrapArgs(),
+  };
+}
+
 function createBootstrapAuthController() {
-  return bootstrapAuthHelpers.createController(createBootstrapAuthControllerDeps({
-  desktopTestingEnabled,
-  devAuthSessionStorageKey: DEV_AUTH_SESSION_STORAGE_KEY,
-  devAuthHashSecret,
-  devAuthControls,
-  devModeBadge,
-  devSignInButton,
-  getIsAuthenticated: () => isAuthenticated,
-  setIsAuthenticated: (value) => {
-    isAuthenticated = Boolean(value);
-    syncTelegramUnreadNotificationsToggle();
-  },
-  sessionStorageRef: window.sessionStorage,
-  devAuthModal,
-  devAuthForm,
-  devAuthSecretInput,
-  devAuthUserIdInput,
-  devAuthDisplayNameInput,
-  devAuthUsernameInput,
-  devAuthCancelButton,
-  authStatus,
-  appendSystemMessage,
-  fetchImpl: (...args) => fetch(...args),
-  initData,
-  parseSseEvent,
-  setOperatorDisplayName: (value) => {
-    operatorDisplayName = String(value || "");
-  },
-  getOperatorDisplayName: () => operatorDisplayName,
-  operatorName,
-  messagesEl,
-  setSkin,
-  setTelegramUnreadNotificationsEnabled: (value) => {
-    setTelegramUnreadNotificationsEnabled(value);
-  },
-  syncChats,
-  syncPinnedChats,
-  histories,
-  setActiveChatMeta,
-  renderPinnedChats,
-  renderMessages,
-  warmChatHistoryCache,
-  chats,
-  pendingChats,
-  resumePendingChatStream,
-  hasFreshPendingStreamSnapshot,
-  restorePendingStreamSnapshot,
-  ensureActivationReadThreshold: (chatId, unreadCount) => chatHistoryController.ensureActivationReadThreshold(chatId, unreadCount),
-  windowObject: window,
-  authBootstrapMaxAttempts: AUTH_BOOTSTRAP_MAX_ATTEMPTS,
-  authBootstrapBaseDelayMs: AUTH_BOOTSTRAP_BASE_DELAY_MS,
-  authBootstrapRetryableStatus: AUTH_BOOTSTRAP_RETRYABLE_STATUS,
-  bootBootstrapVersion,
-  bootstrapVersionReloadStorageKey: BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY,
-  recordBootMetric,
-  syncBootLatencyChip,
-  updateComposerState,
-  isMobileQuoteMode: () => mobileQuoteMode,
-  markVersionSyncReloadIntent,
-  onBootstrapStage: createBootstrapAuthStageReporter({
-    recordBootMeta,
-    getBootMeta: () => startupMetricsController.bootMeta,
-    logBootStage,
-  }),
-}));
+  return bootstrapAuthHelpers.createController(createBootstrapAuthControllerDeps(createBootstrapAuthControllerArgs()));
 }
 
 const bootstrapAuthController = createBootstrapAuthController();
@@ -2303,35 +2388,85 @@ const chatAdminController = chatAdminHelpers.createController({
   focusComposerForNewChat,
 });
 
-const shellUiController = shellUiHelpers.createController({
-  tg,
-  pendingChats,
-  fullscreenAppTopButton,
-  devAuthControls,
-  devModeBadge,
-  devConfig,
-  desktopTestingRequested,
-  appendSystemMessage,
-  scheduleTimeout: (callback, delay) => window.setTimeout(callback, delay),
-  windowObject: window,
-});
+function createShellUiControllerDeps() {
+  return {
+    tg,
+    pendingChats,
+    fullscreenAppTopButton,
+    devAuthControls,
+    devModeBadge,
+    devConfig,
+    desktopTestingRequested,
+    appendSystemMessage,
+    scheduleTimeout: (callback, delay) => window.setTimeout(callback, delay),
+    windowObject: window,
+  };
+}
 
+function createShellUiController() {
+  return shellUiHelpers.createController(createShellUiControllerDeps());
+}
 
-const composerViewportController = composerViewportHelpers.createController({
-  windowObject: window,
-  documentObject: document,
-  tg,
-  promptEl,
-  form,
-  messagesEl,
-  tabsEl,
-  mobileQuoteMode,
-  isNearBottomFn: isNearBottom,
-  getActiveChatId: () => Number(activeChatId),
-  chatScrollTop,
-  chatStickToBottom,
-  updateJumpLatestVisibility,
-});
+const shellUiController = createShellUiController();
+
+function createComposerViewportControllerDeps() {
+  return {
+    windowObject: window,
+    documentObject: document,
+    tg,
+    promptEl,
+    form,
+    messagesEl,
+    tabsEl,
+    mobileQuoteMode,
+    isNearBottomFn: isNearBottom,
+    getActiveChatId: () => Number(activeChatId),
+    chatScrollTop,
+    chatStickToBottom,
+    updateJumpLatestVisibility,
+  };
+}
+
+function createComposerViewportController() {
+  return composerViewportHelpers.createController(createComposerViewportControllerDeps());
+}
+
+const composerViewportController = createComposerViewportController();
+
+function createLatencyViewControllerDeps() {
+  return {
+    latencyByChat,
+    getActiveChatId: () => Number(activeChatId),
+    hasLiveStreamController,
+    setActivityChip,
+    preserveViewportDuringUiMutation,
+    latencyChip,
+    streamDebugLog,
+    onLatencyMapMutated: () => persistLatencyByChatToStorage(),
+    renderTraceLog,
+    getDocumentVisibilityState: () => document.visibilityState,
+  };
+}
+
+function createStreamActivityControllerDeps() {
+  return {
+    chats,
+    getActiveChatId: () => Number(activeChatId),
+    hasLiveStreamController,
+    getChatLatencyText: (chatId) => latencyByChat.get(Number(chatId)) || '',
+    getStreamPhase,
+    streamPhases: STREAM_PHASES,
+    chatLabel,
+    compactChatLabel,
+    setStreamStatus,
+    setActivityChip,
+    streamChip,
+    latencyChip,
+    setChatLatency,
+    syncActiveLatencyChip,
+    formatLatency,
+  };
+}
 
 let latencyViewControllerInstance = null;
 let streamActivityControllerInstance = null;
@@ -2339,75 +2474,68 @@ let streamActivityControllerInstance = null;
 function getLatencyViewController() {
   if (!latencyViewControllerInstance) {
     ensureLatencyStorageLoaded();
-    latencyViewControllerInstance = runtimeHelpers.createLatencyController({
-      latencyByChat,
-      getActiveChatId: () => Number(activeChatId),
-      hasLiveStreamController,
-      setActivityChip,
-      preserveViewportDuringUiMutation,
-      latencyChip,
-      streamDebugLog,
-      onLatencyMapMutated: () => persistLatencyByChatToStorage(),
-      renderTraceLog,
-      getDocumentVisibilityState: () => document.visibilityState,
-    });
+    latencyViewControllerInstance = runtimeHelpers.createLatencyController(createLatencyViewControllerDeps());
   }
   return latencyViewControllerInstance;
 }
 
 function getStreamActivityController() {
   if (!streamActivityControllerInstance) {
-    streamActivityControllerInstance = runtimeHelpers.createStreamActivityController({
-      chats,
-      getActiveChatId: () => Number(activeChatId),
-      hasLiveStreamController,
-      getChatLatencyText: (chatId) => latencyByChat.get(Number(chatId)) || '',
-      getStreamPhase,
-      streamPhases: STREAM_PHASES,
-      chatLabel,
-      compactChatLabel,
-      setStreamStatus,
-      setActivityChip,
-      streamChip,
-      latencyChip,
-      setChatLatency,
-      syncActiveLatencyChip,
-      formatLatency,
-    });
+    streamActivityControllerInstance = runtimeHelpers.createStreamActivityController(createStreamActivityControllerDeps());
   }
   return streamActivityControllerInstance;
 }
 
-const visibilitySkinController = visibilitySkinHelpers.createController({
-  windowObject: window,
-  documentObject: document,
-  localStorageRef: localStorage,
-  fetchImpl: (...args) => fetch(...args),
-  devConfig,
-  pendingChats,
-  skinStorageKey: SKIN_STORAGE_KEY,
-  allowedSkins: ALLOWED_SKINS,
-  skinSyncChannel,
-  body,
-  skinName,
-  panelHint,
-  skinButtons,
-  getCurrentSkin: () => currentSkin,
-  setCurrentSkin: (value) => {
-    currentSkin = String(value || "");
-  },
-  apiPost,
-  syncTelegramChromeForSkin,
-  getIsAuthenticated: () => isAuthenticated,
-  getActiveChatId: () => Number(activeChatId),
-  refreshChats,
-  syncVisibleActiveChat,
-  syncActiveMessageView,
-  getStreamAbortControllers,
-  maybeRefreshForBootstrapVersionMismatch,
-  markBackgrounded,
-  markVisibilityResume,
-});
+function createVisibilitySkinControllerStateDeps() {
+  return {
+    windowObject: window,
+    documentObject: document,
+    localStorageRef: localStorage,
+    fetchImpl: (...args) => fetch(...args),
+    devConfig,
+    pendingChats,
+    skinStorageKey: SKIN_STORAGE_KEY,
+    allowedSkins: ALLOWED_SKINS,
+    skinSyncChannel,
+    body,
+    skinName,
+    panelHint,
+    skinButtons,
+    getCurrentSkin: () => currentSkin,
+    setCurrentSkin: (value) => {
+      currentSkin = String(value || "");
+    },
+  };
+}
+
+function createVisibilitySkinControllerRuntimeDeps() {
+  return {
+    apiPost,
+    syncTelegramChromeForSkin,
+    getIsAuthenticated: () => isAuthenticated,
+    getActiveChatId: () => Number(activeChatId),
+    refreshChats,
+    syncVisibleActiveChat,
+    syncActiveMessageView,
+    getStreamAbortControllers,
+    maybeRefreshForBootstrapVersionMismatch,
+    markBackgrounded,
+    markVisibilityResume,
+  };
+}
+
+function createVisibilitySkinControllerDeps() {
+  return {
+    ...createVisibilitySkinControllerStateDeps(),
+    ...createVisibilitySkinControllerRuntimeDeps(),
+  };
+}
+
+function createVisibilitySkinController() {
+  return visibilitySkinHelpers.createController(createVisibilitySkinControllerDeps());
+}
+
+const visibilitySkinController = createVisibilitySkinController();
 
 function createStartupBindingsControllerElementDeps({
   getActiveChatId,
@@ -2561,21 +2689,37 @@ function createStartupBindingsControllerDeps(args = {}) {
   };
 }
 
+function createStartupBindingsControllerStateArgs() {
+  return {
+    getActiveChatId: () => Number(activeChatId),
+    getRenderedChatId: () => Number(renderedChatId),
+    getIsAuthenticated: () => isAuthenticated,
+    setInitData: (value) => {
+      initData = String(value || "");
+    },
+    getInitData: () => initData,
+    getRenderTraceDebugEnabled: () => renderTraceDebugEnabled,
+  };
+}
+
+function createStartupBindingsControllerRuntimeArgs() {
+  return {
+    isMobileBootstrapPath: () => mobileQuoteMode,
+    getChatsSize: () => chats.size,
+    isActiveChatPending: () => Boolean(activeChatId && chats.get(Number(activeChatId))?.pending),
+    getStreamAbortControllers: () => streamController.getAbortControllers(),
+  };
+}
+
+function createStartupBindingsControllerArgs() {
+  return {
+    ...createStartupBindingsControllerStateArgs(),
+    ...createStartupBindingsControllerRuntimeArgs(),
+  };
+}
+
 function createStartupBindingsController() {
-  return startupBindingsHelpers.createController(createStartupBindingsControllerDeps({
-  getActiveChatId: () => Number(activeChatId),
-  getRenderedChatId: () => Number(renderedChatId),
-  getIsAuthenticated: () => isAuthenticated,
-  setInitData: (value) => {
-    initData = String(value || "");
-  },
-  getInitData: () => initData,
-  getRenderTraceDebugEnabled: () => renderTraceDebugEnabled,
-  isMobileBootstrapPath: () => mobileQuoteMode,
-  getChatsSize: () => chats.size,
-  isActiveChatPending: () => Boolean(activeChatId && chats.get(Number(activeChatId))?.pending),
-  getStreamAbortControllers: () => streamController.getAbortControllers(),
-}));
+  return startupBindingsHelpers.createController(createStartupBindingsControllerDeps(createStartupBindingsControllerArgs()));
 }
 
 const startupBindingsController = createStartupBindingsController();

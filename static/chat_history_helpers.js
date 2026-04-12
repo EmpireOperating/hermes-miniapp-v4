@@ -805,6 +805,20 @@
         if (!safeBody && !pendingState) {
           return;
         }
+        if (!pendingState) {
+          const latestCompletedAssistant = [...history].reverse().find((item) => {
+            if (!item || item.pending) return false;
+            const role = String(item.role || '').toLowerCase();
+            if (role !== 'hermes' && role !== 'assistant') {
+              return false;
+            }
+            return String(item.body || '').trim() === safeBody;
+          });
+          if (latestCompletedAssistant) {
+            clearPendingStreamSnapshot?.(key);
+            return;
+          }
+        }
         history.push({
           role: 'hermes',
           body: nextBody,

@@ -17,8 +17,52 @@ function extractFunctionBody(source, functionName) {
 test('app.js stream-state wrappers keep delegating to helper-owned controllers', async () => {
   const source = await readFile(appJsUrl, 'utf8');
 
-  assert.match(source, /const streamPhaseController = streamStateHelpers\.createPhaseController\(\{/, 'app.js should compose streamPhaseController');
-  assert.match(source, /const streamLifecycleController = streamStateHelpers\.createLifecycleController\(\{/, 'app.js should compose streamLifecycleController');
+  assert.ok(
+    source.includes('function createStreamPersistenceControllerDeps() {')
+      && source.includes('streamResumeCursorStorageKey: STREAM_RESUME_CURSOR_STORAGE_KEY,')
+      && source.includes('pendingStreamSnapshotStorageKey: PENDING_STREAM_SNAPSHOT_STORAGE_KEY,'),
+    'app.js should isolate stream persistence wiring in createStreamPersistenceControllerDeps(...)',
+  );
+  assert.ok(
+    source.includes('function createStreamPersistenceController() {')
+      && source.includes('return streamStateHelpers.createPersistenceController(createStreamPersistenceControllerDeps());'),
+    'app.js should instantiate streamPersistenceController through createStreamPersistenceController(...)',
+  );
+  assert.ok(
+    source.includes('const streamPersistenceController = createStreamPersistenceController();'),
+    'app.js should allocate streamPersistenceController through the createStreamPersistenceController wrapper',
+  );
+  assert.ok(
+    source.includes('function createStreamPhaseControllerDeps() {')
+      && source.includes('streamPhaseByChat,')
+      && source.includes('renderTraceLog,'),
+    'app.js should isolate stream phase wiring in createStreamPhaseControllerDeps(...)',
+  );
+  assert.ok(
+    source.includes('function createStreamPhaseController() {')
+      && source.includes('return streamStateHelpers.createPhaseController(createStreamPhaseControllerDeps());'),
+    'app.js should instantiate streamPhaseController through createStreamPhaseController(...)',
+  );
+  assert.ok(
+    source.includes('const streamPhaseController = createStreamPhaseController();'),
+    'app.js should allocate streamPhaseController through the createStreamPhaseController wrapper',
+  );
+  assert.ok(
+    source.includes('function createStreamLifecycleControllerDeps() {')
+      && source.includes('pendingChats,')
+      && source.includes('unseenStreamChats,')
+      && source.includes('refreshTabNode,'),
+    'app.js should isolate stream lifecycle wiring in createStreamLifecycleControllerDeps(...)',
+  );
+  assert.ok(
+    source.includes('function createStreamLifecycleController() {')
+      && source.includes('return streamStateHelpers.createLifecycleController(createStreamLifecycleControllerDeps());'),
+    'app.js should instantiate streamLifecycleController through createStreamLifecycleController(...)',
+  );
+  assert.ok(
+    source.includes('const streamLifecycleController = createStreamLifecycleController();'),
+    'app.js should allocate streamLifecycleController through the createStreamLifecycleController wrapper',
+  );
   assert.doesNotMatch(source, /getStreamPhaseFromState/, 'app.js should not keep raw getStreamPhase helper aliases');
   assert.doesNotMatch(source, /setStreamPhaseInState/, 'app.js should not keep raw setStreamPhase helper aliases');
 

@@ -17,22 +17,20 @@ function extractFunctionBody(source, functionName) {
 test('app.js composes messageRenderController and delegates message-render wrappers through it', async () => {
   const source = await readFile(appJsUrl, 'utf8');
 
-  assert.match(source, /const messageRenderController = renderTraceHelpers\.createMessageRenderController\(\{/,
-    'app.js should compose messageRenderController from renderTraceHelpers');
-  assert.match(source, /getAllowedRoots: \(\) => filePreviewAllowedRoots/,
-    'messageRenderController should receive allowed-roots getter');
-  assert.match(source, /getOperatorDisplayName: \(\) => operatorDisplayName/,
-    'messageRenderController should receive live operator-display getter');
-  assert.match(source, /templateElement: template/,
-    'messageRenderController should receive the message template');
-  assert.match(source, /getHistory: \(chatId\) => histories\.get\(Number\(chatId\)\) \|\| \[\]/,
-    'messageRenderController should receive live history lookup');
-  assert.match(source, /getMessagesContainer: \(\) => messagesEl/,
-    'messageRenderController should receive the live messages container');
-  assert.match(source, /getActiveChatId: \(\) => activeChatId/,
-    'messageRenderController should receive a live active-chat getter');
-  assert.match(source, /getStreamPhase,/,
-    'messageRenderController should receive stream-phase lookup');
+  assert.match(source, /function\s+createLazyControllerProxy\s*\(getController\)\s*\{[\s\S]*?return\s+new\s+Proxy\(\{},[\s\S]*?get\(_target, prop\)[\s\S]*?const\s+controller\s*=\s*getController\(\);[\s\S]*?value\.bind\(controller\)\s*:\s*value;[\s\S]*?\}\);\s*\}/m,
+    'app.js should share lazy proxy binding through createLazyControllerProxy(...)');
+  assert.match(source, /function\s+createRenderTraceControllerDeps\s*\(\)\s*\{[\s\S]*?renderTraceBadge,[\s\S]*?storageKey:\s*RENDER_TRACE_STORAGE_KEY,[\s\S]*?consoleRef:\s*console,[\s\S]*?\};\s*\}/m,
+    'app.js should build render-trace deps through createRenderTraceControllerDeps(...)');
+  assert.match(source, /function\s+createRenderTraceController\s*\(\)\s*\{\s*return\s+renderTraceHelpers\.createController\(createRenderTraceControllerDeps\(\)\);\s*\}/m,
+    'app.js should instantiate renderTraceController through createRenderTraceController(...)');
+  assert.match(source, /const\s+renderTraceController\s*=\s*createLazyControllerProxy\(getRenderTraceController\);/,
+    'app.js should expose renderTraceController through the shared lazy proxy helper');
+  assert.match(source, /function\s+createMessageRenderControllerDeps\s*\(\)\s*\{[\s\S]*?getAllowedRoots:\s*\(\)\s*=>\s*filePreviewAllowedRoots,[\s\S]*?getOperatorDisplayName:\s*\(\)\s*=>\s*operatorDisplayName,[\s\S]*?templateElement:\s*template,[\s\S]*?getHistory:\s*\(chatId\)\s*=>\s*histories\.get\(Number\(chatId\)\)\s*\|\|\s*\[\],[\s\S]*?getMessagesContainer:\s*\(\)\s*=>\s*messagesEl,[\s\S]*?getActiveChatId:\s*\(\)\s*=>\s*activeChatId,[\s\S]*?getStreamPhase,[\s\S]*?\};\s*\}/m,
+    'app.js should build messageRenderController deps through createMessageRenderControllerDeps(...)');
+  assert.match(source, /function\s+createMessageRenderController\s*\(\)\s*\{\s*return\s+renderTraceHelpers\.createMessageRenderController\(createMessageRenderControllerDeps\(\)\);\s*\}/m,
+    'app.js should instantiate messageRenderController through createMessageRenderController(...)');
+  assert.match(source, /const\s+messageRenderController\s*=\s*createLazyControllerProxy\(getMessageRenderController\);/,
+    'app.js should expose messageRenderController through the shared lazy proxy helper');
 
   const appendMessagesBody = extractFunctionBody(source, 'appendMessages');
   assert.match(appendMessagesBody, /messageRenderController\.appendMessages\(fragment, messages, options\)/,

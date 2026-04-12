@@ -75,6 +75,132 @@ class StoreChatsMixin:
             return None
         return int(row["active_chat_id"])
 
+    def get_oldest_unread_hermes_message_id(self, user_id: str, chat_id: int) -> int | None:
+        with self._connect() as conn:
+            self._ensure_chat_exists(conn, user_id, chat_id)
+            row = conn.execute(
+                """
+                SELECT MIN(cm.id) AS unread_anchor_message_id
+                FROM chat_messages cm
+                JOIN chat_threads ct ON ct.user_id = cm.user_id AND ct.id = cm.chat_id
+                WHERE cm.user_id = ?
+                  AND cm.chat_id = ?
+                  AND cm.role = 'hermes'
+                  AND cm.id > ct.last_read_message_id
+                """,
+                (user_id, chat_id),
+            ).fetchone()
+        if not row or row["unread_anchor_message_id"] in (None, ""):
+            return None
+        return int(row["unread_anchor_message_id"])
+
+    def unread_reply_notification_sent_for_anchor(self, user_id: str, chat_id: int, unread_anchor_message_id: int | None) -> bool:
+        if unread_anchor_message_id in (None, ""):
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM telegram_notification_attempts
+                WHERE user_id = ?
+                  AND chat_id = ?
+                  AND unread_anchor_message_id = ?
+                  AND attempt_ok = 1
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (user_id, chat_id, int(unread_anchor_message_id)),
+            ).fetchone()
+        return row is not None
+
+    def record_telegram_notification_attempt(
+        self,
+        *,
+        user_id: str,
+        chat_id: int,
+        unread_anchor_message_id: int | None,
+        prior_unread_count: int,
+        decision_reason: str,
+        result,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO telegram_notification_attempts (
+                    user_id,
+                    chat_id,
+                    unread_anchor_message_id,
+                    prior_unread_count,
+                    decision_reason,
+                    attempt_ok,
+                    status_code,
+                    error,
+                    response_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    int(chat_id),
+                    int(unread_anchor_message_id) if unread_anchor_message_id not in (None, "") else None,
+                    max(0, int(prior_unread_count or 0)),
+                    str(decision_reason or "unknown").strip() or "unknown",
+                    1 if bool(getattr(result, "ok", False)) else 0,
+                    getattr(result, "status_code", None),
+                    str(getattr(result, "error", "") or "") or None,
+                    str(getattr(result, "response_text", "") or "") or None,
+                ),
+            )
+
+    def list_telegram_notification_attempts(
+        self,
+        *,
+        user_id: str | None = None,
+        chat_id: int | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if chat_id is not None:
+            clauses.append("chat_id = ?")
+            params.append(int(chat_id))
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        safe_limit = max(1, min(int(limit or 20), 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, user_id, chat_id, unread_anchor_message_id, prior_unread_count,
+                       decision_reason, attempt_ok, status_code, error, response_text, created_at
+                FROM telegram_notification_attempts
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (*params, safe_limit),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "user_id": str(row["user_id"]),
+                "chat_id": int(row["chat_id"]),
+                "unread_anchor_message_id": (
+                    int(row["unread_anchor_message_id"])
+                    if row["unread_anchor_message_id"] not in (None, "")
+                    else None
+                ),
+                "prior_unread_count": int(row["prior_unread_count"] or 0),
+                "decision_reason": str(row["decision_reason"] or ""),
+                "ok": bool(int(row["attempt_ok"] or 0)),
+                "status_code": int(row["status_code"]) if row["status_code"] not in (None, "") else None,
+                "error": str(row["error"] or "") or None,
+                "response_text": str(row["response_text"] or "") or None,
+                "created_at": str(row["created_at"] or ""),
+            }
+            for row in rows
+        ]
+
     def set_active_chat(self, user_id: str, chat_id: int) -> None:
         with self._connect() as conn:
             self._ensure_chat_exists(conn, user_id, chat_id)

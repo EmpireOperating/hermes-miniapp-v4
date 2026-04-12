@@ -17,16 +17,20 @@ function extractFunctionBody(source, functionName) {
 test('app.js shell-ui wrappers delegate through shellUiController', async () => {
   const source = await readFile(appJsUrl, 'utf8');
 
-  assert.match(
-    source,
-    /const\s+shellUiController\s*=\s*shellUiHelpers\.createController\(\{/,
-    'app.js should build shellUiController from shellUiHelpers.createController',
+  assert.ok(
+    source.includes('function createShellUiControllerDeps() {') && source.includes('windowObject: window,'),
+    'app.js should isolate shell-ui dependency wiring in createShellUiControllerDeps(...)',
   );
 
-  assert.match(
-    source,
-    /windowObject:\s*window/,
-    'app.js should inject window into shellUiController for confirm fallback ownership',
+  assert.ok(
+    source.includes('function createShellUiController() {')
+      && source.includes('return shellUiHelpers.createController(createShellUiControllerDeps());'),
+    'app.js should instantiate shellUiController through createShellUiController(...)',
+  );
+
+  assert.ok(
+    source.includes('const shellUiController = createShellUiController();'),
+    'app.js should allocate shellUiController through the createShellUiController wrapper',
   );
 
   const delegateExpectations = [

@@ -24,8 +24,13 @@ test('app.js composes historyRenderController and delegates history-render wrapp
   );
   assert.match(
     source,
-    /historyRenderControllerInstance\s*=\s*renderTraceHelpers\.createHistoryRenderController\(createHistoryRenderControllerDeps\(\{[\s\S]*?getActiveChatId:\s*\(\)\s*=>\s*Number\(activeChatId\),[\s\S]*?\}\)\);/m,
-    'app.js should instantiate historyRenderController through createHistoryRenderControllerDeps(...)',
+    /function\s+createHistoryRenderControllerArgs\s*\(\)\s*\{[\s\S]*?getActiveChatId:\s*\(\)\s*=>\s*Number\(activeChatId\),[\s\S]*?getRenderedChatId:\s*\(\)\s*=>\s*Number\(renderedChatId\),[\s\S]*?setRenderedChatId:[\s\S]*?\};\s*\}/m,
+    'app.js should isolate history-render state getters through createHistoryRenderControllerArgs(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createHistoryRenderController\s*\(\)\s*\{\s*return\s+renderTraceHelpers\.createHistoryRenderController\(createHistoryRenderControllerDeps\(createHistoryRenderControllerArgs\(\)\)\);\s*\}/m,
+    'app.js should instantiate historyRenderController through createHistoryRenderController(...)',
   );
 
   const renderVirtualizedBody = extractFunctionBody(source, 'renderVirtualizedHistory');

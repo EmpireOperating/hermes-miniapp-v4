@@ -39,8 +39,22 @@ test('app.js startup/bootstrap wrappers keep delegating to startupBindingsContro
   );
   assert.match(
     source,
-    /function\s+createStartupBindingsController\s*\(\)\s*\{[\s\S]*?startupBindingsHelpers\.createController\(createStartupBindingsControllerDeps\(\{[\s\S]*?getActiveChatId:\s*\(\)\s*=>\s*Number\(activeChatId\),[\s\S]*?getStreamAbortControllers:\s*\(\)\s*=>\s*streamController\.getAbortControllers\(\),[\s\S]*?\}\)\);[\s\S]*?\}/m,
-    'app.js should instantiate startupBindingsController through createStartupBindingsController(...)',
+    /function\s+createStartupBindingsControllerStateArgs\s*\(\)\s*\{[\s\S]*?getActiveChatId:\s*\(\)\s*=>\s*Number\(activeChatId\),[\s\S]*?getRenderTraceDebugEnabled:\s*\(\)\s*=>\s*renderTraceDebugEnabled,[\s\S]*?\}/m,
+    'app.js should isolate startup state arg building in createStartupBindingsControllerStateArgs(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createStartupBindingsControllerRuntimeArgs\s*\(\)\s*\{[\s\S]*?isMobileBootstrapPath:\s*\(\)\s*=>\s*mobileQuoteMode,[\s\S]*?getStreamAbortControllers:\s*\(\)\s*=>\s*streamController\.getAbortControllers\(\),[\s\S]*?\}/m,
+    'app.js should isolate startup runtime arg building in createStartupBindingsControllerRuntimeArgs(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createStartupBindingsControllerArgs\s*\(\)\s*\{[\s\S]*?createStartupBindingsControllerStateArgs\(\)[\s\S]*?createStartupBindingsControllerRuntimeArgs\(\)[\s\S]*?\}/m,
+    'app.js should compose startup constructor args from narrower helper bands',
+  );
+  assert.ok(
+    source.includes('return startupBindingsHelpers.createController(createStartupBindingsControllerDeps(createStartupBindingsControllerArgs()));'),
+    'app.js should instantiate startupBindingsController through createStartupBindingsController(...) using the extracted args builder',
   );
   assert.match(
     source,

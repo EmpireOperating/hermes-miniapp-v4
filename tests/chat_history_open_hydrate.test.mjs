@@ -126,6 +126,31 @@ test('hydrateChatFromServer retries once when unread advances but first hydrate 
   assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
 });
 
+test('late terminal finalize does not duplicate a hydrated completed assistant reply after unread catch-up', async () => {
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 1, newest_unread_message_id: 12 },
+          history: [{ id: 12, role: 'assistant', body: 'fresh final reply', pending: false }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'stale cached reply', pending: false }]);
+  harness.chats.set(7, { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false });
+
+  await harness.controller.hydrateChatFromServer(7, 0, true);
+  harness.controller.updatePendingAssistant(7, 'fresh final reply', false);
+
+  assert.deepEqual(harness.histories.get(7), [
+    { id: 12, role: 'assistant', body: 'fresh final reply', pending: false },
+  ]);
+  assert.deepEqual(harness.clearedSnapshots, [7]);
+});
+
 test('hydrateChatFromServer restores pending snapshot for pending chats before resuming', async () => {
   const harness = buildHarness({
     apiPost: async (path, payload) => {
