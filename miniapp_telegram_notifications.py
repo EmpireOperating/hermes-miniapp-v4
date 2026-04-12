@@ -19,6 +19,30 @@ class TelegramUnreadNotificationStore(Protocol):
 
     def get_active_chat(self, user_id: str) -> int | None: ...
 
+    def get_last_read_message_id(self, user_id: str, chat_id: int) -> int: ...
+
+    def count_telegram_notification_send_attempts(self, user_id: str, chat_id: int, unread_streak_key: int) -> int: ...
+
+    def has_successful_telegram_notification_for_streak(self, user_id: str, chat_id: int, unread_streak_key: int) -> bool: ...
+
+    def record_telegram_notification_attempt(
+        self,
+        *,
+        user_id: str,
+        chat_id: int,
+        unread_streak_key: int,
+        prior_unread_count: int,
+        notifications_enabled: bool,
+        active_chat_id: int | None,
+        visibly_open_chat_id: int | None,
+        decision_reason: str,
+        send_attempted: bool,
+        send_ok: bool,
+        status_code: int | None,
+        error: str | None,
+        response_text: str | None,
+    ) -> int: ...
+
 
 class TelegramUnreadNotificationPresence(Protocol):
     def is_chat_visibly_open(self, user_id: str, chat_id: int) -> bool: ...
@@ -46,11 +70,11 @@ def should_send_unread_reply_notification(
     active_chat_id: int | None,
     visibly_open_chat_id: int | None,
     chat_id: int,
+    send_attempt_count_for_streak: int,
+    successful_send_already_recorded: bool,
 ) -> TelegramUnreadNotificationDecision:
     if not notifications_enabled:
         return TelegramUnreadNotificationDecision(False, "disabled")
-    if int(prior_unread_count or 0) > 0:
-        return TelegramUnreadNotificationDecision(False, "already_unread")
     if (
         active_chat_id is not None
         and visibly_open_chat_id is not None
@@ -58,7 +82,13 @@ def should_send_unread_reply_notification(
         and int(visibly_open_chat_id) == int(chat_id)
     ):
         return TelegramUnreadNotificationDecision(False, "chat_active")
-    return TelegramUnreadNotificationDecision(True, "send")
+    if successful_send_already_recorded:
+        return TelegramUnreadNotificationDecision(False, "already_notified")
+    if int(prior_unread_count or 0) <= 0:
+        return TelegramUnreadNotificationDecision(True, "send")
+    if int(send_attempt_count_for_streak or 0) <= 1:
+        return TelegramUnreadNotificationDecision(True, "send_retry")
+    return TelegramUnreadNotificationDecision(False, "retry_budget_exhausted")
 
 
 class TelegramUnreadReplyNotifier:
@@ -77,19 +107,93 @@ class TelegramUnreadReplyNotifier:
         visibly_open_chat_id = None
         if self.presence is not None and self.presence.is_chat_visibly_open(user_id, chat_id):
             visibly_open_chat_id = int(chat_id)
+        notifications_enabled = self.store.get_telegram_unread_notifications_enabled(user_id)
+        active_chat_id = self.store.get_active_chat(user_id)
+        unread_streak_key = self.store.get_last_read_message_id(user_id, chat_id)
+        send_attempt_count_for_streak = self.store.count_telegram_notification_send_attempts(
+            user_id,
+            chat_id,
+            unread_streak_key,
+        )
+        successful_send_already_recorded = self.store.has_successful_telegram_notification_for_streak(
+            user_id,
+            chat_id,
+            unread_streak_key,
+        )
         decision = should_send_unread_reply_notification(
-            notifications_enabled=self.store.get_telegram_unread_notifications_enabled(user_id),
+            notifications_enabled=notifications_enabled,
             prior_unread_count=prior_unread_count,
-            active_chat_id=self.store.get_active_chat(user_id),
+            active_chat_id=active_chat_id,
             visibly_open_chat_id=visibly_open_chat_id,
             chat_id=chat_id,
+            send_attempt_count_for_streak=send_attempt_count_for_streak,
+            successful_send_already_recorded=successful_send_already_recorded,
         )
         if not decision.should_send:
-            return TelegramNotificationResult(ok=False, error=f"suppressed:{decision.reason}")
-        return self.sender.send_text(
+            result = TelegramNotificationResult(ok=False, error=f"suppressed:{decision.reason}")
+            self._record_attempt(
+                user_id=user_id,
+                chat_id=chat_id,
+                unread_streak_key=unread_streak_key,
+                prior_unread_count=prior_unread_count,
+                notifications_enabled=notifications_enabled,
+                active_chat_id=active_chat_id,
+                visibly_open_chat_id=visibly_open_chat_id,
+                decision_reason=decision.reason,
+                send_attempted=False,
+                result=result,
+            )
+            return result
+        result = self.sender.send_text(
             chat_id=user_id,
             text=build_unread_reply_notification_text(chat_title=chat_title),
         )
+        self._record_attempt(
+            user_id=user_id,
+            chat_id=chat_id,
+            unread_streak_key=unread_streak_key,
+            prior_unread_count=prior_unread_count,
+            notifications_enabled=notifications_enabled,
+            active_chat_id=active_chat_id,
+            visibly_open_chat_id=visibly_open_chat_id,
+            decision_reason=decision.reason,
+            send_attempted=True,
+            result=result,
+        )
+        return result
+
+    def _record_attempt(
+        self,
+        *,
+        user_id: str,
+        chat_id: int,
+        unread_streak_key: int,
+        prior_unread_count: int,
+        notifications_enabled: bool,
+        active_chat_id: int | None,
+        visibly_open_chat_id: int | None,
+        decision_reason: str,
+        send_attempted: bool,
+        result: TelegramNotificationResult,
+    ) -> None:
+        try:
+            self.store.record_telegram_notification_attempt(
+                user_id=user_id,
+                chat_id=chat_id,
+                unread_streak_key=unread_streak_key,
+                prior_unread_count=prior_unread_count,
+                notifications_enabled=notifications_enabled,
+                active_chat_id=active_chat_id,
+                visibly_open_chat_id=visibly_open_chat_id,
+                decision_reason=decision_reason,
+                send_attempted=send_attempted,
+                send_ok=bool(getattr(result, "ok", False)),
+                status_code=getattr(result, "status_code", None),
+                error=getattr(result, "error", None),
+                response_text=getattr(result, "response_text", None),
+            )
+        except Exception:
+            return
 
 
 class TelegramNotificationSender:

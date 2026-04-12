@@ -75,6 +75,145 @@ class StoreChatsMixin:
             return None
         return int(row["active_chat_id"])
 
+    def get_last_read_message_id(self, user_id: str, chat_id: int) -> int:
+        with self._connect() as conn:
+            self._ensure_chat_exists(conn, user_id, chat_id)
+            row = conn.execute(
+                "SELECT last_read_message_id FROM chat_threads WHERE user_id = ? AND id = ? LIMIT 1",
+                (user_id, chat_id),
+            ).fetchone()
+        return int(row["last_read_message_id"] or 0) if row else 0
+
+    def count_telegram_notification_send_attempts(self, user_id: str, chat_id: int, unread_streak_key: int) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM telegram_notification_attempts
+                WHERE user_id = ?
+                  AND chat_id = ?
+                  AND unread_streak_key = ?
+                  AND send_attempted = 1
+                """,
+                (user_id, chat_id, int(unread_streak_key)),
+            ).fetchone()
+        return int(row["total"] or 0) if row else 0
+
+    def has_successful_telegram_notification_for_streak(self, user_id: str, chat_id: int, unread_streak_key: int) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 AS present
+                FROM telegram_notification_attempts
+                WHERE user_id = ?
+                  AND chat_id = ?
+                  AND unread_streak_key = ?
+                  AND send_ok = 1
+                LIMIT 1
+                """,
+                (user_id, chat_id, int(unread_streak_key)),
+            ).fetchone()
+        return row is not None
+
+    def record_telegram_notification_attempt(
+        self,
+        *,
+        user_id: str,
+        chat_id: int,
+        unread_streak_key: int,
+        prior_unread_count: int,
+        notifications_enabled: bool,
+        active_chat_id: int | None,
+        visibly_open_chat_id: int | None,
+        decision_reason: str,
+        send_attempted: bool,
+        send_ok: bool,
+        status_code: int | None,
+        error: str | None,
+        response_text: str | None,
+    ) -> int:
+        with self._connect() as conn:
+            self._ensure_chat_exists(conn, user_id, chat_id)
+            cursor = conn.execute(
+                """
+                INSERT INTO telegram_notification_attempts (
+                    user_id,
+                    chat_id,
+                    unread_streak_key,
+                    prior_unread_count,
+                    notifications_enabled,
+                    active_chat_id,
+                    visibly_open_chat_id,
+                    decision_reason,
+                    send_attempted,
+                    send_ok,
+                    status_code,
+                    error,
+                    response_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    int(chat_id),
+                    int(unread_streak_key),
+                    max(0, int(prior_unread_count or 0)),
+                    1 if notifications_enabled else 0,
+                    None if active_chat_id is None else int(active_chat_id),
+                    None if visibly_open_chat_id is None else int(visibly_open_chat_id),
+                    str(decision_reason or "unknown")[:120],
+                    1 if send_attempted else 0,
+                    1 if send_ok else 0,
+                    None if status_code is None else int(status_code),
+                    None if error is None else str(error)[:1000],
+                    None if response_text is None else str(response_text)[:4000],
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_telegram_notification_attempts(
+        self,
+        user_id: str,
+        *,
+        chat_id: int | None = None,
+        unread_streak_key: int | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, object]]:
+        where = ["user_id = ?"]
+        params: list[object] = [user_id]
+        if chat_id is not None:
+            where.append("chat_id = ?")
+            params.append(int(chat_id))
+        if unread_streak_key is not None:
+            where.append("unread_streak_key = ?")
+            params.append(int(unread_streak_key))
+        params.append(max(1, int(limit or 50)))
+        query = f"""
+            SELECT
+                id,
+                user_id,
+                chat_id,
+                unread_streak_key,
+                prior_unread_count,
+                notifications_enabled,
+                active_chat_id,
+                visibly_open_chat_id,
+                decision_reason,
+                send_attempted,
+                send_ok,
+                status_code,
+                error,
+                response_text,
+                created_at
+            FROM telegram_notification_attempts
+            WHERE {' AND '.join(where)}
+            ORDER BY id ASC
+            LIMIT ?
+        """
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
+
     def set_active_chat(self, user_id: str, chat_id: int) -> None:
         with self._connect() as conn:
             self._ensure_chat_exists(conn, user_id, chat_id)

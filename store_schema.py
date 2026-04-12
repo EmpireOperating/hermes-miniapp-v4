@@ -23,6 +23,7 @@ class StoreSchemaMixin:
             self._recover_startup_running_jobs(conn)
             self._ensure_chat_thread_schema(conn)
             self._ensure_user_preferences_schema(conn)
+            self._ensure_telegram_notification_schema(conn)
             self._ensure_chat_job_schema(conn)
             self._ensure_runtime_checkpoint_schema(conn)
             self._ensure_auth_session_schema(conn)
@@ -210,6 +211,62 @@ class StoreSchemaMixin:
             conn.execute(
                 "ALTER TABLE user_preferences ADD COLUMN telegram_unread_notifications_enabled INTEGER NOT NULL DEFAULT 0"
             )
+
+    def _ensure_telegram_notification_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS telegram_notification_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                unread_streak_key INTEGER NOT NULL,
+                prior_unread_count INTEGER NOT NULL DEFAULT 0,
+                notifications_enabled INTEGER NOT NULL DEFAULT 0,
+                active_chat_id INTEGER,
+                visibly_open_chat_id INTEGER,
+                decision_reason TEXT NOT NULL,
+                send_attempted INTEGER NOT NULL DEFAULT 0,
+                send_ok INTEGER NOT NULL DEFAULT 0,
+                status_code INTEGER,
+                error TEXT,
+                response_text TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        columns = self._table_columns(conn, "telegram_notification_attempts")
+        if "notifications_enabled" not in columns:
+            conn.execute(
+                "ALTER TABLE telegram_notification_attempts ADD COLUMN notifications_enabled INTEGER NOT NULL DEFAULT 0"
+            )
+        if "active_chat_id" not in columns:
+            conn.execute("ALTER TABLE telegram_notification_attempts ADD COLUMN active_chat_id INTEGER")
+        if "visibly_open_chat_id" not in columns:
+            conn.execute("ALTER TABLE telegram_notification_attempts ADD COLUMN visibly_open_chat_id INTEGER")
+        if "decision_reason" not in columns:
+            conn.execute(
+                "ALTER TABLE telegram_notification_attempts ADD COLUMN decision_reason TEXT NOT NULL DEFAULT 'unknown'"
+            )
+        if "send_attempted" not in columns:
+            conn.execute(
+                "ALTER TABLE telegram_notification_attempts ADD COLUMN send_attempted INTEGER NOT NULL DEFAULT 0"
+            )
+        if "send_ok" not in columns:
+            conn.execute(
+                "ALTER TABLE telegram_notification_attempts ADD COLUMN send_ok INTEGER NOT NULL DEFAULT 0"
+            )
+        if "status_code" not in columns:
+            conn.execute("ALTER TABLE telegram_notification_attempts ADD COLUMN status_code INTEGER")
+        if "error" not in columns:
+            conn.execute("ALTER TABLE telegram_notification_attempts ADD COLUMN error TEXT")
+        if "response_text" not in columns:
+            conn.execute("ALTER TABLE telegram_notification_attempts ADD COLUMN response_text TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_telegram_notification_attempts_chat_streak ON telegram_notification_attempts(user_id, chat_id, unread_streak_key, id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_telegram_notification_attempts_created ON telegram_notification_attempts(user_id, created_at, id)"
+        )
 
     def _ensure_chat_job_schema(self, conn: sqlite3.Connection) -> None:
         chat_job_columns = self._table_columns(conn, "chat_jobs")

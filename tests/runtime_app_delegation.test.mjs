@@ -17,27 +17,46 @@ function extractFunctionBody(source, functionName) {
 test('app.js runtime latency wrappers delegate through runtime-owned controllers', async () => {
   const source = await readFile(appJsUrl, 'utf8');
 
-  assert.match(
-    source,
-    /const\s+latencyPersistenceController\s*=\s*runtimeHelpers\.createLatencyPersistenceController\(\{/,
-    'app.js should build latencyPersistenceController from runtimeHelpers.createLatencyPersistenceController',
+  assert.ok(
+    source.includes('function createLatencyPersistenceControllerDeps() {')
+      && source.includes('storageKey: LATENCY_STORAGE_KEY,')
+      && source.includes('maxAgeMs: LATENCY_MAX_AGE_MS,'),
+    'app.js should isolate latency persistence wiring in createLatencyPersistenceControllerDeps(...)',
   );
-  assert.match(
-    source,
-    /const\s+latencyViewController\s*=\s*runtimeHelpers\.createLatencyController\(\{/,
-    'app.js should build latencyViewController from runtimeHelpers.createLatencyController',
+  assert.ok(
+    source.includes('function createLatencyPersistenceController() {')
+      && source.includes('return runtimeHelpers.createLatencyPersistenceController(createLatencyPersistenceControllerDeps());'),
+    'app.js should instantiate latencyPersistenceController through createLatencyPersistenceController(...)',
   );
-  assert.match(
-    source,
-    /onLatencyMapMutated:\s*\(\)\s*=>\s*latencyPersistenceController\.persistLatencyByChatToStorage\(\)/,
-    'latency view controller should persist latency storage through the runtime-owned persistence controller',
+  assert.ok(
+    source.includes('latencyPersistenceControllerInstance = createLatencyPersistenceController();'),
+    'getLatencyPersistenceController should allocate the runtime persistence controller through createLatencyPersistenceController()',
+  );
+  assert.ok(
+    source.includes('function createDraftControllerDeps() {')
+      && source.includes('draftStorageKey: DRAFT_STORAGE_KEY,')
+      && source.includes('draftByChat,'),
+    'app.js should isolate draft storage wiring in createDraftControllerDeps(...)',
+  );
+  assert.ok(
+    source.includes('function createDraftController() {')
+      && source.includes('return composerStateHelpers.createDraftController(createDraftControllerDeps());'),
+    'app.js should instantiate draftController through createDraftController(...)',
+  );
+  assert.ok(
+    source.includes('const draftController = createDraftController();'),
+    'app.js should allocate draftController through the createDraftController wrapper',
+  );
+  assert.ok(
+    source.includes('function createLatencyViewControllerDeps() {')
+      && source.includes('onLatencyMapMutated: () => persistLatencyByChatToStorage(),'),
+    'latency view controller should persist latency storage through the latency persistence wrapper',
   );
 
   const delegateExpectations = [
-    ['setChatLatency', 'latencyViewController.setChatLatency(chatId, text)'],
-    ['syncActiveLatencyChip', 'latencyViewController.syncActiveLatencyChip()'],
-    ['loadLatencyByChatFromStorage', 'latencyPersistenceController.loadLatencyByChatFromStorage()'],
-    ['persistLatencyByChatToStorage', 'latencyPersistenceController.persistLatencyByChatToStorage()'],
+    ['setChatLatency', 'getLatencyViewController().setChatLatency(chatId, text)'],
+    ['syncActiveLatencyChip', 'getLatencyViewController().syncActiveLatencyChip()'],
+    ['persistLatencyByChatToStorage', 'getLatencyPersistenceController().persistLatencyByChatToStorage()'],
   ];
 
   for (const [fnName, delegatedCall] of delegateExpectations) {
@@ -48,6 +67,18 @@ test('app.js runtime latency wrappers delegate through runtime-owned controllers
       `${fnName} should delegate through the runtime-owned controller`,
     );
   }
+
+  const loadLatencyBody = extractFunctionBody(source, 'loadLatencyByChatFromStorage');
+  assert.match(
+    loadLatencyBody,
+    /latencyStorageLoaded\s*=\s*false;/,
+    'loadLatencyByChatFromStorage should clear the loaded flag before reloading persisted latency state',
+  );
+  assert.match(
+    loadLatencyBody,
+    /return\s+ensureLatencyStorageLoaded\(\);/,
+    'loadLatencyByChatFromStorage should reload via ensureLatencyStorageLoaded()',
+  );
 
   assert.doesNotMatch(
     extractFunctionBody(source, 'setChatLatency'),
@@ -64,16 +95,17 @@ test('app.js runtime latency wrappers delegate through runtime-owned controllers
 test('app.js haptic/unread wrappers delegate through hapticUnreadController', async () => {
   const source = await readFile(appJsUrl, 'utf8');
 
-  assert.match(
-    source,
-    /const\s+hapticUnreadController\s*=\s*runtimeHelpers\.createHapticUnreadController\(\{[\s\S]*?renderTraceLog,/,
+  assert.ok(
+    source.includes('function getHapticUnreadController() {')
+      && source.includes('hapticUnreadControllerInstance = runtimeHelpers.createHapticUnreadController({')
+      && source.includes('renderTraceLog,'),
     'app.js should build hapticUnreadController from runtimeHelpers.createHapticUnreadController with runtime trace logging injected',
   );
 
   const delegateExpectations = [
-    ['latestCompletedAssistantHapticKey', 'hapticUnreadController.latestCompletedAssistantHapticKey(chatId)'],
-    ['triggerIncomingMessageHaptic', 'hapticUnreadController.triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory })'],
-    ['incrementUnread', 'hapticUnreadController.incrementUnread(chatId)'],
+    ['latestCompletedAssistantHapticKey', 'getHapticUnreadController().latestCompletedAssistantHapticKey(chatId)'],
+    ['triggerIncomingMessageHaptic', 'getHapticUnreadController().triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory })'],
+    ['incrementUnread', 'getHapticUnreadController().incrementUnread(chatId)'],
   ];
 
   for (const [fnName, delegatedCall] of delegateExpectations) {

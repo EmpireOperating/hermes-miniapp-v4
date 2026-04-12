@@ -663,6 +663,59 @@ def test_run_chat_job_sends_telegram_unread_notification_for_new_unread_in_inact
     server._run_chat_job(job)
 
     assert sent == [{"chat_id": user_id, "text": "🔔 Worker — New unread reply"}]
+    attempts = server.store.list_telegram_notification_attempts(user_id, chat_id=worker_chat.id)
+    assert len(attempts) == 1
+    assert attempts[0]["decision_reason"] == "send"
+    assert attempts[0]["send_attempted"] == 1
+    assert attempts[0]["send_ok"] == 1
+
+
+def test_run_chat_job_retries_failed_telegram_unread_notification_once_for_same_unread_streak(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
+
+    user_id = "123"
+    main_chat_id = server.store.ensure_default_chat(user_id)
+    worker_chat = server.store.create_chat(user_id, "Worker")
+    server.store.set_active_chat(user_id, main_chat_id)
+    server.store.set_telegram_unread_notifications_enabled(user_id, True)
+    monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: False)
+
+    send_results = [
+        SimpleNamespace(ok=False, error="network down", status_code=None, response_text=None),
+        SimpleNamespace(ok=True, error=None, status_code=200, response_text='{"ok":true}'),
+    ]
+    sent: list[dict[str, object]] = []
+
+    def fake_send_text(**kwargs):
+        sent.append(dict(kwargs))
+        return send_results.pop(0)
+
+    monkeypatch.setattr(server.runtime.telegram_unread_reply_notifier.sender, "send_text", fake_send_text)
+
+    def fake_stream_events(*, user_id, message, conversation_history, session_id):
+        yield {"type": "meta", "source": "agent-persistent"}
+        yield {"type": "done", "reply": f"reply:{message}", "latency_ms": 1}
+
+    monkeypatch.setattr(server.client, "stream_events", fake_stream_events)
+
+    operator_message_id = server.store.add_message(user_id, worker_chat.id, "operator", "first question")
+    server.store.enqueue_chat_job(user_id, worker_chat.id, operator_message_id, max_attempts=1)
+    first_job = _claim_or_get_open_job(server, user_id, worker_chat.id)
+    server._run_chat_job(first_job)
+
+    second_operator_message_id = server.store.add_message(user_id, worker_chat.id, "operator", "second question")
+    server.store.enqueue_chat_job(user_id, worker_chat.id, second_operator_message_id, max_attempts=1)
+    second_job = _claim_or_get_open_job(server, user_id, worker_chat.id)
+    server._run_chat_job(second_job)
+
+    assert sent == [
+        {"chat_id": user_id, "text": "🔔 Worker — New unread reply"},
+        {"chat_id": user_id, "text": "🔔 Worker — New unread reply"},
+    ]
+    attempts = server.store.list_telegram_notification_attempts(user_id, chat_id=worker_chat.id)
+    assert [attempt["decision_reason"] for attempt in attempts] == ["send", "send_retry"]
+    assert [attempt["send_ok"] for attempt in attempts] == [0, 1]
 
 
 def test_publish_job_event_throttles_touch_job_frequency(monkeypatch, tmp_path) -> None:

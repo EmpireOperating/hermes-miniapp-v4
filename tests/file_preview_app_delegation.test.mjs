@@ -18,8 +18,18 @@ test('app.js file-preview wrappers keep delegating to filePreviewController', as
 
   assert.match(
     source,
-    /const\s+filePreviewController\s*=\s*filePreviewHelpers\.createController\(\{[\s\S]*?filePreviewClose,[\s\S]*?messagesEl,[\s\S]*?\}\);/m,
-    'app.js should build filePreviewController with helper-owned binding deps',
+    /function\s+createFilePreviewControllerDeps\s*\(\)\s*\{[\s\S]*?filePreviewClose,[\s\S]*?messagesEl,[\s\S]*?getCurrentFilePreview:[\s\S]*?setCurrentFilePreview:[\s\S]*?\};\s*\}/m,
+    'app.js should build filePreviewController deps through createFilePreviewControllerDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createFilePreviewController\s*\(\)\s*\{\s*return\s+filePreviewHelpers\.createController\(createFilePreviewControllerDeps\(\)\);\s*\}/m,
+    'app.js should instantiate filePreviewController through createFilePreviewController(...)',
+  );
+  assert.match(
+    source,
+    /const\s+filePreviewController\s*=\s*createLazyControllerProxy\(getFilePreviewController\);/m,
+    'app.js should expose filePreviewController through the shared lazy proxy helper',
   );
 
   const delegateExpectations = [

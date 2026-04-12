@@ -16,6 +16,35 @@ function extractFunctionBody(source, functionName) {
 
 test('app.js visibility skin wrappers delegate to visibilitySkinController', async () => {
   const source = await readFile(appJsUrl, 'utf8');
+
+  assert.ok(
+    source.includes('function createVisibilitySkinControllerStateDeps() {')
+      && source.includes('skinSyncChannel,')
+      && source.includes('setCurrentSkin: (value) => {'),
+    'app.js should isolate visibility skin state wiring in createVisibilitySkinControllerStateDeps(...)',
+  );
+  assert.ok(
+    source.includes('function createVisibilitySkinControllerRuntimeDeps() {')
+      && source.includes('apiPost,')
+      && source.includes('markVisibilityResume,'),
+    'app.js should isolate visibility skin runtime wiring in createVisibilitySkinControllerRuntimeDeps(...)',
+  );
+  assert.ok(
+    source.includes('function createVisibilitySkinControllerDeps() {')
+      && source.includes('...createVisibilitySkinControllerStateDeps(),')
+      && source.includes('...createVisibilitySkinControllerRuntimeDeps(),'),
+    'app.js should compose visibility skin deps from narrower helper bands',
+  );
+  assert.ok(
+    source.includes('function createVisibilitySkinController() {')
+      && source.includes('return visibilitySkinHelpers.createController(createVisibilitySkinControllerDeps());'),
+    'app.js should instantiate visibilitySkinController through createVisibilitySkinController(...)',
+  );
+  assert.ok(
+    source.includes('const visibilitySkinController = createVisibilitySkinController();'),
+    'app.js should allocate visibilitySkinController through the createVisibilitySkinController wrapper',
+  );
+
   const delegateExpectations = [
     ['normalizeSkin', /return\s+visibilitySkinController\.normalizeSkin\(value\);/],
     ['getStoredSkin', /return\s+visibilitySkinController\.getStoredSkin\(\);/],

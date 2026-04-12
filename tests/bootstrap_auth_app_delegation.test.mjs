@@ -53,8 +53,27 @@ test('app.js bootstrap/auth request wrappers keep delegating to bootstrapAuthCon
   );
   assert.match(
     source,
-    /function\s+createBootstrapAuthController\s*\(\)\s*\{[\s\S]*?bootstrapAuthHelpers\.createController\(createBootstrapAuthControllerDeps\(\{[\s\S]*?onBootstrapStage:\s*createBootstrapAuthStageReporter\(\{[\s\S]*?\}\),[\s\S]*?\}\)\);[\s\S]*?\}/m,
-    'app.js should instantiate bootstrapAuthController through createBootstrapAuthController(...)',
+    /function\s+createBootstrapAuthControllerStateArgs\s*\(\)\s*\{[\s\S]*?devAuthSessionStorageKey:\s*DEV_AUTH_SESSION_STORAGE_KEY,[\s\S]*?getIsAuthenticated:\s*\(\)\s*=>\s*isAuthenticated,[\s\S]*?messagesEl,[\s\S]*?\}/m,
+    'app.js should isolate bootstrap auth state/session arg building in createBootstrapAuthControllerStateArgs(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createBootstrapAuthControllerAppArgs\s*\(\)\s*\{[\s\S]*?setSkin,[\s\S]*?resumePendingChatStream,[\s\S]*?windowObject:\s*window,[\s\S]*?\}/m,
+    'app.js should isolate bootstrap auth app arg building in createBootstrapAuthControllerAppArgs(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createBootstrapAuthControllerBootstrapArgs\s*\(\)\s*\{[\s\S]*?authBootstrapMaxAttempts:\s*AUTH_BOOTSTRAP_MAX_ATTEMPTS,[\s\S]*?onBootstrapStage:\s*createBootstrapAuthStageReporter\(\{[\s\S]*?\}\),[\s\S]*?\}/m,
+    'app.js should isolate bootstrap auth retry/telemetry arg building in createBootstrapAuthControllerBootstrapArgs(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createBootstrapAuthControllerArgs\s*\(\)\s*\{[\s\S]*?createBootstrapAuthControllerStateArgs\(\)[\s\S]*?createBootstrapAuthControllerAppArgs\(\)[\s\S]*?createBootstrapAuthControllerBootstrapArgs\(\)[\s\S]*?\}/m,
+    'app.js should compose bootstrap auth constructor args from narrower helper bands',
+  );
+  assert.ok(
+    source.includes('return bootstrapAuthHelpers.createController(createBootstrapAuthControllerDeps(createBootstrapAuthControllerArgs()));'),
+    'app.js should instantiate bootstrapAuthController through createBootstrapAuthController(...) using the extracted args builder',
   );
   assert.match(
     source,

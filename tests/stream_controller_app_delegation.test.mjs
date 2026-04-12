@@ -17,10 +17,20 @@ function extractFunctionBody(source, functionName) {
 test('app.js tool-trace wrappers delegate through helper-owned snapshot-aware controller', async () => {
   const source = await readFile(appJsUrl, 'utf8');
 
-  assert.match(
-    source,
-    /const toolTraceController = streamControllerHelpers\.createToolTraceController\(\{[\s\S]*persistPendingStreamSnapshot,[\s\S]*\}\);/m,
-    'app.js should inject persistPendingStreamSnapshot into toolTraceController',
+  assert.ok(
+    source.includes('function createToolTraceControllerDeps() {')
+      && source.includes('persistPendingStreamSnapshot,')
+      && source.includes('cleanDisplayText,'),
+    'app.js should isolate tool-trace wiring in createToolTraceControllerDeps(...)',
+  );
+  assert.ok(
+    source.includes('function createToolTraceController() {')
+      && source.includes('return streamControllerHelpers.createToolTraceController(createToolTraceControllerDeps());'),
+    'app.js should instantiate toolTraceController through createToolTraceController(...)',
+  );
+  assert.ok(
+    source.includes('const toolTraceController = createToolTraceController();'),
+    'app.js should allocate toolTraceController through the createToolTraceController wrapper',
   );
 
   const delegateExpectations = [
