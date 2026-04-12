@@ -148,7 +148,16 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
                 "high_water_by_job": {"991": 3},
                 "high_water_by_chat": {"55": 4},
                 "recent_events": [{"event": "spawn", "job_id": 991, "chat_id": 55}],
-            }
+            },
+            "operator_summary": {
+                "status": {"level": "warning", "reason": "recent_failures_detected"},
+                "active_job_total": 1,
+                "active_paths": {"agent": 1},
+                "fallback_transition_total_recent": 1,
+                "cli_fallback_total_recent": 0,
+                "child_timeout_total": 0,
+                "suspicious_active_jobs": [{"job_id": 991, "chat_id": 55, "current_path": "agent"}],
+            },
         },
     )
 
@@ -170,6 +179,9 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
     assert data["health"]["agent_kwargs_has_session_db"] is True
     assert data["health"]["agent_kwargs_session_db_available"] is True
     assert data["health"]["session_search_ready"] is True
+    assert data["operator_summary"]["status"]["level"] == "warning"
+    assert data["operator_summary"]["active_paths"] == {"agent": 1}
+    assert data["operator_summary"]["fallback_transition_total_recent"] == 1
     assert data["runtime"]["children"]["active_total"] == 3
     assert data["runtime"]["children"]["high_water_total"] == 5
     assert data["runtime"]["children"]["high_water_by_job"] == {"991": 3}
@@ -380,6 +392,8 @@ def test_subprocess_two_chat_session_mismatch_isolation_smoke(monkeypatch, tmp_p
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
     server, client = _authed_client(monkeypatch, tmp_path)
     runtime = server._RUNTIME_DEPS.bind_runtime()
+    runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
+    runtime._shutdown_event.clear()
 
     user_id = "123"
     chat_a_id = server.store.ensure_default_chat(user_id)
@@ -454,6 +468,9 @@ def test_runtime_diagnostics_expose_last_worker_limit_breach(monkeypatch, tmp_pa
     launcher_info = diagnostics["incident_snapshot"]["workers"]["launcher"]
     assert launcher_info["last_limit_breach"] == "memory"
     assert launcher_info["last_limit_breach_detail"] == "stderr_oom"
+    operator_summary = diagnostics["operator_summary"]
+    assert operator_summary["launcher_limit_breach"] == "memory"
+    assert operator_summary["launcher_limit_breach_detail"] == "stderr_oom"
 
 
 def test_runtime_diagnostics_include_child_high_water(monkeypatch, tmp_path) -> None:
@@ -516,6 +533,104 @@ def test_runtime_diagnostics_include_child_timeout_counters(monkeypatch, tmp_pat
     assert workers.get("child_timeout_total") == 1
     assert workers.get("child_timeouts_by_job") == {"991": 1}
     assert workers.get("child_timeouts_by_chat") == {"55": 1}
+
+
+def test_runtime_diagnostics_build_operator_summary_for_fallback_and_idle_jobs(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    runtime = server.runtime
+
+    assert runtime._try_start_job_runner(job_id=991, user_id="123", chat_id=55) is True
+    assert runtime._try_start_job_runner(job_id=992, user_id="123", chat_id=56) is True
+    with runtime._active_job_runner_lock:
+        runtime._active_job_runner_records[991]["started_at"] = 100
+        runtime._active_job_runner_records[991]["last_progress_at"] = 170
+        runtime._active_job_runner_records[992]["started_at"] = 100
+        runtime._active_job_runner_records[992]["last_progress_at"] = 160
+
+    server.client._record_transport_transition(
+        previous_path="none",
+        next_path="agent",
+        reason="direct_start",
+        session_id="miniapp-123-55",
+        user_id="123",
+    )
+    server.client._record_transport_transition(
+        previous_path="agent",
+        next_path="cli",
+        reason="direct_failure:HermesClientError",
+        session_id="miniapp-123-55",
+        user_id="123",
+    )
+    server.client._record_transport_transition(
+        previous_path="none",
+        next_path="agent-persistent",
+        reason="warm_attach_resume",
+        session_id="miniapp-123-56",
+        user_id="123",
+    )
+    server.client.set_spawn_trace_context(user_id="123", chat_id=55, job_id=991, session_id="miniapp-123-55")
+    server.client.register_child_spawn(
+        transport="chat-worker-subprocess",
+        pid=44101,
+        command=["python", "worker.py"],
+        session_id="miniapp-123-55",
+    )
+    server.client.deregister_child_spawn(
+        pid=44101,
+        outcome="chat-worker-subprocess:failed:timeout",
+        return_code=-9,
+    )
+    server.client.clear_spawn_trace_context()
+
+    monkeypatch.setattr(
+        runtime.store,
+        "job_queue_diagnostics",
+        lambda: {
+            "startup_recovered_running_total": 2,
+            "startup_clamped_exhausted_total": 3,
+            "preclaim_dead_letter_total": 4,
+        },
+    )
+
+    diagnostics = build_runtime_diagnostics(runtime, time_fn=lambda: 200, monotonic_fn=lambda: 200)
+    operator_summary = diagnostics["operator_summary"]
+    assert operator_summary["status"]["level"] == "ok"
+    assert operator_summary["active_job_total"] == 2
+    assert operator_summary["active_paths"] == {"cli": 1, "agent-persistent": 1}
+    assert operator_summary["active_latest_transition_reasons"] == {
+        "direct_failure:HermesClientError": 1,
+        "warm_attach_resume": 1,
+    }
+    assert operator_summary["active_resume_job_total"] == 1
+    assert operator_summary["fallback_transition_total_recent"] == 1
+    assert operator_summary["cli_fallback_total_recent"] == 1
+    assert operator_summary["recent_fallback_reasons"] == {"direct_failure:HermesClientError": 1}
+    assert operator_summary["child_timeout_total"] == 1
+    assert operator_summary["timeout_affected_jobs"] == ["991"]
+    assert operator_summary["timeout_affected_chats"] == ["55"]
+    assert operator_summary["startup_recovered_running_total"] == 2
+    assert operator_summary["startup_clamped_exhausted_total"] == 3
+    assert operator_summary["preclaim_dead_letter_total"] == 4
+    assert operator_summary["launcher_limit_breach"] is None
+    assert operator_summary["launcher_limit_breach_detail"] is None
+    suspicious = {item["job_id"]: item for item in operator_summary["suspicious_active_jobs"]}
+    assert suspicious[991]["current_path"] == "cli"
+    assert suspicious[991]["latest_transition_reason"] == "direct_failure:HermesClientError"
+    assert suspicious[991]["latest_fallback_reason"] == "direct_failure:HermesClientError"
+    assert "recent_transport_fallback" in suspicious[991]["suspicion_reasons"]
+    assert "active_on_cli_path" in suspicious[991]["suspicion_reasons"]
+    assert suspicious[992]["current_path"] == "agent-persistent"
+    assert suspicious[992]["idle_seconds"] == 40
+    assert suspicious[992]["suspicion_reasons"] == ["idle_without_progress_30s"]
+    assert diagnostics["incident_snapshot"]["operator_summary"] == operator_summary
+    assert diagnostics["queue_diagnostics"] == {
+        "startup_recovered_running_total": 2,
+        "startup_clamped_exhausted_total": 3,
+        "preclaim_dead_letter_total": 4,
+    }
+
+    runtime._finish_job_runner(991)
+    runtime._finish_job_runner(992)
 
 
 def test_run_chat_job_duplicate_runner_is_suppressed_not_nonretryable(monkeypatch, tmp_path) -> None:
@@ -651,7 +766,7 @@ def test_run_chat_job_sends_telegram_unread_notification_for_new_unread_in_inact
     monkeypatch.setattr(
         server.runtime.telegram_unread_reply_notifier.sender,
         "send_text",
-        lambda **kwargs: sent.append(kwargs) or SimpleNamespace(ok=True, error=None),
+        lambda **kwargs: sent.append(kwargs) or SimpleNamespace(ok=True, status_code=200, error=None, response_text='{"ok":true}'),
     )
 
     def fake_stream_events(*, user_id, message, conversation_history, session_id):
@@ -663,6 +778,57 @@ def test_run_chat_job_sends_telegram_unread_notification_for_new_unread_in_inact
     server._run_chat_job(job)
 
     assert sent == [{"chat_id": user_id, "text": "🔔 Worker — New unread reply"}]
+    attempts = server.store.list_telegram_notification_attempts(user_id=user_id, chat_id=worker_chat.id, limit=5)
+    assert attempts[0]["decision_reason"] == "send"
+    assert attempts[0]["ok"] is True
+    diagnostics = server.runtime.runtime_diagnostics()
+    assert diagnostics["telegram_notifications"]["recent_attempts"][0]["decision_reason"] == "send"
+    assert diagnostics["incident_snapshot"]["telegram_notifications"]["recent_attempts"][0]["chat_id"] == worker_chat.id
+
+
+def test_run_chat_job_retries_telegram_unread_notification_when_same_unread_streak_previously_failed(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
+
+    user_id = "123"
+    main_chat_id = server.store.ensure_default_chat(user_id)
+    worker_chat = server.store.create_chat(user_id, "Worker")
+    server.store.set_active_chat(user_id, main_chat_id)
+    server.store.set_telegram_unread_notifications_enabled(user_id, True)
+    operator_message_id = server.store.add_message(user_id, worker_chat.id, "operator", "latest question")
+    first_reply_id = server.store.add_message(user_id, worker_chat.id, "hermes", "stale unread")
+    server.store.record_telegram_notification_attempt(
+        user_id=user_id,
+        chat_id=worker_chat.id,
+        unread_anchor_message_id=first_reply_id,
+        prior_unread_count=0,
+        decision_reason="send",
+        result=SimpleNamespace(ok=False, status_code=500, error="telegram_send_failed:500", response_text="boom"),
+    )
+    second_operator_message_id = server.store.add_message(user_id, worker_chat.id, "operator", "follow up")
+    server.store.enqueue_chat_job(user_id, worker_chat.id, second_operator_message_id, max_attempts=1)
+    job = _claim_or_get_open_job(server, user_id, worker_chat.id)
+
+    monkeypatch.setattr(server.client, "should_include_conversation_history", lambda session_id: False)
+    sent: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        server.runtime.telegram_unread_reply_notifier.sender,
+        "send_text",
+        lambda **kwargs: sent.append(kwargs) or SimpleNamespace(ok=True, status_code=200, error=None, response_text='{"ok":true}'),
+    )
+
+    def fake_stream_events(*, user_id, message, conversation_history, session_id):
+        yield {"type": "meta", "source": "agent-persistent"}
+        yield {"type": "done", "reply": "retry ok", "latency_ms": 1}
+
+    monkeypatch.setattr(server.client, "stream_events", fake_stream_events)
+
+    server._run_chat_job(job)
+
+    assert sent == [{"chat_id": user_id, "text": "🔔 Worker — New unread reply"}]
+    attempts = server.store.list_telegram_notification_attempts(user_id=user_id, chat_id=worker_chat.id, limit=5)
+    assert [attempt["decision_reason"] for attempt in attempts[:2]] == ["retry_pending_unread", "send"]
+    assert attempts[0]["ok"] is True
 
 
 def test_publish_job_event_throttles_touch_job_frequency(monkeypatch, tmp_path) -> None:

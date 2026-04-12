@@ -73,5 +73,6 @@ def register_jobs_runtime_routes(
             "routing": runtime_payload.get("routing") or {},
             "warm_sessions": runtime_payload.get("warm_sessions") or {},
             "health": runtime_payload.get("health") or {},
+            "operator_summary": runtime_diagnostics.get("operator_summary") or {},
             "runtime": runtime_diagnostics,
         }, 200

@@ -598,6 +598,316 @@ def test_stream_chat_interrupts_open_job_when_requested(monkeypatch, tmp_path) -
 
 
 
+def test_stream_resume_after_interrupt_replays_replacement_job_not_interrupted_job(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "already running")
+    first_job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    server.store.set_active_chat("123", chat_id)
+
+    class _SingleDoneSubscriber:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self._sent = False
+
+        def get(self, timeout=None):
+            if self._sent:
+                raise queue.Empty
+            self._sent = True
+            return {
+                "event": "done",
+                "event_id": 1,
+                "payload": dict(self._payload),
+            }
+
+    subscribers: dict[int, _SingleDoneSubscriber] = {}
+
+    def _subscribe_job_events(job_id: int, after_event_id: int = 0):
+        if after_event_id:
+            raise AssertionError("new stream should not request replay cursor")
+        subscribers[job_id] = _SingleDoneSubscriber(
+            {"chat_id": chat_id, "reply": "replacement ok", "latency_ms": 1}
+        )
+        return subscribers[job_id]
+
+    real_subscribe_job_events = server.runtime.subscribe_job_events
+    real_unsubscribe_job_events = server.runtime.unsubscribe_job_events
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", _subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+
+    interrupt_response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": chat_id, "message": "replace", "interrupt": True},
+    )
+
+    assert interrupt_response.status_code == 200
+    assert server.store.get_active_chat("123") == chat_id
+
+    first_state = server.store.get_job_state(first_job_id)
+    assert first_state is not None
+    assert first_state["status"] == "dead"
+    assert first_state["error"] == "interrupted_by_new_message"
+
+    replacement_open_job = server.store.get_open_job(user_id="123", chat_id=chat_id)
+    assert replacement_open_job is not None
+    replacement_job_id = int(replacement_open_job["id"])
+    assert replacement_job_id != first_job_id
+
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+    assert int(claimed["id"]) == replacement_job_id
+
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", real_subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", real_unsubscribe_job_events)
+    server._publish_job_event(replacement_job_id, "tool", {"chat_id": chat_id, "display": "replacement tool"})
+    server._publish_job_event(replacement_job_id, "done", {"chat_id": chat_id, "reply": "replacement replay ok", "latency_ms": 1})
+
+    resume_response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert resume_response.status_code == 200
+    resume_body = resume_response.get_data(as_text=True)
+    assert "event: tool" in resume_body
+    assert "replacement tool" in resume_body
+    assert "event: done" in resume_body
+    assert '"reply": "replacement replay ok"' in resume_body
+    assert "interrupted_by_new_message" not in resume_body
+    assert server.store.get_active_chat("123") == chat_id
+
+    first_state_after_resume = server.store.get_job_state(first_job_id)
+    assert first_state_after_resume is not None
+    assert first_state_after_resume["status"] == "dead"
+    assert first_state_after_resume["error"] == "interrupted_by_new_message"
+    latest_open_job = server.store.get_open_job(user_id="123", chat_id=chat_id)
+    assert latest_open_job is not None
+    assert int(latest_open_job["id"]) == replacement_job_id
+
+
+
+def test_stream_resume_after_interrupt_done_rejects_without_resurrecting_old_jobs(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "already running")
+    first_job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    server.store.set_active_chat("123", chat_id)
+
+    class _SingleDoneSubscriber:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self._sent = False
+
+        def get(self, timeout=None):
+            if self._sent:
+                raise queue.Empty
+            self._sent = True
+            return {
+                "event": "done",
+                "event_id": 1,
+                "payload": dict(self._payload),
+            }
+
+    subscribers: dict[int, _SingleDoneSubscriber] = {}
+
+    def _subscribe_job_events(job_id: int, after_event_id: int = 0):
+        if after_event_id:
+            raise AssertionError("new stream should not request replay cursor")
+        subscribers[job_id] = _SingleDoneSubscriber(
+            {"chat_id": chat_id, "reply": "replacement ok", "latency_ms": 1}
+        )
+        return subscribers[job_id]
+
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", _subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+
+    interrupt_response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": chat_id, "message": "replace", "interrupt": True},
+    )
+
+    assert interrupt_response.status_code == 200
+    assert server.store.get_active_chat("123") == chat_id
+
+    first_state = server.store.get_job_state(first_job_id)
+    assert first_state is not None
+    assert first_state["status"] == "dead"
+    assert first_state["error"] == "interrupted_by_new_message"
+
+    replacement_open_job = server.store.get_open_job(user_id="123", chat_id=chat_id)
+    assert replacement_open_job is not None
+    replacement_job_id = int(replacement_open_job["id"])
+    assert replacement_job_id != first_job_id
+
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+    assert int(claimed["id"]) == replacement_job_id
+
+    server._publish_job_event(replacement_job_id, "done", {"chat_id": chat_id, "reply": "replacement final", "latency_ms": 1})
+    server.store.complete_job(replacement_job_id)
+
+    resume_response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert resume_response.status_code == 409
+    assert "No active Hermes job" in resume_response.get_data(as_text=True)
+    assert server.store.get_active_chat("123") == chat_id
+    assert server.store.get_open_job(user_id="123", chat_id=chat_id) is None
+
+    replacement_state = server.store.get_job_state(replacement_job_id)
+    assert replacement_state is not None
+    assert replacement_state["status"] == "done"
+
+    first_state_after_resume = server.store.get_job_state(first_job_id)
+    assert first_state_after_resume is not None
+    assert first_state_after_resume["status"] == "dead"
+    assert first_state_after_resume["error"] == "interrupted_by_new_message"
+
+
+
+def test_stream_chat_dead_letters_stale_running_open_job_before_new_stream(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "stale running")
+    stale_job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+    assert int(claimed["id"]) == stale_job_id
+
+    conn = sqlite3.connect(server.store.db_path)
+    conn.execute(
+        "UPDATE chat_jobs SET started_at = CURRENT_TIMESTAMP, updated_at = datetime('now', '-600 seconds') WHERE id = ?",
+        (stale_job_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    class _SingleDoneSubscriber:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self._sent = False
+
+        def get(self, timeout=None):
+            if self._sent:
+                raise queue.Empty
+            self._sent = True
+            return {
+                "event": "done",
+                "event_id": 1,
+                "payload": dict(self._payload),
+            }
+
+    subscribers: dict[int, _SingleDoneSubscriber] = {}
+
+    def _subscribe_job_events(job_id: int, after_event_id: int = 0):
+        if after_event_id:
+            raise AssertionError("new stream should not request replay cursor")
+        subscribers[job_id] = _SingleDoneSubscriber(
+            {"chat_id": chat_id, "reply": "recovered ok", "latency_ms": 1}
+        )
+        return subscribers[job_id]
+
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", _subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": chat_id, "message": "fresh replacement"},
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"reply": "recovered ok"' in body
+
+    stale_state = server.store.get_job_state(stale_job_id)
+    assert stale_state is not None
+    assert stale_state["status"] == "dead"
+    assert stale_state["error"] == "E_STALE_OPEN_JOB_AFTER_RESTART: stale open job dead-lettered before new stream"
+
+    replacement_open_job = server.store.get_open_job(user_id="123", chat_id=chat_id)
+    assert replacement_open_job is not None
+    assert int(replacement_open_job["id"]) != stale_job_id
+
+
+def test_stream_chat_interrupt_replaces_stale_running_open_job_cleanly(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "stale running")
+    stale_job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+    claimed = server.store.claim_next_job()
+    assert claimed is not None
+    assert int(claimed["id"]) == stale_job_id
+
+    conn = sqlite3.connect(server.store.db_path)
+    conn.execute(
+        "UPDATE chat_jobs SET started_at = CURRENT_TIMESTAMP, updated_at = datetime('now', '-600 seconds') WHERE id = ?",
+        (stale_job_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    class _SingleDoneSubscriber:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self._sent = False
+
+        def get(self, timeout=None):
+            if self._sent:
+                raise queue.Empty
+            self._sent = True
+            return {
+                "event": "done",
+                "event_id": 1,
+                "payload": dict(self._payload),
+            }
+
+    subscribers: dict[int, _SingleDoneSubscriber] = {}
+
+    def _subscribe_job_events(job_id: int, after_event_id: int = 0):
+        if after_event_id:
+            raise AssertionError("new stream should not request replay cursor")
+        subscribers[job_id] = _SingleDoneSubscriber(
+            {"chat_id": chat_id, "reply": "interrupt replacement ok", "latency_ms": 1}
+        )
+        return subscribers[job_id]
+
+    terminated: list[tuple[int, str]] = []
+    finished: list[tuple[int, str]] = []
+    evicted: list[tuple[str, str]] = []
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", _subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+    monkeypatch.setattr(server.runtime, "_terminate_job_children", lambda *, job_id, reason: terminated.append((int(job_id), str(reason))))
+    monkeypatch.setattr(server.runtime, "_finish_job_runner", lambda job_id, *, outcome="finished": finished.append((int(job_id), str(outcome))))
+    monkeypatch.setattr(server.client, "evict_session", lambda session_id, *, reason="explicit_eviction": evicted.append((str(session_id), str(reason))) or True)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": chat_id, "message": "interrupt ok", "interrupt": True},
+    )
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"reply": "interrupt replacement ok"' in body
+
+    stale_state = server.store.get_job_state(stale_job_id)
+    assert stale_state is not None
+    assert stale_state["status"] == "dead"
+    assert stale_state["error"] == "interrupted_by_new_message"
+    assert terminated == [(stale_job_id, "interrupted_by_new_message")]
+    assert finished == [(stale_job_id, "interrupted_by_new_message")]
+    assert evicted == [(f"miniapp-123-{chat_id}", "interrupted_by_new_message")]
+
+    replacement_open_job = server.store.get_open_job(user_id="123", chat_id=chat_id)
+    assert replacement_open_job is not None
+    assert int(replacement_open_job["id"]) != stale_job_id
+
+
 def test_stream_chat_allows_other_chat_while_first_chat_has_open_job(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -682,6 +992,107 @@ def test_stream_resume_without_open_job_does_not_change_active_chat(monkeypatch,
     assert server.store.get_active_chat("123") == main_chat_id
 
 
+def test_stream_resume_for_other_chat_does_not_disturb_active_chat_open_job(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    main_chat_id = server.store.ensure_default_chat("123")
+    alt_chat = server.store.create_chat("123", "Alt")
+    operator_message_id = server.store.add_message("123", main_chat_id, "operator", "active job")
+    main_job_id = server.store.enqueue_chat_job("123", main_chat_id, operator_message_id)
+    server.store.set_active_chat("123", main_chat_id)
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": alt_chat.id})
+
+    assert response.status_code == 409
+    assert "No active Hermes job" in response.get_data(as_text=True)
+    assert server.store.get_active_chat("123") == main_chat_id
+
+    main_open_job = server.store.get_open_job(user_id="123", chat_id=main_chat_id)
+    assert main_open_job is not None
+    assert int(main_open_job["id"]) == main_job_id
+
+    main_state = server.store.get_job_state(main_job_id)
+    assert main_state is not None
+    assert main_state["status"] == "queued"
+    assert not main_state["error"]
+
+
+def test_stream_resume_for_other_chat_does_not_disturb_interrupt_replacement_open_job(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    main_chat_id = server.store.ensure_default_chat("123")
+    alt_chat = server.store.create_chat("123", "Alt")
+    operator_message_id = server.store.add_message("123", main_chat_id, "operator", "already running")
+    first_job_id = server.store.enqueue_chat_job("123", main_chat_id, operator_message_id)
+    server.store.set_active_chat("123", main_chat_id)
+
+    class _SingleDoneSubscriber:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self._sent = False
+
+        def get(self, timeout=None):
+            if self._sent:
+                raise queue.Empty
+            self._sent = True
+            return {
+                "event": "done",
+                "event_id": 1,
+                "payload": dict(self._payload),
+            }
+
+    subscribers: dict[int, _SingleDoneSubscriber] = {}
+
+    def _subscribe_job_events(job_id: int, after_event_id: int = 0):
+        if after_event_id:
+            raise AssertionError("new stream should not request replay cursor")
+        subscribers[job_id] = _SingleDoneSubscriber(
+            {"chat_id": main_chat_id, "reply": "replacement ok", "latency_ms": 1}
+        )
+        return subscribers[job_id]
+
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", _subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+
+    interrupt_response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": main_chat_id, "message": "replace", "interrupt": True},
+    )
+
+    assert interrupt_response.status_code == 200
+    assert server.store.get_active_chat("123") == main_chat_id
+
+    first_state = server.store.get_job_state(first_job_id)
+    assert first_state is not None
+    assert first_state["status"] == "dead"
+    assert first_state["error"] == "interrupted_by_new_message"
+
+    replacement_open_job = server.store.get_open_job(user_id="123", chat_id=main_chat_id)
+    assert replacement_open_job is not None
+    replacement_job_id = int(replacement_open_job["id"])
+    assert replacement_job_id != first_job_id
+
+    response = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": alt_chat.id})
+
+    assert response.status_code == 409
+    assert "No active Hermes job" in response.get_data(as_text=True)
+    assert server.store.get_active_chat("123") == main_chat_id
+
+    latest_open_job = server.store.get_open_job(user_id="123", chat_id=main_chat_id)
+    assert latest_open_job is not None
+    assert int(latest_open_job["id"]) == replacement_job_id
+
+    replacement_state = server.store.get_job_state(replacement_job_id)
+    assert replacement_state is not None
+    assert replacement_state["status"] == "queued"
+    assert not replacement_state["error"]
+
+    first_state_after_resume = server.store.get_job_state(first_job_id)
+    assert first_state_after_resume is not None
+    assert first_state_after_resume["status"] == "dead"
+    assert first_state_after_resume["error"] == "interrupted_by_new_message"
+
+
 def test_stream_resume_dead_letters_stale_open_job_before_409(monkeypatch, tmp_path) -> None:
     import sqlite3
 
@@ -705,6 +1116,180 @@ def test_stream_resume_dead_letters_stale_open_job_before_409(monkeypatch, tmp_p
     state = server.store.get_job_state(job_id)
     assert state is not None
     assert state["status"] == "dead"
+
+
+def test_repeated_stale_resume_attempts_stay_local_and_clean(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    server.store.set_active_chat("123", chat_id)
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume stale repeatedly")
+    job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+
+    conn = sqlite3.connect(server.store.db_path)
+    conn.execute("UPDATE chat_jobs SET updated_at = datetime('now', '-600 seconds') WHERE id = ?", (job_id,))
+    conn.commit()
+    conn.close()
+
+    first = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+    assert first.status_code == 409
+    assert "No active Hermes job" in first.get_data(as_text=True)
+
+    state = server.store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+    assert server.store.get_open_job(user_id="123", chat_id=chat_id) is None
+
+    second = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+    assert second.status_code == 409
+    assert "No active Hermes job" in second.get_data(as_text=True)
+
+    state_after_second = server.store.get_job_state(job_id)
+    assert state_after_second is not None
+    assert state_after_second["status"] == "dead"
+    assert server.store.get_open_job(user_id="123", chat_id=chat_id) is None
+    assert server.store.get_active_chat("123") == chat_id
+
+
+def test_failed_resume_in_same_chat_does_not_block_new_stream_in_same_chat(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    server.store.set_active_chat("123", chat_id)
+
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "resume stale")
+    first_job_id = server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+
+    conn = sqlite3.connect(server.store.db_path)
+    conn.execute("UPDATE chat_jobs SET updated_at = datetime('now', '-600 seconds') WHERE id = ?", (first_job_id,))
+    conn.commit()
+    conn.close()
+
+    failed_resume = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": chat_id})
+
+    assert failed_resume.status_code == 409
+    assert "No active Hermes job" in failed_resume.get_data(as_text=True)
+    first_state = server.store.get_job_state(first_job_id)
+    assert first_state is not None
+    assert first_state["status"] == "dead"
+    assert server.store.get_open_job(user_id="123", chat_id=chat_id) is None
+    assert server.store.get_active_chat("123") == chat_id
+
+    class _SingleDoneSubscriber:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self._sent = False
+
+        def get(self, timeout=None):
+            if self._sent:
+                raise queue.Empty
+            self._sent = True
+            return {
+                "event": "done",
+                "event_id": 1,
+                "payload": dict(self._payload),
+            }
+
+    subscribers: dict[int, _SingleDoneSubscriber] = {}
+
+    def _subscribe_job_events(job_id: int, after_event_id: int = 0):
+        if after_event_id:
+            raise AssertionError("new stream should not request replay cursor")
+        subscribers[job_id] = _SingleDoneSubscriber(
+            {"chat_id": chat_id, "reply": "replacement ok", "latency_ms": 1}
+        )
+        return subscribers[job_id]
+
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", _subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+
+    replacement_response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": chat_id, "message": "replacement ok"},
+    )
+
+    assert replacement_response.status_code == 200
+    body = replacement_response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"reply": "replacement ok"' in body
+    assert server.store.get_active_chat("123") == chat_id
+    replacement_open_job = server.store.get_open_job(user_id="123", chat_id=chat_id)
+    assert replacement_open_job is not None
+    assert int(replacement_open_job["id"]) != first_job_id
+
+
+def test_failed_resume_in_one_chat_does_not_block_new_stream_in_other_chat(monkeypatch, tmp_path) -> None:
+    import sqlite3
+
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    first_chat_id = server.store.ensure_default_chat("123")
+    second_chat = server.store.create_chat("123", "Second")
+    server.store.set_active_chat("123", first_chat_id)
+
+    operator_message_id = server.store.add_message("123", first_chat_id, "operator", "resume stale")
+    first_job_id = server.store.enqueue_chat_job("123", first_chat_id, operator_message_id)
+
+    conn = sqlite3.connect(server.store.db_path)
+    conn.execute("UPDATE chat_jobs SET updated_at = datetime('now', '-600 seconds') WHERE id = ?", (first_job_id,))
+    conn.commit()
+    conn.close()
+
+    failed_resume = client.post("/api/chat/stream/resume", json={"init_data": "ok", "chat_id": first_chat_id})
+
+    assert failed_resume.status_code == 409
+    assert "No active Hermes job" in failed_resume.get_data(as_text=True)
+    first_state = server.store.get_job_state(first_job_id)
+    assert first_state is not None
+    assert first_state["status"] == "dead"
+    assert server.store.get_active_chat("123") == first_chat_id
+
+    class _SingleDoneSubscriber:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+            self._sent = False
+
+        def get(self, timeout=None):
+            if self._sent:
+                raise queue.Empty
+            self._sent = True
+            return {
+                "event": "done",
+                "event_id": 1,
+                "payload": dict(self._payload),
+            }
+
+    subscribers: dict[int, _SingleDoneSubscriber] = {}
+
+    def _subscribe_job_events(job_id: int, after_event_id: int = 0):
+        if after_event_id:
+            raise AssertionError("new stream should not request replay cursor")
+        subscribers[job_id] = _SingleDoneSubscriber(
+            {"chat_id": second_chat.id, "reply": "second ok", "latency_ms": 1}
+        )
+        return subscribers[job_id]
+
+    monkeypatch.setattr(server.runtime, "subscribe_job_events", _subscribe_job_events)
+    monkeypatch.setattr(server.runtime, "unsubscribe_job_events", lambda _job_id, _subscriber: None)
+
+    second_response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": second_chat.id, "message": "second can still run"},
+    )
+
+    assert second_response.status_code == 200
+    body = second_response.get_data(as_text=True)
+    assert "event: done" in body
+    assert '"reply": "second ok"' in body
+    assert server.store.get_active_chat("123") == second_chat.id
+    assert server.store.get_open_job(user_id="123", chat_id=first_chat_id) is None
+    open_second = server.store.get_open_job(user_id="123", chat_id=second_chat.id)
+    assert open_second is not None
+    assert int(open_second["id"]) != first_job_id
 
 
 def test_stream_resume_replays_buffered_events_for_open_job(monkeypatch, tmp_path) -> None:
