@@ -360,7 +360,7 @@ test('installKeyboardViewportSync does not cancel native mobile prompt touch def
   assert.equal(harness.documentObject.activeElement, harness.promptEl);
 });
 
-test('installKeyboardViewportSync stops mobile focus sync when user touches an already-focused prompt', () => {
+test('installKeyboardViewportSync re-arms composer reveal sync when a mobile user touches an already-focused prompt', () => {
   const harness = buildHarness({ mobileQuoteMode: true });
 
   harness.controller.installKeyboardViewportSync();
@@ -372,14 +372,12 @@ test('installKeyboardViewportSync stops mobile focus sync when user touches an a
   harness.form.scrollIntoViewCalls.length = 0;
   harness.scrollByCalls.length = 0;
   harness.promptEl.dispatch('touchstart', { touches: [{ clientX: 24, clientY: 34 }] });
-  harness.promptEl.dispatch('touchend', { changedTouches: [{ clientX: 24, clientY: 34 }] });
-  harness.promptEl.dispatch('click');
   harness.visualViewport.dispatch('resize');
 
-  assert.deepEqual(harness.clearIntervalCalls, [1]);
+  assert.deepEqual(harness.clearIntervalCalls, []);
   assert.deepEqual(harness.promptEl.focusCalls, []);
-  assert.equal(harness.form.scrollIntoViewCalls.length, 0);
-  assert.equal(harness.scrollByCalls.length, 0);
+  assert.ok(harness.form.scrollIntoViewCalls.length >= 2);
+  assert.ok(harness.scrollByCalls.length >= 1);
 });
 
 

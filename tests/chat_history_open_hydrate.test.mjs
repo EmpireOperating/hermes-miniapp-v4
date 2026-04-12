@@ -5,10 +5,45 @@ import { buildHarness, chatHistory, runtimeHistory } from './chat_history_test_h
 test('chat history exports hydration helper subcontrollers with stable ownership seams', () => {
   assert.equal(typeof chatHistory.createUnreadAnchorController, 'function');
   assert.equal(typeof chatHistory.createActivationReadThresholdController, 'function');
+  assert.equal(typeof chatHistory.createUnreadPreservationController, 'function');
   assert.equal(typeof chatHistory.createHistoryPendingStateController, 'function');
   assert.equal(typeof chatHistory.createHistoryRenderDecisionController, 'function');
+  assert.equal(typeof chatHistory.createHydrationApplyController, 'function');
+  assert.equal(typeof chatHistory.createVisibilityResumeController, 'function');
   assert.equal(typeof chatHistory.createUnreadHydrationRetryController, 'function');
   assert.equal(typeof chatHistory.createCachedOpenController, 'function');
+});
+
+test('visibility resume helper only forces resume for pending chats that still need recovery', async () => {
+  const resumed = [];
+  const visibilityChecks = [];
+  const controller = chatHistory.createVisibilityResumeController({
+    hasLiveStreamController: () => false,
+    resumePendingChatStream: (chatId, options = {}) => resumed.push({ chatId: Number(chatId), options }),
+    shouldResumeOnVisibilityChange: (args) => {
+      visibilityChecks.push(args);
+      return false;
+    },
+  });
+
+  controller.maybeResumeVisibilitySync({
+    activeChatId: 7,
+    hidden: false,
+    pendingChats: new Set([7]),
+    streamAbortControllers: new Map(),
+    chatPending: false,
+    localPendingWithoutLiveStream: true,
+    snapshotPendingWithoutLiveStream: false,
+    matchedVisibleHydratedCompletion: false,
+  });
+
+  assert.deepEqual(visibilityChecks, [{
+    hidden: false,
+    activeChatId: 7,
+    pendingChats: new Set([7]),
+    streamAbortControllers: new Map(),
+  }]);
+  assert.deepEqual(resumed, [{ chatId: 7, options: { force: true } }]);
 });
 
 test('historiesDiffer only flags meaningful tail changes', () => {
@@ -207,6 +242,9 @@ test('openChat uses cached history path before background hydration', async () =
     },
   });
   harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+  harness.chats.get(7).unread_count = 0;
+  harness.chats.get(7).newest_unread_message_id = 0;
+  harness.chats.get(7).pending = false;
 
   await harness.controller.openChat(7);
 
@@ -230,6 +268,9 @@ test('openChat defers cached transcript render by one UI turn when non-critical 
     },
   });
   harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+  harness.chats.get(7).unread_count = 0;
+  harness.chats.get(7).newest_unread_message_id = 0;
+  harness.chats.get(7).pending = false;
 
   await harness.controller.openChat(7);
 
@@ -262,6 +303,9 @@ test('openChat emits cached-open timing breadcrumbs for deferred cached switches
     },
   });
   harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+  harness.chats.get(7).unread_count = 0;
+  harness.chats.get(7).newest_unread_message_id = 0;
+  harness.chats.get(7).pending = false;
 
   await harness.controller.openChat(7);
   uiCallbacks[0]();
@@ -291,6 +335,7 @@ test('openChat emits cached-open timing breadcrumbs for deferred cached switches
     requestId: 1,
     mode: 'timeout',
     delayMs: 32,
+    prioritizeHydration: false,
   });
   assert.equal(harness.renderTraceLogs[2].details.deferred, true);
   assert.equal(harness.renderTraceLogs[3].details.chatId, 7);
@@ -412,7 +457,7 @@ test('openChat disables deferred cached-chat meta on mobile-style contexts', asy
   assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), true);
 });
 
-test('openChat uses requestIdle to delay cached hydration when deferring non-critical cached-open work', async () => {
+test('openChat uses requestIdle to delay cached hydration when deferring non-critical cached-open work for fully read chats', async () => {
   const idleCallbacks = [];
   const harness = buildHarness({
     shouldDeferNonCriticalCachedOpen: () => true,
@@ -424,6 +469,9 @@ test('openChat uses requestIdle to delay cached hydration when deferring non-cri
     },
   });
   harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+  harness.chats.get(7).unread_count = 0;
+  harness.chats.get(7).newest_unread_message_id = 0;
+  harness.chats.get(7).pending = false;
 
   await harness.controller.openChat(7);
 
@@ -432,6 +480,33 @@ test('openChat uses requestIdle to delay cached hydration when deferring non-cri
   assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), false);
 
   await idleCallbacks[0].callback();
+  assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), true);
+});
+
+test('openChat prioritizes cached hydration over requestIdle when the cached chat has unread messages', async () => {
+  const idleCallbacks = [];
+  const scheduledHydrations = [];
+  const harness = buildHarness({
+    shouldDeferNonCriticalCachedOpen: () => true,
+    requestIdle: (callback, options) => {
+      idleCallbacks.push({ callback, options });
+    },
+    scheduleTimeout: (callback, delay) => {
+      scheduledHydrations.push({ callback, delay });
+    },
+  });
+  harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+  harness.chats.get(7).unread_count = 2;
+  harness.chats.get(7).newest_unread_message_id = 11;
+
+  await harness.controller.openChat(7);
+
+  assert.equal(idleCallbacks.length, 0);
+  assert.equal(scheduledHydrations.length, 1);
+  assert.equal(scheduledHydrations[0].delay, 0);
+  assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), false);
+
+  await scheduledHydrations[0].callback();
   assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), true);
 });
 

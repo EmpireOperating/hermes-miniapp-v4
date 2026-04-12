@@ -397,13 +397,12 @@
         }
       };
 
-      const primeBeforeFocus = () => {
-        if (mobileQuoteMode && isPromptFocused()) {
-          return;
-        }
+      const primeBeforeFocus = ({ skipFocus = false } = {}) => {
         explicitComposerRevealRequested = true;
         armSyncWindow();
-        focusComposerFromUserGesture();
+        if (!skipFocus) {
+          focusComposerFromUserGesture();
+        }
         runSyncBurst();
         startFocusIntervalSync();
       };
@@ -415,7 +414,7 @@
         }
         cancelPendingPromptTouch();
         if (isPromptFocused()) {
-          clearSyncWindowState();
+          primeBeforeFocus({ skipFocus: true });
           return;
         }
         if (promptEl.disabled) return;

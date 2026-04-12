@@ -19,8 +19,23 @@ test('app.js startup/bootstrap wrappers keep delegating to startupBindingsContro
 
   assert.match(
     source,
-    /function\s+createStartupBindingsControllerDeps\s*\([\s\S]*?return\s+\{[\s\S]*?noteMobileCarouselInteraction:[\s\S]*?chatTabsController\.noteMobileCarouselInteraction\(\),[\s\S]*?getStreamAbortControllers,[\s\S]*?\};\s*\}/m,
-    'app.js should build startup bindings deps through createStartupBindingsControllerDeps(...)',
+    /function\s+createStartupBindingsControllerElementDeps\s*\([\s\S]*?return\s+\{[\s\S]*?templateEl:\s*template,[\s\S]*?tg,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate startup DOM wiring in createStartupBindingsControllerElementDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createStartupBindingsControllerInteractionDeps\s*\([\s\S]*?return\s+\{[\s\S]*?noteMobileCarouselInteraction:[\s\S]*?chatTabsController\.noteMobileCarouselInteraction\(\),[\s\S]*?getStreamAbortControllers,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate startup interaction/runtime wiring in createStartupBindingsControllerInteractionDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createStartupBindingsControllerBootstrapDeps\s*\(\)\s*\{[\s\S]*?return\s+\{[\s\S]*?fetchAuthBootstrapWithRetry,[\s\S]*?syncVisibleActiveChat,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate startup bootstrap/auth wiring in createStartupBindingsControllerBootstrapDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createStartupBindingsControllerDeps\s*\(args\s*=\s*\{\}\)\s*\{[\s\S]*?createStartupBindingsControllerElementDeps\(args\)[\s\S]*?createStartupBindingsControllerInteractionDeps\(args\)[\s\S]*?createStartupBindingsControllerBootstrapDeps\(args\)[\s\S]*?\}/m,
+    'app.js should compose startup bindings deps from narrower helper bands',
   );
   assert.match(
     source,

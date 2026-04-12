@@ -33,8 +33,23 @@ test('app.js bootstrap/auth request wrappers keep delegating to bootstrapAuthCon
   );
   assert.match(
     source,
-    /function\s+createBootstrapAuthControllerDeps\s*\([\s\S]*?return\s+\{[\s\S]*?markVersionSyncReloadIntent,[\s\S]*?onBootstrapStage,[\s\S]*?\};\s*\}/m,
-    'app.js should build bootstrap auth deps through a dedicated composition helper',
+    /function\s+createBootstrapAuthControllerSessionDeps\s*\([\s\S]*?return\s+\{[\s\S]*?operatorName,[\s\S]*?messagesEl,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate bootstrap auth session/dev wiring in createBootstrapAuthControllerSessionDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createBootstrapAuthControllerAppDeps\s*\([\s\S]*?return\s+\{[\s\S]*?resumePendingChatStream,[\s\S]*?windowObject,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate bootstrap auth app-state wiring in createBootstrapAuthControllerAppDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createBootstrapAuthControllerBootstrapDeps\s*\([\s\S]*?return\s+\{[\s\S]*?markVersionSyncReloadIntent,[\s\S]*?onBootstrapStage,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate bootstrap auth retry/version wiring in createBootstrapAuthControllerBootstrapDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createBootstrapAuthControllerDeps\s*\(args\)\s*\{[\s\S]*?createBootstrapAuthControllerSessionDeps\(args\)[\s\S]*?createBootstrapAuthControllerAppDeps\(args\)[\s\S]*?createBootstrapAuthControllerBootstrapDeps\(args\)[\s\S]*?\}/m,
+    'app.js should compose bootstrap auth deps from narrower helper bands',
   );
   assert.match(
     source,

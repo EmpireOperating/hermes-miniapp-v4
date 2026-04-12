@@ -634,6 +634,37 @@
     };
   }
 
+  function createUnreadPreservationController({ chats, getActiveChatId }, unreadStateController, thresholdController) {
+    function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
+      if (!preserveActivationUnread) {
+        return unreadStateController.buildChatPreservingUnread(chat, { preserveActivationUnread: false });
+      }
+      const nextChat = unreadStateController.buildChatPreservingUnread(chat, { preserveActivationUnread });
+      const key = normalizeChatId(nextChat?.id);
+      if (!key) {
+        return nextChat;
+      }
+      const localChat = chats.get(key) || null;
+      const localUnread = Math.max(0, Number(localChat?.unread_count || 0));
+      const localUnreadAnchor = Math.max(0, Number(localChat?.newest_unread_message_id || 0));
+      const incomingUnread = Math.max(0, Number(nextChat?.unread_count || 0));
+      const activeUnreadAboveNewestMessage = Boolean(
+        key === normalizeChatId(getActiveChatId())
+        && localUnread > incomingUnread
+        && !thresholdController.hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
+      );
+      if ((thresholdController.hasActivationReadThreshold(key) || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
+        nextChat.unread_count = localUnread;
+        nextChat.newest_unread_message_id = localUnreadAnchor;
+      }
+      return nextChat;
+    }
+
+    return {
+      buildChatPreservingUnread,
+    };
+  }
+
   function createReadSyncController(deps) {
     const {
       chats,
@@ -675,30 +706,13 @@
       pendingChats,
       hasLiveStreamController,
     }, unreadStateController, thresholdController);
+    const unreadPreservationController = createUnreadPreservationController({
+      chats,
+      getActiveChatId,
+    }, unreadStateController, thresholdController);
 
     function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
-      if (!preserveActivationUnread) {
-        return unreadStateController.buildChatPreservingUnread(chat, { preserveActivationUnread: false });
-      }
-      const nextChat = unreadStateController.buildChatPreservingUnread(chat, { preserveActivationUnread });
-      const key = normalizeChatId(nextChat?.id);
-      if (!key) {
-        return nextChat;
-      }
-      const localChat = chats.get(key) || null;
-      const localUnread = Math.max(0, Number(localChat?.unread_count || 0));
-      const localUnreadAnchor = Math.max(0, Number(localChat?.newest_unread_message_id || 0));
-      const incomingUnread = Math.max(0, Number(nextChat?.unread_count || 0));
-      const activeUnreadAboveNewestMessage = Boolean(
-        key === normalizeChatId(getActiveChatId())
-        && localUnread > incomingUnread
-        && !thresholdController.hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
-      );
-      if ((thresholdController.hasActivationReadThreshold(key) || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
-        nextChat.unread_count = localUnread;
-        nextChat.newest_unread_message_id = localUnreadAnchor;
-      }
-      return nextChat;
+      return unreadPreservationController.buildChatPreservingUnread(chat, { preserveActivationUnread });
     }
 
     function upsertChatPreservingUnread(chat, options = {}) {
@@ -1117,6 +1131,101 @@
     };
   }
 
+  function createHydrationApplyController(deps, pendingStateController, retryController) {
+    const {
+      loadChatHistory,
+      upsertChatPreservingUnread,
+      traceChatHistory,
+    } = deps;
+
+    async function applyHydratedServerState({
+      targetChatId,
+      previousHistory,
+      data,
+      requestId = 0,
+      retryEventName = 'hydrate-unread-retry',
+      retryActivate = false,
+    }) {
+      let nextData = data;
+      upsertChatPreservingUnread(nextData.chat, { preserveActivationUnread: true });
+      let pendingState = pendingStateController.derivePendingState(targetChatId, previousHistory, nextData);
+      let preservePendingState = pendingState.preservePendingState;
+      let hydrationResult = pendingStateController.applyHydratedHistory(
+        targetChatId,
+        previousHistory,
+        nextData.history || [],
+        preservePendingState,
+      );
+      const incomingUnreadAnchorMessageId = Math.max(0, Number(nextData.chat?.newest_unread_message_id || 0));
+      if (retryController.shouldRetryUnreadHydrate({
+        incomingUnreadAnchorMessageId,
+        nextHistory: hydrationResult.finalHistory,
+        preservePendingState,
+        restoredPendingSnapshot: hydrationResult.restoredPendingSnapshot,
+      })) {
+        traceChatHistory(retryEventName, {
+          chatId: targetChatId,
+          requestId: Number(requestId) || 0,
+          incomingUnreadAnchorMessageId,
+        });
+        nextData = await loadChatHistory(targetChatId, { activate: Boolean(retryActivate) });
+        upsertChatPreservingUnread(nextData.chat, { preserveActivationUnread: true });
+        pendingState = pendingStateController.derivePendingState(targetChatId, previousHistory, nextData);
+        preservePendingState = pendingState.preservePendingState;
+        hydrationResult = pendingStateController.applyHydratedHistory(
+          targetChatId,
+          previousHistory,
+          nextData.history || [],
+          preservePendingState,
+        );
+      }
+      return {
+        data: nextData,
+        pendingState,
+        preservePendingState,
+        ...hydrationResult,
+      };
+    }
+
+    return {
+      applyHydratedServerState,
+    };
+  }
+
+  function createVisibilityResumeController({
+    hasLiveStreamController,
+    resumePendingChatStream,
+    shouldResumeOnVisibilityChange,
+  }) {
+    function maybeResumeVisibilitySync({
+      activeChatId,
+      hidden = false,
+      streamAbortControllers = new Map(),
+      pendingChats,
+      chatPending = false,
+      localPendingWithoutLiveStream = false,
+      snapshotPendingWithoutLiveStream = false,
+      matchedVisibleHydratedCompletion = false,
+    }) {
+      const needsVisibilityResume = shouldResumeOnVisibilityChange({
+        hidden: Boolean(hidden),
+        activeChatId,
+        pendingChats,
+        streamAbortControllers,
+      });
+      const serverPendingWithoutLiveStream = chatPending && !hasLiveStreamController(activeChatId);
+      const needsSnapshotResume = snapshotPendingWithoutLiveStream && !matchedVisibleHydratedCompletion;
+      if (!matchedVisibleHydratedCompletion && (needsVisibilityResume || serverPendingWithoutLiveStream || localPendingWithoutLiveStream || needsSnapshotResume)) {
+        const shouldForceResume = localPendingWithoutLiveStream || needsSnapshotResume;
+        void resumePendingChatStream(activeChatId, shouldForceResume ? { force: true } : undefined);
+      }
+    }
+
+    return {
+      maybeResumeVisibilitySync,
+    };
+  }
+
   function createCachedOpenController(deps, hydrationController) {
     const {
       setActiveChatMeta,
@@ -1130,7 +1239,18 @@
       traceChatHistory,
       nowMs,
       isActiveChat,
+      chats,
     } = deps;
+
+    function shouldPrioritizeCachedHydration(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key) return false;
+      const chat = chats?.get?.(key) || null;
+      if (!chat || typeof chat !== 'object') return false;
+      return Math.max(0, Number(chat.unread_count || 0)) > 0
+        || Math.max(0, Number(chat.newest_unread_message_id || 0)) > 0
+        || Boolean(chat.pending);
+    }
 
     function renderCachedChat({ targetChatId, requestId, openStartedAtMs, shouldDeferMeta }) {
       if (requestId !== getLastOpenChatRequestId()) {
@@ -1186,6 +1306,7 @@
 
     function openCachedChat(targetChatId, requestId, openStartedAtMs) {
       const shouldDeferMeta = Boolean(shouldDeferNonCriticalCachedOpen(targetChatId));
+      const prioritizeHydration = shouldPrioritizeCachedHydration(targetChatId);
       setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: shouldDeferMeta });
       const renderCached = () => renderCachedChat({ targetChatId, requestId, openStartedAtMs, shouldDeferMeta });
       if (shouldDeferMeta) {
@@ -1195,22 +1316,25 @@
       }
 
       const hydrate = () => hydrateCachedChat({ targetChatId, requestId, openStartedAtMs });
-      if (shouldDeferMeta && typeof requestIdle === 'function') {
+      if (shouldDeferMeta && typeof requestIdle === 'function' && !prioritizeHydration) {
         traceChatHistory('cached-hydrate-scheduled', {
           chatId: targetChatId,
           requestId,
           mode: 'idle',
           timeoutMs: 250,
+          prioritizeHydration,
         });
         requestIdle(hydrate, { timeout: 250 });
       } else {
+        const delayMs = prioritizeHydration ? 0 : (shouldDeferMeta ? 32 : 0);
         traceChatHistory('cached-hydrate-scheduled', {
           chatId: targetChatId,
           requestId,
           mode: 'timeout',
-          delayMs: shouldDeferMeta ? 32 : 0,
+          delayMs,
+          prioritizeHydration,
         });
-        scheduleTimeout(hydrate, shouldDeferMeta ? 32 : 0);
+        scheduleTimeout(hydrate, delayMs);
       }
     }
 
@@ -1253,6 +1377,16 @@
     const pendingStateController = createHistoryPendingStateController(deps);
     const renderDecisionController = createHistoryRenderDecisionController(deps);
     const retryController = createUnreadHydrationRetryController();
+    const hydrationApplyController = createHydrationApplyController({
+      loadChatHistory,
+      upsertChatPreservingUnread,
+      traceChatHistory,
+    }, pendingStateController, retryController);
+    const visibilityResumeController = createVisibilityResumeController({
+      hasLiveStreamController,
+      resumePendingChatStream,
+      shouldResumeOnVisibilityChange,
+    });
 
     async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) {
       const hydrateStartedAtMs = nowMs();
@@ -1263,7 +1397,6 @@
         activeAtStart: isActiveChat(targetChatId),
       });
       let data = await loadChatHistory(targetChatId, { activate: true });
-      upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
 
       if (requestId !== getLastOpenChatRequestId()) {
         traceChatHistory('hydrate-skipped-stale-request', {
@@ -1277,45 +1410,27 @@
       }
 
       const previousHistory = histories.get(targetChatId) || [];
-      let pendingState = pendingStateController.derivePendingState(targetChatId, previousHistory, data);
-      let preservePendingState = pendingState.preservePendingState;
-      let shouldResumePending = pendingState.shouldResumePending;
-      let shouldForceResumePending = pendingState.shouldForceResumePending;
-      let localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
-      let snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
-      let matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
-      let {
+      let restoredPendingSnapshot;
+      let finalHistory;
+      let historyChanged;
+      let pendingState;
+      const hydrationState = await hydrationApplyController.applyHydratedServerState({
+        targetChatId,
+        previousHistory,
+        data,
+        requestId,
+        retryEventName: 'hydrate-unread-retry',
+        retryActivate: false,
+      });
+      ({
+        data,
         restoredPendingSnapshot,
         finalHistory,
         historyChanged,
-      } = pendingStateController.applyHydratedHistory(targetChatId, previousHistory, data.history || [], preservePendingState);
-      const incomingUnreadAnchorMessageId = Math.max(0, Number(data.chat?.newest_unread_message_id || 0));
-      if (retryController.shouldRetryUnreadHydrate({
-        incomingUnreadAnchorMessageId,
-        nextHistory: finalHistory,
-        preservePendingState,
-        restoredPendingSnapshot,
-      })) {
-        traceChatHistory('hydrate-unread-retry', {
-          chatId: targetChatId,
-          requestId: Number(requestId) || 0,
-          incomingUnreadAnchorMessageId,
-        });
-        data = await loadChatHistory(targetChatId, { activate: false });
-        upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
-        pendingState = pendingStateController.derivePendingState(targetChatId, previousHistory, data);
-        preservePendingState = pendingState.preservePendingState;
-        shouldResumePending = pendingState.shouldResumePending;
-        shouldForceResumePending = pendingState.shouldForceResumePending;
-        localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
-        snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
-        matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
-        ({
-          restoredPendingSnapshot,
-          finalHistory,
-          historyChanged,
-        } = pendingStateController.applyHydratedHistory(targetChatId, previousHistory, data.history || [], preservePendingState));
-      }
+        pendingState,
+      } = hydrationState);
+      const shouldResumePending = pendingState.shouldResumePending;
+      const shouldForceResumePending = pendingState.shouldForceResumePending;
 
       refreshTabNode(targetChatId);
       const renderState = renderDecisionController.buildHydrationRenderState({
@@ -1384,40 +1499,26 @@
       const latestActiveId = normalizeChatId(getActiveChatId());
       if (latestActiveId !== activeId) return;
       const previousHistory = histories.get(activeId) || [];
-      let pendingState = pendingStateController.derivePendingState(activeId, previousHistory, data);
-      let chatPending = pendingState.chatPending;
-      let localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
-      let snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
-      let matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
-      let preservePendingState = pendingState.preservePendingState;
-      let {
+      let restoredPendingSnapshot;
+      let finalHistory;
+      let pendingState;
+      const hydrationState = await hydrationApplyController.applyHydratedServerState({
+        targetChatId: activeId,
+        previousHistory,
+        data,
+        retryEventName: 'visibility-unread-retry',
+        retryActivate: false,
+      });
+      ({
+        data,
         restoredPendingSnapshot,
         finalHistory,
-      } = pendingStateController.applyHydratedHistory(activeId, previousHistory, data.history || [], preservePendingState);
-      const incomingUnreadAnchorMessageId = Math.max(0, Number(data.chat?.newest_unread_message_id || 0));
-      if (retryController.shouldRetryUnreadHydrate({
-        incomingUnreadAnchorMessageId,
-        nextHistory: finalHistory,
-        preservePendingState,
-        restoredPendingSnapshot,
-      })) {
-        traceChatHistory('visibility-unread-retry', {
-          chatId: activeId,
-          incomingUnreadAnchorMessageId,
-        });
-        data = await loadChatHistory(activeId, { activate: false });
-        pendingState = pendingStateController.derivePendingState(activeId, previousHistory, data);
-        chatPending = pendingState.chatPending;
-        localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
-        snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
-        matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
-        preservePendingState = pendingState.preservePendingState;
-        ({
-          restoredPendingSnapshot,
-          finalHistory,
-        } = pendingStateController.applyHydratedHistory(activeId, previousHistory, data.history || [], preservePendingState));
-      }
-      upsertChatPreservingUnread(data.chat, { preserveActivationUnread: true });
+        pendingState,
+      } = hydrationState);
+      const chatPending = pendingState.chatPending;
+      const localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
+      const snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
+      const matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
       const renderState = renderDecisionController.buildHydrationRenderState({
         targetChatId: activeId,
         previousHistory,
@@ -1438,18 +1539,16 @@
       ensureActivationReadThreshold(activeId, data.chat?.unread_count);
       maybeMarkRead(activeId);
 
-      const needsVisibilityResume = shouldResumeOnVisibilityChange({
-        hidden: Boolean(hidden),
+      visibilityResumeController.maybeResumeVisibilitySync({
         activeChatId: activeId,
-        pendingChats,
+        hidden,
         streamAbortControllers,
+        pendingChats,
+        chatPending,
+        localPendingWithoutLiveStream,
+        snapshotPendingWithoutLiveStream,
+        matchedVisibleHydratedCompletion,
       });
-      const serverPendingWithoutLiveStream = chatPending && !hasLiveStreamController(activeId);
-      const needsSnapshotResume = snapshotPendingWithoutLiveStream && !matchedVisibleHydratedCompletion;
-      if (!matchedVisibleHydratedCompletion && (needsVisibilityResume || serverPendingWithoutLiveStream || localPendingWithoutLiveStream || needsSnapshotResume)) {
-        const shouldForceResume = localPendingWithoutLiveStream || needsSnapshotResume;
-        void resumePendingChatStream(activeId, shouldForceResume ? { force: true } : undefined);
-      }
     }
 
     return {
@@ -1784,8 +1883,11 @@
     createMetaController,
     createUnreadAnchorController,
     createActivationReadThresholdController,
+    createUnreadPreservationController,
     createHistoryPendingStateController,
     createHistoryRenderDecisionController,
+    createHydrationApplyController,
+    createVisibilityResumeController,
     createUnreadHydrationRetryController,
     createCachedOpenController,
   };

@@ -824,7 +824,7 @@
     };
   }
 
-  function createStreamNonTerminalEventController(deps, sessionController, fallbackController, terminalController) {
+  function createStreamMetaEventController(deps, sessionController) {
     const {
       formatLatency,
       STREAM_PHASES,
@@ -832,155 +832,234 @@
       setStreamPhase,
       chatLabel,
       compactChatLabel,
-      finalizeInlineToolTrace,
-      updatePendingAssistant,
-      markStreamUpdate,
-      patchVisiblePendingAssistant,
-      patchVisibleToolTrace,
       renderTraceLog,
-      syncActiveMessageView,
       setChatLatency,
     } = deps;
     const {
-      consumeFirstAssistantNotification,
-      notifyFirstAssistantChunk,
       setStreamStatusForVisibleChat,
       setStreamChipForVisibleChat,
       setLatencyChipForVisibleChat,
     } = sessionController;
-    const {
-      reconcileVisibleTranscriptFallback,
-    } = fallbackController;
-    const {
-      applyDonePayload,
-    } = terminalController;
 
-    function handleStreamEvent(chatId, eventName, payload, builtReplyRef) {
+    function handleMetaEvent(chatId, payload) {
       if (!payload) {
         return false;
       }
-
-      if (eventName === 'meta') {
-        const detail = String(payload?.detail || '').toLowerCase();
-        if (detail.includes('running') || payload?.job_status === 'running') {
-          if (getStreamPhase(chatId) === STREAM_PHASES.IDLE) {
-            setStreamPhase(chatId, STREAM_PHASES.PENDING_TOOL);
-          }
+      const detail = String(payload?.detail || '').toLowerCase();
+      if (detail.includes('running') || payload?.job_status === 'running') {
+        if (getStreamPhase(chatId) === STREAM_PHASES.IDLE) {
+          setStreamPhase(chatId, STREAM_PHASES.PENDING_TOOL);
         }
       }
-
-      if (eventName === 'meta' && payload.skin) {
+      if (payload.skin) {
         renderTraceLog('stream-meta-skin-ignored', {
           chatId: Number(chatId),
           incomingSkin: payload.skin,
         });
       }
-      if (eventName === 'meta' && payload.detail) {
-        const detail = String(payload.detail || '').trim();
-        if (detail) {
-          setStreamStatusForVisibleChat(chatId, `Queue update (${chatLabel(chatId)}): ${detail}`);
-          if (payload.source === 'queue') {
-            setStreamChipForVisibleChat(chatId, `stream: ${detail} · ${compactChatLabel(chatId)}`);
-            if (payload.job_status === 'running') {
-              const elapsedMs = Number(payload.elapsed_ms);
-              if (typeof deps.markStreamActive === 'function') {
-                deps.markStreamActive(chatId, {
-                  elapsedMs: Number.isFinite(elapsedMs) && elapsedMs >= 0 ? elapsedMs : null,
-                });
-              } else if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
-                const runningLatency = `${formatLatency(elapsedMs)} · live`;
-                setChatLatency(chatId, runningLatency);
-                setLatencyChipForVisibleChat(chatId, `latency: ${runningLatency}`);
-              }
-            } else if (payload.job_status === 'queued') {
-              const queuedAhead = Number(payload.queued_ahead);
-              if (typeof deps.markStreamQueued === 'function') {
-                deps.markStreamQueued(chatId, { queuedAhead });
-              } else {
-                const queueLabel = Number.isFinite(queuedAhead) && queuedAhead > 0
-                  ? `queued · ahead: ${queuedAhead}`
-                  : 'queued...';
-                setChatLatency(chatId, queueLabel);
-                setLatencyChipForVisibleChat(chatId, `latency: ${queueLabel}`);
-              }
-            }
+      const summary = String(payload.detail || '').trim();
+      if (!summary) {
+        return false;
+      }
+      setStreamStatusForVisibleChat(chatId, `Queue update (${chatLabel(chatId)}): ${summary}`);
+      if (payload.source === 'queue') {
+        setStreamChipForVisibleChat(chatId, `stream: ${summary} · ${compactChatLabel(chatId)}`);
+        if (payload.job_status === 'running') {
+          const elapsedMs = Number(payload.elapsed_ms);
+          if (typeof deps.markStreamActive === 'function') {
+            deps.markStreamActive(chatId, {
+              elapsedMs: Number.isFinite(elapsedMs) && elapsedMs >= 0 ? elapsedMs : null,
+            });
+          } else if (Number.isFinite(elapsedMs) && elapsedMs >= 0) {
+            const runningLatency = `${formatLatency(elapsedMs)} · live`;
+            setChatLatency(chatId, runningLatency);
+            setLatencyChipForVisibleChat(chatId, `latency: ${runningLatency}`);
+          }
+        } else if (payload.job_status === 'queued') {
+          const queuedAhead = Number(payload.queued_ahead);
+          if (typeof deps.markStreamQueued === 'function') {
+            deps.markStreamQueued(chatId, { queuedAhead });
+          } else {
+            const queueLabel = Number.isFinite(queuedAhead) && queuedAhead > 0
+              ? `queued · ahead: ${queuedAhead}`
+              : 'queued...';
+            setChatLatency(chatId, queueLabel);
+            setLatencyChipForVisibleChat(chatId, `latency: ${queueLabel}`);
           }
         }
+      }
+      return false;
+    }
+
+    return {
+      handleMetaEvent,
+    };
+  }
+
+  function createToolTraceEventController(deps, sessionController, fallbackController) {
+    const {
+      STREAM_PHASES,
+      setStreamPhase,
+      chatLabel,
+      compactChatLabel,
+      patchVisibleToolTrace,
+      renderTraceLog,
+    } = deps;
+    const {
+      setStreamStatusForVisibleChat,
+      setStreamChipForVisibleChat,
+    } = sessionController;
+    const {
+      reconcileVisibleTranscriptFallback,
+    } = fallbackController;
+
+    function handleToolEvent(chatId, payload) {
+      setStreamPhase(chatId, STREAM_PHASES.STREAMING_TOOL);
+      const display = payload.display || payload.preview || payload.tool_name || 'Tool running';
+      deps.appendInlineToolTrace(chatId, display, payload);
+      const patchedToolTrace = patchVisibleToolTrace(chatId);
+      renderTraceLog('stream-tool-patch', {
+        chatId: Number(chatId),
+        phase: deps.getStreamPhase(chatId),
+        patchedToolTrace,
+        fallbackRender: !patchedToolTrace,
+      });
+      if (!patchedToolTrace) {
+        reconcileVisibleTranscriptFallback(chatId);
+      }
+      if (typeof deps.markToolActivity === 'function') {
+        deps.markToolActivity(chatId);
+      } else {
+        setStreamStatusForVisibleChat(chatId, `Using tools in ${chatLabel(chatId)}`);
+        setStreamChipForVisibleChat(chatId, `stream: tools active · ${compactChatLabel(chatId)}`);
+      }
+      return false;
+    }
+
+    return {
+      handleToolEvent,
+    };
+  }
+
+  function createAssistantChunkEventController(deps, sessionController, fallbackController) {
+    const {
+      STREAM_PHASES,
+      setStreamPhase,
+      updatePendingAssistant,
+      markStreamUpdate,
+      patchVisiblePendingAssistant,
+      renderTraceLog,
+    } = deps;
+    const {
+      notifyFirstAssistantChunk,
+    } = sessionController;
+    const {
+      reconcileVisibleTranscriptFallback,
+    } = fallbackController;
+
+    function handleChunkEvent(chatId, payload, builtReplyRef) {
+      setStreamPhase(chatId, STREAM_PHASES.STREAMING_ASSISTANT);
+      const chunkText = String(payload.text || '');
+      const hadAssistantText = builtReplyRef.value.length > 0;
+      builtReplyRef.value += chunkText;
+      if (!hadAssistantText && chunkText) {
+        notifyFirstAssistantChunk(chatId);
+      }
+      updatePendingAssistant(chatId, builtReplyRef.value, true);
+      markStreamUpdate(chatId);
+      const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, true);
+      renderTraceLog('stream-chunk-patch', {
+        chatId: Number(chatId),
+        phase: deps.getStreamPhase(chatId),
+        patchedAssistant,
+        fallbackRender: !patchedAssistant,
+        chunkLength: String(payload.text || '').length,
+        replyLength: builtReplyRef.value.length,
+      });
+      if (!patchedAssistant) {
+        reconcileVisibleTranscriptFallback(chatId);
+      }
+      return false;
+    }
+
+    return {
+      handleChunkEvent,
+    };
+  }
+
+  function createStreamErrorEventController(deps, sessionController) {
+    const {
+      STREAM_PHASES,
+      setStreamPhase,
+      finalizeInlineToolTrace,
+      updatePendingAssistant,
+      markStreamUpdate,
+      syncActiveMessageView,
+      setChatLatency,
+    } = deps;
+    const {
+      consumeFirstAssistantNotification,
+      setStreamStatusForVisibleChat,
+      setStreamChipForVisibleChat,
+    } = sessionController;
+
+    function handleErrorEvent(chatId, payload) {
+      setStreamPhase(chatId, STREAM_PHASES.ERROR);
+      finalizeInlineToolTrace(chatId);
+      deps.clearStreamCursor?.(chatId);
+      consumeFirstAssistantNotification(chatId);
+      updatePendingAssistant(chatId, payload.error || 'Hermes stream failed.', false);
+      markStreamUpdate(chatId);
+      syncActiveMessageView(chatId, { preserveViewport: true });
+      if (typeof deps.markStreamError === 'function') {
+        deps.markStreamError(chatId);
+      } else {
+        setChatLatency(chatId, '--');
+        setStreamStatusForVisibleChat(chatId, 'Stream error');
+        setStreamChipForVisibleChat(chatId, 'stream: error');
+      }
+      return true;
+    }
+
+    return {
+      handleErrorEvent,
+    };
+  }
+
+  function createStreamNonTerminalEventController(deps, sessionController, fallbackController, terminalController) {
+    const {
+      STREAM_PHASES,
+      setStreamPhase,
+    } = deps;
+    const {
+      applyDonePayload,
+    } = terminalController;
+    const metaController = createStreamMetaEventController(deps, sessionController);
+    const toolController = createToolTraceEventController(deps, sessionController, fallbackController);
+    const chunkController = createAssistantChunkEventController(deps, sessionController, fallbackController);
+    const errorController = createStreamErrorEventController(deps, sessionController);
+
+    function handleStreamEvent(chatId, eventName, payload, builtReplyRef) {
+      if (!payload) {
         return false;
       }
-
+      if (eventName === 'meta') {
+        return metaController.handleMetaEvent(chatId, payload);
+      }
       if (eventName === 'tool') {
-        setStreamPhase(chatId, STREAM_PHASES.STREAMING_TOOL);
-        const display = payload.display || payload.preview || payload.tool_name || 'Tool running';
-        deps.appendInlineToolTrace(chatId, display, payload);
-        const patchedToolTrace = patchVisibleToolTrace(chatId);
-        renderTraceLog('stream-tool-patch', {
-          chatId: Number(chatId),
-          phase: getStreamPhase(chatId),
-          patchedToolTrace,
-          fallbackRender: !patchedToolTrace,
-        });
-        if (!patchedToolTrace) {
-          reconcileVisibleTranscriptFallback(chatId);
-        }
-        if (typeof deps.markToolActivity === 'function') {
-          deps.markToolActivity(chatId);
-        } else {
-          setStreamStatusForVisibleChat(chatId, `Using tools in ${chatLabel(chatId)}`);
-          setStreamChipForVisibleChat(chatId, `stream: tools active · ${compactChatLabel(chatId)}`);
-        }
-        return false;
+        return toolController.handleToolEvent(chatId, payload);
       }
-
       if (eventName === 'chunk') {
-        setStreamPhase(chatId, STREAM_PHASES.STREAMING_ASSISTANT);
-        const chunkText = String(payload.text || '');
-        const hadAssistantText = builtReplyRef.value.length > 0;
-        builtReplyRef.value += chunkText;
-        if (!hadAssistantText && chunkText) {
-          notifyFirstAssistantChunk(chatId);
-        }
-        updatePendingAssistant(chatId, builtReplyRef.value, true);
-        markStreamUpdate(chatId);
-        const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, true);
-        renderTraceLog('stream-chunk-patch', {
-          chatId: Number(chatId),
-          phase: getStreamPhase(chatId),
-          patchedAssistant,
-          fallbackRender: !patchedAssistant,
-          chunkLength: String(payload.text || '').length,
-          replyLength: builtReplyRef.value.length,
-        });
-        if (!patchedAssistant) {
-          reconcileVisibleTranscriptFallback(chatId);
-        }
-        return false;
+        return chunkController.handleChunkEvent(chatId, payload, builtReplyRef);
       }
-
       if (eventName === 'error') {
-        setStreamPhase(chatId, STREAM_PHASES.ERROR);
-        finalizeInlineToolTrace(chatId);
-        deps.clearStreamCursor?.(chatId);
-        consumeFirstAssistantNotification(chatId);
-        updatePendingAssistant(chatId, payload.error || 'Hermes stream failed.', false);
-        markStreamUpdate(chatId);
-        syncActiveMessageView(chatId, { preserveViewport: true });
-        if (typeof deps.markStreamError === 'function') {
-          deps.markStreamError(chatId);
-        } else {
-          setChatLatency(chatId, '--');
-          setStreamStatusForVisibleChat(chatId, 'Stream error');
-          setStreamChipForVisibleChat(chatId, 'stream: error');
-        }
-        return true;
+        return errorController.handleErrorEvent(chatId, payload);
       }
-
       if (eventName === 'done') {
         setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
         applyDonePayload(chatId, payload, builtReplyRef);
         return true;
       }
-
       return false;
     }
 
@@ -1104,6 +1183,128 @@
     };
   }
 
+  function createTranscriptBufferController({
+    parseSseEvent,
+    dispatchController,
+    renderTraceLog,
+    streamDebugLog,
+    shouldSkipReplayedEvent,
+    chatId,
+    key,
+    builtReplyRef,
+  }) {
+    function createConsumeState() {
+      return {
+        buffer: '',
+        terminalReceived: false,
+        expectedSegmentEnd: false,
+      };
+    }
+
+    function appendChunk(state, text) {
+      state.buffer += text;
+      const events = state.buffer.split(/\r?\n\r?\n/);
+      state.buffer = events.at(-1) || '';
+      return events.slice(0, -1);
+    }
+
+    function drainBufferedEvents(state, rawEvents) {
+      for (const rawEvent of rawEvents) {
+        const parsed = parseSseEvent(rawEvent);
+        if (!parsed) continue;
+        const eventName = parsed.eventName || parsed.event || 'message';
+        const payload = parsed.payload;
+        const handledAsTerminal = dispatchController.dispatchParsedEvent(eventName, payload, state);
+        if (handledAsTerminal) {
+          break;
+        }
+      }
+    }
+
+    function drainTailBuffer(state) {
+      if (state.terminalReceived || !state.buffer.trim()) {
+        return;
+      }
+      const trimmedBuffer = state.buffer.trim();
+      const parsed = parseSseEvent(trimmedBuffer);
+      const eventName = parsed?.eventName || parsed?.event || 'message';
+      const payload = parsed?.payload;
+      streamDebugLog('sse-buffer-tail', {
+        chatId: Number(chatId),
+        eventName,
+        hasPayload: Boolean(payload),
+        tailLength: trimmedBuffer.length,
+      });
+      if (payload && !shouldSkipReplayedEvent(key, payload)) {
+        const handledAsTerminal = dispatchController.dispatchParsedEvent(eventName, payload, state);
+        if (handledAsTerminal) {
+          renderTraceLog('stream-terminal-buffer-tail', {
+            chatId: Number(chatId),
+            eventName,
+            tailLength: trimmedBuffer.length,
+            replyLength: builtReplyRef.value.length,
+          });
+        }
+      }
+    }
+
+    return {
+      createConsumeState,
+      appendChunk,
+      drainBufferedEvents,
+      drainTailBuffer,
+    };
+  }
+
+  function createTranscriptReadLoopController({
+    readerController,
+    bufferController,
+    renderTraceLog,
+    chatId,
+    builtReplyRef,
+  }) {
+    async function readUntilTerminal(state) {
+      while (true) {
+        const { done, text } = await readerController.readChunk();
+        if (done) {
+          readerController.logReaderClosed({ chatId, terminalReceived: state.terminalReceived, buffer: state.buffer });
+          break;
+        }
+        const rawEvents = bufferController.appendChunk(state, text);
+        bufferController.drainBufferedEvents(state, rawEvents);
+        if (state.terminalReceived) {
+          break;
+        }
+      }
+    }
+
+    function buildConsumeResult(state, suppressEarlyCloseFallback, fallbackTraceEvent, applyEarlyStreamCloseFallback) {
+      bufferController.drainTailBuffer(state);
+      const earlyClosed = !state.terminalReceived;
+      renderTraceLog('stream-consume-finished', {
+        chatId: Number(chatId),
+        terminalReceived: state.terminalReceived,
+        earlyClosed,
+        expectedSegmentEnd: state.expectedSegmentEnd,
+        suppressEarlyCloseFallback: Boolean(suppressEarlyCloseFallback),
+        replyLength: builtReplyRef.value.length,
+      });
+      if (earlyClosed && !suppressEarlyCloseFallback) {
+        applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent);
+      }
+      return {
+        terminalReceived: state.terminalReceived,
+        earlyClosed,
+        expectedSegmentEnd: state.expectedSegmentEnd,
+      };
+    }
+
+    return {
+      readUntilTerminal,
+      buildConsumeResult,
+    };
+  }
+
   function createTranscriptConsumeController(deps, sessionController, eventController) {
     const {
       parseSseEvent,
@@ -1140,84 +1341,37 @@
         renderTraceLog,
         streamDebugLog,
       });
-      const state = {
-        buffer: "",
-        terminalReceived: false,
-        expectedSegmentEnd: false,
-      };
+      const bufferController = createTranscriptBufferController({
+        parseSseEvent,
+        dispatchController,
+        renderTraceLog,
+        streamDebugLog,
+        shouldSkipReplayedEvent,
+        chatId,
+        key,
+        builtReplyRef,
+      });
+      const readLoopController = createTranscriptReadLoopController({
+        readerController,
+        bufferController,
+        renderTraceLog,
+        chatId,
+        builtReplyRef,
+      });
+      const state = bufferController.createConsumeState();
 
-      while (true) {
-        const { done, text } = await readerController.readChunk();
-        if (done) {
-          readerController.logReaderClosed({ chatId, terminalReceived: state.terminalReceived, buffer: state.buffer });
-          break;
-        }
-        state.buffer += text;
-        const { events, tail } = readerController.splitBufferedEvents(state.buffer);
-        state.buffer = tail;
-
-        for (const rawEvent of events) {
-          const parsed = parseSseEvent(rawEvent);
-          if (!parsed) continue;
-          const eventName = parsed.eventName || parsed.event || "message";
-          const payload = parsed.payload;
-          const handledAsTerminal = dispatchController.dispatchParsedEvent(eventName, payload, state);
-          if (handledAsTerminal) {
-            break;
-          }
-        }
-
-        if (state.terminalReceived) {
-          break;
-        }
-      }
+      await readLoopController.readUntilTerminal(state);
 
       if (state.terminalReceived) {
         await readerController.cancelReader();
       }
 
-      if (!state.terminalReceived && state.buffer.trim()) {
-        const trimmedBuffer = state.buffer.trim();
-        const parsed = parseSseEvent(trimmedBuffer);
-        const eventName = parsed?.eventName || parsed?.event || "message";
-        const payload = parsed?.payload;
-        streamDebugLog("sse-buffer-tail", {
-          chatId: Number(chatId),
-          eventName,
-          hasPayload: Boolean(payload),
-          tailLength: trimmedBuffer.length,
-        });
-        if (payload && !shouldSkipReplayedEvent(key, payload)) {
-          const handledAsTerminal = dispatchController.dispatchParsedEvent(eventName, payload, state);
-          if (handledAsTerminal) {
-            renderTraceLog("stream-terminal-buffer-tail", {
-              chatId: Number(chatId),
-              eventName,
-              tailLength: trimmedBuffer.length,
-              replyLength: builtReplyRef.value.length,
-            });
-          }
-        }
-      }
-
-      const earlyClosed = !state.terminalReceived;
-      renderTraceLog("stream-consume-finished", {
-        chatId: Number(chatId),
-        terminalReceived: state.terminalReceived,
-        earlyClosed,
-        expectedSegmentEnd: state.expectedSegmentEnd,
-        suppressEarlyCloseFallback: Boolean(suppressEarlyCloseFallback),
-        replyLength: builtReplyRef.value.length,
-      });
-      if (earlyClosed && !suppressEarlyCloseFallback) {
-        applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent);
-      }
-
-      return {
-        terminalReceived: state.terminalReceived,
-        earlyClosed,
-        expectedSegmentEnd: state.expectedSegmentEnd,
-      };
+      return readLoopController.buildConsumeResult(
+        state,
+        suppressEarlyCloseFallback,
+        fallbackTraceEvent,
+        applyEarlyStreamCloseFallback,
+      );
     }
 
     async function consumeStreamWithReconnect(chatId, response, builtReplyRef, {
@@ -1231,19 +1385,19 @@
         resetReplayCursor,
       });
       if (!consumeResult?.earlyClosed) {
-        renderTraceLog("stream-reconnect-not-needed", {
+        renderTraceLog('stream-reconnect-not-needed', {
           chatId: Number(chatId),
           terminalReceived: Boolean(consumeResult?.terminalReceived),
         });
         return false;
       }
-      renderTraceLog("stream-reconnect-needed", {
+      renderTraceLog('stream-reconnect-needed', {
         chatId: Number(chatId),
         terminalReceived: Boolean(consumeResult?.terminalReceived),
         expectedSegmentEnd: Boolean(consumeResult?.expectedSegmentEnd),
         replyLength: builtReplyRef.value.length,
       });
-      if (typeof onEarlyClose === "function") {
+      if (typeof onEarlyClose === 'function') {
         await onEarlyClose({
           expectedSegmentEnd: Boolean(consumeResult?.expectedSegmentEnd),
         });
@@ -2049,6 +2203,10 @@
     createResumeRecoveryPolicy,
     createVisibleTranscriptFallbackController,
     createStreamTerminalEventController,
+    createStreamMetaEventController,
+    createToolTraceEventController,
+    createAssistantChunkEventController,
+    createStreamErrorEventController,
     createStreamNonTerminalEventController,
     createStreamSendRequestController,
     createStreamResumeAttemptController,
@@ -2058,6 +2216,8 @@
     createFirstAssistantNotificationController,
     createStreamEventDispatchController,
     createSseStreamReadController,
+    createTranscriptBufferController,
+    createTranscriptReadLoopController,
     createStreamSessionController,
     createStreamTranscriptController,
     createStreamLifecycleController,

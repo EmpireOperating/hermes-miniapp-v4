@@ -1,6 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { buildHarness } from './chat_history_test_harness.mjs';
+
+const require = createRequire(import.meta.url);
+const chatHistory = require('../static/chat_history_helpers.js');
+
+test('unread preservation helper keeps local activation unread until threshold is satisfied', () => {
+  const chats = new Map([[7, { id: 7, unread_count: 3, newest_unread_message_id: 22 }]]);
+  const unreadStateController = {
+    buildChatPreservingUnread: (chat) => ({ ...chat }),
+  };
+  const thresholdController = {
+    hasActivationReadThreshold: (chatId) => Number(chatId) === 7,
+    hasReachedNewestUnreadMessageBottom: () => false,
+  };
+  const helper = chatHistory.createUnreadPreservationController(
+    { chats, getActiveChatId: () => 7 },
+    unreadStateController,
+    thresholdController,
+  );
+
+  const nextChat = helper.buildChatPreservingUnread({ id: 7, unread_count: 1, newest_unread_message_id: 11 }, { preserveActivationUnread: true });
+
+  assert.equal(nextChat.unread_count, 3);
+  assert.equal(nextChat.newest_unread_message_id, 22);
+});
 
 test('addLocalMessage and updatePendingAssistant mutate chat history in place', () => {
   const harness = buildHarness();

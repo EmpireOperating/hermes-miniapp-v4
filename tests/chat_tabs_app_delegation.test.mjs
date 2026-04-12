@@ -18,8 +18,23 @@ test('app.js chat tab wrappers delegate to chatTabsController', async () => {
   const source = await readFile(appJsUrl, 'utf8');
   assert.match(
     source,
-    /function\s+createChatTabsControllerDeps\s*\([\s\S]*?return\s+\{[\s\S]*?resumeCycleCountByChat,[\s\S]*?nowFn,[\s\S]*?\};\s*\}/m,
-    'app.js should build chat tab controller deps through a dedicated composition helper',
+    /function\s+createChatTabsControllerStateDeps\s*\([\s\S]*?return\s+\{[\s\S]*?renderedHistoryVirtualized,[\s\S]*?tabNodes,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate chat tab state/store wiring in createChatTabsControllerStateDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createChatTabsControllerUiDeps\s*\([\s\S]*?return\s+\{[\s\S]*?pinChatButton,[\s\S]*?renderTraceLog,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate chat tab DOM/presentation wiring in createChatTabsControllerUiDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createChatTabsControllerPolicyDeps\s*\([\s\S]*?return\s+\{[\s\S]*?resumeCycleCountByChat,[\s\S]*?nowFn,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate chat tab policy wiring in createChatTabsControllerPolicyDeps(...)',
+  );
+  assert.match(
+    source,
+    /function\s+createChatTabsControllerDeps\s*\(args\)\s*\{[\s\S]*?createChatTabsControllerStateDeps\(args\)[\s\S]*?createChatTabsControllerUiDeps\(args\)[\s\S]*?createChatTabsControllerPolicyDeps\(args\)[\s\S]*?\}/m,
+    'app.js should compose chat tab deps from narrower helper bands',
   );
   assert.match(
     source,

@@ -142,9 +142,15 @@ test('stream controller exports transcript and lifecycle subcontrollers with sta
   assert.equal(typeof streamController.createSseStreamReadController, 'function');
   assert.equal(typeof streamController.createVisibleTranscriptFallbackController, 'function');
   assert.equal(typeof streamController.createStreamTerminalEventController, 'function');
+  assert.equal(typeof streamController.createStreamMetaEventController, 'function');
+  assert.equal(typeof streamController.createToolTraceEventController, 'function');
+  assert.equal(typeof streamController.createAssistantChunkEventController, 'function');
+  assert.equal(typeof streamController.createStreamErrorEventController, 'function');
   assert.equal(typeof streamController.createStreamNonTerminalEventController, 'function');
   assert.equal(typeof streamController.createStreamSendRequestController, 'function');
   assert.equal(typeof streamController.createStreamResumeAttemptController, 'function');
+  assert.equal(typeof streamController.createTranscriptBufferController, 'function');
+  assert.equal(typeof streamController.createTranscriptReadLoopController, 'function');
 
   const syncCalls = [];
   const scheduledCalls = [];
@@ -252,6 +258,150 @@ test('stream session helper bands expose replay-cursor, abort-registry, and firs
     messageKey: 'chat:12:assistant-stream:1',
     unreadIncremented: true,
   });
+});
+
+test('stream event helper bands expose direct meta/chunk/error ownership', () => {
+  const phaseChanges = [];
+  const statuses = [];
+  const chips = [];
+  const latencies = [];
+  const updates = [];
+  const fallbacks = [];
+  const phases = new Map([[7, streamState.STREAM_PHASES.IDLE]]);
+  const metaController = streamController.createStreamMetaEventController({
+    formatLatency: sharedUtils.formatLatency,
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: (chatId) => phases.get(Number(chatId)) || streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: (chatId, phase) => {
+      phases.set(Number(chatId), phase);
+      phaseChanges.push({ chatId: Number(chatId), phase });
+    },
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    renderTraceLog: () => {},
+    setChatLatency: (chatId, text) => latencies.push({ chatId: Number(chatId), text }),
+  }, {
+    setStreamStatusForVisibleChat: (chatId, text) => statuses.push({ chatId: Number(chatId), text }),
+    setStreamChipForVisibleChat: (chatId, text) => chips.push({ chatId: Number(chatId), text }),
+    setLatencyChipForVisibleChat: (chatId, text) => chips.push({ chatId: Number(chatId), text }),
+  });
+  metaController.handleMetaEvent(7, { detail: 'Running now', source: 'queue', job_status: 'running', elapsed_ms: 950 });
+  assert.deepEqual(phaseChanges, [{ chatId: 7, phase: streamState.STREAM_PHASES.PENDING_TOOL }]);
+  assert.deepEqual(statuses, [{ chatId: 7, text: 'Queue update (chat-7): Running now' }]);
+  assert.deepEqual(chips, [
+    { chatId: 7, text: 'stream: Running now · #7' },
+    { chatId: 7, text: 'latency: 1s · live' },
+  ]);
+  assert.deepEqual(latencies, [{ chatId: 7, text: '1s · live' }]);
+
+  const chunkController = streamController.createAssistantChunkEventController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: () => streamState.STREAM_PHASES.STREAMING_ASSISTANT,
+    setStreamPhase: (chatId, phase) => updates.push({ type: 'phase', chatId: Number(chatId), phase }),
+    updatePendingAssistant: (chatId, text, pending) => updates.push({ type: 'assistant', chatId: Number(chatId), text, pending }),
+    markStreamUpdate: (chatId) => updates.push({ type: 'mark', chatId: Number(chatId) }),
+    patchVisiblePendingAssistant: () => false,
+    renderTraceLog: () => {},
+  }, {
+    notifyFirstAssistantChunk: (chatId) => updates.push({ type: 'notify', chatId: Number(chatId) }),
+  }, {
+    reconcileVisibleTranscriptFallback: (chatId) => fallbacks.push(Number(chatId)),
+  });
+  const builtReplyRef = { value: '' };
+  chunkController.handleChunkEvent(7, { text: 'hello' }, builtReplyRef);
+  assert.equal(builtReplyRef.value, 'hello');
+  assert.deepEqual(fallbacks, [7]);
+  assert.ok(updates.some((entry) => entry.type === 'notify'));
+  assert.ok(updates.some((entry) => entry.type === 'assistant' && entry.text === 'hello' && entry.pending === true));
+
+  const errorController = streamController.createStreamErrorEventController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    setStreamPhase: (chatId, phase) => updates.push({ type: 'error-phase', chatId: Number(chatId), phase }),
+    finalizeInlineToolTrace: (chatId) => updates.push({ type: 'finalize-tools', chatId: Number(chatId) }),
+    updatePendingAssistant: (chatId, text, pending) => updates.push({ type: 'error-text', chatId: Number(chatId), text, pending }),
+    markStreamUpdate: (chatId) => updates.push({ type: 'error-mark', chatId: Number(chatId) }),
+    syncActiveMessageView: (chatId, options = {}) => updates.push({ type: 'sync', chatId: Number(chatId), options }),
+    setChatLatency: (chatId, text) => updates.push({ type: 'latency', chatId: Number(chatId), text }),
+  }, {
+    consumeFirstAssistantNotification: (chatId) => updates.push({ type: 'consume', chatId: Number(chatId) }),
+    setStreamStatusForVisibleChat: (chatId, text) => updates.push({ type: 'status', chatId: Number(chatId), text }),
+    setStreamChipForVisibleChat: (chatId, text) => updates.push({ type: 'chip', chatId: Number(chatId), text }),
+  });
+  assert.equal(errorController.handleErrorEvent(7, { error: 'boom' }), true);
+  assert.ok(updates.some((entry) => entry.type === 'error-text' && entry.text === 'boom' && entry.pending === false));
+  assert.ok(updates.some((entry) => entry.type === 'status' && entry.text === 'Stream error'));
+});
+
+test('transcript buffer/read-loop helpers expose direct consume ownership', async () => {
+  const dispatched = [];
+  const bufferController = streamController.createTranscriptBufferController({
+    parseSseEvent: sharedUtils.parseSseEvent,
+    dispatchController: {
+      dispatchParsedEvent: (eventName, payload, state) => {
+        dispatched.push({ eventName, payload });
+        if (eventName === 'done') {
+          state.terminalReceived = true;
+          return true;
+        }
+        return false;
+      },
+    },
+    renderTraceLog: () => {},
+    streamDebugLog: () => {},
+    shouldSkipReplayedEvent: () => false,
+    chatId: 7,
+    key: 7,
+    builtReplyRef: { value: 'hi' },
+  });
+  const state = bufferController.createConsumeState();
+  const rawEvents = bufferController.appendChunk(state, 'event: chunk\ndata: {"text":"a"}\n\n');
+  assert.equal(state.buffer, '');
+  bufferController.drainBufferedEvents(state, rawEvents);
+  assert.deepEqual(dispatched, [{ eventName: 'chunk', payload: { text: 'a' } }]);
+
+  const readerEvents = [];
+  const readLoopController = streamController.createTranscriptReadLoopController({
+    readerController: {
+      async readChunk() {
+        if (readerEvents.length) {
+          return { done: true, text: '' };
+        }
+        readerEvents.push('read');
+        return { done: false, text: 'event: done\ndata: {"reply":"ok"}\n\n' };
+      },
+      logReaderClosed: ({ chatId, terminalReceived }) => readerEvents.push({ chatId: Number(chatId), terminalReceived }),
+    },
+    bufferController: streamController.createTranscriptBufferController({
+      parseSseEvent: sharedUtils.parseSseEvent,
+      dispatchController: {
+        dispatchParsedEvent: (eventName, payload, nextState) => {
+          readerEvents.push({ eventName, payload });
+          if (eventName === 'done') {
+            nextState.terminalReceived = true;
+            return true;
+          }
+          return false;
+        },
+      },
+      renderTraceLog: () => {},
+      streamDebugLog: () => {},
+      shouldSkipReplayedEvent: () => false,
+      chatId: 11,
+      key: 11,
+      builtReplyRef: { value: 'ok' },
+    }),
+    renderTraceLog: () => {},
+    chatId: 11,
+    builtReplyRef: { value: 'ok' },
+  });
+  const loopState = { buffer: '', terminalReceived: false, expectedSegmentEnd: false };
+  await readLoopController.readUntilTerminal(loopState);
+  const consumeResult = readLoopController.buildConsumeResult(loopState, false, 'fallback', () => {
+    throw new Error('fallback should not run after terminal event');
+  });
+  assert.equal(consumeResult.terminalReceived, true);
+  assert.equal(consumeResult.earlyClosed, false);
+  assert.ok(readerEvents.some((entry) => entry.eventName === 'done'));
 });
 
 test('createStreamLifecycleController owns sendPrompt auth guard', async () => {

@@ -488,7 +488,7 @@ const {
 
 let chatHistoryController = null;
 
-function createChatTabsControllerDeps({
+function createChatTabsControllerStateDeps({
   localStorageRef,
   pinnedChatsCollapsedStorageKey,
   pinnedChatsAutoCollapseThreshold,
@@ -506,35 +506,6 @@ function createChatTabsControllerDeps({
   renderedHistoryLength,
   renderedHistoryVirtualized,
   tabNodes,
-  tabTemplate,
-  tabsEl,
-  hiddenUnreadLeftEl,
-  hiddenUnreadRightEl,
-  hiddenUnreadSummaryEl,
-  tabOverviewEl,
-  mobileTabCarouselEnabled,
-  getIsMobileCarouselViewport,
-  getCurrentUnreadCount,
-  openChat,
-  clearChatStreamState,
-  chatUiHelpers,
-  pinnedChatsWrap,
-  pinnedChatsEl,
-  pinnedChatsCountEl,
-  pinnedChatsToggleButton,
-  pinChatButton,
-  documentObject,
-  renderTraceLog,
-  getActiveChatId,
-  getPinnedChatsCollapsed,
-  setPinnedChatsCollapsedState,
-  getHasPinnedChatsCollapsePreference,
-  setHasPinnedChatsCollapsePreference,
-  resumeCooldownUntilByChat,
-  reconnectResumeBlockedChats,
-  resumeCycleCountByChat,
-  maxAutoResumeCyclesPerChat,
-  nowFn,
 }) {
   return {
     localStorageRef,
@@ -554,6 +525,31 @@ function createChatTabsControllerDeps({
     renderedHistoryLength,
     renderedHistoryVirtualized,
     tabNodes,
+  };
+}
+
+function createChatTabsControllerUiDeps({
+  tabTemplate,
+  tabsEl,
+  hiddenUnreadLeftEl,
+  hiddenUnreadRightEl,
+  hiddenUnreadSummaryEl,
+  tabOverviewEl,
+  mobileTabCarouselEnabled,
+  getIsMobileCarouselViewport,
+  getCurrentUnreadCount,
+  openChat,
+  clearChatStreamState,
+  chatUiHelpers,
+  pinnedChatsWrap,
+  pinnedChatsEl,
+  pinnedChatsCountEl,
+  pinnedChatsToggleButton,
+  pinChatButton,
+  documentObject,
+  renderTraceLog,
+}) {
+  return {
     tabTemplate,
     tabsEl,
     hiddenUnreadLeftEl,
@@ -573,6 +569,22 @@ function createChatTabsControllerDeps({
     pinChatButton,
     documentObject,
     renderTraceLog,
+  };
+}
+
+function createChatTabsControllerPolicyDeps({
+  getActiveChatId,
+  getPinnedChatsCollapsed,
+  setPinnedChatsCollapsedState,
+  getHasPinnedChatsCollapsePreference,
+  setHasPinnedChatsCollapsePreference,
+  resumeCooldownUntilByChat,
+  reconnectResumeBlockedChats,
+  resumeCycleCountByChat,
+  maxAutoResumeCyclesPerChat,
+  nowFn,
+}) {
+  return {
     getActiveChatId,
     getPinnedChatsCollapsed,
     setPinnedChatsCollapsedState,
@@ -583,6 +595,14 @@ function createChatTabsControllerDeps({
     resumeCycleCountByChat,
     maxAutoResumeCyclesPerChat,
     nowFn,
+  };
+}
+
+function createChatTabsControllerDeps(args) {
+  return {
+    ...createChatTabsControllerStateDeps(args),
+    ...createChatTabsControllerUiDeps(args),
+    ...createChatTabsControllerPolicyDeps(args),
   };
 }
 
@@ -1277,7 +1297,7 @@ function createBootstrapAuthStageReporter({
   };
 }
 
-function createBootstrapAuthControllerDeps({
+function createBootstrapAuthControllerSessionDeps({
   desktopTestingEnabled,
   devAuthSessionStorageKey,
   devAuthHashSecret,
@@ -1303,33 +1323,6 @@ function createBootstrapAuthControllerDeps({
   getOperatorDisplayName,
   operatorName,
   messagesEl,
-  setSkin,
-  setTelegramUnreadNotificationsEnabled,
-  syncChats,
-  syncPinnedChats,
-  histories,
-  setActiveChatMeta,
-  renderPinnedChats,
-  renderMessages,
-  warmChatHistoryCache,
-  chats,
-  pendingChats,
-  resumePendingChatStream,
-  hasFreshPendingStreamSnapshot,
-  restorePendingStreamSnapshot,
-  ensureActivationReadThreshold,
-  windowObject,
-  authBootstrapMaxAttempts,
-  authBootstrapBaseDelayMs,
-  authBootstrapRetryableStatus,
-  bootBootstrapVersion,
-  bootstrapVersionReloadStorageKey,
-  recordBootMetric,
-  syncBootLatencyChip,
-  updateComposerState,
-  isMobileQuoteMode,
-  markVersionSyncReloadIntent,
-  onBootstrapStage,
 }) {
   return {
     desktopTestingEnabled,
@@ -1357,6 +1350,28 @@ function createBootstrapAuthControllerDeps({
     getOperatorDisplayName,
     operatorName,
     messagesEl,
+  };
+}
+
+function createBootstrapAuthControllerAppDeps({
+  setSkin,
+  setTelegramUnreadNotificationsEnabled,
+  syncChats,
+  syncPinnedChats,
+  histories,
+  setActiveChatMeta,
+  renderPinnedChats,
+  renderMessages,
+  warmChatHistoryCache,
+  chats,
+  pendingChats,
+  resumePendingChatStream,
+  hasFreshPendingStreamSnapshot,
+  restorePendingStreamSnapshot,
+  ensureActivationReadThreshold,
+  windowObject,
+}) {
+  return {
     setSkin,
     setTelegramUnreadNotificationsEnabled,
     syncChats,
@@ -1373,6 +1388,23 @@ function createBootstrapAuthControllerDeps({
     restorePendingStreamSnapshot,
     ensureActivationReadThreshold,
     windowObject,
+  };
+}
+
+function createBootstrapAuthControllerBootstrapDeps({
+  authBootstrapMaxAttempts,
+  authBootstrapBaseDelayMs,
+  authBootstrapRetryableStatus,
+  bootBootstrapVersion,
+  bootstrapVersionReloadStorageKey,
+  recordBootMetric,
+  syncBootLatencyChip,
+  updateComposerState,
+  isMobileQuoteMode,
+  markVersionSyncReloadIntent,
+  onBootstrapStage,
+}) {
+  return {
     authBootstrapMaxAttempts,
     authBootstrapBaseDelayMs,
     authBootstrapRetryableStatus,
@@ -1384,6 +1416,14 @@ function createBootstrapAuthControllerDeps({
     isMobileQuoteMode,
     markVersionSyncReloadIntent,
     onBootstrapStage,
+  };
+}
+
+function createBootstrapAuthControllerDeps(args) {
+  return {
+    ...createBootstrapAuthControllerSessionDeps(args),
+    ...createBootstrapAuthControllerAppDeps(args),
+    ...createBootstrapAuthControllerBootstrapDeps(args),
   };
 }
 
@@ -2369,7 +2409,7 @@ const visibilitySkinController = visibilitySkinHelpers.createController({
   markVisibilityResume,
 });
 
-function createStartupBindingsControllerDeps({
+function createStartupBindingsControllerElementDeps({
   getActiveChatId,
   getRenderedChatId,
   getIsAuthenticated,
@@ -2410,6 +2450,22 @@ function createStartupBindingsControllerDeps({
     sendButton,
     templateEl: template,
     tg,
+  };
+}
+
+function createStartupBindingsControllerInteractionDeps({
+  getActiveChatId,
+  getRenderedChatId,
+  getIsAuthenticated,
+  setInitData,
+  getInitData,
+  getRenderTraceDebugEnabled,
+  isMobileBootstrapPath,
+  getChatsSize,
+  isActiveChatPending,
+  getStreamAbortControllers,
+} = {}) {
+  return {
     getActiveChatId,
     getRenderedChatId,
     isNearBottomFn: isNearBottom,
@@ -2449,10 +2505,22 @@ function createStartupBindingsControllerDeps({
     openSettingsModal,
     closeSettingsModal,
     signInWithDevAuth,
+    getIsAuthenticated,
+    setInitData,
+    getInitData,
+    getRenderTraceDebugEnabled,
+    isMobileBootstrapPath,
+    getChatsSize,
+    isActiveChatPending,
+    getStreamAbortControllers,
+  };
+}
+
+function createStartupBindingsControllerBootstrapDeps() {
+  return {
     appendSystemMessage,
     syncDevAuthUi,
     reportUiError,
-    getIsAuthenticated,
     getTelegramUnreadNotificationsEnabled,
     saveSkinPreference,
     saveTelegramUnreadNotificationsPreference,
@@ -2464,12 +2532,7 @@ function createStartupBindingsControllerDeps({
     loadDraftsFromStorage,
     syncClosingConfirmation,
     syncFullscreenControlState,
-    setInitData,
-    getInitData,
-    getRenderTraceDebugEnabled,
-    renderTraceLog,
     maybeRefreshForBootstrapVersionMismatch,
-    isMobileBootstrapPath,
     logBootStage,
     syncBootLatencyChip,
     fetchAuthBootstrapWithRetry,
@@ -2485,11 +2548,16 @@ function createStartupBindingsControllerDeps({
     revealShell,
     recordBootMetric,
     summarizeBootMetrics,
-    getChatsSize,
-    isActiveChatPending,
     refreshChats,
     syncVisibleActiveChat,
-    getStreamAbortControllers,
+  };
+}
+
+function createStartupBindingsControllerDeps(args = {}) {
+  return {
+    ...createStartupBindingsControllerElementDeps(args),
+    ...createStartupBindingsControllerInteractionDeps(args),
+    ...createStartupBindingsControllerBootstrapDeps(args),
   };
 }
 

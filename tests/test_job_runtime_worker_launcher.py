@@ -1213,6 +1213,9 @@ def test_subprocess_worker_launcher_remaps_retryable_exception_from_runner(monke
 
 def test_runtime_run_chat_job_uses_configured_worker_launcher(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
+    runtime = server.runtime
+    runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
+    runtime._shutdown_event.clear()
 
     user_id = "123"
     chat_id = server.store.ensure_default_chat(user_id)
