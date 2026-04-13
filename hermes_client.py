@@ -26,6 +26,14 @@ from hermes_client_types import HermesClientError, HermesReply, IsolatedWorkerWa
 logger = logging.getLogger(__name__)
 
 
+def _default_venv_python_path(venv_path: str | Path, *, platform_name: str | None = None) -> str:
+    platform_value = platform_name if platform_name is not None else os.name
+    root = Path(venv_path)
+    if str(platform_value).lower() in {"nt", "windows", "win32"}:
+        return str(root / "Scripts" / "python.exe")
+    return str(root / "bin" / "python")
+
+
 @dataclass(frozen=True)
 class _AttachResumeTransport:
     session_id: str
@@ -92,7 +100,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         self.agent_hermes_home = os.environ.get("MINI_APP_AGENT_HERMES_HOME") or os.environ.get("HERMES_HOME") or str(Path(self.agent_home) / ".hermes")
         self.agent_workdir = os.environ.get("MINI_APP_AGENT_WORKDIR") or str(Path(self.agent_hermes_home) / "hermes-agent")
         self.agent_venv = os.environ.get("MINI_APP_AGENT_VENV") or str(Path(self.agent_workdir) / "venv")
-        self.agent_python = os.environ.get("MINI_APP_AGENT_PYTHON") or str(Path(self.agent_venv) / "bin" / "python")
+        self.agent_python = os.environ.get("MINI_APP_AGENT_PYTHON") or _default_venv_python_path(self.agent_venv)
         self._session_db = self._init_session_db()
         self._bootstrap = HermesClientBootstrap(agent_hermes_home=self.agent_hermes_home, logger=logger)
         self.model = env_model if env_model and env_model.lower() != "auto" else self._load_default_model_from_config()

@@ -23,6 +23,12 @@ At minimum, configure:
   - `HERMES_API_URL`, or
   - local agent runtime variables
 
+## Platform support notes
+
+- Linux is the primary deployment target today.
+- macOS can work for local bootstrap and validation, but production deployment is more commonly done on Linux.
+- Windows operators should prefer HTTP-backed Hermes mode. Some local-runtime features still assume Unix behavior and should not be treated as fully first-class on Windows yet.
+
 ## Why you need a domain / DNS
 
 Telegram Mini Apps expect an HTTPS URL. In practice, that means most deployments need a domain or subdomain you control so `MINI_APP_URL` can point at a real HTTPS origin.

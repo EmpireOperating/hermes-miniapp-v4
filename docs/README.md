@@ -7,11 +7,14 @@ The docs tree is intended to stay scoped to Hermes Mini App. Unrelated project d
 ## Recommended reading order for new users
 
 1. `../README.md`
-2. `../CONTRIBUTING.md`
-3. `../SECURITY.md`
+2. `setup.md`
+3. `../CONTRIBUTING.md`
+4. `../SECURITY.md`
 
 ## Public-facing docs
 
+- `setup.md`
+  - canonical bootstrap, config, doctor, and platform-support walkthrough
 - `architecture.md`
   - high-level component and request-flow overview
 - `deployment.md`

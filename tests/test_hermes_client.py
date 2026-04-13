@@ -45,7 +45,12 @@ def test_client_derives_agent_runtime_defaults_from_environment(monkeypatch) -> 
     assert client.agent_hermes_home == "/tmp/custom-hermes-home"
     assert client.agent_workdir == "/tmp/custom-hermes-home/hermes-agent"
     assert client.agent_venv == "/tmp/custom-hermes-home/hermes-agent/venv"
-    assert client.agent_python == "/tmp/custom-hermes-home/hermes-agent/venv/bin/python"
+    assert client.agent_python == hermes_client._default_venv_python_path(client.agent_venv)
+
+
+def test_default_venv_python_path_is_platform_aware() -> None:
+    assert hermes_client._default_venv_python_path("/tmp/demo-venv", platform_name="posix") == "/tmp/demo-venv/bin/python"
+    assert hermes_client._default_venv_python_path("C:/demo/venv", platform_name="nt") == "C:/demo/venv/Scripts/python.exe"
 
 
 class _FakeAgent:

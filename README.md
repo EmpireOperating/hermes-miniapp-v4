@@ -57,6 +57,18 @@ You will get the best experience if you already have a working Hermes Agent setu
 
 No npm install step is required for the frontend tests in this repository; they use the built-in Node test runner.
 
+## Platform support
+
+- Linux: primary supported path today
+- macOS: expected to work for bootstrap, tests, and core runtime; verify with the setup doctor
+- Windows: bootstrap, config, and HTTP-backed Hermes mode are the best-supported paths today; some local-runtime features still assume Unix behavior
+
+If you want the smoothest first setup, start with:
+- Python 3.11+
+- Node 20+
+- `python scripts/setup_bootstrap.py --write-env-if-missing`
+- HTTP-backed Hermes mode (`HERMES_STREAM_URL` or `HERMES_API_URL`) unless you already have a local Hermes install you want to wire in
+
 ## Desktop usability and shortcut discovery
 
 The desktop UI includes keyboard-first navigation and a built-in shortcuts help surface intended to make the open-source experience more discoverable for new users.
@@ -69,21 +81,21 @@ This is intentionally part of the public product surface, not stray internal-onl
 
 ## Quickstart
 
-1. Create a virtual environment and install dependencies.
+Recommended setup flow:
+
+1. Run the cross-platform bootstrap command.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
+python scripts/setup_bootstrap.py --write-env-if-missing
 ```
 
-2. Create your environment file.
+That command:
+- checks Python and Node versions
+- creates `.venv` if needed
+- installs `requirements.txt` and `requirements-dev.txt`
+- creates `.env` from `.env.example` when you pass `--write-env-if-missing`
 
-```bash
-cp .env.example .env
-```
-
-3. Set the minimum required values in `.env`.
+2. Fill in the minimum required values in `.env`.
 
 - `TELEGRAM_BOT_TOKEN`
 - `MINI_APP_URL`
@@ -91,6 +103,24 @@ cp .env.example .env
   - `HERMES_STREAM_URL`, or
   - `HERMES_API_URL`, or
   - local agent/CLI configuration
+
+3. Run the setup doctor.
+
+```bash
+python scripts/setup_doctor.py
+```
+
+4. Start the server.
+
+```bash
+python server.py
+```
+
+5. Open the Mini App from your Telegram bot and verify you can authenticate and send a message.
+
+Setup is easiest if you think about it in two phases:
+- Phase A: local code bootstrap, dependency install, and config validation
+- Phase B: Telegram-facing DNS, HTTPS, and Mini App URL wiring
 
 Important: `MINI_APP_URL` should be an HTTPS URL on a domain you control. Telegram Mini Apps need a real HTTPS origin, so most operators will need DNS even if the app is only for their own private use.
 
@@ -102,16 +132,7 @@ What matters is:
 - the URL serves valid HTTPS
 - the value in `MINI_APP_URL` matches the URL your bot opens
 
-4. Start the server.
-
-```bash
-set -a
-source .env
-set +a
-python server.py
-```
-
-5. Open the Mini App from your Telegram bot and verify you can authenticate and send a message.
+For a fuller walkthrough, platform notes, and troubleshooting, see `docs/setup.md`.
 
 ## Local Hermes Agent runtime configuration
 
@@ -128,7 +149,9 @@ Portable defaults are derived from the current environment when these are unset:
 - `MINI_APP_AGENT_HERMES_HOME` defaults to `HERMES_HOME` or `HOME/.hermes`
 - `MINI_APP_AGENT_WORKDIR` defaults to `HERMES_HOME/hermes-agent`
 - `MINI_APP_AGENT_VENV` defaults to `MINI_APP_AGENT_WORKDIR/venv`
-- `MINI_APP_AGENT_PYTHON` defaults to `MINI_APP_AGENT_VENV/bin/python`
+- `MINI_APP_AGENT_PYTHON` defaults to the platform-appropriate virtualenv interpreter:
+  - POSIX: `MINI_APP_AGENT_VENV/bin/python`
+  - Windows: `MINI_APP_AGENT_VENV/Scripts/python.exe`
 
 If your Hermes Agent lives elsewhere, set the variables explicitly.
 
@@ -137,8 +160,13 @@ If your Hermes Agent lives elsewhere, set the variables explicitly.
 Run the Python suite:
 
 ```bash
-source .venv/bin/activate
-python -m pytest -q
+.venv/bin/python -m pytest -q
+```
+
+On Windows, use:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q
 ```
 
 Run the Node suite:
@@ -170,6 +198,7 @@ See `SECURITY.md` for reporting guidance.
 - `LICENSE`: MIT license for reuse and contribution
 - `CONTRIBUTING.md`: contributor workflow
 - `SECURITY.md`: vulnerability reporting and deployment cautions
+- `docs/setup.md`: canonical setup, doctor, and platform-support walkthrough
 - `docs/architecture.md`: system structure and request flow
 - `docs/deployment.md`: deployment and hardening guidance
 - `docs/README.md`: docs index and explanation of public vs maintainer-oriented docs

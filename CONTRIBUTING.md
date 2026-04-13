@@ -10,16 +10,31 @@ Thanks for your interest in improving Hermes Mini App v4.
 
 ## Development setup
 
+Recommended:
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
+python scripts/setup_bootstrap.py --write-env-if-missing
 ```
 
-Create local config if you need to run the app:
+Then validate:
 
 ```bash
+python scripts/setup_doctor.py
+```
+
+Manual equivalent if you prefer:
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt
 cp .env.example .env
+```
+
+On Windows PowerShell, use:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt
+Copy-Item .env.example .env
 ```
 
 ## Running tests
@@ -27,8 +42,13 @@ cp .env.example .env
 Python:
 
 ```bash
-source .venv/bin/activate
-python -m pytest -q
+.venv/bin/python -m pytest -q
+```
+
+Windows PowerShell:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q
 ```
 
 Node:
