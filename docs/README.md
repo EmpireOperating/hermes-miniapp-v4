@@ -14,7 +14,7 @@ The docs tree is intended to stay scoped to Hermes Mini App. Unrelated project d
 ## Public-facing docs
 
 - `setup.md`
-  - canonical bootstrap, config, doctor, and platform-support walkthrough
+  - canonical bootstrap, including `scripts/setup.sh`, `scripts/setup.ps1`, the portable Python fallback, config, doctor, and platform-support walkthrough
 - `architecture.md`
   - high-level component and request-flow overview
 - `deployment.md`

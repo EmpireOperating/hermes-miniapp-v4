@@ -12,13 +12,24 @@ Thanks for your interest in improving Hermes Mini App v4.
 
 Recommended:
 
+Linux/macOS (Bash/Zsh):
+
 ```bash
-python scripts/setup_bootstrap.py --write-env-if-missing
+scripts/setup.sh
+scripts/setup.sh doctor
 ```
 
-Then validate:
+Windows PowerShell:
+
+```powershell
+./scripts/setup.ps1
+./scripts/setup.ps1 doctor
+```
+
+Portable Python equivalents:
 
 ```bash
+python scripts/setup_bootstrap.py --write-env-if-missing
 python scripts/setup_doctor.py
 ```
 

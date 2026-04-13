@@ -66,7 +66,8 @@ No npm install step is required for the frontend tests in this repository; they 
 If you want the smoothest first setup, start with:
 - Python 3.11+
 - Node 20+
-- `python scripts/setup_bootstrap.py --write-env-if-missing`
+- Bash/Zsh on Linux/macOS: `scripts/setup.sh`
+- PowerShell on Windows: `./scripts/setup.ps1`
 - HTTP-backed Hermes mode (`HERMES_STREAM_URL` or `HERMES_API_URL`) unless you already have a local Hermes install you want to wire in
 
 ## Desktop usability and shortcut discovery
@@ -83,13 +84,27 @@ This is intentionally part of the public product surface, not stray internal-onl
 
 Recommended setup flow:
 
-1. Run the cross-platform bootstrap command.
+1. Run the bootstrap command for your shell.
+
+Linux/macOS (Bash/Zsh):
+
+```bash
+scripts/setup.sh
+```
+
+Windows PowerShell:
+
+```powershell
+./scripts/setup.ps1
+```
+
+Portable Python equivalent:
 
 ```bash
 python scripts/setup_bootstrap.py --write-env-if-missing
 ```
 
-That command:
+The bootstrap command:
 - checks Python and Node versions
 - creates `.venv` if needed
 - installs `requirements.txt` and `requirements-dev.txt`
@@ -105,6 +120,20 @@ That command:
   - local agent/CLI configuration
 
 3. Run the setup doctor.
+
+Linux/macOS (Bash/Zsh):
+
+```bash
+scripts/setup.sh doctor
+```
+
+Windows PowerShell:
+
+```powershell
+./scripts/setup.ps1 doctor
+```
+
+Portable Python equivalent:
 
 ```bash
 python scripts/setup_doctor.py

@@ -9,8 +9,9 @@ If you only read one setup document, read this one.
 Use this path unless you already know you want something else:
 - Python 3.11+
 - Node.js 20+
-- `python scripts/setup_bootstrap.py --write-env-if-missing`
-- `python scripts/setup_doctor.py`
+- Linux/macOS (Bash/Zsh): `scripts/setup.sh` then `scripts/setup.sh doctor`
+- Windows PowerShell: `./scripts/setup.ps1` then `./scripts/setup.ps1 doctor`
+- Portable Python fallback: `python scripts/setup_bootstrap.py --write-env-if-missing` then `python scripts/setup_doctor.py`
 - HTTP-backed Hermes mode (`HERMES_STREAM_URL` or `HERMES_API_URL`) unless you already have a local Hermes install you want to wire in
 
 ## Platform support
@@ -30,7 +31,21 @@ That means Windows users should prefer HTTP-backed Hermes mode for now. If you t
 
 ### Phase A: local bootstrap and validation
 
-1. Run the bootstrap command:
+1. Run the bootstrap command for your shell:
+
+Linux/macOS (Bash/Zsh):
+
+```bash
+scripts/setup.sh
+```
+
+Windows PowerShell:
+
+```powershell
+./scripts/setup.ps1
+```
+
+Portable Python fallback:
 
 ```bash
 python scripts/setup_bootstrap.py --write-env-if-missing
@@ -45,6 +60,20 @@ python scripts/setup_bootstrap.py --write-env-if-missing
   - local agent/CLI configuration
 
 3. Run the doctor:
+
+Linux/macOS (Bash/Zsh):
+
+```bash
+scripts/setup.sh doctor
+```
+
+Windows PowerShell:
+
+```powershell
+./scripts/setup.ps1 doctor
+```
+
+Portable Python fallback:
 
 ```bash
 python scripts/setup_doctor.py
@@ -78,7 +107,12 @@ Even if the Mini App is mainly for your own use, Telegram still expects a real H
 
 ## What the bootstrap command does
 
-`python scripts/setup_bootstrap.py --write-env-if-missing`
+Human-friendly wrappers:
+- Linux/macOS: `scripts/setup.sh`
+- Windows PowerShell: `./scripts/setup.ps1`
+
+Portable Python implementation:
+- `python scripts/setup_bootstrap.py --write-env-if-missing`
 
 It:
 - checks that Python 3.11+ is being used
@@ -98,7 +132,12 @@ Flags:
 
 ## What the doctor command checks
 
-`python scripts/setup_doctor.py`
+Human-friendly wrappers:
+- Linux/macOS: `scripts/setup.sh doctor`
+- Windows PowerShell: `./scripts/setup.ps1 doctor`
+
+Portable Python implementation:
+- `python scripts/setup_doctor.py`
 
 It checks:
 - Python version
