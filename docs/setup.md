@@ -11,8 +11,8 @@ If the setup doctor reports something unclear, go straight to `setup-troubleshoo
 Use this path unless you already know you want something else:
 - Python 3.11+
 - Node.js 20+
-- Linux/macOS (Bash/Zsh): `scripts/setup.sh` then `scripts/setup.sh doctor`
-- Windows PowerShell: `./scripts/setup.ps1` then `./scripts/setup.ps1 doctor`
+- Linux/macOS: `scripts/setup.sh` then `scripts/setup.sh doctor`
+- Windows: open a WSL2 shell, then run `scripts/setup.sh` and `scripts/setup.sh doctor` there
 - Portable Python fallback: `python scripts/setup_bootstrap.py --write-env-if-missing` then `python scripts/setup_doctor.py`
 - HTTP-backed Hermes mode unless you already have local Hermes running on Linux/macOS or under WSL2
 
@@ -24,11 +24,11 @@ Use this path unless you already know you want something else:
   - expected to work for bootstrap, tests, and core runtime
   - run the setup doctor to verify your environment
 - Windows
-  - native Windows is fine for bootstrap, config, tests, and HTTP-backed Hermes mode
-  - if you want local Hermes on the same machine, use WSL2 rather than native Windows
-  - local warm attach is currently disabled on native Windows because it depends on AF_UNIX unix-domain sockets; other local-runtime details still skew Unix-first
+  - use WSL2 for Mini App setup and runtime
+  - Hermes Agent does not support a native Windows runtime path
+  - even if you plan to point the Mini App at an HTTP-backed Hermes endpoint, do the Mini App setup from WSL2 on Windows
 
-That means Windows users should prefer HTTP-backed Hermes mode natively. For same-machine local Hermes, use WSL2. If you try the local-runtime-heavy path on native Windows, the app should now degrade cleanly instead of failing with a cryptic socket error.
+That means the supported Windows path is: open WSL2, work from the repo there, and run the same `scripts/setup.sh` flow used on Linux.
 
 ## Setup flow in two phases
 
@@ -42,10 +42,10 @@ Linux/macOS (Bash/Zsh):
 scripts/setup.sh
 ```
 
-Windows PowerShell (native Windows, best with HTTP-backed Hermes):
+Windows (via WSL2 shell):
 
-```powershell
-./scripts/setup.ps1
+```bash
+scripts/setup.sh
 ```
 
 Portable Python fallback:
@@ -74,10 +74,10 @@ Linux/macOS (Bash/Zsh):
 scripts/setup.sh doctor
 ```
 
-Windows PowerShell (native Windows, best with HTTP-backed Hermes):
+Windows (via WSL2 shell):
 
-```powershell
-./scripts/setup.ps1 doctor
+```bash
+scripts/setup.sh doctor
 ```
 
 Portable Python fallback:
@@ -108,7 +108,7 @@ This is usually the biggest setup friction. The short version:
 
 Use:
 - Linux/macOS: `scripts/setup.sh`
-- Windows PowerShell: `./scripts/setup.ps1`
+- Windows: open a WSL2 shell, then run `scripts/setup.sh`
 - portable Python: `python scripts/setup_bootstrap.py --write-env-if-missing`
 
 Bootstrap creates `.venv`, installs dependencies, creates `.env` when needed, and prompts for key values on an interactive terminal.
@@ -127,7 +127,7 @@ Flags:
 
 Use:
 - Linux/macOS: `scripts/setup.sh doctor`
-- Windows PowerShell: `./scripts/setup.ps1 doctor`
+- Windows: open a WSL2 shell, then run `scripts/setup.sh doctor`
 - portable Python: `python scripts/setup_doctor.py`
 
 Doctor checks Python, Node, `.venv`, dependencies, `.env`, key config values, DNS, backend configuration, and platform mode.
@@ -148,7 +148,7 @@ The JSON output includes:
 Use:
 - `HERMES_STREAM_URL` for the best live UX if you already have a streaming endpoint
 - `HERMES_API_URL` for the simplest remote setup
-- local Hermes for same-machine setups that can tolerate more machine-specific configuration; on Windows, use WSL2 for this path
+- local Hermes for same-machine setups that can tolerate more machine-specific configuration
 
 Relevant variables:
 - `MINI_APP_AGENT_HOME`
@@ -168,10 +168,10 @@ Python:
 .venv/bin/python -m pytest -q
 ```
 
-Windows PowerShell (native Windows, best with HTTP-backed Hermes):
+Windows: run tests from WSL2 using the same command:
 
-```powershell
-.venv\Scripts\python.exe -m pytest -q
+```bash
+.venv/bin/python -m pytest -q
 ```
 
 Node:

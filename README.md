@@ -61,14 +61,13 @@ No npm install step is required for the frontend tests in this repository; they 
 
 - Linux: primary supported path today
 - macOS: expected to work for bootstrap, tests, and core runtime; verify with the setup doctor
-- Windows: native Windows is fine for bootstrap, config, and HTTP-backed Hermes mode; use WSL2 if you want a local Hermes installation on the same machine
+- Windows: use WSL2 for Mini App setup and runtime. Hermes Agent does not support a native Windows runtime path.
 
 If you want the smoothest first setup, start with:
 - Python 3.11+
 - Node 20+
 - Bash/Zsh on Linux/macOS: `scripts/setup.sh`
-- PowerShell on Windows: `./scripts/setup.ps1`
-- On Windows, use `HERMES_STREAM_URL` or `HERMES_API_URL` natively; if you want local Hermes on the same machine, run Hermes under WSL2
+- Windows: open a WSL2 shell and run `scripts/setup.sh` there
 
 ## Desktop usability and shortcut discovery
 
@@ -92,10 +91,10 @@ Linux/macOS (Bash/Zsh):
 scripts/setup.sh
 ```
 
-Windows PowerShell (native Windows, best with HTTP-backed Hermes):
+Windows (via WSL2 shell):
 
-```powershell
-./scripts/setup.ps1
+```bash
+scripts/setup.sh
 ```
 
 Portable Python equivalent:
@@ -124,10 +123,10 @@ Linux/macOS (Bash/Zsh):
 scripts/setup.sh doctor
 ```
 
-Windows PowerShell (native Windows, best with HTTP-backed Hermes):
+Windows (via WSL2 shell):
 
-```powershell
-./scripts/setup.ps1 doctor
+```bash
+scripts/setup.sh doctor
 ```
 
 Portable Python equivalent:

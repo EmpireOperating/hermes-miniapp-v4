@@ -10,7 +10,7 @@ Recommended order:
 
 Human-friendly commands:
 - Linux/macOS: `scripts/setup.sh` then `scripts/setup.sh doctor`
-- Windows PowerShell: `./scripts/setup.ps1` then `./scripts/setup.ps1 doctor`
+- Windows: open a WSL2 shell, then run `scripts/setup.sh` and `scripts/setup.sh doctor` there
 
 Portable Python fallback:
 - `python scripts/setup_bootstrap.py --write-env-if-missing`
@@ -53,7 +53,7 @@ Meaning:
 
 Fix:
 - Linux/macOS: `scripts/setup.sh`
-- Windows PowerShell: `./scripts/setup.ps1`
+- Windows: open a WSL2 shell, then run `scripts/setup.sh`
 - portable fallback: `python scripts/setup_bootstrap.py --write-env-if-missing`
 
 ### dependencies
@@ -132,16 +132,12 @@ Meaning:
 Current guidance:
 - Linux is the primary supported path
 - macOS is expected to work, but verify with the doctor
-- Windows is best treated as:
-  - supported natively for bootstrap, config, tests, and HTTP-backed Hermes mode
-  - WSL2 is the right path if you want local Hermes on the same machine
-  - not yet fully first-class natively for every local-runtime feature
+- Windows should use WSL2 for Mini App setup and runtime
+- Hermes Agent does not support a native Windows runtime path
 
 Important Windows note:
-- warm attach currently depends on AF_UNIX unix-domain sockets
-- that path is disabled on Windows intentionally
-- prefer `HERMES_STREAM_URL` or `HERMES_API_URL` on native Windows for the smoothest setup
-- use WSL2 if you want local Hermes on a Windows machine
+- do Mini App setup from WSL2, even if the app will talk to an HTTP-backed Hermes endpoint
+- use `scripts/setup.sh` and `scripts/setup.sh doctor` from inside WSL2
 
 ## If the doctor still looks confusing
 

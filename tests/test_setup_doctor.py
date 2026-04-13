@@ -45,15 +45,15 @@ def test_detect_local_backend_accepts_http_and_cli(monkeypatch) -> None:
     assert mode == "cli"
 
 
-def test_check_platform_mode_warns_on_windows_without_http(monkeypatch) -> None:
+def test_check_platform_mode_fails_on_native_windows(monkeypatch) -> None:
     monkeypatch.setattr(setup_doctor.sys, "platform", "win32", raising=False)
 
     result = setup_doctor.check_platform_mode({})
 
-    assert result.status == "WARN"
-    assert "Windows detected" in result.summary
-    assert "AF_UNIX" in (result.detail or "")
-    assert "WSL2" in (result.detail or "")
+    assert result.status == "FAIL"
+    assert "WSL2" in result.summary
+    assert "native Windows runtime path" in (result.detail or "")
+    assert "scripts/setup.sh" in (result.fix or "")
 
 
 def test_format_human_output_and_exit_code() -> None:
@@ -81,7 +81,7 @@ def test_recommended_next_steps_prioritize_bootstrap_and_config() -> None:
         setup_doctor.CheckResult("mini_app_url", "FAIL", "missing"),
         setup_doctor.CheckResult("hermes_backend", "FAIL", "missing"),
         setup_doctor.CheckResult("dns", "WARN", "pending"),
-        setup_doctor.CheckResult("platform_mode", "WARN", "windows guidance"),
+        setup_doctor.CheckResult("platform_mode", "FAIL", "windows guidance"),
     ]
 
     steps = setup_doctor.recommended_next_steps(results)

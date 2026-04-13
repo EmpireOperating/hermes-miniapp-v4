@@ -12,18 +12,19 @@ Thanks for your interest in improving Hermes Mini App v4.
 
 Recommended:
 
-Linux/macOS (Bash/Zsh):
+Linux/macOS:
 
 ```bash
 scripts/setup.sh
 scripts/setup.sh doctor
 ```
 
-Windows PowerShell (native Windows, best with HTTP-backed Hermes):
+Windows:
 
-```powershell
-./scripts/setup.ps1
-./scripts/setup.ps1 doctor
+```bash
+# open a WSL2 shell first
+scripts/setup.sh
+scripts/setup.sh doctor
 ```
 
 Portable Python equivalents:
@@ -33,7 +34,7 @@ python scripts/setup_bootstrap.py --write-env-if-missing
 python scripts/setup_doctor.py
 ```
 
-If you want to develop against a local Hermes install on a Windows machine, run Hermes under WSL2 rather than native Windows.
+On Windows, use WSL2 for Mini App development. Hermes Agent does not support a native Windows runtime path.
 
 Manual equivalent if you prefer:
 
@@ -43,12 +44,7 @@ python -m venv .venv
 cp .env.example .env
 ```
 
-On Windows PowerShell, use:
-
-```powershell
-.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt
-Copy-Item .env.example .env
-```
+On Windows, run the equivalent commands from WSL2.
 
 ## Running tests
 
@@ -58,10 +54,10 @@ Python:
 .venv/bin/python -m pytest -q
 ```
 
-Windows PowerShell (native Windows, best with HTTP-backed Hermes):
+Windows: run tests from WSL2 using the same command:
 
-```powershell
-.venv\Scripts\python.exe -m pytest -q
+```bash
+.venv/bin/python -m pytest -q
 ```
 
 Node:

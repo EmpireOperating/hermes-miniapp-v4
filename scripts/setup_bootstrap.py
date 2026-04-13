@@ -225,8 +225,8 @@ def configure_env_interactively(
         "Choose the Hermes backend mode",
         [
             ("1", "HERMES_STREAM_URL — best streaming UX if you already have a streaming endpoint"),
-            ("2", "HERMES_API_URL — simplest HTTP-backed setup, especially for first-time/native-Windows users"),
-            ("3", "Local Hermes CLI/runtime — direct local execution on this machine (use WSL2 on Windows)"),
+            ("2", "HERMES_API_URL — simplest HTTP-backed setup"),
+            ("3", "Local Hermes CLI/runtime — direct local execution on this machine"),
             ("4", "Skip backend configuration for now"),
         ],
         default=recommended_choice,
@@ -299,8 +299,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def native_windows_message() -> str:
+    return (
+        "Native Windows is not a supported runtime path for Hermes Mini App because Hermes Agent itself must run under WSL2. "
+        "Open a WSL2 shell and run scripts/setup.sh there."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if is_windows():
+        print(f"ERROR: {native_windows_message()}", file=sys.stderr)
+        return 1
     root = project_root()
     if not python_version_supported():
         print(f"ERROR: Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required.", file=sys.stderr)

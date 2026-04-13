@@ -27,7 +27,7 @@ At minimum, configure:
 
 - Linux is the primary deployment target today.
 - macOS can work for local bootstrap and validation, but production deployment is more commonly done on Linux.
-- Windows operators should prefer HTTP-backed Hermes mode. Some local-runtime features still assume Unix behavior and should not be treated as fully first-class on Windows yet.
+- Windows operators should use WSL2 for Mini App setup and runtime. Hermes Agent does not support a native Windows runtime path.
 
 ## Why you need a domain / DNS
 

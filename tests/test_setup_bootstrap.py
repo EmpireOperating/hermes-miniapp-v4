@@ -88,6 +88,13 @@ def test_recommended_backend_choice_prefers_existing_values_and_platform_default
     assert setup_bootstrap.recommended_backend_choice({}, platform_name="win32") == "2"
 
 
+def test_native_windows_message_mentions_wsl2() -> None:
+    message = setup_bootstrap.native_windows_message()
+
+    assert "WSL2" in message
+    assert "scripts/setup.sh" in message
+
+
 def test_explain_backend_modes_mentions_recommendation() -> None:
     printed: list[str] = []
 
@@ -131,7 +138,7 @@ def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> N
     assert "Interactive setup" in joined
     assert "Recommended: HERMES_STREAM_URL" in joined
     assert "Any domain or subdomain you control is fine" in joined
-    assert "use WSL2 on Windows" in joined
+    assert "Local Hermes CLI/runtime" in joined
 
 
 def test_render_next_steps_mentions_dns_doctor_and_interactive_fill(tmp_path: Path) -> None:

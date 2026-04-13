@@ -47,8 +47,8 @@ def recommended_next_steps(results: list[CheckResult]) -> list[str]:
         steps.append("Choose one Hermes backend path: HERMES_STREAM_URL, HERMES_API_URL, or explicit local Hermes agent/CLI settings.")
     if any(result.key == "dns" for result in warnings):
         steps.append("If MINI_APP_URL is set, point that hostname at your reverse proxy or tunnel and wait for DNS to propagate.")
-    if any(result.key == "platform_mode" and result.status == "WARN" for result in warnings):
-        steps.append("On Windows, use HERMES_STREAM_URL or HERMES_API_URL natively, or run local Hermes under WSL2.")
+    if any(result.key == "platform_mode" for result in failures + warnings):
+        steps.append("If you are on Windows, open a WSL2 shell and run scripts/setup.sh there.")
     if not steps and not failures:
         steps.append("Setup looks good. Start the app with: python server.py")
     return steps
@@ -293,20 +293,12 @@ def check_hermes_backend(env_values: dict[str, str]) -> CheckResult:
 def check_platform_mode(env_values: dict[str, str]) -> CheckResult:
     if not is_windows():
         return CheckResult("platform_mode", "PASS", f"Platform {sys.platform} is within the primary support path.")
-    if (env_values.get("HERMES_STREAM_URL") or "").strip() or (env_values.get("HERMES_API_URL") or "").strip():
-        return CheckResult(
-            "platform_mode",
-            "WARN",
-            "Windows detected. Native Windows is best with HTTP-backed Hermes mode.",
-            detail="If you want local Hermes on the same machine, use WSL2. Native Windows local runtime still includes Unix-specific assumptions such as AF_UNIX warm-attach transport.",
-            fix="Use HERMES_STREAM_URL or HERMES_API_URL on native Windows, or run local Hermes under WSL2.",
-        )
     return CheckResult(
         "platform_mode",
-        "WARN",
-        "Windows detected. Native Windows local Hermes runtime is not a fully supported path.",
-        detail="Warm attach currently depends on AF_UNIX unix-domain sockets and is disabled on native Windows. Use WSL2 if you want local Hermes on a Windows machine.",
-        fix="Prefer HTTP-backed Hermes mode on native Windows, or run local Hermes under WSL2.",
+        "FAIL",
+        "Windows detected. Run Hermes Mini App under WSL2, not native Windows.",
+        detail="Hermes Agent itself does not support a native Windows runtime path. If you are on Windows, use WSL2 for the Mini App setup and runtime, even when you plan to point the app at an HTTP-backed Hermes endpoint.",
+        fix="Open a WSL2 shell and run scripts/setup.sh there.",
     )
 
 
