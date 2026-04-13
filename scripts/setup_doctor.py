@@ -48,7 +48,7 @@ def recommended_next_steps(results: list[CheckResult]) -> list[str]:
     if any(result.key == "dns" for result in warnings):
         steps.append("If MINI_APP_URL is set, point that hostname at your reverse proxy or tunnel and wait for DNS to propagate.")
     if any(result.key == "platform_mode" and result.status == "WARN" for result in warnings):
-        steps.append("On Windows, prefer HTTP-backed Hermes mode (HERMES_STREAM_URL or HERMES_API_URL) for the smoothest setup.")
+        steps.append("On Windows, use HERMES_STREAM_URL or HERMES_API_URL natively, or run local Hermes under WSL2.")
     if not steps and not failures:
         steps.append("Setup looks good. Start the app with: python server.py")
     return steps
@@ -297,16 +297,16 @@ def check_platform_mode(env_values: dict[str, str]) -> CheckResult:
         return CheckResult(
             "platform_mode",
             "WARN",
-            "Windows detected. HTTP-backed Hermes mode is the recommended path today.",
-            detail="Local Hermes runtime features still include Unix-specific assumptions such as AF_UNIX warm-attach transport.",
-            fix="Prefer HERMES_STREAM_URL or HERMES_API_URL on Windows until local runtime support is hardened further.",
+            "Windows detected. Native Windows is best with HTTP-backed Hermes mode.",
+            detail="If you want local Hermes on the same machine, use WSL2. Native Windows local runtime still includes Unix-specific assumptions such as AF_UNIX warm-attach transport.",
+            fix="Use HERMES_STREAM_URL or HERMES_API_URL on native Windows, or run local Hermes under WSL2.",
         )
     return CheckResult(
         "platform_mode",
         "WARN",
-        "Windows detected. Local Hermes runtime mode is not yet a fully first-class path.",
-        detail="Warm attach currently depends on AF_UNIX unix-domain sockets and is disabled on Windows.",
-        fix="Prefer HTTP-backed Hermes mode on Windows, or use Linux/macOS for the local-runtime path.",
+        "Windows detected. Native Windows local Hermes runtime is not a fully supported path.",
+        detail="Warm attach currently depends on AF_UNIX unix-domain sockets and is disabled on native Windows. Use WSL2 if you want local Hermes on a Windows machine.",
+        fix="Prefer HTTP-backed Hermes mode on native Windows, or run local Hermes under WSL2.",
     )
 
 

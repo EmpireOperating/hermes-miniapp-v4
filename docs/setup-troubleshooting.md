@@ -133,13 +133,15 @@ Current guidance:
 - Linux is the primary supported path
 - macOS is expected to work, but verify with the doctor
 - Windows is best treated as:
-  - supported for bootstrap, config, tests, and HTTP-backed Hermes mode
-  - not yet fully first-class for every local-runtime feature
+  - supported natively for bootstrap, config, tests, and HTTP-backed Hermes mode
+  - WSL2 is the right path if you want local Hermes on the same machine
+  - not yet fully first-class natively for every local-runtime feature
 
 Important Windows note:
 - warm attach currently depends on AF_UNIX unix-domain sockets
 - that path is disabled on Windows intentionally
-- prefer `HERMES_STREAM_URL` or `HERMES_API_URL` on Windows for the smoothest setup
+- prefer `HERMES_STREAM_URL` or `HERMES_API_URL` on native Windows for the smoothest setup
+- use WSL2 if you want local Hermes on a Windows machine
 
 ## If the doctor still looks confusing
 

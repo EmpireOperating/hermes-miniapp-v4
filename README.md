@@ -61,14 +61,14 @@ No npm install step is required for the frontend tests in this repository; they 
 
 - Linux: primary supported path today
 - macOS: expected to work for bootstrap, tests, and core runtime; verify with the setup doctor
-- Windows: bootstrap, config, and HTTP-backed Hermes mode are the best-supported paths today; some local-runtime features still assume Unix behavior
+- Windows: native Windows is fine for bootstrap, config, and HTTP-backed Hermes mode; use WSL2 if you want a local Hermes installation on the same machine
 
 If you want the smoothest first setup, start with:
 - Python 3.11+
 - Node 20+
 - Bash/Zsh on Linux/macOS: `scripts/setup.sh`
 - PowerShell on Windows: `./scripts/setup.ps1`
-- HTTP-backed Hermes mode (`HERMES_STREAM_URL` or `HERMES_API_URL`) unless you already have a local Hermes install you want to wire in
+- On Windows, use `HERMES_STREAM_URL` or `HERMES_API_URL` natively; if you want local Hermes on the same machine, run Hermes under WSL2
 
 ## Desktop usability and shortcut discovery
 
@@ -92,7 +92,7 @@ Linux/macOS (Bash/Zsh):
 scripts/setup.sh
 ```
 
-Windows PowerShell:
+Windows PowerShell (native Windows, best with HTTP-backed Hermes):
 
 ```powershell
 ./scripts/setup.ps1
@@ -124,7 +124,7 @@ Linux/macOS (Bash/Zsh):
 scripts/setup.sh doctor
 ```
 
-Windows PowerShell:
+Windows PowerShell (native Windows, best with HTTP-backed Hermes):
 
 ```powershell
 ./scripts/setup.ps1 doctor
@@ -150,7 +150,9 @@ For a fuller walkthrough, platform notes, and troubleshooting, see `docs/setup.m
 
 ## Local Hermes Agent runtime configuration
 
-If you want the Mini App to use a local Hermes Agent installation instead of an HTTP endpoint, configure these environment variables as needed:
+If you want the Mini App to use a local Hermes Agent installation instead of an HTTP endpoint, configure these environment variables as needed.
+
+On Windows, prefer running the Mini App against `HERMES_STREAM_URL` or `HERMES_API_URL`. If you want local Hermes on the same machine, run Hermes inside WSL2 and point the Mini App at that environment or its HTTP endpoint.
 
 - `MINI_APP_AGENT_HOME`
 - `MINI_APP_AGENT_HERMES_HOME`

@@ -19,7 +19,7 @@ scripts/setup.sh
 scripts/setup.sh doctor
 ```
 
-Windows PowerShell:
+Windows PowerShell (native Windows, best with HTTP-backed Hermes):
 
 ```powershell
 ./scripts/setup.ps1
@@ -32,6 +32,8 @@ Portable Python equivalents:
 python scripts/setup_bootstrap.py --write-env-if-missing
 python scripts/setup_doctor.py
 ```
+
+If you want to develop against a local Hermes install on a Windows machine, run Hermes under WSL2 rather than native Windows.
 
 Manual equivalent if you prefer:
 
@@ -56,7 +58,7 @@ Python:
 .venv/bin/python -m pytest -q
 ```
 
-Windows PowerShell:
+Windows PowerShell (native Windows, best with HTTP-backed Hermes):
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q

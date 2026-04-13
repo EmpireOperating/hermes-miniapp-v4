@@ -53,6 +53,7 @@ def test_check_platform_mode_warns_on_windows_without_http(monkeypatch) -> None:
     assert result.status == "WARN"
     assert "Windows detected" in result.summary
     assert "AF_UNIX" in (result.detail or "")
+    assert "WSL2" in (result.detail or "")
 
 
 def test_format_human_output_and_exit_code() -> None:
@@ -91,6 +92,7 @@ def test_recommended_next_steps_prioritize_bootstrap_and_config() -> None:
     assert any("HERMES_STREAM_URL" in step for step in steps)
     assert any("DNS" in step or "hostname" in step for step in steps)
     assert any("Windows" in step for step in steps)
+    assert any("WSL2" in step for step in steps)
 
 
 def test_main_json_output(monkeypatch, capsys) -> None:

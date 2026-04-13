@@ -225,8 +225,8 @@ def configure_env_interactively(
         "Choose the Hermes backend mode",
         [
             ("1", "HERMES_STREAM_URL — best streaming UX if you already have a streaming endpoint"),
-            ("2", "HERMES_API_URL — simplest HTTP-backed setup, especially for first-time/Windows users"),
-            ("3", "Local Hermes CLI/runtime — direct local execution on this machine"),
+            ("2", "HERMES_API_URL — simplest HTTP-backed setup, especially for first-time/native-Windows users"),
+            ("3", "Local Hermes CLI/runtime — direct local execution on this machine (use WSL2 on Windows)"),
             ("4", "Skip backend configuration for now"),
         ],
         default=recommended_choice,
@@ -252,7 +252,7 @@ def configure_env_interactively(
         updates["HERMES_STREAM_URL"] = ""
     elif backend_choice == "3":
         if is_windows():
-            output("Windows note: remote HTTP mode is usually smoother than local mode.")
+            output("Windows note: use WSL2 for local Hermes. Native Windows is best with HTTP-backed mode.")
         cli_default = values.get("HERMES_CLI_COMMAND", "hermes") or "hermes"
         cli_command = prompt_text("HERMES_CLI_COMMAND (command used to launch Hermes locally)", default=cli_default, input_fn=input_fn, output=output)
         updates["HERMES_CLI_COMMAND"] = cli_command or "hermes"

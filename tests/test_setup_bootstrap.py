@@ -131,6 +131,7 @@ def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> N
     assert "Interactive setup" in joined
     assert "Recommended: HERMES_STREAM_URL" in joined
     assert "Any domain or subdomain you control is fine" in joined
+    assert "use WSL2 on Windows" in joined
 
 
 def test_render_next_steps_mentions_dns_doctor_and_interactive_fill(tmp_path: Path) -> None:

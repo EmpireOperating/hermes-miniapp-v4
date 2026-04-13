@@ -14,7 +14,7 @@ Use this path unless you already know you want something else:
 - Linux/macOS (Bash/Zsh): `scripts/setup.sh` then `scripts/setup.sh doctor`
 - Windows PowerShell: `./scripts/setup.ps1` then `./scripts/setup.ps1 doctor`
 - Portable Python fallback: `python scripts/setup_bootstrap.py --write-env-if-missing` then `python scripts/setup_doctor.py`
-- HTTP-backed Hermes mode unless you already want same-machine local Hermes
+- HTTP-backed Hermes mode unless you already have local Hermes running on Linux/macOS or under WSL2
 
 ## Platform support
 
@@ -24,10 +24,11 @@ Use this path unless you already know you want something else:
   - expected to work for bootstrap, tests, and core runtime
   - run the setup doctor to verify your environment
 - Windows
-  - bootstrap, config, tests, and HTTP-backed Hermes mode are the best-supported paths today
-  - local warm attach is currently disabled because it depends on AF_UNIX unix-domain sockets; other local-runtime details still skew Unix-first
+  - native Windows is fine for bootstrap, config, tests, and HTTP-backed Hermes mode
+  - if you want local Hermes on the same machine, use WSL2 rather than native Windows
+  - local warm attach is currently disabled on native Windows because it depends on AF_UNIX unix-domain sockets; other local-runtime details still skew Unix-first
 
-That means Windows users should prefer HTTP-backed Hermes mode for now. If you try the local-runtime-heavy path on Windows, the app should now degrade cleanly instead of failing with a cryptic socket error.
+That means Windows users should prefer HTTP-backed Hermes mode natively. For same-machine local Hermes, use WSL2. If you try the local-runtime-heavy path on native Windows, the app should now degrade cleanly instead of failing with a cryptic socket error.
 
 ## Setup flow in two phases
 
@@ -41,7 +42,7 @@ Linux/macOS (Bash/Zsh):
 scripts/setup.sh
 ```
 
-Windows PowerShell:
+Windows PowerShell (native Windows, best with HTTP-backed Hermes):
 
 ```powershell
 ./scripts/setup.ps1
@@ -73,7 +74,7 @@ Linux/macOS (Bash/Zsh):
 scripts/setup.sh doctor
 ```
 
-Windows PowerShell:
+Windows PowerShell (native Windows, best with HTTP-backed Hermes):
 
 ```powershell
 ./scripts/setup.ps1 doctor
@@ -147,7 +148,7 @@ The JSON output includes:
 Use:
 - `HERMES_STREAM_URL` for the best live UX if you already have a streaming endpoint
 - `HERMES_API_URL` for the simplest remote setup
-- local Hermes for same-machine setups that can tolerate more machine-specific configuration
+- local Hermes for same-machine setups that can tolerate more machine-specific configuration; on Windows, use WSL2 for this path
 
 Relevant variables:
 - `MINI_APP_AGENT_HOME`
@@ -167,7 +168,7 @@ Python:
 .venv/bin/python -m pytest -q
 ```
 
-Windows PowerShell:
+Windows PowerShell (native Windows, best with HTTP-backed Hermes):
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q
