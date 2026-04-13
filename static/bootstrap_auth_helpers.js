@@ -518,18 +518,27 @@
         historyCount: bootstrapHistory.length,
         restoredPendingSnapshot,
       });
+      const shouldResumePending = (Boolean(chats.get(activeId)?.pending) || restoredPendingSnapshot) && !pendingChats.has(activeId);
       if (bootstrapChats.length > 1) {
         const warmDelayMs = mobileBootstrapPath
           ? Math.max(0, Number(mobileBootstrapWarmDelayMs) || 0)
           : 0;
-        onBootstrapStage?.("warm-history-cache-triggered", {
-          activeChatId: activeId,
-          mode: mobileBootstrapPath ? "mobile-delayed" : "default",
-          delayMs: warmDelayMs,
-        });
-        void delayMs(warmDelayMs).then(() => warmChatHistoryCache());
+        const deferWarmForPendingResume = mobileBootstrapPath && shouldResumePending;
+        if (deferWarmForPendingResume) {
+          onBootstrapStage?.("warm-history-cache-deferred-pending-resume", {
+            activeChatId: activeId,
+            mode: "mobile-skip-pending-resume",
+            delayMs: warmDelayMs,
+          });
+        } else {
+          onBootstrapStage?.("warm-history-cache-triggered", {
+            activeChatId: activeId,
+            mode: mobileBootstrapPath ? "mobile-delayed" : "default",
+            delayMs: warmDelayMs,
+          });
+          void delayMs(warmDelayMs).then(() => warmChatHistoryCache());
+        }
       }
-      const shouldResumePending = (Boolean(chats.get(activeId)?.pending) || restoredPendingSnapshot) && !pendingChats.has(activeId);
       if (shouldResumePending) {
         onBootstrapStage?.("pending-stream-resume-triggered", {
           activeChatId: activeId,

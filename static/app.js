@@ -1367,6 +1367,8 @@ function createBootstrapAuthStageReporter({
       });
     } else if (stage === 'warm-history-cache-triggered') {
       recordBootMeta?.('warmedHistoryOnOpen', true);
+    } else if (stage === 'warm-history-cache-deferred-pending-resume') {
+      recordBootMeta?.('warmHistoryDeferredForPendingResumeOnOpen', true);
     } else if (stage === 'pending-stream-resume-triggered') {
       recordBootMeta?.('resumedPendingStreamOnOpen', true);
     } else if (stage === 'auth-bootstrap-applied-finished') {

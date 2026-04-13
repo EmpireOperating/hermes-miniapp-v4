@@ -364,6 +364,41 @@ test('applyAuthBootstrap delays history warming on mobile so reopen stays light 
   assert.equal(harness.getWarmCalls(), 1);
 });
 
+test('applyAuthBootstrap skips mobile open-time history warming when the active chat needs pending stream resume', async () => {
+  const chats = new Map([[5, { pending: true }], [8, { pending: false }]]);
+  const harness = buildHarness({
+    chats,
+    isMobileQuoteMode: () => true,
+    mobileBootstrapWarmDelayMs: 280,
+  });
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    skin: 'terminal',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: true }, { id: 8, pending: false }],
+    pinned_chats: [],
+    history: [{ role: 'assistant', body: 'hello' }],
+  }, { preferredUsername: 'Desktop' });
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(harness.getWarmCalls(), 0);
+  assert.deepEqual(
+    harness.getBootStages().filter((entry) => entry.stage === 'warm-history-cache-deferred-pending-resume'),
+    [{
+      stage: 'warm-history-cache-deferred-pending-resume',
+      details: { activeChatId: 5, mode: 'mobile-skip-pending-resume', delayMs: 280 },
+    }],
+  );
+  assert.deepEqual(
+    harness.getBootStages().filter((entry) => entry.stage === 'warm-history-cache-triggered'),
+    [],
+  );
+  assert.deepEqual(harness.getResumeCalls(), [{ chatId: 5, options: { force: false } }]);
+});
+
 test('applyAuthBootstrap supports explicit no-active-chat state', () => {
   const harness = buildHarness();
 
