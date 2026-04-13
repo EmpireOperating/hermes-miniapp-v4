@@ -104,22 +104,17 @@ Portable Python equivalent:
 python scripts/setup_bootstrap.py --write-env-if-missing
 ```
 
-The bootstrap command:
-- checks Python and Node versions
-- creates `.venv` if needed
-- installs `requirements.txt` and `requirements-dev.txt`
-- creates `.env` from `.env.example` when needed
-- on an interactive terminal, prompts for the key `.env` values so you do not have to edit everything by hand on first run
+The bootstrap command sets up `.venv`, installs dependencies, creates `.env` when needed, and prompts for the key first-run values on an interactive terminal.
 
 2. Confirm the minimum required values in `.env`.
 
-The interactive bootstrap now prompts for:
+Bootstrap prompts for:
 - `TELEGRAM_BOT_TOKEN`
 - `MINI_APP_URL`
-- your preferred Hermes backend mode, with an explanation of the tradeoffs and a platform-aware recommendation:
-  - `HERMES_STREAM_URL`: best live streaming UX if you already have a streaming Hermes endpoint; the recommended default on Unix-like systems when no backend is configured yet
-  - `HERMES_API_URL`: simplest HTTP-backed setup and usually the easiest first-time path, especially on Windows; the recommended default on Windows when no backend is configured yet
-  - local Hermes CLI/runtime: useful when Hermes is installed on the same machine, but more machine-specific and only recommended when you already know you want same-machine execution
+- one backend mode:
+  - `HERMES_STREAM_URL` for the best streaming UX if you already have a streaming endpoint
+  - `HERMES_API_URL` for the simplest remote setup, especially on Windows
+  - local Hermes if Hermes runs on the same machine
 
 If you skip or rerun later, make sure `.env` contains:
 - `TELEGRAM_BOT_TOKEN`
@@ -156,10 +151,6 @@ python server.py
 ```
 
 5. Open the Mini App from your Telegram bot and verify you can authenticate and send a message.
-
-Setup is easiest if you think about it in two phases:
-- Phase A: local code bootstrap, dependency install, and config validation
-- Phase B: Telegram-facing DNS, HTTPS, and Mini App URL wiring
 
 Important: `MINI_APP_URL` should be an HTTPS URL on a domain you control. Telegram Mini Apps need a real HTTPS origin, so most operators will need DNS even if the app is only for their own private use.
 

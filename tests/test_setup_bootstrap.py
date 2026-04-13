@@ -94,10 +94,10 @@ def test_explain_backend_modes_mentions_tradeoffs_and_recommendation() -> None:
     setup_bootstrap.explain_backend_modes(recommended_choice="2", output=printed.append)
 
     joined = "\n".join(printed)
-    assert "Recommended here: HERMES_API_URL" in joined
+    assert "Recommended: HERMES_API_URL" in joined
     assert "HERMES_STREAM_URL" in joined
     assert "HERMES_API_URL" in joined
-    assert "Local Hermes CLI/runtime" in joined
+    assert "Local Hermes" in joined
     assert "Windows" in joined
 
 
@@ -133,9 +133,9 @@ def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> N
     assert "HERMES_API_URL=" in text
     joined = "\n".join(printed)
     assert "Interactive setup" in joined
-    assert "Backend choices and tradeoffs" in joined
-    assert "best live streaming UX" in joined
-    assert "cheap domain or subdomain you control is fine" in joined
+    assert "Choose one backend mode" in joined
+    assert "best streaming UX" in joined
+    assert "Any domain or subdomain you control is fine" in joined
 
 
 def test_render_next_steps_mentions_dns_doctor_and_interactive_fill(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ Use this path unless you already know you want something else:
 - Linux/macOS (Bash/Zsh): `scripts/setup.sh` then `scripts/setup.sh doctor`
 - Windows PowerShell: `./scripts/setup.ps1` then `./scripts/setup.ps1 doctor`
 - Portable Python fallback: `python scripts/setup_bootstrap.py --write-env-if-missing` then `python scripts/setup_doctor.py`
-- HTTP-backed Hermes mode (`HERMES_STREAM_URL` or `HERMES_API_URL`) unless you already have a local Hermes install you want to wire in
+- HTTP-backed Hermes mode unless you already want same-machine local Hermes
 
 ## Platform support
 
@@ -53,21 +53,15 @@ Portable Python fallback:
 python scripts/setup_bootstrap.py --write-env-if-missing
 ```
 
-On an interactive terminal, the bootstrap now prompts for the most important first-run values and writes them into `.env` for you:
+On an interactive terminal, bootstrap writes the most important first-run values into `.env` for you:
 - `TELEGRAM_BOT_TOKEN`
 - `MINI_APP_URL`
 - your preferred Hermes backend mode
 
-The bootstrap now explains the backend tradeoffs before asking you to choose, and it gives a platform-aware recommendation when no backend is configured yet:
-- `HERMES_STREAM_URL`
-  - best live streaming UX if you already have a streaming Hermes endpoint
-  - recommended by default on Unix-like systems when you are starting fresh
-- `HERMES_API_URL`
-  - simplest HTTP-backed setup and usually the easiest first-time path, especially on Windows
-  - recommended by default on Windows when you are starting fresh
-- local Hermes CLI/runtime
-  - useful when Hermes is installed on the same machine, but more machine-specific than HTTP-backed mode
-  - recommended only when you already know you want same-machine execution
+Backend choices stay simple:
+- `HERMES_STREAM_URL`: best streaming UX if you already have a streaming endpoint
+- `HERMES_API_URL`: simplest remote setup, especially on Windows
+- local Hermes: same-machine setup, but more machine-specific
 
 If you are automating setup, use `--non-interactive` and fill `.env` another way.
 
@@ -185,39 +179,12 @@ The JSON output includes:
 - fail/warn/pass counts
 - a `summary.next_steps` list that an agent or script can surface directly
 
-## Choosing a Hermes backend mode
+## Backend mode notes
 
-### `HERMES_STREAM_URL`
-
-Choose this when:
-- you already expose a streaming Hermes endpoint
-- you want the best incremental/live streaming experience in the Mini App
-- you are comfortable pointing the Mini App at a remote HTTP endpoint
-
-Tradeoff:
-- not the simplest endpoint shape to stand up from scratch if you do not already have it
-
-### `HERMES_API_URL`
-
-Choose this when:
-- you want the simplest HTTP-backed setup
-- Hermes already runs elsewhere and exposes a plain API endpoint
-- you want the easiest first-time path, especially on Windows
-
-Tradeoff:
-- usually less stream-native than a dedicated streaming endpoint
-
-### Local Hermes mode
-
-Choose this when:
-- Hermes runs on the same machine as the Mini App
-- you prefer direct local execution instead of calling a remote HTTP endpoint
-- your setup is private/local enough that machine-specific config is acceptable
-
-Tradeoffs:
-- more machine-specific setup
-- less portable between machines
-- Windows support is weaker than the HTTP-backed modes today
+Use:
+- `HERMES_STREAM_URL` if you already have a streaming endpoint and want the best live UX
+- `HERMES_API_URL` if you want the simplest remote setup
+- local Hermes if Hermes runs on the same machine and you accept a more machine-specific setup
 
 If Hermes runs on the same machine as the Mini App, you can use local agent/CLI configuration.
 
