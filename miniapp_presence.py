@@ -14,10 +14,13 @@ class VisibleChatLease:
 
 
 class MiniAppPresenceTracker:
-    def __init__(self, *, default_ttl_seconds: int = 45) -> None:
+    def __init__(self, *, default_ttl_seconds: int = 45, prune_interval_seconds: int | None = None) -> None:
         self.default_ttl_seconds = max(5, int(default_ttl_seconds or 45))
+        resolved_prune_interval = self.default_ttl_seconds if prune_interval_seconds is None else int(prune_interval_seconds)
+        self.prune_interval_seconds = max(1, resolved_prune_interval)
         self._lock = threading.Lock()
         self._visible_chat_by_user: dict[str, dict[str, VisibleChatLease]] = {}
+        self._last_pruned_at_monotonic = 0.0
 
     @staticmethod
     def _normalize_user_id(user_id: str) -> str:
@@ -26,6 +29,28 @@ class MiniAppPresenceTracker:
     @staticmethod
     def _normalize_instance_id(instance_id: str | None) -> str:
         return str(instance_id or "").strip()
+
+    def _prune_expired_locked(self, *, now: float) -> int:
+        removed = 0
+        empty_user_ids: list[str] = []
+        for user_id, per_user in self._visible_chat_by_user.items():
+            expired_instance_ids = [
+                key for key, lease in per_user.items() if lease.expires_at_monotonic <= now
+            ]
+            for key in expired_instance_ids:
+                per_user.pop(key, None)
+                removed += 1
+            if not per_user:
+                empty_user_ids.append(user_id)
+        for user_id in empty_user_ids:
+            self._visible_chat_by_user.pop(user_id, None)
+        self._last_pruned_at_monotonic = now
+        return removed
+
+    def _maybe_prune_expired_locked(self, *, now: float) -> int:
+        if self._last_pruned_at_monotonic and (now - self._last_pruned_at_monotonic) < float(self.prune_interval_seconds):
+            return 0
+        return self._prune_expired_locked(now=now)
 
     def mark_visible(
         self,
@@ -48,6 +73,7 @@ class MiniAppPresenceTracker:
             instance_id=resolved_instance_id,
         )
         with self._lock:
+            self._maybe_prune_expired_locked(now=resolved_now)
             per_user = self._visible_chat_by_user.setdefault(resolved_user_id, {})
             per_user[resolved_instance_id] = lease
         return lease
@@ -55,7 +81,9 @@ class MiniAppPresenceTracker:
     def mark_hidden(self, user_id: str, *, instance_id: str | None = None, chat_id: int | None = None) -> None:
         resolved_user_id = self._normalize_user_id(user_id)
         resolved_instance_id = self._normalize_instance_id(instance_id)
+        resolved_now = time.monotonic()
         with self._lock:
+            self._maybe_prune_expired_locked(now=resolved_now)
             per_user = self._visible_chat_by_user.get(resolved_user_id)
             if not per_user:
                 return
@@ -82,16 +110,9 @@ class MiniAppPresenceTracker:
         resolved_user_id = self._normalize_user_id(user_id)
         resolved_now = time.monotonic() if now is None else float(now)
         with self._lock:
+            self._prune_expired_locked(now=resolved_now)
             per_user = self._visible_chat_by_user.get(resolved_user_id)
             if not per_user:
-                return []
-            expired_instance_ids = [
-                key for key, lease in per_user.items() if lease.expires_at_monotonic <= resolved_now
-            ]
-            for key in expired_instance_ids:
-                per_user.pop(key, None)
-            if not per_user:
-                self._visible_chat_by_user.pop(resolved_user_id, None)
                 return []
             return list(per_user.values())
 
@@ -111,18 +132,5 @@ class MiniAppPresenceTracker:
 
     def prune_expired(self, *, now: float | None = None) -> int:
         resolved_now = time.monotonic() if now is None else float(now)
-        removed = 0
         with self._lock:
-            empty_user_ids: list[str] = []
-            for user_id, per_user in self._visible_chat_by_user.items():
-                expired_instance_ids = [
-                    key for key, lease in per_user.items() if lease.expires_at_monotonic <= resolved_now
-                ]
-                for key in expired_instance_ids:
-                    per_user.pop(key, None)
-                    removed += 1
-                if not per_user:
-                    empty_user_ids.append(user_id)
-            for user_id in empty_user_ids:
-                self._visible_chat_by_user.pop(user_id, None)
-        return removed
+            return self._prune_expired_locked(now=resolved_now)
