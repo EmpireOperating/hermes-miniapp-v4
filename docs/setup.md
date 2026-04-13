@@ -58,13 +58,16 @@ On an interactive terminal, the bootstrap now prompts for the most important fir
 - `MINI_APP_URL`
 - your preferred Hermes backend mode
 
-The bootstrap now explains the backend tradeoffs before asking you to choose:
+The bootstrap now explains the backend tradeoffs before asking you to choose, and it gives a platform-aware recommendation when no backend is configured yet:
 - `HERMES_STREAM_URL`
   - best live streaming UX if you already have a streaming Hermes endpoint
+  - recommended by default on Unix-like systems when you are starting fresh
 - `HERMES_API_URL`
   - simplest HTTP-backed setup and usually the easiest first-time path, especially on Windows
+  - recommended by default on Windows when you are starting fresh
 - local Hermes CLI/runtime
   - useful when Hermes is installed on the same machine, but more machine-specific than HTTP-backed mode
+  - recommended only when you already know you want same-machine execution
 
 If you are automating setup, use `--non-interactive` and fill `.env` another way.
 

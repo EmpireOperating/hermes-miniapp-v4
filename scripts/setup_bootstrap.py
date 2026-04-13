@@ -144,7 +144,7 @@ def prompt_choice(prompt: str, choices: list[tuple[str, str]], *, default: str, 
     output = output or print
     output(prompt)
     for key, label in choices:
-        marker = " (default)" if key == default else ""
+        marker = " (recommended)" if key == default else ""
         output(f"  {key}) {label}{marker}")
     while True:
         response = input_fn(f"Choose [{default}]: ").strip().lower()
@@ -156,9 +156,27 @@ def prompt_choice(prompt: str, choices: list[tuple[str, str]], *, default: str, 
         output("Please choose one of: " + ", ".join(key for key, _label in choices))
 
 
-def explain_backend_modes(*, output: callable | None = None) -> None:
+def recommended_backend_choice(values: dict[str, str], *, platform_name: str | None = None) -> str:
+    if values.get("HERMES_STREAM_URL", "").strip():
+        return "1"
+    if values.get("HERMES_API_URL", "").strip():
+        return "2"
+    if values.get("HERMES_CLI_COMMAND", "").strip() and values.get("HERMES_CLI_COMMAND", "").strip() != "hermes":
+        return "3"
+    return "2" if is_windows(platform_name) else "1"
+
+
+def explain_backend_modes(*, recommended_choice: str, output: callable | None = None) -> None:
     output = output or print
+    recommended_label = {
+        "1": "Recommended here: HERMES_STREAM_URL (best live streaming UX on Unix-like systems when no backend is configured yet).",
+        "2": "Recommended here: HERMES_API_URL (simplest HTTP-backed setup; the smoother default on Windows and for many first-time users).",
+        "3": "Recommended here: local Hermes CLI/runtime (only when you already know you want same-machine execution).",
+        "4": "Recommended here: skip for now.",
+    }.get(recommended_choice)
     output("Backend choices and tradeoffs:")
+    if recommended_label:
+        output(recommended_label)
     output("- 1) HERMES_STREAM_URL: best live streaming UX and the recommended remote/default path if you already expose a streaming Hermes endpoint.")
     output("     Choose this when you want the most responsive incremental output and already have an HTTP streaming endpoint.")
     output("- 2) HERMES_API_URL: simplest HTTP-backed setup and the easiest option for many first-time users, especially on Windows.")
@@ -211,7 +229,8 @@ def configure_env_interactively(
     )
 
     output("")
-    explain_backend_modes(output=output)
+    recommended_choice = recommended_backend_choice(values)
+    explain_backend_modes(recommended_choice=recommended_choice, output=output)
     backend_choice = prompt_choice(
         "Choose the Hermes backend mode",
         [
@@ -220,7 +239,7 @@ def configure_env_interactively(
             ("3", "Local Hermes CLI/runtime — direct local execution on this machine"),
             ("4", "Skip backend configuration for now"),
         ],
-        default="1",
+        default=recommended_choice,
         input_fn=input_fn,
         output=output,
     )

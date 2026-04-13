@@ -80,12 +80,21 @@ def test_should_run_interactive_prefers_tty_unless_noninteractive(monkeypatch) -
     assert setup_bootstrap.should_run_interactive(parser.parse_args(["--interactive"])) is True
 
 
-def test_explain_backend_modes_mentions_tradeoffs() -> None:
+def test_recommended_backend_choice_prefers_existing_values_and_platform_defaults() -> None:
+    assert setup_bootstrap.recommended_backend_choice({"HERMES_STREAM_URL": "https://example.com/stream"}, platform_name="linux") == "1"
+    assert setup_bootstrap.recommended_backend_choice({"HERMES_API_URL": "https://example.com/api"}, platform_name="linux") == "2"
+    assert setup_bootstrap.recommended_backend_choice({"HERMES_CLI_COMMAND": "hermes --profile local"}, platform_name="linux") == "3"
+    assert setup_bootstrap.recommended_backend_choice({}, platform_name="linux") == "1"
+    assert setup_bootstrap.recommended_backend_choice({}, platform_name="win32") == "2"
+
+
+def test_explain_backend_modes_mentions_tradeoffs_and_recommendation() -> None:
     printed: list[str] = []
 
-    setup_bootstrap.explain_backend_modes(output=printed.append)
+    setup_bootstrap.explain_backend_modes(recommended_choice="2", output=printed.append)
 
     joined = "\n".join(printed)
+    assert "Recommended here: HERMES_API_URL" in joined
     assert "HERMES_STREAM_URL" in joined
     assert "HERMES_API_URL" in joined
     assert "Local Hermes CLI/runtime" in joined
