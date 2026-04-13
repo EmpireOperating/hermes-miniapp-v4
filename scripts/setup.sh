@@ -22,7 +22,7 @@ case "$1" in
 Hermes Mini App setup wrapper
 
 Usage:
-  scripts/setup.sh                Run bootstrap with --write-env-if-missing
+  scripts/setup.sh                Run bootstrap (interactive on a TTY) with --write-env-if-missing
   scripts/setup.sh bootstrap ...  Run scripts/setup_bootstrap.py
   scripts/setup.sh doctor ...     Run scripts/setup_doctor.py
   scripts/setup.sh help           Show this help

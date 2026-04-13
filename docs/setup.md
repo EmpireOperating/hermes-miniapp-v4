@@ -53,7 +53,14 @@ Portable Python fallback:
 python scripts/setup_bootstrap.py --write-env-if-missing
 ```
 
-2. Edit `.env` and set the minimum required values:
+On an interactive terminal, the bootstrap now prompts for the most important first-run values and writes them into `.env` for you:
+- `TELEGRAM_BOT_TOKEN`
+- `MINI_APP_URL`
+- your preferred Hermes backend mode
+
+If you are automating setup, use `--non-interactive` and fill `.env` another way.
+
+2. Confirm `.env` has the minimum required values:
 - `TELEGRAM_BOT_TOKEN`
 - `MINI_APP_URL`
 - one Hermes execution path:
@@ -121,7 +128,8 @@ It:
 - checks that Node.js 20+ is available unless you pass `--skip-node-check`
 - creates `.venv` if needed
 - installs `requirements.txt` and `requirements-dev.txt`
-- creates `.env` from `.env.example` when you pass `--write-env-if-missing`
+- creates `.env` from `.env.example` when needed
+- prompts for key `.env` values on an interactive terminal unless disabled
 - prints clear next steps
 
 Flags:
@@ -129,8 +137,10 @@ Flags:
   - create `.env` from `.env.example` if `.env` does not exist
 - `--skip-node-check`
   - skip the Node version check
+- `--interactive`
+  - force interactive prompts even if terminal detection would skip them
 - `--non-interactive`
-  - reserved for automation flows; the current bootstrap is already non-interactive
+  - disable prompts for automation flows or scripted setup
 
 ## What the doctor command checks
 

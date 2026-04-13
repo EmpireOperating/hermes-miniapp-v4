@@ -108,10 +108,17 @@ The bootstrap command:
 - checks Python and Node versions
 - creates `.venv` if needed
 - installs `requirements.txt` and `requirements-dev.txt`
-- creates `.env` from `.env.example` when you pass `--write-env-if-missing`
+- creates `.env` from `.env.example` when needed
+- on an interactive terminal, prompts for the key `.env` values so you do not have to edit everything by hand on first run
 
-2. Fill in the minimum required values in `.env`.
+2. Confirm the minimum required values in `.env`.
 
+The interactive bootstrap now prompts for:
+- `TELEGRAM_BOT_TOKEN`
+- `MINI_APP_URL`
+- your preferred Hermes backend mode
+
+If you skip or rerun later, make sure `.env` contains:
 - `TELEGRAM_BOT_TOKEN`
 - `MINI_APP_URL`
 - one Hermes execution path:

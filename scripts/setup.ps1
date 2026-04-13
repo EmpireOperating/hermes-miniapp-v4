@@ -30,7 +30,7 @@ switch ($Command.ToLowerInvariant()) {
 Hermes Mini App setup wrapper
 
 Usage:
-  ./scripts/setup.ps1                  Run bootstrap with --write-env-if-missing
+  ./scripts/setup.ps1                  Run bootstrap (interactive on a TTY) with --write-env-if-missing
   ./scripts/setup.ps1 bootstrap ...    Run scripts/setup_bootstrap.py
   ./scripts/setup.ps1 doctor ...       Run scripts/setup_doctor.py
   ./scripts/setup.ps1 help             Show this help

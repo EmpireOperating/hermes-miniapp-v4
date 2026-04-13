@@ -52,9 +52,71 @@ def test_maybe_write_env_does_not_overwrite_existing_file(tmp_path: Path) -> Non
     assert (tmp_path / ".env").read_text(encoding="utf-8") == "B=2\n"
 
 
-def test_render_next_steps_mentions_dns_and_doctor(tmp_path: Path) -> None:
-    output = setup_bootstrap.render_next_steps(tmp_path, env_state="created")
+def test_update_env_file_replaces_target_keys_without_dropping_comments(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("# comment\nTELEGRAM_BOT_TOKEN=***\nHERMES_STREAM_URL=\nHERMES_API_URL=old\n", encoding="utf-8")
 
+    setup_bootstrap.update_env_file(env_path, {"TELEGRAM_BOT_TOKEN": "123:abc", "HERMES_API_URL": "", "HERMES_STREAM_URL": "https://example.com/stream"})
+
+    text = env_path.read_text(encoding="utf-8")
+    assert "# comment" in text
+    assert "TELEGRAM_BOT_TOKEN=123:abc" in text
+    assert "HERMES_STREAM_URL=https://example.com/stream" in text
+    assert "HERMES_API_URL=" in text
+
+
+def test_should_run_interactive_prefers_tty_unless_noninteractive(monkeypatch) -> None:
+    class _TTY:
+        @staticmethod
+        def isatty() -> bool:
+            return True
+
+    monkeypatch.setattr(setup_bootstrap.sys, "stdin", _TTY())
+    monkeypatch.setattr(setup_bootstrap.sys, "stdout", _TTY())
+
+    parser = setup_bootstrap.build_parser()
+    assert setup_bootstrap.should_run_interactive(parser.parse_args([])) is True
+    assert setup_bootstrap.should_run_interactive(parser.parse_args(["--non-interactive"])) is False
+    assert setup_bootstrap.should_run_interactive(parser.parse_args(["--interactive"])) is True
+
+
+def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=***\nMINI_APP_URL=https://your-domain.com/app\nHERMES_STREAM_URL=\nHERMES_API_URL=\nHERMES_CLI_COMMAND=hermes\n",
+        encoding="utf-8",
+    )
+
+    answers = iter([
+        "123456:real-token",
+        "https://mini.example.com/app",
+        "1",
+        "https://hermes.example.com/stream",
+    ])
+    printed: list[str] = []
+
+    updates = setup_bootstrap.configure_env_interactively(
+        tmp_path,
+        input_fn=lambda _prompt: next(answers),
+        output=printed.append,
+    )
+
+    assert updates["TELEGRAM_BOT_TOKEN"] == "123456:real-token"
+    assert updates["MINI_APP_URL"] == "https://mini.example.com/app"
+    assert updates["HERMES_STREAM_URL"] == "https://hermes.example.com/stream"
+    assert updates["HERMES_API_URL"] == ""
+    text = env_path.read_text(encoding="utf-8")
+    assert "TELEGRAM_BOT_TOKEN=123456:real-token" in text
+    assert "MINI_APP_URL=https://mini.example.com/app" in text
+    assert "HERMES_STREAM_URL=https://hermes.example.com/stream" in text
+    assert "HERMES_API_URL=" in text
+    assert any("Interactive setup" in line for line in printed)
+
+
+def test_render_next_steps_mentions_dns_doctor_and_interactive_fill(tmp_path: Path) -> None:
+    output = setup_bootstrap.render_next_steps(tmp_path, env_state="created", interactive_updates={"MINI_APP_URL": "https://mini.example.com/app"})
+
+    assert "bootstrap already filled the prompted values" in output
     assert "python scripts/setup_doctor.py" in output
     assert "MINI_APP_URL must be HTTPS" in output
     assert "cheapest domain you can buy and control is usually good enough" in output
