@@ -44,6 +44,7 @@
       handleGlobalArrowJump,
       handleGlobalComposerFocusShortcut,
       handleGlobalChatActionShortcut,
+      handleGlobalShortcutsHelpShortcut,
       handleGlobalControlEnterDefuse,
       handleGlobalControlMouseDownFocusGuard,
       handleGlobalControlClickFocusCleanup,
@@ -122,6 +123,7 @@
       documentObject.addEventListener('keydown', handleGlobalArrowJump);
       documentObject.addEventListener('keydown', handleGlobalComposerFocusShortcut);
       documentObject.addEventListener('keydown', handleGlobalChatActionShortcut);
+      documentObject.addEventListener('keydown', handleGlobalShortcutsHelpShortcut);
       documentObject.addEventListener('keydown', handleGlobalControlEnterDefuse, true);
       documentObject.addEventListener('mousedown', handleGlobalControlMouseDownFocusGuard, true);
       documentObject.addEventListener('click', handleGlobalControlClickFocusCleanup, true);
@@ -436,14 +438,19 @@
       closeAppTopButton,
       renderTraceBadge,
       settingsButton,
+      keyboardShortcutsButton,
       devSignInButton,
       settingsClose,
+      keyboardShortcutsClose,
       settingsModal,
+      keyboardShortcutsModal,
       handleFullscreenToggle,
       handleCloseApp,
       handleRenderTraceBadgeClick,
       openSettingsModal,
       closeSettingsModal,
+      openKeyboardShortcutsModal,
+      closeKeyboardShortcutsModal,
       signInWithDevAuth,
       authStatusEl,
       appendSystemMessage,
@@ -455,6 +462,7 @@
       closeAppTopButton?.addEventListener('click', handleCloseApp);
       renderTraceBadge?.addEventListener('click', handleRenderTraceBadgeClick);
       settingsButton?.addEventListener('click', openSettingsModal);
+      keyboardShortcutsButton?.addEventListener('click', openKeyboardShortcutsModal);
       devSignInButton?.addEventListener('click', () => {
         void (async () => {
           try {
@@ -468,9 +476,14 @@
       });
 
       settingsClose?.addEventListener('click', closeSettingsModal);
+      keyboardShortcutsClose?.addEventListener('click', closeKeyboardShortcutsModal);
       settingsModal?.addEventListener?.('cancel', (event) => {
         event.preventDefault();
         closeSettingsModal();
+      });
+      keyboardShortcutsModal?.addEventListener?.('cancel', (event) => {
+        event.preventDefault();
+        closeKeyboardShortcutsModal();
       });
     }
 

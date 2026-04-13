@@ -6,6 +6,7 @@
       windowObject,
       tabActionsMenuEnabled = false,
       settingsModal,
+      keyboardShortcutsModal,
       chatTitleModal,
       chatTitleForm,
       chatTitleHint,
@@ -765,6 +766,37 @@
       settingsModal.removeAttribute('open');
     }
 
+    function openKeyboardShortcutsModal() {
+      if (!keyboardShortcutsModal) return;
+
+      if (settingsModal?.open) {
+        closeSettingsModal();
+      }
+
+      const showModal = () => {
+        if (keyboardShortcutsModal.showModal) {
+          keyboardShortcutsModal.showModal();
+          return;
+        }
+        keyboardShortcutsModal.setAttribute('open', 'open');
+      };
+
+      if (windowObject?.requestAnimationFrame) {
+        windowObject.requestAnimationFrame(showModal);
+        return;
+      }
+      showModal();
+    }
+
+    function closeKeyboardShortcutsModal() {
+      if (!keyboardShortcutsModal) return;
+      if (keyboardShortcutsModal.close) {
+        keyboardShortcutsModal.close();
+        return;
+      }
+      keyboardShortcutsModal.removeAttribute('open');
+    }
+
     return {
       parseTaggedChatTitle,
       formatTaggedChatTitle,
@@ -796,6 +828,8 @@
       toggleChatPin,
       openSettingsModal,
       closeSettingsModal,
+      openKeyboardShortcutsModal,
+      closeKeyboardShortcutsModal,
     };
   }
 

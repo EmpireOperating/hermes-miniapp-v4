@@ -221,6 +221,30 @@
     void createChat();
   }
 
+  function handleGlobalShortcutsHelpShortcut(event, {
+    mobileQuoteMode,
+    isDesktopViewportFn,
+    documentObject,
+    isTextEntryElementFn,
+    openKeyboardShortcutsModal,
+  }) {
+    if (event.defaultPrevented) return;
+    if (event.isComposing) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.repeat) return;
+    if (mobileQuoteMode || !isDesktopViewportFn()) return;
+    if (hasOpenDialog(documentObject)) return;
+
+    const target = event.target;
+    if (isTextEntryElementFn(target)) return;
+
+    const isQuestionMark = event.key === "?" || (event.key === "/" && event.shiftKey);
+    if (!isQuestionMark) return;
+
+    event.preventDefault();
+    openKeyboardShortcutsModal?.();
+  }
+
   function shouldReleaseControlFocusAfterClick(target, {
     isTextEntryElementFn,
     settingsModal,
@@ -354,6 +378,7 @@
       focusMessagesPaneIfActiveChat,
       createChat,
       removeActiveChat,
+      openKeyboardShortcutsModal,
     } = deps;
 
     function getOrderedChatIdsFromState() {
@@ -438,6 +463,16 @@
       });
     }
 
+    function handleGlobalShortcutsHelpShortcutFromState(event) {
+      return handleGlobalShortcutsHelpShortcut(event, {
+        mobileQuoteMode: getMobileQuoteMode(),
+        isDesktopViewportFn: isDesktopViewportFromState,
+        documentObject,
+        isTextEntryElementFn: isTextEntryElement,
+        openKeyboardShortcutsModal,
+      });
+    }
+
     function shouldReleaseControlFocusAfterClickFromState(target) {
       return shouldReleaseControlFocusAfterClick(target, {
         isTextEntryElementFn: isTextEntryElement,
@@ -498,6 +533,7 @@
       handleGlobalArrowJump: handleGlobalArrowJumpFromState,
       handleGlobalComposerFocusShortcut: handleGlobalComposerFocusShortcutFromState,
       handleGlobalChatActionShortcut: handleGlobalChatActionShortcutFromState,
+      handleGlobalShortcutsHelpShortcut: handleGlobalShortcutsHelpShortcutFromState,
       shouldReleaseControlFocusAfterClick: shouldReleaseControlFocusAfterClickFromState,
       releaseStickyControlFocus: releaseStickyControlFocusFromState,
       handleGlobalControlClickFocusCleanup: handleGlobalControlClickFocusCleanupFromState,
@@ -519,6 +555,7 @@
     handleGlobalArrowJump,
     handleGlobalComposerFocusShortcut,
     handleGlobalChatActionShortcut,
+    handleGlobalShortcutsHelpShortcut,
     shouldReleaseControlFocusAfterClick,
     releaseStickyControlFocus,
     handleGlobalControlClickFocusCleanup,

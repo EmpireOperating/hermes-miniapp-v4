@@ -349,6 +349,68 @@ test('handleGlobalChatActionShortcut ignores editable targets, repeats, and open
   assert.deepEqual(calls, []);
 });
 
+test('handleGlobalShortcutsHelpShortcut opens shortcuts sheet on desktop question mark', () => {
+  const calls = [];
+  let prevented = false;
+
+  keyboard.handleGlobalShortcutsHelpShortcut({
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: true,
+    repeat: false,
+    key: '?',
+    target: {},
+    preventDefault() {
+      prevented = true;
+    },
+  }, {
+    mobileQuoteMode: false,
+    isDesktopViewportFn: () => true,
+    documentObject: { querySelector: () => null },
+    isTextEntryElementFn: () => false,
+    openKeyboardShortcutsModal: () => calls.push('open'),
+  });
+
+  assert.equal(prevented, true);
+  assert.deepEqual(calls, ['open']);
+});
+
+test('handleGlobalShortcutsHelpShortcut ignores text entry, modifiers, and open dialogs', () => {
+  const calls = [];
+  const run = (overrides = {}, options = {}) => {
+    keyboard.handleGlobalShortcutsHelpShortcut({
+      defaultPrevented: false,
+      isComposing: false,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: true,
+      repeat: false,
+      key: '?',
+      target: {},
+      preventDefault() {},
+      ...overrides,
+    }, {
+      mobileQuoteMode: false,
+      isDesktopViewportFn: () => true,
+      documentObject: { querySelector: () => null },
+      isTextEntryElementFn: () => false,
+      openKeyboardShortcutsModal: () => calls.push('open'),
+      ...options,
+    });
+  };
+
+  run({ target: { id: 'input' } }, { isTextEntryElementFn: () => true });
+  run({ ctrlKey: true });
+  run({ repeat: true });
+  run({}, { documentObject: { querySelector: () => ({ open: true }) } });
+
+  assert.deepEqual(calls, []);
+});
+
 test('createController resolves active chat lazily for keyboard handlers', () => {
   let activeChatId = 4;
   const opened = [];
@@ -376,6 +438,7 @@ test('createController resolves active chat lazily for keyboard handlers', () =>
     focusMessagesPaneIfActiveChat: () => {},
     createChat: async () => actions.push(`create:${activeChatId}`),
     removeActiveChat: async () => actions.push(`remove:${activeChatId}`),
+    openKeyboardShortcutsModal: () => actions.push(`help:${activeChatId}`),
   });
 
   controller.handleGlobalTabCycle({
