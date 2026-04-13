@@ -25,8 +25,27 @@ def _clear_ambient_miniapp_env(monkeypatch) -> None:
         "MINI_APP_WARM_WORKER_REUSE",
         "MINI_APP_WARM_WORKER_SAME_CHAT_ONLY",
         "MINI_APP_DIRECT_AGENT",
+        "MINI_APP_AGENT_HOME",
+        "MINI_APP_AGENT_HERMES_HOME",
+        "MINI_APP_AGENT_WORKDIR",
+        "MINI_APP_AGENT_VENV",
+        "MINI_APP_AGENT_PYTHON",
+        "HERMES_HOME",
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def test_client_derives_agent_runtime_defaults_from_environment(monkeypatch) -> None:
+    monkeypatch.setenv("HOME", "/tmp/miniapp-home")
+    monkeypatch.setenv("HERMES_HOME", "/tmp/custom-hermes-home")
+
+    client = hermes_client.HermesClient()
+
+    assert client.agent_home == "/tmp/miniapp-home"
+    assert client.agent_hermes_home == "/tmp/custom-hermes-home"
+    assert client.agent_workdir == "/tmp/custom-hermes-home/hermes-agent"
+    assert client.agent_venv == "/tmp/custom-hermes-home/hermes-agent/venv"
+    assert client.agent_python == "/tmp/custom-hermes-home/hermes-agent/venv/bin/python"
 
 
 class _FakeAgent:

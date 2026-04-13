@@ -88,11 +88,11 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         self.direct_agent_enabled = os.environ.get("MINI_APP_DIRECT_AGENT", "1") == "1"
         self.max_iterations = int(os.environ.get("HERMES_MAX_ITERATIONS", "90"))
         self.tool_progress_mode = (os.environ.get("HERMES_TOOL_PROGRESS_MODE") or "all").strip().lower()
-        self.agent_python = os.environ.get("MINI_APP_AGENT_PYTHON") or "/home/hermes-agent/.hermes/hermes-agent/venv/bin/python"
-        self.agent_home = os.environ.get("MINI_APP_AGENT_HOME") or "/home/hermes-agent"
-        self.agent_hermes_home = os.environ.get("MINI_APP_AGENT_HERMES_HOME") or f"{self.agent_home}/.hermes"
-        self.agent_workdir = os.environ.get("MINI_APP_AGENT_WORKDIR") or f"{self.agent_hermes_home}/hermes-agent"
-        self.agent_venv = os.environ.get("MINI_APP_AGENT_VENV") or f"{self.agent_workdir}/venv"
+        self.agent_home = os.environ.get("MINI_APP_AGENT_HOME") or os.environ.get("HOME") or str(Path.home())
+        self.agent_hermes_home = os.environ.get("MINI_APP_AGENT_HERMES_HOME") or os.environ.get("HERMES_HOME") or str(Path(self.agent_home) / ".hermes")
+        self.agent_workdir = os.environ.get("MINI_APP_AGENT_WORKDIR") or str(Path(self.agent_hermes_home) / "hermes-agent")
+        self.agent_venv = os.environ.get("MINI_APP_AGENT_VENV") or str(Path(self.agent_workdir) / "venv")
+        self.agent_python = os.environ.get("MINI_APP_AGENT_PYTHON") or str(Path(self.agent_venv) / "bin" / "python")
         self._session_db = self._init_session_db()
         self._bootstrap = HermesClientBootstrap(agent_hermes_home=self.agent_hermes_home, logger=logger)
         self.model = env_model if env_model and env_model.lower() != "auto" else self._load_default_model_from_config()
