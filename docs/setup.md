@@ -4,7 +4,7 @@ This guide is the canonical setup path for Hermes Mini App v4.
 
 If you only read one setup document, read this one.
 
-If the setup doctor reports a failure or warning you do not understand, go straight to `setup-troubleshooting.md`.
+If the setup doctor reports something unclear, go straight to `setup-troubleshooting.md`.
 
 ## Recommended path
 
@@ -53,15 +53,7 @@ Portable Python fallback:
 python scripts/setup_bootstrap.py --write-env-if-missing
 ```
 
-On an interactive terminal, bootstrap writes the most important first-run values into `.env` for you:
-- `TELEGRAM_BOT_TOKEN`
-- `MINI_APP_URL`
-- your preferred Hermes backend mode
-
-Backend choices stay simple:
-- `HERMES_STREAM_URL`: best streaming UX if you already have a streaming endpoint
-- `HERMES_API_URL`: simplest remote setup, especially on Windows
-- local Hermes: same-machine setup, but more machine-specific
+On an interactive terminal, bootstrap fills the main first-run values in `.env` for you.
 
 If you are automating setup, use `--non-interactive` and fill `.env` another way.
 
@@ -105,37 +97,20 @@ At this point you have validated the code, dependencies, and basic configuration
 
 To use the Mini App in Telegram, `MINI_APP_URL` must be a real HTTPS URL.
 
-This is usually the biggest setup friction, so the important thing to know is:
+This is usually the biggest setup friction. The short version:
 - the domain name itself does not matter much
-- it does not need to be a public brand domain
 - any domain or subdomain you control is fine
 - if you do not already have one, the cheapest domain you can buy and control is usually good enough
+- it must serve valid HTTPS and match the URL your Telegram bot opens
 
-What matters is:
-- you control the domain or subdomain
-- DNS points it at your reverse proxy or tunnel
-- the site serves valid HTTPS
-- the value in `MINI_APP_URL` exactly matches the URL your Telegram bot opens
+## Bootstrap command
 
-Even if the Mini App is mainly for your own use, Telegram still expects a real HTTPS origin.
-
-## What the bootstrap command does
-
-Human-friendly wrappers:
+Use:
 - Linux/macOS: `scripts/setup.sh`
 - Windows PowerShell: `./scripts/setup.ps1`
+- portable Python: `python scripts/setup_bootstrap.py --write-env-if-missing`
 
-Portable Python implementation:
-- `python scripts/setup_bootstrap.py --write-env-if-missing`
-
-It:
-- checks that Python 3.11+ is being used
-- checks that Node.js 20+ is available unless you pass `--skip-node-check`
-- creates `.venv` if needed
-- installs `requirements.txt` and `requirements-dev.txt`
-- creates `.env` from `.env.example` when needed
-- prompts for key `.env` values on an interactive terminal unless disabled
-- prints clear next steps
+Bootstrap creates `.venv`, installs dependencies, creates `.env` when needed, and prompts for key values on an interactive terminal.
 
 Flags:
 - `--write-env-if-missing`
@@ -147,26 +122,14 @@ Flags:
 - `--non-interactive`
   - disable prompts for automation flows or scripted setup
 
-## What the doctor command checks
+## Doctor command
 
-Human-friendly wrappers:
+Use:
 - Linux/macOS: `scripts/setup.sh doctor`
 - Windows PowerShell: `./scripts/setup.ps1 doctor`
+- portable Python: `python scripts/setup_doctor.py`
 
-Portable Python implementation:
-- `python scripts/setup_doctor.py`
-
-It checks:
-- Python version
-- Node version
-- `.venv` exists
-- runtime and dev dependencies import from `.venv`
-- `.env` exists
-- `TELEGRAM_BOT_TOKEN` is not still a placeholder
-- `MINI_APP_URL` is a full HTTPS URL
-- DNS resolution for the configured hostname, best effort
-- whether a Hermes execution path is configured
-- whether the current platform is in a preferred or limited support mode
+Doctor checks Python, Node, `.venv`, dependencies, `.env`, key config values, DNS, backend configuration, and platform mode.
 
 Use JSON output for automation:
 
@@ -182,11 +145,9 @@ The JSON output includes:
 ## Backend mode notes
 
 Use:
-- `HERMES_STREAM_URL` if you already have a streaming endpoint and want the best live UX
-- `HERMES_API_URL` if you want the simplest remote setup
-- local Hermes if Hermes runs on the same machine and you accept a more machine-specific setup
-
-If Hermes runs on the same machine as the Mini App, you can use local agent/CLI configuration.
+- `HERMES_STREAM_URL` for the best live UX if you already have a streaming endpoint
+- `HERMES_API_URL` for the simplest remote setup
+- local Hermes for same-machine setups that can tolerate more machine-specific configuration
 
 Relevant variables:
 - `MINI_APP_AGENT_HOME`

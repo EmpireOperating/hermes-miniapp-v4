@@ -169,18 +169,13 @@ def recommended_backend_choice(values: dict[str, str], *, platform_name: str | N
 def explain_backend_modes(*, recommended_choice: str, output: callable | None = None) -> None:
     output = output or print
     recommended_label = {
-        "1": "Recommended: HERMES_STREAM_URL.",
-        "2": "Recommended: HERMES_API_URL.",
-        "3": "Recommended: local Hermes mode.",
-        "4": "Recommended: skip for now.",
+        "1": "Recommended: HERMES_STREAM_URL",
+        "2": "Recommended: HERMES_API_URL",
+        "3": "Recommended: local Hermes",
+        "4": "Recommended: skip for now",
     }.get(recommended_choice)
-    output("Choose one backend mode:")
     if recommended_label:
         output(recommended_label)
-    output("- 1) HERMES_STREAM_URL: best streaming UX if you already have a streaming endpoint.")
-    output("- 2) HERMES_API_URL: simplest remote setup; good default for many first-time users, especially on Windows.")
-    output("- 3) Local Hermes: use Hermes on this machine; more machine-specific.")
-    output("- 4) Skip for now.")
 
 
 def should_run_interactive(args: argparse.Namespace) -> bool:
@@ -288,10 +283,7 @@ def render_next_steps(root: Path, *, env_state: str, interactive_updates: dict[s
         lines.append("3. Start the app: python server.py")
     lines.extend([
         "",
-        "DNS note:",
-        "- MINI_APP_URL must be HTTPS for Telegram Mini Apps.",
-        "- The domain name itself does not matter much; any domain or subdomain you control is fine.",
-        "- If you do not already have one, the cheapest domain you can buy and control is usually good enough.",
+        "DNS note: MINI_APP_URL must be HTTPS on a domain or subdomain you control.",
     ])
     if env_state == "created":
         lines.insert(3, "   .env was created from .env.example.")

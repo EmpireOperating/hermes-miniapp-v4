@@ -88,17 +88,13 @@ def test_recommended_backend_choice_prefers_existing_values_and_platform_default
     assert setup_bootstrap.recommended_backend_choice({}, platform_name="win32") == "2"
 
 
-def test_explain_backend_modes_mentions_tradeoffs_and_recommendation() -> None:
+def test_explain_backend_modes_mentions_recommendation() -> None:
     printed: list[str] = []
 
     setup_bootstrap.explain_backend_modes(recommended_choice="2", output=printed.append)
 
     joined = "\n".join(printed)
-    assert "Recommended: HERMES_API_URL" in joined
-    assert "HERMES_STREAM_URL" in joined
-    assert "HERMES_API_URL" in joined
-    assert "Local Hermes" in joined
-    assert "Windows" in joined
+    assert joined == "Recommended: HERMES_API_URL"
 
 
 def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> None:
@@ -133,8 +129,7 @@ def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> N
     assert "HERMES_API_URL=" in text
     joined = "\n".join(printed)
     assert "Interactive setup" in joined
-    assert "Choose one backend mode" in joined
-    assert "best streaming UX" in joined
+    assert "Recommended: HERMES_STREAM_URL" in joined
     assert "Any domain or subdomain you control is fine" in joined
 
 
@@ -144,4 +139,4 @@ def test_render_next_steps_mentions_dns_doctor_and_interactive_fill(tmp_path: Pa
     assert "bootstrap already filled the prompted values" in output
     assert "python scripts/setup_doctor.py" in output
     assert "MINI_APP_URL must be HTTPS" in output
-    assert "cheapest domain you can buy and control is usually good enough" in output
+    assert "domain or subdomain you control" in output

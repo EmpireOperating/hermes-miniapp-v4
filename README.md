@@ -108,15 +108,7 @@ The bootstrap command sets up `.venv`, installs dependencies, creates `.env` whe
 
 2. Confirm the minimum required values in `.env`.
 
-Bootstrap prompts for:
-- `TELEGRAM_BOT_TOKEN`
-- `MINI_APP_URL`
-- one backend mode:
-  - `HERMES_STREAM_URL` for the best streaming UX if you already have a streaming endpoint
-  - `HERMES_API_URL` for the simplest remote setup, especially on Windows
-  - local Hermes if Hermes runs on the same machine
-
-If you skip or rerun later, make sure `.env` contains:
+If you skip the prompts or rerun later, make sure `.env` contains:
 - `TELEGRAM_BOT_TOKEN`
 - `MINI_APP_URL`
 - one Hermes execution path:
@@ -152,15 +144,7 @@ python server.py
 
 5. Open the Mini App from your Telegram bot and verify you can authenticate and send a message.
 
-Important: `MINI_APP_URL` should be an HTTPS URL on a domain you control. Telegram Mini Apps need a real HTTPS origin, so most operators will need DNS even if the app is only for their own private use.
-
-The domain name itself does not matter much. It does not need to be a public brand domain or a memorable name. If you do not already have a domain you want to use, the cheapest domain you can buy and control is usually fine.
-
-What matters is:
-- you control the domain or subdomain
-- DNS points it at your reverse proxy or tunnel
-- the URL serves valid HTTPS
-- the value in `MINI_APP_URL` matches the URL your bot opens
+Important: `MINI_APP_URL` must be a real HTTPS URL on a domain or subdomain you control. The name itself does not matter much; if you do not already have one, the cheapest domain you can buy and control is usually fine.
 
 For a fuller walkthrough, platform notes, and troubleshooting, see `docs/setup.md` and `docs/setup-troubleshooting.md`.
 
