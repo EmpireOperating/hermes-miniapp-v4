@@ -5,6 +5,7 @@ import io
 import json
 import socket
 import sys
+import platform
 import tempfile
 import threading
 import time
@@ -185,7 +186,14 @@ def _normalize_history(history: Any) -> list[dict[str, Any]]:
     return [item for item in history if isinstance(item, dict)]
 
 
+def _warm_attach_runtime_supported(*, platform_name: str | None = None) -> bool:
+    name = str(platform_name or sys.platform).lower()
+    return (not name.startswith("win")) and hasattr(socket, "AF_UNIX")
+
+
 def _warm_attach_enabled(client: HermesClient) -> bool:
+    if not _warm_attach_runtime_supported():
+        return False
     contract_fn = getattr(client, "warm_session_contract", None)
     if not callable(contract_fn):
         return False
@@ -342,6 +350,18 @@ def main() -> int:
         client.deregister_child_spawn = _wrapped_deregister_child_spawn
 
     if not _warm_attach_enabled(client):
+        if not _warm_attach_runtime_supported():
+            stdout_writer.emit(
+                {
+                    "type": "meta",
+                    "source": "warm-attach",
+                    "status": "disabled",
+                    "reason": "unsupported_platform_warm_attach",
+                    "detail": "Warm attach currently depends on AF_UNIX and is disabled on this platform.",
+                    "platform": platform.system() or sys.platform,
+                    "session_id": session_id,
+                }
+            )
         return _stream_request(
             client=client,
             user_id=user_id,

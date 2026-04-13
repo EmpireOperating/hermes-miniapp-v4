@@ -1359,6 +1359,29 @@ def test_resolve_attach_resume_transport_requires_supported_socket_contract(monk
     assert resolved["resume_token"] == "token-123"
 
 
+def test_resolve_attach_resume_transport_reports_windows_platform_limit(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")
+    monkeypatch.setattr(hermes_client.sys, "platform", "win32", raising=False)
+    client = hermes_client.HermesClient()
+
+    resolved = client._resolve_attach_resume_transport(
+        session_id="miniapp-123-7",
+        requested_path="agent",
+        reuse_contract={
+            "transport_kind": "unix_socket_jsonl",
+            "worker_endpoint": "C:/tmp/fake.sock",
+            "resume_token": "token-123",
+            "resume_deadline_ms": int(time.monotonic() * 1000) + 5000,
+        },
+        attach_action={"status": "attach_action_handshake_succeeded"},
+    )
+
+    assert resolved["status"] == "attach_action_attach_unavailable"
+    assert resolved["reason"] == "unsupported_platform_warm_attach"
+    assert resolved["transport_kind"] == "unix_socket_jsonl"
+
+
 def test_attempt_warm_reuse_returns_live_attach_stream_when_transport_available(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
     monkeypatch.setenv("MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP", "auto")

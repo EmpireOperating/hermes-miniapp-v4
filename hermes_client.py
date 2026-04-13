@@ -16,6 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+
+def _supports_unix_socket_attach_transport(*, platform_name: str | None = None) -> bool:
+    current = str(platform_name if platform_name is not None else sys.platform).lower()
+    return (not current.startswith("win")) and hasattr(socket, "AF_UNIX")
+
 from hermes_client_agent import HermesClientAgentMixin
 from hermes_client_bootstrap import HermesClientBootstrap
 from hermes_client_cli import HermesClientCLIMixin
@@ -1768,6 +1773,17 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 resume_token_present=bool(resume_token),
                 executed=False,
             )
+        if not _supports_unix_socket_attach_transport():
+            return self._build_attach_resume_result(
+                session_id=session_id,
+                requested_path=requested_path,
+                status="attach_action_attach_unavailable",
+                reason="unsupported_platform_warm_attach",
+                transport_kind=transport_kind or None,
+                worker_endpoint=worker_endpoint or None,
+                resume_token_present=bool(resume_token),
+                executed=False,
+            )
         missing_fields: list[str] = []
         if not worker_endpoint:
             missing_fields.append("worker_endpoint")
@@ -1915,6 +1931,11 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         message: str,
         conversation_history: list[dict[str, str]] | None,
     ) -> tuple[socket.socket, Any]:
+        if not _supports_unix_socket_attach_transport():
+            raise HermesClientError(
+                "Warm attach over unix_socket_jsonl is not supported on this platform yet. "
+                "Prefer HTTP-backed Hermes mode or use Linux/macOS for local-runtime-heavy workflows."
+            )
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(float(self.warm_attach_resume_timeout_ms) / 1000.0)
         try:

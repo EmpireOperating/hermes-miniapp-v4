@@ -52,6 +52,7 @@ def test_check_platform_mode_warns_on_windows_without_http(monkeypatch) -> None:
 
     assert result.status == "WARN"
     assert "Windows detected" in result.summary
+    assert "AF_UNIX" in (result.detail or "")
 
 
 def test_format_human_output_and_exit_code() -> None:

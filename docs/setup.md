@@ -22,9 +22,9 @@ Use this path unless you already know you want something else:
   - run the setup doctor to verify your environment
 - Windows
   - bootstrap, config, tests, and HTTP-backed Hermes mode are the best-supported paths today
-  - some local-runtime features still assume Unix behavior, especially around warm worker attach and other process details
+  - local warm attach is currently disabled because it depends on AF_UNIX unix-domain sockets; other local-runtime details still skew Unix-first
 
-That means Windows users should prefer HTTP-backed Hermes mode for now.
+That means Windows users should prefer HTTP-backed Hermes mode for now. If you try the local-runtime-heavy path on Windows, the app should now degrade cleanly instead of failing with a cryptic socket error.
 
 ## Setup flow in two phases
 

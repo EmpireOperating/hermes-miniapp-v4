@@ -275,7 +275,7 @@ def check_platform_mode(env_values: dict[str, str]) -> CheckResult:
         "platform_mode",
         "WARN",
         "Windows detected. Local Hermes runtime mode is not yet a fully first-class path.",
-        detail="Some local runtime features still assume Unix behavior.",
+        detail="Warm attach currently depends on AF_UNIX unix-domain sockets and is disabled on Windows.",
         fix="Prefer HTTP-backed Hermes mode on Windows, or use Linux/macOS for the local-runtime path.",
     )
 

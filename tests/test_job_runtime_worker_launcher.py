@@ -89,6 +89,40 @@ def test_chat_worker_subprocess_skips_warm_attach_when_contract_disabled(monkeyp
     assert stream_calls[0]["emit_terminal"] is True
 
 
+def test_chat_worker_subprocess_disables_warm_attach_cleanly_on_windows(monkeypatch) -> None:
+    class FakeClient:
+        def warm_session_contract(self):
+            return SimpleNamespace(enabled=True)
+
+    monkeypatch.setattr(chat_worker_subprocess, "HermesClient", FakeClient)
+    monkeypatch.setattr(chat_worker_subprocess.sys, "platform", "win32", raising=False)
+    events: list[dict[str, object]] = []
+    attach_server_created = {"value": False}
+
+    def fake_emit_stdout(event: dict[str, object]) -> None:
+        events.append(dict(event))
+
+    def fake_stream_request(**_kwargs):
+        return 0
+
+    class UnexpectedAttachServer:
+        def __init__(self, *args, **kwargs):
+            attach_server_created["value"] = True
+            raise AssertionError("warm attach server should not start on unsupported platforms")
+
+    monkeypatch.setattr(chat_worker_subprocess, "_emit_stdout", fake_emit_stdout)
+    monkeypatch.setattr(chat_worker_subprocess, "_stream_request", fake_stream_request)
+    monkeypatch.setattr(chat_worker_subprocess, "_WarmAttachServer", UnexpectedAttachServer)
+    monkeypatch.setattr(chat_worker_subprocess.sys, "stdin", io.StringIO('{"user_id":"123","message":"hello","session_id":"miniapp-123-55"}'))
+
+    result = chat_worker_subprocess.main()
+
+    assert result == 0
+    assert attach_server_created["value"] is False
+    assert events[0]["type"] == "meta"
+    assert events[0]["reason"] == "unsupported_platform_warm_attach"
+
+
 def test_chat_worker_subprocess_stream_request_emits_heartbeat_during_silent_wait(monkeypatch) -> None:
     events: list[dict[str, object]] = []
     writer = chat_worker_subprocess._JsonlWriter(lambda event: events.append(dict(event)))
