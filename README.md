@@ -116,7 +116,10 @@ The bootstrap command:
 The interactive bootstrap now prompts for:
 - `TELEGRAM_BOT_TOKEN`
 - `MINI_APP_URL`
-- your preferred Hermes backend mode
+- your preferred Hermes backend mode, with an explanation of the tradeoffs:
+  - `HERMES_STREAM_URL`: best live streaming UX if you already have a streaming Hermes endpoint
+  - `HERMES_API_URL`: simplest HTTP-backed setup and usually the easiest first-time path, especially on Windows
+  - local Hermes CLI/runtime: useful when Hermes is installed on the same machine, but more machine-specific
 
 If you skip or rerun later, make sure `.env` contains:
 - `TELEGRAM_BOT_TOKEN`

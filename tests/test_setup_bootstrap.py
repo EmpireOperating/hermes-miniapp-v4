@@ -80,6 +80,18 @@ def test_should_run_interactive_prefers_tty_unless_noninteractive(monkeypatch) -
     assert setup_bootstrap.should_run_interactive(parser.parse_args(["--interactive"])) is True
 
 
+def test_explain_backend_modes_mentions_tradeoffs() -> None:
+    printed: list[str] = []
+
+    setup_bootstrap.explain_backend_modes(output=printed.append)
+
+    joined = "\n".join(printed)
+    assert "HERMES_STREAM_URL" in joined
+    assert "HERMES_API_URL" in joined
+    assert "Local Hermes CLI/runtime" in joined
+    assert "Windows" in joined
+
+
 def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> None:
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -110,7 +122,11 @@ def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> N
     assert "MINI_APP_URL=https://mini.example.com/app" in text
     assert "HERMES_STREAM_URL=https://hermes.example.com/stream" in text
     assert "HERMES_API_URL=" in text
-    assert any("Interactive setup" in line for line in printed)
+    joined = "\n".join(printed)
+    assert "Interactive setup" in joined
+    assert "Backend choices and tradeoffs" in joined
+    assert "best live streaming UX" in joined
+    assert "cheap domain or subdomain you control is fine" in joined
 
 
 def test_render_next_steps_mentions_dns_doctor_and_interactive_fill(tmp_path: Path) -> None:

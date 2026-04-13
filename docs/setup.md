@@ -58,6 +58,14 @@ On an interactive terminal, the bootstrap now prompts for the most important fir
 - `MINI_APP_URL`
 - your preferred Hermes backend mode
 
+The bootstrap now explains the backend tradeoffs before asking you to choose:
+- `HERMES_STREAM_URL`
+  - best live streaming UX if you already have a streaming Hermes endpoint
+- `HERMES_API_URL`
+  - simplest HTTP-backed setup and usually the easiest first-time path, especially on Windows
+- local Hermes CLI/runtime
+  - useful when Hermes is installed on the same machine, but more machine-specific than HTTP-backed mode
+
 If you are automating setup, use `--non-interactive` and fill `.env` another way.
 
 2. Confirm `.env` has the minimum required values:
@@ -176,18 +184,37 @@ The JSON output includes:
 
 ## Choosing a Hermes backend mode
 
-### Recommended: HTTP-backed Hermes mode
+### `HERMES_STREAM_URL`
 
-Use one of:
-- `HERMES_STREAM_URL`
-- `HERMES_API_URL`
+Choose this when:
+- you already expose a streaming Hermes endpoint
+- you want the best incremental/live streaming experience in the Mini App
+- you are comfortable pointing the Mini App at a remote HTTP endpoint
 
-This is the easiest path for:
-- Windows users
-- remote deployments
-- setups where Hermes already runs elsewhere
+Tradeoff:
+- not the simplest endpoint shape to stand up from scratch if you do not already have it
+
+### `HERMES_API_URL`
+
+Choose this when:
+- you want the simplest HTTP-backed setup
+- Hermes already runs elsewhere and exposes a plain API endpoint
+- you want the easiest first-time path, especially on Windows
+
+Tradeoff:
+- usually less stream-native than a dedicated streaming endpoint
 
 ### Local Hermes mode
+
+Choose this when:
+- Hermes runs on the same machine as the Mini App
+- you prefer direct local execution instead of calling a remote HTTP endpoint
+- your setup is private/local enough that machine-specific config is acceptable
+
+Tradeoffs:
+- more machine-specific setup
+- less portable between machines
+- Windows support is weaker than the HTTP-backed modes today
 
 If Hermes runs on the same machine as the Mini App, you can use local agent/CLI configuration.
 

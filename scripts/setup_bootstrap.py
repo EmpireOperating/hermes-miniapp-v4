@@ -156,6 +156,18 @@ def prompt_choice(prompt: str, choices: list[tuple[str, str]], *, default: str, 
         output("Please choose one of: " + ", ".join(key for key, _label in choices))
 
 
+def explain_backend_modes(*, output: callable | None = None) -> None:
+    output = output or print
+    output("Backend choices and tradeoffs:")
+    output("- 1) HERMES_STREAM_URL: best live streaming UX and the recommended remote/default path if you already expose a streaming Hermes endpoint.")
+    output("     Choose this when you want the most responsive incremental output and already have an HTTP streaming endpoint.")
+    output("- 2) HERMES_API_URL: simplest HTTP-backed setup and the easiest option for many first-time users, especially on Windows.")
+    output("     Choose this when you want the least local machine coupling and are okay with a simpler non-stream-native HTTP path.")
+    output("- 3) Local Hermes CLI/runtime: keeps Hermes on the same machine as the Mini App and can be convenient for local/private setups.")
+    output("     Choose this when Hermes is installed locally and you want direct local execution; tradeoff: more machine-specific setup and weaker Windows support today.")
+    output("- 4) Skip for now: leave backend wiring for later and finish the rest of bootstrap first.")
+
+
 def should_run_interactive(args: argparse.Namespace) -> bool:
     if getattr(args, "interactive", False):
         return True
@@ -178,6 +190,7 @@ def configure_env_interactively(
     output("Interactive setup")
     output("- Press Enter to keep the current value shown in brackets.")
     output("- You can rerun this later with: python scripts/setup_bootstrap.py --interactive")
+    output("- The bootstrap will explain the Hermes backend choices before asking you to pick one.")
     output("")
 
     token_default = values.get("TELEGRAM_BOT_TOKEN", "")
@@ -188,19 +201,23 @@ def configure_env_interactively(
     url_default = values.get("MINI_APP_URL", "")
     if url_default == "https://your-domain.com/app":
         url_default = ""
+    output("DNS note: Telegram Mini Apps need a real HTTPS URL.")
+    output("The name itself does not matter much; any cheap domain or subdomain you control is fine.")
     url = prompt_text(
-        "Mini App HTTPS URL (the domain can be cheap; any domain/subdomain you control is fine)",
+        "Mini App HTTPS URL",
         default=url_default,
         input_fn=input_fn,
         output=output,
     )
 
+    output("")
+    explain_backend_modes(output=output)
     backend_choice = prompt_choice(
         "Choose the Hermes backend mode",
         [
-            ("1", "Recommended: HERMES_STREAM_URL (best incremental streaming)"),
-            ("2", "Recommended: HERMES_API_URL (simple HTTP-backed Hermes mode)"),
-            ("3", "Local Hermes CLI/runtime on this machine"),
+            ("1", "HERMES_STREAM_URL — best streaming UX if you already have a streaming endpoint"),
+            ("2", "HERMES_API_URL — simplest HTTP-backed setup, especially for first-time/Windows users"),
+            ("3", "Local Hermes CLI/runtime — direct local execution on this machine"),
             ("4", "Skip backend configuration for now"),
         ],
         default="1",
@@ -215,18 +232,23 @@ def configure_env_interactively(
         updates["MINI_APP_URL"] = url
 
     if backend_choice == "1":
+        output("You chose HERMES_STREAM_URL: best for responsive incremental output when you already have a streaming Hermes endpoint.")
         stream_default = values.get("HERMES_STREAM_URL", values.get("HERMES_API_URL", ""))
-        stream_url = prompt_text("HERMES_STREAM_URL", default=stream_default, input_fn=input_fn, output=output)
+        stream_url = prompt_text("HERMES_STREAM_URL (full streaming endpoint URL)", default=stream_default, input_fn=input_fn, output=output)
         updates["HERMES_STREAM_URL"] = stream_url
         updates["HERMES_API_URL"] = ""
     elif backend_choice == "2":
+        output("You chose HERMES_API_URL: simplest remote setup and usually the easiest first-time path.")
         api_default = values.get("HERMES_API_URL", values.get("HERMES_STREAM_URL", ""))
-        api_url = prompt_text("HERMES_API_URL", default=api_default, input_fn=input_fn, output=output)
+        api_url = prompt_text("HERMES_API_URL (full HTTP endpoint URL)", default=api_default, input_fn=input_fn, output=output)
         updates["HERMES_API_URL"] = api_url
         updates["HERMES_STREAM_URL"] = ""
     elif backend_choice == "3":
+        output("You chose local Hermes mode: convenient when Hermes is installed on this machine, but more machine-specific than HTTP-backed mode.")
+        if is_windows():
+            output("Windows note: local mode can work, but HTTP-backed mode is still the smoother/default path today.")
         cli_default = values.get("HERMES_CLI_COMMAND", "hermes") or "hermes"
-        cli_command = prompt_text("HERMES_CLI_COMMAND", default=cli_default, input_fn=input_fn, output=output)
+        cli_command = prompt_text("HERMES_CLI_COMMAND (command used to launch Hermes locally)", default=cli_default, input_fn=input_fn, output=output)
         updates["HERMES_CLI_COMMAND"] = cli_command or "hermes"
         updates["HERMES_STREAM_URL"] = ""
         updates["HERMES_API_URL"] = ""
