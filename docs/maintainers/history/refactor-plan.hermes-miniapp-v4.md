@@ -1,14 +1,14 @@
 # Refactor Plan — hermes-miniapp-v4
 
 > Canonical active plan file (live source of truth).
-> Detailed execution history and refresh evidence live in `docs/refactor-log.hermes-miniapp-v4.md`.
-> Historical refresh snapshot archived at `docs/archive/refactor-plans/refactor-plan.hermes-miniapp-v4.refresh-2026-03-27.md`.
+> Detailed execution history and refresh evidence live in `docs/maintainers/history/refactor-log.hermes-miniapp-v4.md`.
+> Historical refresh snapshot archived at `docs/maintainers/archive/refactor-plans/refactor-plan.hermes-miniapp-v4.refresh-2026-03-27.md`.
 
 ## Project snapshot
 - Project: hermes-miniapp-v4
 - Project slug: hermes-miniapp-v4
 - Generated: 2026-04-12T02:37:44Z
-- Plan maintenance note: Compacted on 2026-04-11 so this file stays focused on active work; older completed-item detail and refresh evidence live in `docs/refactor-log.hermes-miniapp-v4.md`.
+- Plan maintenance note: Compacted on 2026-04-11 so this file stays focused on active work; older completed-item detail and refresh evidence live in `docs/maintainers/history/refactor-log.hermes-miniapp-v4.md`.
 - Branch: main
 - Git status summary: dirty (`git status --short --branch` currently shows `## main` plus modified `static/composer_viewport_helpers.js`, `tests/composer_viewport_helpers.test.mjs`, and `tests/test_job_runtime_worker_launcher.py`).
 - Analysis mode: fresh monolith-focused refactor refresh against current repo reality; no production code edits in this pass.
@@ -116,6 +116,6 @@ Note: “Next up” is only a prioritized subset, not the full backlog.
   - Notes/dependencies: Closed 2026-04-12 by routing subprocess event iteration, timeout/kill handling, attach-ready/descendant telemetry, nonzero-exit mapping, and finalize/limit-breach reporting through new helper module `job_runtime_worker_launcher_subprocess.py` (`SubprocessStreamLifecycle`, `SubprocessStreamState`) while keeping `SubprocessJobWorkerLauncher` as orchestration glue. Added direct helper-level finalize/limit-breach coverage in `tests/test_job_runtime_worker_launcher.py`. Scoped validation is green for the launcher slice; the only remaining failure in the broader command is the known unrelated `tests/test_job_runtime_worker_launcher.py::test_runtime_run_chat_job_uses_configured_worker_launcher` case where `claim_next_job()` returns `None` before launcher behavior is exercised.
 
 ## Log pointers
-- Completed-item archive: `docs/refactor-log.hermes-miniapp-v4.md`
-- Legacy refresh snapshot archive: `docs/archive/refactor-plans/refactor-plan.hermes-miniapp-v4.refresh-2026-03-27.md`
+- Completed-item archive: `docs/maintainers/history/refactor-log.hermes-miniapp-v4.md`
+- Legacy refresh snapshot archive: `docs/maintainers/archive/refactor-plans/refactor-plan.hermes-miniapp-v4.refresh-2026-03-27.md`
 - Compaction rule for this project: keep the active plan focused on open items plus the latest few completions; move older completed-item detail and refresh evidence into the refactor log.

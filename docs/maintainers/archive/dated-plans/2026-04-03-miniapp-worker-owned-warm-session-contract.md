@@ -5,10 +5,10 @@
 > It is the contract for what a future isolated-worker-owned warm session must look like.
 
 Linked docs:
-- Warm-session ownership decision: `docs/plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
-- Backend swap checklist: `docs/plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
-- Primary two-track plan: `docs/plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
-- Live QA checklist for the bounded implementation: `docs/plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
+- Warm-session ownership decision: `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
+- Backend swap checklist: `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
+- Primary two-track plan: `docs/maintainers/archive/dated-plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
+- Live QA checklist for the bounded implementation: `docs/maintainers/archive/dated-plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
 
 Date: 2026-04-03
 
@@ -326,7 +326,7 @@ Future slices should likely proceed in this order:
 - clear/remove invalidation and attach-deadline expiry preserve correct final owner state
 - first-turn queue/SSE handoff now emits a normal terminal `done` before job completion
 - browser/API verification steps are captured in:
-  - `docs/plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
+  - `docs/maintainers/archive/dated-plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
 
 ---
 

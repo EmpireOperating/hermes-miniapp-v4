@@ -5,10 +5,10 @@
 > For Hermes or follow-on agents: do not re-decide this ad hoc in code. Treat this doc as the decision anchor for backend-swap work.
 
 Linked docs:
-- Primary two-track plan: `docs/plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
-- Implementation status: `docs/plans/2026-04-03-miniapp-two-track-implementation-status.md`
-- Updated backend-swap checklist: `docs/plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
-- Isolation runbook: `docs/miniapp-worker-isolation-runbook.md`
+- Primary two-track plan: `docs/maintainers/archive/dated-plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
+- Implementation status: `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-two-track-implementation-status.md`
+- Updated backend-swap checklist: `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
+- Isolation runbook: `docs/maintainers/runbooks/miniapp-worker-isolation-runbook.md`
 
 Date: 2026-04-03
 

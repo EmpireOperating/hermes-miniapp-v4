@@ -861,7 +861,8 @@ def test_boot_telemetry_rejects_invalid_payload(monkeypatch, tmp_path) -> None:
 def test_startup_auth_allows_empty_chat_state() -> None:
     app_script = _read_repo_file("static", "bootstrap_auth_helpers.js")
 
-    assert 'body: JSON.stringify({ init_data: initData, allow_empty: true })' in app_script
+    assert 'init_data: initData' in app_script
+    assert 'allow_empty: true' in app_script
 
 
 

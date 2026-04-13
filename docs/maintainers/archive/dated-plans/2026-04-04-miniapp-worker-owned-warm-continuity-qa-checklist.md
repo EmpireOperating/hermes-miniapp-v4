@@ -16,9 +16,9 @@ It is meant to be short enough for routine regression passes, while still coveri
 - browser UI recovery from running/pending back to normal send state
 
 Linked context:
-- `docs/plans/2026-04-03-miniapp-warmer-handoff-status.md`
-- `docs/plans/2026-04-03-miniapp-worker-owned-warm-session-contract.md`
-- `docs/plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-warmer-handoff-status.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-worker-owned-warm-session-contract.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
 
 ## Fast code/test regression gate
 
@@ -170,6 +170,6 @@ For a compact end-to-end pass, use this order:
 
 If any of these checks start failing, update both:
 - this checklist
-- `docs/plans/2026-04-03-miniapp-warmer-handoff-status.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-warmer-handoff-status.md`
 
 Do not leave the docs describing a state that live QA no longer supports.

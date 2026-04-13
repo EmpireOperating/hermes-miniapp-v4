@@ -14,10 +14,10 @@ The major architectural change is no longer hypothetical:
 - browser and API QA have both been run against the live service
 
 This document should be read together with:
-- `docs/plans/2026-04-03-miniapp-worker-owned-warm-session-contract.md`
-- `docs/plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
-- `docs/plans/2026-04-03-miniapp-two-track-implementation-status.md`
-- `docs/plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-worker-owned-warm-session-contract.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-two-track-implementation-status.md`
+- `docs/maintainers/archive/dated-plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
 
 ## High-level architecture direction
 
@@ -138,7 +138,7 @@ Primary tests:
 - `/home/hermes-agent/workspace/active/hermes_miniapp_v4/tests/test_routes_chat.py`
 
 Verification doc:
-- `/home/hermes-agent/workspace/active/hermes_miniapp_v4/docs/plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
+- `/home/hermes-agent/workspace/active/hermes_miniapp_v4/docs/maintainers/archive/dated-plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
 
 ## Current verified test state
 
@@ -171,4 +171,4 @@ Do NOT regress these properties:
 
 Suggested continuation prompt:
 
-"Continue the Hermes Miniapp backend-swap work from docs/plans/2026-04-03-miniapp-warmer-handoff-status.md and docs/plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md. Preserve the now-working bounded worker-owned warm continuity path, then focus on remaining sign-off work: operator diagnostics, reconnect/tab-switch hardening, and broader bad-day regression coverage without regressing live attach behavior."
+"Continue the Hermes Miniapp backend-swap work from docs/maintainers/archive/dated-plans/2026-04-03-miniapp-warmer-handoff-status.md and docs/maintainers/archive/dated-plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md. Preserve the now-working bounded worker-owned warm continuity path, then focus on remaining sign-off work: operator diagnostics, reconnect/tab-switch hardening, and broader bad-day regression coverage without regressing live attach behavior."

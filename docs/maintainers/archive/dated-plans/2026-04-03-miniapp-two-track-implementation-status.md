@@ -1,13 +1,13 @@
 # Miniapp Two-Track Plan — Implementation Status and Next Slices
 
 Linked primary plan:
-- `docs/plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
+- `docs/maintainers/archive/dated-plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
 
 Primary remaining-work checklist:
-- `docs/plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
 
 Warm-session ownership decision:
-- `docs/plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
 
 Purpose:
 - Provide an at-a-glance implementation checkpoint for any agent picking up work.
@@ -32,7 +32,7 @@ Date:
 ### A0: Baseline capture before changes
 Status: Done
 Evidence:
-- `docs/miniapp-child-spawn-hardening-runbook.md` exists and documents incident class, controls, and diagnostics.
+- `docs/maintainers/runbooks/miniapp-child-spawn-hardening-runbook.md` exists and documents incident class, controls, and diagnostics.
 
 ### A1: Isolated chat-runner entrypoint
 Status: Partial
@@ -129,7 +129,7 @@ Evidence:
 - Regression lock added:
   - `tests/test_fanout_storm_forensics.py::test_forensics_signature_direct_spawn_cap_blocks_cli_fallback`
 - Runbook updated with trigger/fix/verification mapping:
-  - `docs/miniapp-worker-isolation-runbook.md`
+  - `docs/maintainers/runbooks/miniapp-worker-isolation-runbook.md`
 
 ---
 
@@ -169,7 +169,7 @@ Notable regression coverage now explicitly includes:
 - same-chat conflict rejection without blocking a different chat from starting its own stream
 
 Additional live validation is captured in:
-- `docs/plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
+- `docs/maintainers/archive/dated-plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
 
 That live validation covered:
 - first-turn queue/SSE `done` handoff
@@ -235,14 +235,14 @@ Implementation checkpoint (2026-04-03, landed):
   - `last_limit_breach_detail`
 - Added runtime diagnostics tests that assert launcher limits and limit-breach fields are visible under `incident_snapshot.workers.launcher`.
 - Added runbook:
-  - `docs/miniapp-worker-isolation-runbook.md`
+  - `docs/maintainers/runbooks/miniapp-worker-isolation-runbook.md`
 
 Primary files:
 - `job_runtime_worker_launcher.py`
 - `miniapp_config.py`
 - `app_factory.py`
 - `server.py`
-- `docs/miniapp-worker-isolation-runbook.md`
+- `docs/maintainers/runbooks/miniapp-worker-isolation-runbook.md`
 - `tests/test_config.py`
 - `tests/test_routes_jobs_runtime.py`
 - `tests/test_job_runtime_worker_launcher.py`
@@ -267,12 +267,12 @@ Implementation checkpoint (2026-04-03, landed):
 - Regression lock added in:
   - `tests/test_fanout_storm_forensics.py::test_forensics_signature_direct_spawn_cap_blocks_cli_fallback`
 - Runbook updated with trigger/fix/verification mapping:
-  - `docs/miniapp-worker-isolation-runbook.md`
+  - `docs/maintainers/runbooks/miniapp-worker-isolation-runbook.md`
 
 Primary files:
 - `hermes_client.py`
 - `tests/test_fanout_storm_forensics.py`
-- `docs/miniapp-worker-isolation-runbook.md`
+- `docs/maintainers/runbooks/miniapp-worker-isolation-runbook.md`
 
 Required outcomes:
 - Previously abnormal repro signature is bounded or absent after fix.

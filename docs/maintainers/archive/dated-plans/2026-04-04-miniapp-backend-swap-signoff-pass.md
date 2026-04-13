@@ -146,10 +146,10 @@ rather than:
 
 ## Related docs
 
-- `docs/plans/2026-04-03-miniapp-two-track-implementation-status.md`
-- `docs/plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
-- `docs/plans/2026-04-03-miniapp-warmer-handoff-status.md`
-- `docs/plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-two-track-implementation-status.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-warmer-handoff-status.md`
+- `docs/maintainers/archive/dated-plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
 
 ## Recommended next move
 

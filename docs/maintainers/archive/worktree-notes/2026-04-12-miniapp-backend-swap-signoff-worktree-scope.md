@@ -85,7 +85,7 @@ What it verifies:
 
 Primary files touched:
 - `tests/test_routes_jobs_runtime.py`
-- `docs/plans/2026-04-12-miniapp-backend-swap-signoff-worktree-scope.md`
+- `docs/maintainers/archive/worktree-notes/2026-04-12-miniapp-backend-swap-signoff-worktree-scope.md`
 
 Validation run:
 - `/home/hermes-agent/workspace/active/hermes_miniapp_v4/.venv/bin/python -m pytest tests/test_routes_jobs_runtime.py::test_subprocess_two_chat_session_mismatch_isolation_smoke -q -vv`
@@ -401,7 +401,7 @@ What it verifies:
 - the current Arch diff against `main` is still confined to the intended signoff files rather than drifting into broader architecture churn
 
 Primary files touched:
-- `docs/plans/2026-04-12-miniapp-backend-swap-signoff-worktree-scope.md`
+- `docs/maintainers/archive/worktree-notes/2026-04-12-miniapp-backend-swap-signoff-worktree-scope.md`
 
 Validation run:
 - Arch worktree bundle:

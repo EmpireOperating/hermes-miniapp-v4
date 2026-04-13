@@ -5,11 +5,11 @@
 > For Hermes or any follow-on agent: use this document as the primary execution checklist for remaining backend-swap work.
 > 
 > Linked context:
-> - Primary architecture plan: `docs/plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
-> - Implementation status snapshot: `docs/plans/2026-04-03-miniapp-two-track-implementation-status.md`
+> - Primary architecture plan: `docs/maintainers/archive/dated-plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
+> - Implementation status snapshot: `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-two-track-implementation-status.md`
 > - Isolation runbooks:
->   - `docs/miniapp-worker-isolation-runbook.md`
->   - `docs/miniapp-child-spawn-hardening-runbook.md`
+>   - `docs/maintainers/runbooks/miniapp-worker-isolation-runbook.md`
+>   - `docs/maintainers/runbooks/miniapp-child-spawn-hardening-runbook.md`
 
 Date: 2026-04-03
 
@@ -21,10 +21,10 @@ This checklist answers one question:
 - What still must be done before we can honestly call the miniapp backend swap complete?
 
 Warm-session ownership decision anchor:
-- `docs/plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
 
 Latest broader sign-off snapshot:
-- `docs/plans/2026-04-04-miniapp-backend-swap-signoff-pass.md`
+- `docs/maintainers/archive/dated-plans/2026-04-04-miniapp-backend-swap-signoff-pass.md`
 
 Use this doc for:
 - agent handoff
@@ -75,7 +75,7 @@ Why this matters:
 Current state:
 - subprocess worker boundary exists
 - explicit warm-session ownership decision doc exists:
-  - `docs/plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
+  - `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
 - runtime/status diagnostics surface the current warm-session strategy and target mode via `warm_sessions`
 - bounded worker-owned warm continuity now works end-to-end in the live path:
   - first turn can preserve a detached warm owner
@@ -84,7 +84,7 @@ Current state:
   - explicit clear/remove invalidation and attach-deadline expiry preserve correct final owner state
   - first-turn queue/SSE termination now ends with a normal `done` payload instead of synthetic terminal DB recovery
 - compact live verification checklist now exists:
-  - `docs/plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
+  - `docs/maintainers/archive/dated-plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
 - status remains Partial because broader backend-swap sign-off still requires stronger isolation, operator visibility, reconnect/tab-switch sign-off, and ugly-case regression coverage
 
 Required decision:
@@ -110,7 +110,7 @@ Suggested files:
 - `job_runtime_worker_launcher.py`
 - `chat_worker_runner.py`
 - `miniapp_config.py`
-- docs under `docs/plans/` and `docs/miniapp-worker-isolation-runbook.md`
+- docs under `docs/maintainers/plans/` and `docs/maintainers/runbooks/miniapp-worker-isolation-runbook.md`
 
 ---
 
@@ -145,7 +145,7 @@ Suggested files:
 - `chat_worker_subprocess.py`
 - `app_factory.py`
 - service/unit docs or wrapper scripts
-- `docs/miniapp-worker-isolation-runbook.md`
+- `docs/maintainers/runbooks/miniapp-worker-isolation-runbook.md`
 
 ---
 
@@ -194,7 +194,7 @@ Priority: P0
 Latest live finding:
 - overlapping multi-chat API behavior looks healthy in live sign-off testing
 - browser reload/resume blocker was traced to delayed detached-worker job completion and then fixed
-- latest snapshot: `docs/plans/2026-04-04-miniapp-backend-swap-signoff-pass.md`
+- latest snapshot: `docs/maintainers/archive/dated-plans/2026-04-04-miniapp-backend-swap-signoff-pass.md`
 
 Why this matters:
 - this is the highest-value user-facing stability area after basic containment

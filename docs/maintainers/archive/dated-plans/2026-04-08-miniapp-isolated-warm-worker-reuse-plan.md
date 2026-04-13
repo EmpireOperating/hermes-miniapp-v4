@@ -67,7 +67,7 @@ Primary files to inspect/modify:
 - `tests/test_hermes_client.py`
 - `tests/test_routes_jobs_runtime.py`
 - `tests/test_routes_chat.py`
-- `docs/plans/2026-04-03-miniapp-worker-owned-warm-session-contract.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-worker-owned-warm-session-contract.md`
 
 Current architecture constraints already visible in code/docs:
 - warm-session scaffolding exists
@@ -117,7 +117,7 @@ Verification:
 Objective: Keep the architecture contract current before behavior lands.
 
 Files:
-- Modify: `docs/plans/2026-04-03-miniapp-worker-owned-warm-session-contract.md`
+- Modify: `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-worker-owned-warm-session-contract.md`
 
 Add a short section describing:
 - same-chat isolated warm reuse as the first real behavior slice
@@ -450,7 +450,7 @@ Verification:
 Objective: Make manual signoff straightforward before wider rollout.
 
 Files:
-- Create: `docs/plans/2026-04-08-miniapp-same-chat-warm-reuse-qa-checklist.md`
+- Create: `docs/maintainers/archive/dated-plans/2026-04-08-miniapp-same-chat-warm-reuse-qa-checklist.md`
 
 Checklist should cover:
 - same chat repeated prompt uses warm reuse
@@ -498,20 +498,3 @@ Before rollout with the flag enabled, also run a manual miniapp QA pass covering
 
 ---
 
-## Final implementation note
-
-Do not try to make this “perfectly general” in one pass.
-
-The safest path is:
-- same-chat only
-- isolated only
-- bounded only
-- fallback-first
-- instrument everything
-
-If this slice works, then we can decide whether Phase 2 should be:
-- one warm worker per active chat as the standard model
-or
-- a bounded attachable worker pool
-
-For the miniapp product goals, one warm isolated worker per active chat is likely the better next step after this plan succeeds.
