@@ -193,8 +193,9 @@
       syncSkinFromStorage();
       if (!getIsAuthenticated()) return;
 
-      await syncUnreadNotificationPresence({ visible: true });
-
+      const hidden = documentObject.visibilityState !== 'visible';
+      const streamAbortControllers = getStreamAbortControllers();
+      const presenceSyncPromise = syncUnreadNotificationPresence({ visible: true });
       const activeId = Number(getActiveChatId());
       if (activeId > 0) {
         // Visibility/focus resumption is a common point where throttled UI work catches up.
@@ -203,14 +204,23 @@
       }
 
       try {
-        await refreshChats();
-        await syncVisibleActiveChatDelegate({
-          hidden: documentObject.visibilityState !== 'visible',
-          streamAbortControllers: getStreamAbortControllers(),
-        });
+        if (activeId > 0) {
+          await syncVisibleActiveChatDelegate({
+            hidden,
+            streamAbortControllers,
+          });
+        }
       } catch {
-        // best effort sync
+        // best effort active-chat sync
       }
+
+      try {
+        await refreshChats();
+      } catch {
+        // best effort status sync
+      }
+
+      await Promise.allSettled([presenceSyncPromise]);
     }
 
     async function handleVisibilityChange() {

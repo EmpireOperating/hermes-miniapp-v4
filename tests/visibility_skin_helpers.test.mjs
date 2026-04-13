@@ -25,7 +25,7 @@ function createEventTarget(initial = {}) {
   };
 }
 
-function buildHarness({ visibilityState = 'visible', authenticated = true, pendingChatsSize = 0 } = {}) {
+function buildHarness({ visibilityState = 'visible', authenticated = true, pendingChatsSize = 0, apiPostImpl = null } = {}) {
   let currentSkin = 'terminal';
   const skinCalls = [];
   const reloadCalls = [];
@@ -38,6 +38,7 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
   const bootstrapRefreshCalls = [];
   const lifecycleMarks = [];
   const visibilityResumes = [];
+  const callOrder = [];
 
   const documentObject = createEventTarget({
     visibilityState,
@@ -122,7 +123,11 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
       currentSkin = String(value || '');
     },
     apiPost: async (url, payload) => {
+      callOrder.push(`apiPost:${url}`);
       apiPostCalls.push({ url, payload });
+      if (typeof apiPostImpl === 'function') {
+        return apiPostImpl(url, payload);
+      }
       return { skin: payload?.skin === 'terminal' ? 'obsidian' : payload?.skin };
     },
     syncTelegramChromeForSkin: (skin) => {
@@ -135,12 +140,15 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
       return false;
     },
     refreshChats: async () => {
+      callOrder.push('refreshChats');
       refreshChatsCalls.push('refresh');
     },
     syncVisibleActiveChat: async (options = {}) => {
+      callOrder.push('syncVisibleActiveChat');
       syncVisibleActiveChatCalls.push(options);
     },
     syncActiveMessageView: (chatId, options) => {
+      callOrder.push('syncActiveMessageView');
       syncActiveMessageViewCalls.push({ chatId, options });
     },
     getStreamAbortControllers: () => streamAbortControllers,
@@ -169,6 +177,7 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
     lifecycleMarks,
     visibilityResumes,
     streamAbortControllers,
+    callOrder,
     getCurrentSkin: () => currentSkin,
   };
 }
@@ -232,6 +241,12 @@ test('installLifecycleListeners wires storage/focus/channel handlers', async () 
     hidden: false,
     streamAbortControllers: harness.streamAbortControllers,
   }]);
+  assert.deepEqual(harness.callOrder.slice(0, 3), [
+    'apiPost:/api/presence/state',
+    'syncActiveMessageView',
+    'syncVisibleActiveChat',
+  ]);
+  assert.equal(harness.callOrder.indexOf('syncVisibleActiveChat') < harness.callOrder.indexOf('refreshChats'), true);
   assert.equal(harness.visibilityResumes.length, 1);
   assert.equal(harness.visibilityResumes[0].trigger, 'focus');
 });
@@ -252,6 +267,12 @@ test('handleVisibilityChange refreshes lifecycle and delegates active-chat recon
     hidden: false,
     streamAbortControllers: harness.streamAbortControllers,
   });
+  assert.deepEqual(harness.callOrder.slice(0, 3), [
+    'apiPost:/api/presence/state',
+    'syncActiveMessageView',
+    'syncVisibleActiveChat',
+  ]);
+  assert.equal(harness.callOrder.indexOf('syncVisibleActiveChat') < harness.callOrder.indexOf('refreshChats'), true);
 });
 
 test('handleVisibilityChange is a no-op when document is hidden', async () => {
@@ -275,6 +296,36 @@ test('handleVisibilityChange is a no-op when unauthenticated', async () => {
   assert.deepEqual(harness.bootstrapRefreshCalls, []);
   assert.deepEqual(harness.refreshChatsCalls, []);
   assert.deepEqual(harness.syncVisibleActiveChatCalls, []);
+});
+
+test('resumeVisibleApp does not let visible presence sync block active chat hydration', async () => {
+  let resolvePresence;
+  const harness = buildHarness({
+    visibilityState: 'visible',
+    authenticated: true,
+    apiPostImpl: async (url, payload) => {
+      if (url === '/api/presence/state' && payload?.visible) {
+        await new Promise((resolve) => {
+          resolvePresence = resolve;
+        });
+        return { ok: true };
+      }
+      return { skin: payload?.skin === 'terminal' ? 'obsidian' : payload?.skin };
+    },
+  });
+
+  const resumePromise = harness.controller.handleVisibilityChange();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
+    hidden: false,
+    streamAbortControllers: harness.streamAbortControllers,
+  }]);
+  assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
+  assert.equal(harness.callOrder.indexOf('syncVisibleActiveChat') < harness.callOrder.indexOf('refreshChats'), true);
+
+  resolvePresence();
+  await resumePromise;
 });
 
 test('handleVisibilityChange ignores bootstrap refresh callbacks and continues normal sync', async () => {

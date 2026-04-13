@@ -142,6 +142,61 @@ test('syncVisibleActiveChat treats visible resume like an activation fetch so ac
   assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
 });
 
+test('syncVisibleActiveChat fires a hydration haptic when visible resume reveals a newer unread assistant reply', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: 7, pending: false, unread_count: 1, newest_unread_message_id: 2 },
+          history: [{ id: 2, role: 'assistant', body: 'fresh final reply' }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: 7, pending: false, unread_count: 0, newest_unread_message_id: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'old cached reply' }]);
+  harness.chats.set(7, { id: 7, unread_count: 1, newest_unread_message_id: 2, pending: false });
+
+  await harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+
+  assert.deepEqual(harness.incomingHapticCalls, [{
+    chatId: 7,
+    options: { fallbackToLatestHistory: true },
+  }]);
+});
+
+test('syncVisibleActiveChat does not fire a hydration haptic when the visible assistant reply did not advance', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: 7, pending: false, unread_count: 1, newest_unread_message_id: 2 },
+          history: [{ id: 2, role: 'assistant', body: 'same visible reply' }],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: 7, pending: false, unread_count: 0, newest_unread_message_id: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, [{ id: 2, role: 'assistant', body: 'same visible reply' }]);
+  harness.chats.set(7, { id: 7, unread_count: 1, newest_unread_message_id: 2, pending: false });
+
+  await harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+
+  assert.deepEqual(harness.incomingHapticCalls, []);
+});
+
 test('syncVisibleActiveChat finalizes stale local pending tool traces when hydrate already includes the completed assistant reply', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,

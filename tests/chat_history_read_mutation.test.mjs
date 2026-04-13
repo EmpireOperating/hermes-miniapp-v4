@@ -82,6 +82,21 @@ test('updatePendingAssistant does not append duplicate finalized assistant text 
   assert.deepEqual(harness.clearedSnapshots, [7]);
 });
 
+test('updatePendingAssistant removes a stale pending assistant when the same finalized reply already exists earlier in history', () => {
+  const harness = buildHarness();
+  harness.histories.set(7, [
+    { id: 11, role: 'assistant', body: 'final answer with artifact link', pending: false, created_at: '2026-04-12T06:00:00Z' },
+    { role: 'assistant', body: 'final answer with artifact lin', pending: true, created_at: '2026-04-12T06:00:01Z' },
+  ]);
+
+  harness.controller.updatePendingAssistant(7, 'final answer with artifact link', false);
+
+  assert.deepEqual(harness.histories.get(7), [
+    { id: 11, role: 'assistant', body: 'final answer with artifact link', pending: false, created_at: '2026-04-12T06:00:00Z' },
+  ]);
+  assert.deepEqual(harness.clearedSnapshots, [7]);
+});
+
 test('updatePendingAssistant persists and clears pending stream snapshots inside helper ownership', () => {
   const harness = buildHarness();
 

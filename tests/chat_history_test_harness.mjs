@@ -29,6 +29,7 @@ function buildHarness(overrides = {}) {
   const markReadInFlight = new Set();
   const unseenStreamChats = new Set();
   const finalizedHydratedPendingChats = [];
+  const incomingHapticCalls = [];
   const renderedAssistantNodes = [];
   const messagesContainer = {
     scrollTop: 0,
@@ -193,6 +194,9 @@ function buildHarness(overrides = {}) {
       resumeVisibilityChecks.push(args);
       return false;
     },
+    triggerIncomingMessageHaptic: (chatId, options = {}) => {
+      incomingHapticCalls.push({ chatId: Number(chatId), options: { ...options } });
+    },
     ...overrides,
   };
 
@@ -221,6 +225,7 @@ function buildHarness(overrides = {}) {
     messagesContainer,
     pendingChats,
     finalizedHydratedPendingChats,
+    incomingHapticCalls,
     renderedAssistantNodes,
     getRenderTabsCalls: () => renderTabsCalls,
     getRenderPinnedChatsCalls: () => renderPinnedChatsCalls,

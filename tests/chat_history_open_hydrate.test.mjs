@@ -151,6 +151,35 @@ test('late terminal finalize does not duplicate a hydrated completed assistant r
   assert.deepEqual(harness.clearedSnapshots, [7]);
 });
 
+test('hydrateChatFromServer treats a long local pending prefix as matched completion and avoids preserving a duplicate pending assistant', async () => {
+  const harness = buildHarness({
+    mergeHydratedHistory: runtimeHistory.mergeHydratedHistory,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 1, newest_unread_message_id: 12 },
+          history: [{ id: 12, role: 'assistant', body: 'fresh final reply with artifact link', pending: false }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, [
+    { role: 'assistant', body: 'fresh final reply with artifact', pending: true, created_at: '2026-04-12T06:00:00Z' },
+  ]);
+  harness.chats.set(7, { id: 7, unread_count: 1, newest_unread_message_id: 12, pending: true });
+  harness.pendingChats.add(7);
+
+  await harness.controller.hydrateChatFromServer(7, 0, true);
+
+  assert.deepEqual(harness.histories.get(7), [
+    { id: 12, role: 'assistant', body: 'fresh final reply with artifact link', pending: false },
+  ]);
+  assert.deepEqual(harness.finalizedHydratedPendingChats, [7]);
+  assert.deepEqual(harness.resumedChats, []);
+});
+
 test('hydrateChatFromServer restores pending snapshot for pending chats before resuming', async () => {
   const harness = buildHarness({
     apiPost: async (path, payload) => {

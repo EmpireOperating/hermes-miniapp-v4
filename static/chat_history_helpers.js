@@ -167,12 +167,30 @@
     });
   }
 
+  function normalizeAssistantLikeBody(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+  }
+
   function hydratedCompletionMatchesVisibleLocalPending(previousHistory, nextHistory) {
     const completedBody = latestAssistantLikeBody(nextHistory, { pending: false });
     if (!completedBody) return false;
     const pendingBody = latestAssistantLikeBody(previousHistory, { pending: true });
     if (pendingBody) {
-      return completedBody === pendingBody;
+      const normalizedCompletedBody = normalizeAssistantLikeBody(completedBody);
+      const normalizedPendingBody = normalizeAssistantLikeBody(pendingBody);
+      if (!normalizedCompletedBody || !normalizedPendingBody) {
+        return false;
+      }
+      if (normalizedCompletedBody === normalizedPendingBody) {
+        return true;
+      }
+      const shorterBody = normalizedCompletedBody.length <= normalizedPendingBody.length
+        ? normalizedCompletedBody
+        : normalizedPendingBody;
+      const longerBody = shorterBody === normalizedCompletedBody
+        ? normalizedPendingBody
+        : normalizedCompletedBody;
+      return shorterBody.length >= 24 && longerBody.startsWith(shorterBody);
     }
     const hydratedPendingTranscript = Array.isArray(nextHistory) && nextHistory.some((item) => {
       if (!item?.pending) return false;
@@ -212,6 +230,33 @@
         fileRefSignature,
       ].join('::');
     }).join('||');
+  }
+
+  function latestCompletedAssistantHydrationKey(chatId, history) {
+    const key = normalizeChatId(chatId);
+    if (!key) return '';
+    const entries = Array.isArray(history) ? history : [];
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const item = entries[index] || {};
+      if (Boolean(item?.pending)) continue;
+      const role = String(item?.role || '').toLowerCase();
+      if (role !== 'assistant' && role !== 'hermes') continue;
+      const messageId = Math.max(0, Number(item?.id || 0));
+      if (messageId > 0) {
+        return `chat:${key}:msg:${messageId}`;
+      }
+      const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
+      const fileRefSignature = fileRefs
+        .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
+        .join('|');
+      return [
+        `chat:${key}:local`,
+        String(item?.created_at || ''),
+        String(item?.body || ''),
+        fileRefSignature,
+      ].join('|');
+    }
+    return '';
   }
 
   function createUnreadStateController(deps) {
@@ -833,6 +878,23 @@
         return;
       }
 
+      if (!pendingState) {
+        const safeBody = normalizeAssistantLikeBody(nextBody);
+        const duplicateCompletedAssistantIndex = history.findIndex((item) => {
+          if (!item || item === pendingMessage || item.pending) return false;
+          const role = String(item.role || '').toLowerCase();
+          if (role !== 'hermes' && role !== 'assistant') {
+            return false;
+          }
+          return normalizeAssistantLikeBody(item.body) === safeBody;
+        });
+        if (duplicateCompletedAssistantIndex >= 0) {
+          history.splice(history.indexOf(pendingMessage), 1);
+          histories.set(key, history);
+          clearPendingStreamSnapshot?.(key);
+          return;
+        }
+      }
       pendingMessage.body = nextBody;
       pendingMessage.pending = pendingState;
       histories.set(key, history);
@@ -1421,6 +1483,7 @@
       isActiveChat,
       hasLocalPendingWithoutLiveStream,
       getRenderedTranscriptSignature = null,
+      triggerIncomingMessageHaptic = null,
     } = deps;
 
     const pendingStateController = createHistoryPendingStateController(deps);
@@ -1437,6 +1500,34 @@
       shouldResumeOnVisibilityChange,
     });
     let visibleSyncGeneration = 0;
+
+    function maybeTriggerVisibleHydrationHaptic({
+      targetChatId,
+      hidden = false,
+      previousHistory,
+      finalHistory,
+      chat,
+      shouldRenderActiveHistory = false,
+    }) {
+      if (hidden || typeof triggerIncomingMessageHaptic !== 'function') return false;
+      if (!shouldRenderActiveHistory) return false;
+      const nextAssistantKey = latestCompletedAssistantHydrationKey(targetChatId, finalHistory);
+      if (!nextAssistantKey) return false;
+      const previousAssistantKey = latestCompletedAssistantHydrationKey(targetChatId, previousHistory);
+      if (previousAssistantKey === nextAssistantKey) return false;
+      const unreadCount = Math.max(0, Number(chat?.unread_count || 0));
+      const newestUnreadMessageId = Math.max(0, Number(chat?.newest_unread_message_id || 0));
+      if (unreadCount <= 0 && newestUnreadMessageId <= 0) return false;
+      triggerIncomingMessageHaptic(targetChatId, { fallbackToLatestHistory: true });
+      traceChatHistory('visible-hydration-haptic', {
+        chatId: Number(targetChatId),
+        unreadCount,
+        newestUnreadMessageId,
+        previousAssistantKey,
+        nextAssistantKey,
+      });
+      return true;
+    }
 
     async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) {
       const hydrateStartedAtMs = nowMs();
@@ -1591,6 +1682,14 @@
       if (shouldRenderActiveHistory) {
         renderMessages(activeId, { preserveViewport: true });
       }
+      maybeTriggerVisibleHydrationHaptic({
+        targetChatId: activeId,
+        hidden,
+        previousHistory,
+        finalHistory,
+        chat: data.chat,
+        shouldRenderActiveHistory,
+      });
       ensureActivationReadThreshold(activeId, data.chat?.unread_count);
       maybeMarkRead(activeId);
 
@@ -1820,6 +1919,7 @@
       finalizeHydratedPendingState,
       shouldDeferNonCriticalCachedOpen = () => false,
       getRenderedTranscriptSignature = null,
+      triggerIncomingMessageHaptic = null,
       renderTraceLog = () => {},
       nowMs = () => Date.now(),
     } = deps;
@@ -1908,6 +2008,7 @@
       isActiveChat,
       hasLocalPendingWithoutLiveStream: readSyncController.hasLocalPendingWithoutLiveStream,
       getRenderedTranscriptSignature,
+      triggerIncomingMessageHaptic,
     });
 
     return {

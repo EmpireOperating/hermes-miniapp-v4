@@ -482,6 +482,33 @@
       return null;
     }
 
+    function latestCompletedAssistantRecord(history) {
+      const items = Array.isArray(history) ? history : [];
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        const role = String(item?.role || '').toLowerCase();
+        if (role !== 'hermes' && role !== 'assistant') continue;
+        if (Boolean(item?.pending)) continue;
+        const body = String(item?.body || '').trim();
+        if (!body) continue;
+        return { item, index };
+      }
+      return null;
+    }
+
+    function countUserMessagesThroughIndex(history, endIndex) {
+      const items = Array.isArray(history) ? history : [];
+      if (!items.length) return 0;
+      const targetIndex = Math.max(0, Math.min(items.length - 1, Number(endIndex) || 0));
+      let count = 0;
+      for (let index = 0; index <= targetIndex; index += 1) {
+        if (String(items[index]?.role || '').toLowerCase() === 'user') {
+          count += 1;
+        }
+      }
+      return count;
+    }
+
     function latestAssistantRenderSignature(history) {
       const item = latestAssistantMessage(history);
       if (!item) {
@@ -501,8 +528,9 @@
     }
 
     function preserveLatestCompletedAssistantMessage(previousHistory, nextHistory) {
-      const previousAssistant = latestAssistantMessage(previousHistory);
+      const previousRecord = latestCompletedAssistantRecord(previousHistory);
       const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
+      const previousAssistant = previousRecord?.item || null;
       const previousBody = String(previousAssistant?.body || '').trim();
       if (!previousAssistant || !previousBody) {
         return incoming;
@@ -520,6 +548,26 @@
         };
         return incoming;
       }
+
+      const latestIncomingRecord = latestCompletedAssistantRecord(incoming);
+      const previousTurn = countUserMessagesThroughIndex(previousHistory, previousRecord.index);
+      const incomingTurn = latestIncomingRecord
+        ? countUserMessagesThroughIndex(incoming, latestIncomingRecord.index)
+        : -1;
+
+      if (latestIncomingRecord && incomingTurn === previousTurn) {
+        incoming[latestIncomingRecord.index] = {
+          ...latestIncomingRecord.item,
+          ...previousAssistant,
+          pending: false,
+        };
+        return incoming;
+      }
+
+      if (latestIncomingRecord && incomingTurn > previousTurn) {
+        return incoming;
+      }
+
       incoming.push({
         ...previousAssistant,
         pending: false,

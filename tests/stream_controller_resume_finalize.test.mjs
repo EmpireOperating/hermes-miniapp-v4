@@ -239,7 +239,7 @@ test('hydrateChatAfterGracefulResumeCompletion rerenders when hydrated transcrip
   ]);
 });
 
-test('hydrateChatAfterGracefulResumeCompletion can force completed chat state during terminal reconciliation', async () => {
+test('hydrateChatAfterGracefulResumeCompletion can force completed chat state during terminal reconciliation without duplicating a pending local assistant', async () => {
   const phases = new Map();
   const chatsUpserted = [];
   const renderedMessages = [];
@@ -303,7 +303,6 @@ test('hydrateChatAfterGracefulResumeCompletion can force completed chat state du
   assert.deepEqual(chatsUpserted.at(-1), { id: 9, pending: false, title: 'chat-9' });
   assert.deepEqual(histories.get(9), [
     { role: 'assistant', body: 'hydrated', pending: false },
-    { role: 'assistant', body: 'partial', pending: false },
   ]);
   assert.deepEqual(renderedMessages.at(-1), { chatId: 9, options: { preserveViewport: true } });
 });
@@ -396,9 +395,9 @@ test('hydrateChatAfterGracefulResumeCompletion does not let inactive terminal re
   assert.equal(renderTraceLogs.at(-1)?.details.skipped, true);
 });
 
-test('hydrateChatAfterGracefulResumeCompletion preserves local final assistant when completed hydrate is temporarily stale', async () => {
+test('hydrateChatAfterGracefulResumeCompletion replaces a stale same-turn hydrated assistant with the completed local final reply instead of appending a duplicate', async () => {
   const phases = new Map();
-  const histories = new Map([[9, [{ role: 'assistant', body: 'final local reply', pending: true }]]]);
+  const histories = new Map([[9, [{ role: 'assistant', body: 'final local reply', pending: false }]]]);
   const renderedMessages = [];
   const controller = streamController.createController({
     parseSseEvent: sharedUtils.parseSseEvent,
@@ -456,10 +455,83 @@ test('hydrateChatAfterGracefulResumeCompletion preserves local final assistant w
   await controller.hydrateChatAfterGracefulResumeCompletion(9, { forceCompleted: true });
 
   assert.deepEqual(histories.get(9), [
-    { role: 'assistant', body: 'older server reply', pending: false },
     { role: 'assistant', body: 'final local reply', pending: false },
   ]);
-  assert.deepEqual(renderedMessages.at(-1), { chatId: 9, options: { preserveViewport: true } });
+  assert.deepEqual(renderedMessages, []);
+});
+
+test('hydrateChatAfterGracefulResumeCompletion keeps a newer hydrated assistant turn instead of reviving an older completed local reply', async () => {
+  const phases = new Map();
+  const histories = new Map([[9, [
+    { role: 'user', body: 'older question', pending: false },
+    { role: 'assistant', body: 'older local reply', pending: false },
+  ]]]);
+  const controller = streamController.createController({
+    parseSseEvent: sharedUtils.parseSseEvent,
+    formatLatency: sharedUtils.formatLatency,
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: (chatId) => phases.get(Number(chatId)) || streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: (chatId, phase) => phases.set(Number(chatId), phase),
+    isPatchPhaseAllowed: () => false,
+    chats: new Map([[9, { id: 9, pending: false }]]),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    finalizeInlineToolTrace: () => {},
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    patchVisiblePendingAssistant: () => false,
+    patchVisibleToolTrace: () => false,
+    renderTraceLog: () => {},
+    syncActiveMessageView: () => {},
+    scheduleActiveMessageView: () => {},
+    setChatLatency: () => {},
+    incrementUnread: () => {},
+    getActiveChatId: () => 9,
+    triggerIncomingMessageHaptic: () => {},
+    messagesEl: null,
+    promptEl: { focus: () => {} },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    streamDebugLog: () => {},
+    finalizeStreamPendingState: () => {},
+    appendInlineToolTrace: () => {},
+    loadChatHistory: async () => ({
+      chat: { id: 9, pending: false, title: 'chat-9' },
+      history: [
+        { role: 'user', body: 'older question', pending: false },
+        { role: 'assistant', body: 'older server reply', pending: false },
+        { role: 'user', body: 'newer question', pending: false },
+        { role: 'assistant', body: 'newer hydrated reply', pending: false },
+      ],
+    }),
+    upsertChat: () => {},
+    histories,
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    renderMessages: () => {},
+    persistStreamCursor: () => {},
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+  });
+
+  await controller.hydrateChatAfterGracefulResumeCompletion(9, { forceCompleted: true });
+
+  assert.deepEqual(histories.get(9), [
+    { role: 'user', body: 'older question', pending: false },
+    { role: 'assistant', body: 'older server reply', pending: false },
+    { role: 'user', body: 'newer question', pending: false },
+    { role: 'assistant', body: 'newer hydrated reply', pending: false },
+  ]);
 });
 
 test('consumeStreamWithReconnect invokes reconnect callback only on early close', async () => {

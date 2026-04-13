@@ -2390,6 +2390,7 @@ chatHistoryController = chatHistoryHelpers.createController({
     return runtimeHelpers.shouldResumeOnVisibilityChange(args);
   },
   shouldDeferNonCriticalCachedOpen: () => !mobileQuoteMode && document.visibilityState === 'visible',
+  triggerIncomingMessageHaptic,
   getRenderedTranscriptSignature: (chatId) => {
     const key = Number(chatId);
     if (!key || key !== Number(renderedChatId)) return '';
