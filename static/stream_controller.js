@@ -568,6 +568,8 @@
       resetReconnectResumeBudget,
       upsertChat,
       histories,
+      chats,
+      pendingChats,
       mergeHydratedHistory,
       renderMessages,
       renderTraceLog,
@@ -589,15 +591,13 @@
         resetReconnectResumeBudget?.(key);
       }
       try {
-        const hydrated = await loadChatHistory(key, { activate: Number(getActiveChatId()) === key });
+        const isActiveChat = Number(getActiveChatId()) === key;
+        const hydrated = await loadChatHistory(key, { activate: isActiveChat });
         const hydratedChat = hydrated && typeof hydrated === "object" && hydrated.chat && typeof hydrated.chat === "object"
           ? { ...hydrated.chat }
           : hydrated?.chat;
         if (forceCompleted && hydratedChat && typeof hydratedChat === "object") {
           hydratedChat.pending = false;
-        }
-        if (typeof upsertChat === "function") {
-          upsertChat(hydratedChat);
         }
         const previousHistory = histories?.get?.(key) || [];
         const previousAssistantSignature = latestAssistantRenderSignature(previousHistory);
@@ -613,10 +613,33 @@
         if (forceCompleted) {
           nextHistory = preserveLatestCompletedAssistantMessage(previousHistory, nextHistory);
         }
-        histories?.set?.(key, nextHistory);
         const nextAssistantSignature = latestAssistantRenderSignature(nextHistory);
         const nextTranscriptSignature = transcriptRenderSignature(nextHistory);
-        const renderedTranscriptSignature = Number(getActiveChatId()) === key && typeof getRenderedTranscriptSignature === 'function'
+        const localChat = chats?.get?.(key) || null;
+        const localPending = Boolean(localChat?.pending) || Boolean(pendingChats?.has?.(key));
+        const shouldSkipInactiveTerminalCommit = Boolean(
+          forceCompleted
+          && !isActiveChat
+          && localPending
+          && previousTranscriptSignature === nextTranscriptSignature
+        );
+        renderTraceLog("stream-done-hydrate-commit-check", {
+          chatId: key,
+          forceCompleted: Boolean(forceCompleted),
+          active: Boolean(isActiveChat),
+          localPending,
+          previousTranscriptSignature,
+          nextTranscriptSignature,
+          skipped: shouldSkipInactiveTerminalCommit,
+        });
+        if (shouldSkipInactiveTerminalCommit) {
+          return;
+        }
+        if (typeof upsertChat === "function") {
+          upsertChat(hydratedChat);
+        }
+        histories?.set?.(key, nextHistory);
+        const renderedTranscriptSignature = isActiveChat && typeof getRenderedTranscriptSignature === 'function'
           ? String(getRenderedTranscriptSignature(key) || '')
           : '';
         const shouldRenderActiveChat = Number(getActiveChatId()) === key

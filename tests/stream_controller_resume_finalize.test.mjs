@@ -312,7 +312,7 @@ test('hydrateChatAfterGracefulResumeCompletion clears reconnect recovery state w
   const harness = buildControllerHarness({
     loadChatHistory: async (chatId) => ({
       chat: { id: Number(chatId), pending: true, title: `chat-${chatId}` },
-      history: [{ role: 'assistant', body: 'hydrated', pending: false }],
+      history: [{ role: 'assistant', body: 'hydrated', pending: true }],
     }),
   });
 
@@ -323,6 +323,77 @@ test('hydrateChatAfterGracefulResumeCompletion clears reconnect recovery state w
     harness.timeoutCalls.filter((entry) => entry.type === 'reset-budget'),
     [{ type: 'reset-budget', chatId: 9 }],
   );
+});
+
+test('hydrateChatAfterGracefulResumeCompletion does not let inactive terminal reconciliation clear pending or overwrite unchanged transcript', async () => {
+  const phases = new Map();
+  const histories = new Map([[9, [{ role: 'assistant', body: 'old cached reply', pending: false }]]]);
+  const chats = new Map([[9, { id: 9, pending: true, unread_count: 1 }]]);
+  const pendingChats = new Set([9]);
+  const chatsUpserted = [];
+  const renderTraceLogs = [];
+  const controller = streamController.createController({
+    parseSseEvent: sharedUtils.parseSseEvent,
+    formatLatency: sharedUtils.formatLatency,
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: (chatId) => phases.get(Number(chatId)) || streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: (chatId, phase) => phases.set(Number(chatId), phase),
+    isPatchPhaseAllowed: () => false,
+    chats,
+    pendingChats,
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    finalizeInlineToolTrace: () => {},
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    patchVisiblePendingAssistant: () => false,
+    patchVisibleToolTrace: () => false,
+    renderTraceLog: (eventName, details = {}) => renderTraceLogs.push({ eventName, details }),
+    syncActiveMessageView: () => {},
+    scheduleActiveMessageView: () => {},
+    setChatLatency: () => {},
+    incrementUnread: () => {},
+    getActiveChatId: () => 0,
+    triggerIncomingMessageHaptic: () => {},
+    messagesEl: null,
+    promptEl: { focus: () => {} },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    streamDebugLog: () => {},
+    finalizeStreamPendingState: () => {},
+    appendInlineToolTrace: () => {},
+    loadChatHistory: async () => ({
+      chat: { id: 9, pending: false, unread_count: 0, title: 'chat-9' },
+      history: [{ role: 'assistant', body: 'old cached reply', pending: false }],
+    }),
+    upsertChat: (chat) => chatsUpserted.push(chat),
+    histories,
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    renderMessages: () => {},
+    persistStreamCursor: () => {},
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    clearReconnectResumeBlock: () => {},
+    resetReconnectResumeBudget: () => {},
+  });
+
+  await controller.hydrateChatAfterGracefulResumeCompletion(9, { forceCompleted: true });
+
+  assert.deepEqual(histories.get(9), [{ role: 'assistant', body: 'old cached reply', pending: false }]);
+  assert.deepEqual(chatsUpserted, []);
+  assert.equal(chats.get(9).pending, true);
+  assert.equal(renderTraceLogs.at(-1)?.eventName, 'stream-done-hydrate-commit-check');
+  assert.equal(renderTraceLogs.at(-1)?.details.skipped, true);
 });
 
 test('hydrateChatAfterGracefulResumeCompletion preserves local final assistant when completed hydrate is temporarily stale', async () => {

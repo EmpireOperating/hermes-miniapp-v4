@@ -30,7 +30,7 @@ test('syncVisibleActiveChat hydrates active history and resumes pending streams 
   assert.deepEqual(harness.markReadCalls, []);
   assert.deepEqual(harness.apiCalls.at(0), {
     path: '/api/chats/history',
-    payload: { chat_id: 7, activate: false },
+    payload: { chat_id: 7, activate: true },
   });
 });
 
@@ -101,6 +101,45 @@ test('syncVisibleActiveChat retries once when unread advances but first hydrate 
   assert.deepEqual(harness.histories.get(7), [{ id: 2, role: 'assistant', body: 'fresh final reply' }]);
   assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
   assert.deepEqual(harness.resumedChats, []);
+});
+
+test('syncVisibleActiveChat treats visible resume like an activation fetch so active hidden chats catch up even when unread markers stay zero', async () => {
+  let historyCalls = 0;
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        historyCalls += 1;
+        if (payload.activate === true) {
+          return {
+            chat: { id: Number(payload.chat_id), pending: false, unread_count: 0, newest_unread_message_id: 0 },
+            history: [{ id: 2, role: 'assistant', body: 'fresh final reply' }],
+          };
+        }
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0, newest_unread_message_id: 0 },
+          history: [{ id: 1, role: 'assistant', body: 'old cached reply' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.chats.set(7, { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'old cached reply' }]);
+
+  await harness.controller.syncVisibleActiveChat({
+    hidden: false,
+    streamAbortControllers: new Map(),
+  });
+
+  assert.equal(historyCalls, 1);
+  assert.deepEqual(harness.apiCalls.at(0), {
+    path: '/api/chats/history',
+    payload: { chat_id: 7, activate: true },
+  });
+  assert.deepEqual(harness.histories.get(7), [{ id: 2, role: 'assistant', body: 'fresh final reply' }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
 });
 
 test('syncVisibleActiveChat finalizes stale local pending tool traces when hydrate already includes the completed assistant reply', async () => {
@@ -629,7 +668,7 @@ test('syncVisibleActiveChat does not consume active-chat unread on visibility re
   assert.deepEqual(harness.markReadCalls, []);
   assert.deepEqual(harness.apiCalls.at(0), {
     path: '/api/chats/history',
-    payload: { chat_id: 7, activate: false },
+    payload: { chat_id: 7, activate: true },
   });
   assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
 });

@@ -940,6 +940,28 @@
       }
     }
 
+    function isLaggingPrefetchResult(chatId, chat) {
+      const key = normalizeChatId(chatId);
+      if (!key || !chat || typeof chat !== 'object') {
+        return false;
+      }
+      const localChat = chats?.get?.(key) || null;
+      if (!localChat || typeof localChat !== 'object') {
+        return false;
+      }
+      const localUnread = Math.max(0, Number(localChat.unread_count || 0));
+      const incomingUnread = Math.max(0, Number(chat.unread_count || 0));
+      if (localUnread > incomingUnread) {
+        return true;
+      }
+      const localUnreadAnchor = Math.max(0, Number(localChat.newest_unread_message_id || 0));
+      const incomingUnreadAnchor = Math.max(0, Number(chat.newest_unread_message_id || 0));
+      if (localUnreadAnchor > incomingUnreadAnchor) {
+        return true;
+      }
+      return Boolean(localChat.pending) && !Boolean(chat.pending);
+    }
+
     function prefetchChatHistory(chatId) {
       const key = normalizeChatId(chatId);
       if (!key || histories.has(key) || prefetchingHistories.has(key)) {
@@ -952,6 +974,19 @@
       });
       void loadChatHistory(key, { activate: false })
         .then((data) => {
+          const activeNow = isActiveChat(key);
+          const cacheFilledElsewhere = histories.has(key);
+          const laggingPrefetchResult = isLaggingPrefetchResult(key, data?.chat);
+          if (activeNow || cacheFilledElsewhere || laggingPrefetchResult) {
+            traceChatHistory('prefetch-skipped-commit', {
+              chatId: key,
+              activeNow,
+              cacheFilledElsewhere,
+              laggingPrefetchResult,
+              durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
+            });
+            return;
+          }
           upsertChatPreservingUnread(data.chat);
           histories.set(key, data.history || []);
           traceChatHistory('prefetch-finished', {
@@ -1511,8 +1546,9 @@
       if (!activeId) return;
       const visibleRequestId = visibleSyncGeneration + 1;
       visibleSyncGeneration = visibleRequestId;
+      const activateVisibleChat = !hidden;
 
-      let data = await loadChatHistory(activeId, { activate: false });
+      let data = await loadChatHistory(activeId, { activate: activateVisibleChat });
       const latestActiveId = normalizeChatId(getActiveChatId());
       if (latestActiveId !== activeId || visibleRequestId !== visibleSyncGeneration) return;
       const previousHistory = histories.get(activeId) || [];
@@ -1525,7 +1561,7 @@
         data,
         requestId: visibleRequestId,
         retryEventName: 'visibility-unread-retry',
-        retryActivate: false,
+        retryActivate: activateVisibleChat,
       });
       ({
         data,

@@ -878,3 +878,72 @@ test('warmChatHistoryCache prefetches the first uncached tab immediately without
   );
 });
 
+
+test('prefetchChatHistory does not clobber a chat that became active while the prefetch was in flight', async () => {
+  let resolveHistory;
+  const historyPromise = new Promise((resolve) => {
+    resolveHistory = resolve;
+  });
+  const harness = buildHarness({
+    chats: new Map([
+      [7, { id: 7, pending: false }],
+      [8, { id: 8, pending: false, unread_count: 0, newest_unread_message_id: 0 }],
+    ]),
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history' && Number(payload.chat_id) === 8) {
+        return historyPromise;
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  harness.controller.prefetchChatHistory(8);
+  harness.setActiveChatId(8);
+  harness.histories.set(8, [{ id: 22, role: 'assistant', body: 'fresh active hydrate' }]);
+  resolveHistory({
+    chat: { id: 8, pending: false, unread_count: 0, newest_unread_message_id: 0 },
+    history: [{ id: 11, role: 'assistant', body: 'stale prefetched history' }],
+  });
+  await historyPromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.histories.get(8), [{ id: 22, role: 'assistant', body: 'fresh active hydrate' }]);
+  assert.equal(harness.renderTraceLogs.at(-1)?.eventName, 'chat-history-prefetch-skipped-commit');
+  assert.equal(harness.renderTraceLogs.at(-1)?.details?.chatId, 8);
+  assert.equal(harness.renderTraceLogs.at(-1)?.details?.activeNow, true);
+  assert.equal(harness.renderTraceLogs.at(-1)?.details?.cacheFilledElsewhere, true);
+  assert.equal(harness.renderTraceLogs.at(-1)?.details?.laggingPrefetchResult, false);
+});
+
+
+test('prefetchChatHistory skips warming stale history when local unread or pending metadata is ahead of the non-activating fetch', async () => {
+  const harness = buildHarness({
+    chats: new Map([
+      [7, { id: 7, pending: false }],
+      [8, { id: 8, pending: true, unread_count: 1, newest_unread_message_id: 99 }],
+    ]),
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history' && Number(payload.chat_id) === 8) {
+        return {
+          chat: { id: 8, pending: false, unread_count: 0, newest_unread_message_id: 0 },
+          history: [{ id: 11, role: 'assistant', body: 'stale prefetched history' }],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  harness.controller.prefetchChatHistory(8);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(harness.histories.has(8), false);
+  assert.equal(harness.upsertedChats.length, 0);
+  assert.equal(harness.renderTraceLogs.at(-1)?.eventName, 'chat-history-prefetch-skipped-commit');
+  assert.equal(harness.renderTraceLogs.at(-1)?.details?.chatId, 8);
+  assert.equal(harness.renderTraceLogs.at(-1)?.details?.activeNow, false);
+  assert.equal(harness.renderTraceLogs.at(-1)?.details?.cacheFilledElsewhere, false);
+  assert.equal(harness.renderTraceLogs.at(-1)?.details?.laggingPrefetchResult, true);
+});
+
