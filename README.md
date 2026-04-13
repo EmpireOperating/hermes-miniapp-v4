@@ -92,6 +92,16 @@ cp .env.example .env
   - `HERMES_API_URL`, or
   - local agent/CLI configuration
 
+Important: `MINI_APP_URL` should be an HTTPS URL on a domain you control. Telegram Mini Apps need a real HTTPS origin, so most operators will need DNS even if the app is only for their own private use.
+
+The domain name itself does not matter much. It does not need to be a public brand domain or a memorable name. If you do not already have a domain you want to use, the cheapest domain you can buy and control is usually fine.
+
+What matters is:
+- you control the domain or subdomain
+- DNS points it at your reverse proxy or tunnel
+- the URL serves valid HTTPS
+- the value in `MINI_APP_URL` matches the URL your bot opens
+
 4. Start the server.
 
 ```bash

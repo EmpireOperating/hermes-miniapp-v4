@@ -23,6 +23,24 @@ At minimum, configure:
   - `HERMES_API_URL`, or
   - local agent runtime variables
 
+## Why you need a domain / DNS
+
+Telegram Mini Apps expect an HTTPS URL. In practice, that means most deployments need a domain or subdomain you control so `MINI_APP_URL` can point at a real HTTPS origin.
+
+This is often the biggest setup friction for new operators, so the important thing to know is:
+- the domain name itself is usually not important
+- it does not need to be a meaningful public brand name
+- if you do not already have a domain to use, the cheapest domain you can buy and control is usually good enough
+- a subdomain you already control is also fine
+
+What actually matters is:
+- you control the DNS for the domain/subdomain
+- it resolves to your reverse proxy or tunnel
+- the site presents valid HTTPS
+- `MINI_APP_URL` exactly matches the URL your Telegram bot is configured to open
+
+Even if the Mini App is mainly for your own use, you still typically need this DNS + HTTPS layer because Telegram launches the web app from a URL, not from a local filesystem path.
+
 ## Suggested production hardening
 
 Review and set these based on your deployment:
