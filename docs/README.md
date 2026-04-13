@@ -15,6 +15,8 @@ The docs tree is intended to stay scoped to Hermes Mini App. Unrelated project d
 
 - `setup.md`
   - canonical bootstrap, including `scripts/setup.sh`, `scripts/setup.ps1`, the portable Python fallback, config, doctor, and platform-support walkthrough
+- `setup-troubleshooting.md`
+  - keyed troubleshooting matrix for setup doctor failures and warnings, including DNS/domain and Windows-mode guidance
 - `architecture.md`
   - high-level component and request-flow overview
 - `deployment.md`

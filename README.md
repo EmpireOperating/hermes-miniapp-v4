@@ -161,7 +161,7 @@ What matters is:
 - the URL serves valid HTTPS
 - the value in `MINI_APP_URL` matches the URL your bot opens
 
-For a fuller walkthrough, platform notes, and troubleshooting, see `docs/setup.md`.
+For a fuller walkthrough, platform notes, and troubleshooting, see `docs/setup.md` and `docs/setup-troubleshooting.md`.
 
 ## Local Hermes Agent runtime configuration
 

@@ -24,6 +24,36 @@ class CheckResult:
     fix: str | None = None
 
 
+def summarize_by_status(results: list[CheckResult]) -> dict[str, list[CheckResult]]:
+    grouped = {"FAIL": [], "WARN": [], "PASS": []}
+    for result in results:
+        grouped.setdefault(result.status, []).append(result)
+    return grouped
+
+
+def recommended_next_steps(results: list[CheckResult]) -> list[str]:
+    grouped = summarize_by_status(results)
+    failures = grouped.get("FAIL", [])
+    warnings = grouped.get("WARN", [])
+    steps: list[str] = []
+
+    if any(result.key in {"venv", "dependencies", "env_file"} for result in failures):
+        steps.append("Run scripts/setup.sh (or ./scripts/setup.ps1 on Windows) to create .venv, install dependencies, and write .env if missing.")
+    if any(result.key == "telegram_bot_token" for result in failures):
+        steps.append("Edit .env and set TELEGRAM_BOT_TOKEN to your real bot token.")
+    if any(result.key == "mini_app_url" for result in failures):
+        steps.append("Edit .env and set MINI_APP_URL to the exact HTTPS URL your Telegram bot will open.")
+    if any(result.key == "hermes_backend" for result in failures):
+        steps.append("Choose one Hermes backend path: HERMES_STREAM_URL, HERMES_API_URL, or explicit local Hermes agent/CLI settings.")
+    if any(result.key == "dns" for result in warnings):
+        steps.append("If MINI_APP_URL is set, point that hostname at your reverse proxy or tunnel and wait for DNS to propagate.")
+    if any(result.key == "platform_mode" and result.status == "WARN" for result in warnings):
+        steps.append("On Windows, prefer HTTP-backed Hermes mode (HERMES_STREAM_URL or HERMES_API_URL) for the smoothest setup.")
+    if not steps and not failures:
+        steps.append("Setup looks good. Start the app with: python server.py")
+    return steps
+
+
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -301,7 +331,34 @@ def summarize_exit_code(results: list[CheckResult]) -> int:
 
 
 def format_human_output(results: list[CheckResult]) -> str:
+    grouped = summarize_by_status(results)
+    failures = grouped.get("FAIL", [])
+    warnings = grouped.get("WARN", [])
+
     lines = ["Hermes Mini App setup doctor", ""]
+    if failures:
+        lines.append(f"Blocking issues ({len(failures)}):")
+        for result in failures:
+            lines.append(f"- {result.key}: {result.summary}")
+        lines.append("")
+    else:
+        lines.append("Blocking issues: none")
+        lines.append("")
+
+    if warnings:
+        lines.append(f"Warnings to fix next ({len(warnings)}):")
+        for result in warnings:
+            lines.append(f"- {result.key}: {result.summary}")
+        lines.append("")
+    else:
+        lines.append("Warnings to fix next: none")
+        lines.append("")
+
+    lines.append("Recommended next steps:")
+    for index, step in enumerate(recommended_next_steps(results), start=1):
+        lines.append(f"{index}. {step}")
+    lines.append("")
+    lines.append("Full check details:")
     for result in results:
         lines.append(f"[{result.status}] {result.key}: {result.summary}")
         if result.detail:
@@ -321,7 +378,16 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     results = run_checks(project_root())
     if args.json:
-        print(json.dumps({"results": [asdict(result) for result in results]}, indent=2))
+        grouped = summarize_by_status(results)
+        print(json.dumps({
+            "results": [asdict(result) for result in results],
+            "summary": {
+                "fail_count": len(grouped.get("FAIL", [])),
+                "warn_count": len(grouped.get("WARN", [])),
+                "pass_count": len(grouped.get("PASS", [])),
+                "next_steps": recommended_next_steps(results),
+            },
+        }, indent=2))
     else:
         print(format_human_output(results))
     return summarize_exit_code(results)

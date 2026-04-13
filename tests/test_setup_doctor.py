@@ -59,17 +59,45 @@ def test_format_human_output_and_exit_code() -> None:
     results = [
         setup_doctor.CheckResult("python", "PASS", "ok"),
         setup_doctor.CheckResult("env", "FAIL", "missing", fix="do the thing"),
+        setup_doctor.CheckResult("dns", "WARN", "not propagated yet", fix="wait"),
     ]
 
     output = setup_doctor.format_human_output(results)
 
+    assert "Blocking issues (1):" in output
+    assert "Warnings to fix next (1):" in output
+    assert "Recommended next steps:" in output
+    assert "Full check details:" in output
     assert "[PASS] python: ok" in output
     assert "[FAIL] env: missing" in output
     assert setup_doctor.summarize_exit_code(results) == 1
 
 
+def test_recommended_next_steps_prioritize_bootstrap_and_config() -> None:
+    results = [
+        setup_doctor.CheckResult("venv", "FAIL", "missing"),
+        setup_doctor.CheckResult("telegram_bot_token", "FAIL", "missing"),
+        setup_doctor.CheckResult("mini_app_url", "FAIL", "missing"),
+        setup_doctor.CheckResult("hermes_backend", "FAIL", "missing"),
+        setup_doctor.CheckResult("dns", "WARN", "pending"),
+        setup_doctor.CheckResult("platform_mode", "WARN", "windows guidance"),
+    ]
+
+    steps = setup_doctor.recommended_next_steps(results)
+
+    assert any("scripts/setup.sh" in step for step in steps)
+    assert any("TELEGRAM_BOT_TOKEN" in step for step in steps)
+    assert any("MINI_APP_URL" in step for step in steps)
+    assert any("HERMES_STREAM_URL" in step for step in steps)
+    assert any("DNS" in step or "hostname" in step for step in steps)
+    assert any("Windows" in step for step in steps)
+
+
 def test_main_json_output(monkeypatch, capsys) -> None:
-    fake_results = [setup_doctor.CheckResult("python", "PASS", "ok")]
+    fake_results = [
+        setup_doctor.CheckResult("python", "PASS", "ok"),
+        setup_doctor.CheckResult("dns", "WARN", "pending"),
+    ]
     monkeypatch.setattr(setup_doctor, "run_checks", lambda _root: fake_results)
 
     exit_code = setup_doctor.main(["--json"])
@@ -78,3 +106,7 @@ def test_main_json_output(monkeypatch, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["results"][0]["key"] == "python"
     assert payload["results"][0]["status"] == "PASS"
+    assert payload["summary"]["fail_count"] == 0
+    assert payload["summary"]["warn_count"] == 1
+    assert payload["summary"]["pass_count"] == 1
+    assert payload["summary"]["next_steps"]

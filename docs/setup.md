@@ -4,6 +4,8 @@ This guide is the canonical setup path for Hermes Mini App v4.
 
 If you only read one setup document, read this one.
 
+If the setup doctor reports a failure or warning you do not understand, go straight to `setup-troubleshooting.md`.
+
 ## Recommended path
 
 Use this path unless you already know you want something else:
@@ -157,6 +159,11 @@ Use JSON output for automation:
 python scripts/setup_doctor.py --json
 ```
 
+The JSON output includes:
+- per-check results
+- fail/warn/pass counts
+- a `summary.next_steps` list that an agent or script can surface directly
+
 ## Choosing a Hermes backend mode
 
 ### Recommended: HTTP-backed Hermes mode
@@ -204,17 +211,6 @@ Node:
 node --test tests/*.mjs
 ```
 
-## Troubleshooting by doctor result
+## Troubleshooting
 
-- `.env is missing`
-  - run `python scripts/setup_bootstrap.py --write-env-if-missing`
-- `TELEGRAM_BOT_TOKEN is missing or still set to a placeholder value`
-  - edit `.env` and paste your real bot token
-- `MINI_APP_URL must be a full HTTPS URL`
-  - use your real Telegram-facing HTTPS URL, not `http://localhost`
-- `Could not resolve <host> yet`
-  - set up DNS and wait for propagation
-- `No Hermes execution path detected`
-  - configure `HERMES_STREAM_URL`, `HERMES_API_URL`, or a local Hermes path
-- `Windows detected. Local Hermes runtime mode is not yet a fully first-class path`
-  - prefer HTTP-backed Hermes mode or use Linux/macOS for local-runtime-heavy workflows
+Use `setup-troubleshooting.md` for a keyed troubleshooting matrix based on the doctor output.
