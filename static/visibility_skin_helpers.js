@@ -27,6 +27,7 @@
       maybeRefreshForBootstrapVersionMismatch = null,
       markBackgrounded = null,
       markVisibilityResume = null,
+      getPresenceInstanceId = null,
     } = deps;
 
     async function syncUnreadNotificationPresence(options = {}) {
@@ -35,6 +36,9 @@
         visible = true,
         chatId = Number(getActiveChatId()),
       } = options;
+      const instanceId = typeof getPresenceInstanceId === 'function'
+        ? String(getPresenceInstanceId() || '').trim()
+        : '';
       if (!visible) {
         try {
           await fetchImpl('/api/presence/state', {
@@ -45,7 +49,7 @@
             },
             credentials: 'same-origin',
             keepalive: true,
-            body: JSON.stringify({ visible: false }),
+            body: JSON.stringify({ visible: false, instance_id: instanceId || undefined }),
           });
         } catch {
           // best effort hidden-state sync
@@ -55,7 +59,11 @@
       const normalizedChatId = Number(chatId || 0);
       if (normalizedChatId <= 0) return null;
       try {
-        return await apiPost('/api/presence/state', { visible: true, chat_id: normalizedChatId });
+        return await apiPost('/api/presence/state', {
+          visible: true,
+          chat_id: normalizedChatId,
+          instance_id: instanceId || undefined,
+        });
       } catch {
         return null;
       }

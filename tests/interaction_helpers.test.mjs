@@ -1182,6 +1182,107 @@ test('selection quote button pointerdown applies quote immediately for touch poi
   assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state', 'apply:quoted text']);
 });
 
+test('desktop quote button pointerdown prevents button focus theft while leaving click insertion to the click handler', () => {
+  const calls = [];
+  const listeners = new Map();
+  const selectionQuoteButton = {
+    hidden: false,
+    addEventListener(type, handler) {
+      listeners.set(type, handler);
+    },
+  };
+  const messagesEl = {
+    contains: () => false,
+    addEventListener: () => {},
+  };
+  const controller = interaction.createSelectionQuoteController({
+    mobileQuoteMode: false,
+    windowObject: { getSelection: () => ({ removeAllRanges: () => calls.push('remove-ranges') }) },
+    documentObject: {
+      activeElement: selectionQuoteButton,
+      getSelection: () => null,
+      addEventListener: () => {},
+    },
+    promptEl: {},
+    messagesEl,
+    selectionQuoteButton,
+    selectionQuoteState: { getText: () => 'quoted text', clearPlacement: () => calls.push('clear-placement') },
+    activeSelectionQuote: () => null,
+    cancelSelectionQuoteSync: () => calls.push('cancel-sync'),
+    cancelSelectionQuoteSettle: () => calls.push('cancel-settle'),
+    cancelSelectionQuoteClear: () => calls.push('cancel-clear'),
+    scheduleSelectionQuoteSync: () => calls.push('schedule-sync'),
+    scheduleSelectionQuoteClear: () => calls.push('schedule-clear'),
+    applyQuoteIntoPrompt: (text) => calls.push(`apply:${text}`),
+    clearSelectionQuoteState: () => calls.push('clear-state'),
+  });
+
+  controller.bind();
+
+  let prevented = false;
+  let stopped = false;
+  listeners.get('pointerdown')?.({
+    pointerType: 'mouse',
+    preventDefault() {
+      prevented = true;
+    },
+    stopPropagation() {
+      stopped = true;
+    },
+  });
+  listeners.get('click')?.();
+
+  assert.equal(prevented, true);
+  assert.equal(stopped, false);
+  assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'cancel-clear', 'remove-ranges', 'clear-state', 'apply:quoted text']);
+});
+
+test('desktop quote button mousedown fallback prevents button focus theft when PointerEvent is unavailable', () => {
+  const listeners = new Map();
+  const selectionQuoteButton = {
+    hidden: false,
+    addEventListener(type, handler) {
+      listeners.set(type, handler);
+    },
+  };
+  const messagesEl = {
+    contains: () => false,
+    addEventListener: () => {},
+  };
+  const controller = interaction.createSelectionQuoteController({
+    mobileQuoteMode: false,
+    windowObject: { getSelection: () => ({ removeAllRanges: () => {} }) },
+    documentObject: {
+      activeElement: selectionQuoteButton,
+      getSelection: () => null,
+      addEventListener: () => {},
+    },
+    promptEl: {},
+    messagesEl,
+    selectionQuoteButton,
+    selectionQuoteState: { getText: () => 'quoted text', clearPlacement: () => {} },
+    activeSelectionQuote: () => null,
+    cancelSelectionQuoteSync: () => {},
+    cancelSelectionQuoteSettle: () => {},
+    cancelSelectionQuoteClear: () => {},
+    scheduleSelectionQuoteSync: () => {},
+    scheduleSelectionQuoteClear: () => {},
+    applyQuoteIntoPrompt: () => {},
+    clearSelectionQuoteState: () => {},
+  });
+
+  controller.bind();
+
+  let prevented = false;
+  listeners.get('mousedown')?.({
+    preventDefault() {
+      prevented = true;
+    },
+  });
+
+  assert.equal(prevented, true);
+});
+
 test('interaction controller binds selection quote handlers once and reuses controller instance', () => {
   const messageListeners = [];
   const documentListeners = [];
@@ -1224,7 +1325,7 @@ test('interaction controller binds selection quote handlers once and reuses cont
   const second = controller.bindSelectionQuoteBindings();
 
   assert.equal(first, second);
-  assert.deepEqual(buttonListeners.map(([type]) => type), ['click', 'touchstart', 'pointerdown']);
+  assert.deepEqual(buttonListeners.map(([type]) => type), ['click', 'touchstart', 'pointerdown', 'mousedown']);
   assert.deepEqual(messageListeners.map(([type]) => type), ['mouseup', 'touchstart', 'touchend', 'touchcancel', 'pointerdown', 'pointerup', 'pointercancel']);
   assert.deepEqual(documentListeners.map(([type]) => type), ['selectionchange', 'mousedown', 'touchstart', 'pointerdown']);
 });

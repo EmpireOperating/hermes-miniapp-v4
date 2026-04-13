@@ -68,7 +68,7 @@
   }) {
     if (event.defaultPrevented) return;
     if (event.isComposing) return;
-    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.metaKey) return;
     if (mobileQuoteMode || !isDesktopViewportFn()) return;
     if (settingsModal?.open || hasOpenDialog(documentObject)) return;
 
@@ -79,8 +79,10 @@
     const target = event.target;
     const isTextEntryTarget = isTextEntryElementFn(target);
     const isComposerTarget = Boolean(promptEl && target === promptEl);
-    if (isTextEntryTarget && !(isComposerTarget && event.shiftKey)) return;
-    if (isComposerTarget && !event.shiftKey) return;
+    const isComposerCycleShortcut = isComposerTarget && event.ctrlKey && event.altKey && !event.shiftKey;
+
+    if (isTextEntryTarget && !isComposerCycleShortcut) return;
+    if (!isTextEntryTarget && (event.altKey || event.ctrlKey)) return;
 
     const current = Number(activeChatId);
     if (!current) return;

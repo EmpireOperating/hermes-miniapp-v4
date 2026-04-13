@@ -153,9 +153,19 @@ class AuthBootstrapService:
             history=history,
             chat_pending=bool(serialized_active_chat and serialized_active_chat.get("pending")),
         )
-        if store.get_active_chat(user_id) != int(active_chat_id):
-            store.set_active_chat(user_id=user_id, chat_id=active_chat_id)
         return int(active_chat_id), history
+
+    @staticmethod
+    def parse_preferred_chat_id(payload: dict[str, object]) -> tuple[int | None, tuple[dict[str, object], int] | None]:
+        if "preferred_chat_id" not in payload or payload.get("preferred_chat_id") in (None, ""):
+            return None, None
+        try:
+            preferred_chat_id = int(payload.get("preferred_chat_id"))
+        except (TypeError, ValueError):
+            return None, ({"ok": False, "error": "Invalid preferred_chat_id. Expected positive integer."}, 400)
+        if preferred_chat_id <= 0:
+            return None, ({"ok": False, "error": "Invalid preferred_chat_id. Expected positive integer."}, 400)
+        return preferred_chat_id, None
 
     def auth_success_state(
         self,
@@ -163,6 +173,7 @@ class AuthBootstrapService:
         *,
         auth_mode: str,
         allow_empty: bool = False,
+        preferred_chat_id: int | None = None,
     ) -> dict[str, object]:
         store = self._store_getter()
         runtime = self._runtime_getter()
@@ -176,8 +187,11 @@ class AuthBootstrapService:
         if any(bool(chat.get("pending")) for chat in chats):
             runtime.ensure_pending_jobs(user_id)
 
-        active_chat_id = store.get_active_chat(user_id)
-        if active_chat_id and int(active_chat_id) not in visible_chat_ids:
+        stored_active_chat_id = store.get_active_chat(user_id)
+        active_chat_id = stored_active_chat_id
+        if preferred_chat_id and int(preferred_chat_id) in visible_chat_ids:
+            active_chat_id = int(preferred_chat_id)
+        elif active_chat_id and int(active_chat_id) not in visible_chat_ids:
             active_chat_id = None
 
         if not active_chat_id and not allow_empty:
@@ -198,7 +212,7 @@ class AuthBootstrapService:
         else:
             active_chat_id = None
             history = []
-            if store.get_active_chat(user_id) is not None:
+            if stored_active_chat_id and int(stored_active_chat_id) not in visible_chat_ids:
                 store.clear_active_chat(user_id=user_id)
 
         skin = store.get_skin(user_id=user_id)

@@ -81,6 +81,7 @@
     bootBootstrapVersion = "",
     bootstrapVersionReloadStorageKey = "",
     sessionStorageRef,
+    preferredActiveChatSessionStorageKey = "",
     recordBootMetric = null,
     syncBootLatencyChip = null,
     onBootstrapStage = null,
@@ -171,6 +172,17 @@
       return /temporarily unavailable|try again|timeout/i.test(text);
     }
 
+    function readPreferredChatId() {
+      if (!preferredActiveChatSessionStorageKey) return null;
+      try {
+        const raw = sessionStorageRef?.getItem?.(preferredActiveChatSessionStorageKey);
+        const value = Number(raw || 0);
+        return Number.isFinite(value) && value > 0 ? value : null;
+      } catch {
+        return null;
+      }
+    }
+
     async function fetchAuthBootstrapWithRetry() {
       let lastResponse = null;
       let lastData = null;
@@ -183,10 +195,15 @@
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         onBootstrapStage?.("auth-bootstrap-attempt-start", { attempt });
         try {
+          const preferredChatId = readPreferredChatId();
           const response = await fetchImpl("/api/auth", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ init_data: initData, allow_empty: true }),
+            body: JSON.stringify({
+              init_data: initData,
+              allow_empty: true,
+              preferred_chat_id: preferredChatId || undefined,
+            }),
           });
           const data = await safeReadJson(response);
           if (response.ok && data?.ok) {
@@ -674,6 +691,7 @@
     const {
       desktopTestingEnabled,
       devAuthSessionStorageKey,
+      preferredActiveChatSessionStorageKey = "",
       devAuthControls = null,
       devModeBadge = null,
       devSignInButton = null,
@@ -790,6 +808,7 @@
       bootBootstrapVersion,
       bootstrapVersionReloadStorageKey,
       sessionStorageRef,
+      preferredActiveChatSessionStorageKey,
       recordBootMetric,
       syncBootLatencyChip,
       onBootstrapStage,

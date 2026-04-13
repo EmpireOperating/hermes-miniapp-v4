@@ -146,6 +146,16 @@ def test_parse_allow_empty_flag_rejects_non_boolean_values() -> None:
     assert error == ({"ok": False, "error": "Invalid allow_empty flag. Expected boolean."}, 400)
 
 
+def test_parse_preferred_chat_id_rejects_invalid_values() -> None:
+    preferred_chat_id, error = AuthBootstrapService.parse_preferred_chat_id({"preferred_chat_id": "abc"})
+    assert preferred_chat_id is None
+    assert error == ({"ok": False, "error": "Invalid preferred_chat_id. Expected positive integer."}, 400)
+
+    preferred_chat_id, error = AuthBootstrapService.parse_preferred_chat_id({"preferred_chat_id": 0})
+    assert preferred_chat_id is None
+    assert error == ({"ok": False, "error": "Invalid preferred_chat_id. Expected positive integer."}, 400)
+
+
 def test_build_dev_verified_user_rejects_non_positive_or_non_integer_ids() -> None:
     verified, error = AuthBootstrapService.build_dev_verified_user({"user_id": "abc"})
     assert verified is None
@@ -248,3 +258,36 @@ def test_auth_success_state_does_not_consume_active_chat_unread_on_bootstrap() -
     assert active_chat["newest_unread_message_id"] == 11
     assert store.mark_chat_read_calls == 0
     assert store.mark_chat_read_through_calls == 0
+
+
+def test_auth_success_state_prefers_preferred_chat_without_overwriting_shared_active_chat() -> None:
+    store = _UnreadBootstrapStoreStub()
+    service = _service(store=store)
+    store.active_chat_id = 7
+
+    def list_chats(*, user_id: str):
+        assert user_id == "123"
+        return [
+            {"id": 7, "title": "Ideas", "pending": False, "unread_count": 0, "is_pinned": False},
+            {"id": 9, "title": "Mobile", "pending": False, "unread_count": 0, "is_pinned": False},
+        ]
+
+    def get_history(*, user_id: str, chat_id: int, limit: int = 120):
+        assert user_id == "123"
+        assert limit == 120
+        return [_Turn(id=chat_id, chat_id=chat_id, role="hermes", body=f"history {chat_id}", created_at="2026-04-10T00:00:00Z")]
+
+    store.list_chats = list_chats
+    store.get_history = get_history
+
+    result = service.auth_success_state(
+        SimpleNamespace(id=123, first_name="Operator", username="operator"),
+        auth_mode="telegram",
+        allow_empty=False,
+        preferred_chat_id=9,
+    )
+
+    payload = result["payload"]
+    assert payload["active_chat_id"] == 9
+    assert payload["history"][-1]["body"] == "history 9"
+    assert store.active_chat_id == 7

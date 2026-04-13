@@ -558,10 +558,25 @@
 
       handleQuoteButtonPointerDown(event) {
         const pointerType = String(event?.pointerType || "").toLowerCase();
-        if (!mobileQuoteMode || !pointerType || pointerType === "mouse") return;
+        if (!mobileQuoteMode) {
+          if (!pointerType || pointerType === "mouse") {
+            // Desktop mouse clicks focus buttons on pointerdown before the click
+            // handler runs. Prevent that focus transfer so post-quote caret
+            // restoration targets the composer instead of fighting button focus.
+            event?.preventDefault?.();
+          }
+          return;
+        }
+        if (!pointerType || pointerType === "mouse") return;
         event?.preventDefault?.();
         event?.stopPropagation?.();
         this.handleQuoteButtonClick();
+      },
+
+      handleQuoteButtonMouseDown(event) {
+        if (mobileQuoteMode) return;
+        // Fallback for browsers that dispatch mouse events without PointerEvent.
+        event?.preventDefault?.();
       },
 
       handleMessagesMouseUp() {
@@ -686,6 +701,7 @@
           this.handleQuoteButtonClick();
         }, { passive: false });
         selectionQuoteButton?.addEventListener("pointerdown", (event) => this.handleQuoteButtonPointerDown(event));
+        selectionQuoteButton?.addEventListener("mousedown", (event) => this.handleQuoteButtonMouseDown(event));
         messagesEl.addEventListener("mouseup", () => this.handleMessagesMouseUp());
         messagesEl.addEventListener("touchstart", () => this.handleMessagesTouchStart());
         messagesEl.addEventListener("touchend", () => this.handleMessagesTouchEnd());

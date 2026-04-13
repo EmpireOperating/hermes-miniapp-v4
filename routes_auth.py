@@ -56,8 +56,19 @@ def register_auth_routes(
             secure=cookie_secure_fn(),
         )
 
-    def build_auth_success_response(verified_user, *, auth_mode: str, allow_empty: bool = False) -> Response:
-        state = auth_service.auth_success_state(verified_user, auth_mode=auth_mode, allow_empty=allow_empty)
+    def build_auth_success_response(
+        verified_user,
+        *,
+        auth_mode: str,
+        allow_empty: bool = False,
+        preferred_chat_id: int | None = None,
+    ) -> Response:
+        state = auth_service.auth_success_state(
+            verified_user,
+            auth_mode=auth_mode,
+            allow_empty=allow_empty,
+            preferred_chat_id=preferred_chat_id,
+        )
         payload = dict(state["payload"])
         response = jsonify(payload)
         _set_skin_cookie(response, str(payload.get("skin") or "terminal"))
@@ -75,10 +86,18 @@ def register_auth_routes(
         allow_empty, allow_empty_error = auth_service.parse_allow_empty_flag(payload)
         if allow_empty_error:
             return allow_empty_error
+        preferred_chat_id, preferred_chat_error = auth_service.parse_preferred_chat_id(payload)
+        if preferred_chat_error:
+            return preferred_chat_error
         verified, auth_error = verify_for_json_fn(payload)
         if auth_error:
             return auth_error
-        return build_auth_success_response(verified.user, auth_mode="telegram", allow_empty=bool(allow_empty))
+        return build_auth_success_response(
+            verified.user,
+            auth_mode="telegram",
+            allow_empty=bool(allow_empty),
+            preferred_chat_id=preferred_chat_id,
+        )
 
     @api_bp.post("/dev/auth")
     def dev_auth() -> Response | tuple[dict[str, object], int]:
@@ -89,6 +108,9 @@ def register_auth_routes(
         allow_empty, allow_empty_error = auth_service.parse_allow_empty_flag(payload)
         if allow_empty_error:
             return allow_empty_error
+        preferred_chat_id, preferred_chat_error = auth_service.parse_preferred_chat_id(payload)
+        if preferred_chat_error:
+            return preferred_chat_error
         provided_secret = str(request.headers.get("X-Dev-Auth") or payload.get("secret") or "").strip()
         if not hmac.compare_digest(provided_secret, dev_auth_secret):
             return {"ok": False, "error": "Invalid dev auth secret."}, 401
@@ -105,7 +127,12 @@ def register_auth_routes(
                 extra={"user_id": str(verified.user.id), "username": verified.user.username},
             )
         )
-        return build_auth_success_response(verified.user, auth_mode="dev", allow_empty=bool(allow_empty))
+        return build_auth_success_response(
+            verified.user,
+            auth_mode="dev",
+            allow_empty=bool(allow_empty),
+            preferred_chat_id=preferred_chat_id,
+        )
 
     @api_bp.post("/auth/logout-all")
     def logout_all_sessions() -> Response | tuple[dict[str, object], int]:
@@ -174,6 +201,7 @@ def register_auth_routes(
         visible = payload.get("visible")
         if not isinstance(visible, bool):
             return {"ok": False, "error": "Invalid visible flag. Expected boolean."}, 400
+        instance_id = str(payload.get("instance_id") or "").strip() or None
 
         verified, auth_error = verify_for_json_fn(payload)
         if auth_error:
@@ -181,11 +209,11 @@ def register_auth_routes(
 
         user_id = str(verified.user.id)
         if presence_tracker is None:
-            return jsonify({"ok": True, "visible": visible, "chat_id": None})
+            return jsonify({"ok": True, "visible": visible, "chat_id": None, "instance_id": instance_id})
 
         if not visible:
-            presence_tracker.mark_hidden(user_id=user_id)
-            return jsonify({"ok": True, "visible": False, "chat_id": None})
+            presence_tracker.mark_hidden(user_id=user_id, instance_id=instance_id)
+            return jsonify({"ok": True, "visible": False, "chat_id": None, "instance_id": instance_id})
 
         chat_id_raw = payload.get("chat_id")
         try:
@@ -195,5 +223,10 @@ def register_auth_routes(
         if chat_id <= 0:
             return {"ok": False, "error": "Invalid chat_id. Expected positive integer."}, 400
 
-        presence_tracker.mark_visible(user_id=user_id, chat_id=chat_id, ttl_seconds=presence_lease_ttl_seconds)
-        return jsonify({"ok": True, "visible": True, "chat_id": chat_id})
+        presence_tracker.mark_visible(
+            user_id=user_id,
+            chat_id=chat_id,
+            instance_id=instance_id,
+            ttl_seconds=presence_lease_ttl_seconds,
+        )
+        return jsonify({"ok": True, "visible": True, "chat_id": chat_id, "instance_id": instance_id})

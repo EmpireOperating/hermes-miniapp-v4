@@ -61,17 +61,17 @@ test('handleGlobalTabCycle opens next chat for desktop ArrowRight outside text e
   assert.deepEqual(opened, [8]);
 });
 
-test('handleGlobalTabCycle opens previous/next chat from composer only on Shift+ArrowLeft/ArrowRight', () => {
+test('handleGlobalTabCycle opens previous/next chat from composer only on Ctrl+Alt+ArrowLeft/ArrowRight', () => {
   const opened = [];
   const promptEl = { id: 'composer' };
-  const makeEvent = (key, shiftKey) => {
+  const makeEvent = (key, { altKey = false, ctrlKey = false, shiftKey = false } = {}) => {
     let prevented = false;
     return {
       event: {
         defaultPrevented: false,
         isComposing: false,
-        altKey: false,
-        ctrlKey: false,
+        altKey,
+        ctrlKey,
         metaKey: false,
         shiftKey,
         key,
@@ -102,17 +102,29 @@ test('handleGlobalTabCycle opens previous/next chat from composer only on Shift+
     },
   };
 
-  const plainRight = makeEvent('ArrowRight', false);
+  const plainRight = makeEvent('ArrowRight');
   keyboard.handleGlobalTabCycle(plainRight.event, commonOptions);
   assert.equal(plainRight.wasPrevented(), false);
 
-  const shiftLeft = makeEvent('ArrowLeft', true);
-  keyboard.handleGlobalTabCycle(shiftLeft.event, commonOptions);
-  assert.equal(shiftLeft.wasPrevented(), true);
+  const ctrlOnlyLeft = makeEvent('ArrowLeft', { ctrlKey: true });
+  keyboard.handleGlobalTabCycle(ctrlOnlyLeft.event, commonOptions);
+  assert.equal(ctrlOnlyLeft.wasPrevented(), false);
 
-  const shiftRight = makeEvent('ArrowRight', true);
-  keyboard.handleGlobalTabCycle(shiftRight.event, commonOptions);
-  assert.equal(shiftRight.wasPrevented(), true);
+  const altOnlyRight = makeEvent('ArrowRight', { altKey: true });
+  keyboard.handleGlobalTabCycle(altOnlyRight.event, commonOptions);
+  assert.equal(altOnlyRight.wasPrevented(), false);
+
+  const ctrlAltShiftLeft = makeEvent('ArrowLeft', { ctrlKey: true, altKey: true, shiftKey: true });
+  keyboard.handleGlobalTabCycle(ctrlAltShiftLeft.event, commonOptions);
+  assert.equal(ctrlAltShiftLeft.wasPrevented(), false);
+
+  const ctrlAltLeft = makeEvent('ArrowLeft', { ctrlKey: true, altKey: true });
+  keyboard.handleGlobalTabCycle(ctrlAltLeft.event, commonOptions);
+  assert.equal(ctrlAltLeft.wasPrevented(), true);
+
+  const ctrlAltRight = makeEvent('ArrowRight', { ctrlKey: true, altKey: true });
+  keyboard.handleGlobalTabCycle(ctrlAltRight.event, commonOptions);
+  assert.equal(ctrlAltRight.wasPrevented(), true);
 
   assert.deepEqual(opened, [2, 8]);
 });

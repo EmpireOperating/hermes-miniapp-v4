@@ -79,6 +79,51 @@ test('createHistoryRenderController markStreamUpdate only marks active off-botto
   assert.deepEqual(refreshed, [7]);
 });
 
+test('createHistoryRenderController keeps jump-to-last-start visible whenever a final message target exists', () => {
+  const jumpLatestButton = { hidden: true };
+  const jumpLastStartButton = { hidden: true };
+  const renderedMessages = [
+    { dataset: { messageKey: '1' }, offsetTop: 0 },
+    { dataset: { messageKey: '2' }, offsetTop: 1200 },
+  ];
+  const messagesEl = {
+    scrollHeight: 2400,
+    clientHeight: 400,
+    scrollTop: 150,
+    querySelectorAll(selector) {
+      if (selector === '.message') {
+        return renderedMessages;
+      }
+      return [];
+    },
+    appendChild: () => {},
+  };
+  const controller = renderTraceHistoryHelpers.createHistoryRenderController({
+    messagesEl,
+    jumpLatestButton,
+    jumpLastStartButton,
+    histories: new Map(),
+    virtualizationRanges: new Map(),
+    virtualMetrics: new Map(),
+    renderedHistoryLength: new Map(),
+    renderedHistoryVirtualized: new Map(),
+    unseenStreamChats: new Set(),
+    chatScrollTop: new Map(),
+    chatStickToBottom: new Map(),
+    getActiveChatId: () => 7,
+    getRenderedChatId: () => 7,
+    setRenderedChatId: () => {},
+    appendMessagesFn: () => {},
+    shouldUseAppendOnlyRenderFn: () => false,
+    renderTraceLogFn: () => {},
+  });
+
+  controller.updateJumpLatestVisibility();
+
+  assert.equal(jumpLatestButton.hidden, false);
+  assert.equal(jumpLastStartButton.hidden, false);
+});
+
 test('createHistoryRenderController append-only render preserves absolute history indices for appended nodes', () => {
   const histories = new Map([[7, [
     { id: 1, role: 'operator', body: 'prompt', created_at: '2026-04-08T08:00:00Z' },

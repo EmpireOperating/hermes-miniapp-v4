@@ -347,6 +347,8 @@ const AUTH_BOOTSTRAP_MAX_ATTEMPTS = 3;
 const AUTH_BOOTSTRAP_BASE_DELAY_MS = 220;
 const AUTH_BOOTSTRAP_RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const BOOTSTRAP_VERSION_RELOAD_STORAGE_KEY = "hermes_bootstrap_version_reload_once";
+const PREFERRED_ACTIVE_CHAT_SESSION_STORAGE_KEY = "hermes_preferred_active_chat_id";
+const PRESENCE_INSTANCE_ID_SESSION_STORAGE_KEY = "hermes_presence_instance_id";
 const bootSkin = document.documentElement?.getAttribute("data-skin") || window.__HERMES_SKIN_BOOT__ || "terminal";
 const bootBootstrapVersion = String(window.__HERMES_BOOTSTRAP_VERSION__ || "").trim();
 const skinSyncChannel = (() => {
@@ -1504,10 +1506,49 @@ function createBootstrapAuthControllerDeps(args) {
   };
 }
 
+function readSessionStorageKey(key) {
+  try {
+    return window.sessionStorage?.getItem?.(key) || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionStorageKey(key, value) {
+  try {
+    if (value == null || value === '') {
+      window.sessionStorage?.removeItem?.(key);
+      return;
+    }
+    window.sessionStorage?.setItem?.(key, String(value));
+  } catch {
+    // best effort only
+  }
+}
+
+function getPresenceInstanceId() {
+  const existing = readSessionStorageKey(PRESENCE_INSTANCE_ID_SESSION_STORAGE_KEY);
+  if (existing) return existing;
+  const nextId = `miniapp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  writeSessionStorageKey(PRESENCE_INSTANCE_ID_SESSION_STORAGE_KEY, nextId);
+  return nextId;
+}
+
+function persistPreferredActiveChatId(chatId) {
+  const normalizedChatId = Number(chatId || 0);
+  if (normalizedChatId > 0) {
+    writeSessionStorageKey(PREFERRED_ACTIVE_CHAT_SESSION_STORAGE_KEY, normalizedChatId);
+    return normalizedChatId;
+  }
+  writeSessionStorageKey(PREFERRED_ACTIVE_CHAT_SESSION_STORAGE_KEY, null);
+  return null;
+}
+
 function createBootstrapAuthControllerStateArgs() {
   return {
     desktopTestingEnabled,
     devAuthSessionStorageKey: DEV_AUTH_SESSION_STORAGE_KEY,
+    preferredActiveChatSessionStorageKey: PREFERRED_ACTIVE_CHAT_SESSION_STORAGE_KEY,
     devAuthHashSecret,
     devAuthControls,
     devModeBadge,
@@ -2242,11 +2283,15 @@ const activeChatMetaController = chatHistoryHelpers.createMetaController({
 });
 
 function setActiveChatMeta(chatId, options = {}) {
-  return activeChatMetaController.setActiveChatMeta(chatId, options);
+  const result = activeChatMetaController.setActiveChatMeta(chatId, options);
+  persistPreferredActiveChatId(chatId);
+  return result;
 }
 
 function setNoActiveChatMeta() {
-  return activeChatMetaController.setNoActiveChatMeta();
+  const result = activeChatMetaController.setNoActiveChatMeta();
+  persistPreferredActiveChatId(null);
+  return result;
 }
 
 const composerStateController = composerStateHelpers.createController({
@@ -2529,6 +2574,7 @@ function createVisibilitySkinControllerRuntimeDeps() {
     syncTelegramChromeForSkin,
     getIsAuthenticated: () => isAuthenticated,
     getActiveChatId: () => Number(activeChatId),
+    getPresenceInstanceId,
     refreshChats,
     syncVisibleActiveChat,
     syncActiveMessageView,

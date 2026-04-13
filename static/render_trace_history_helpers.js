@@ -92,11 +92,7 @@
       if (jumpLastStartButton) {
         const renderedMessages = messagesEl?.querySelectorAll?.('.message') || [];
         const lastRenderedMessage = renderedMessages[renderedMessages.length - 1];
-        const showJumpLastStart = Boolean(
-          hasActiveChat
-          && lastRenderedMessage
-          && Number(lastRenderedMessage.offsetTop) < (messagesEl.scrollTop - 6)
-        );
+        const showJumpLastStart = Boolean(hasActiveChat && lastRenderedMessage);
         jumpLastStartButton.hidden = !showJumpLastStart;
       }
     }
