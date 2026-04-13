@@ -92,9 +92,9 @@ test('draft controller loads valid values and ignores malformed storage payloads
   const localStorageRef = {
     getItem() {
       return JSON.stringify({
-        4: 'hello',
+        4: { value: 'hello', ts: 40 },
         nope: 'skip',
-        8: '',
+        8: { value: '', ts: 80 },
       });
     },
     setItem() {
@@ -113,10 +113,11 @@ test('draft controller loads valid values and ignores malformed storage payloads
   assert.equal(draftByChat.size, 1);
   assert.equal(draftByChat.get(4), 'hello');
   assert.equal(drafts.getDraft(4), 'hello');
+  assert.equal(drafts.getDraft(8), '');
   assert.equal(drafts.getDraft(999), '');
 });
 
-test('draft controller setDraft persists add/remove operations', () => {
+test('draft controller setDraft persists timestamped add/remove operations', () => {
   const writes = [];
   const draftByChat = new Map();
   const localStorageRef = {
@@ -132,13 +133,49 @@ test('draft controller setDraft persists add/remove operations', () => {
     localStorageRef,
     draftStorageKey: 'miniapp.drafts',
     draftByChat,
+    nowMs: () => 1_000,
   });
 
   drafts.setDraft(6, 'draft text');
   drafts.setDraft(6, '');
 
   assert.equal(writes.length, 2);
-  assert.deepEqual(writes[0], ['miniapp.drafts', JSON.stringify({ 6: 'draft text' })]);
-  assert.deepEqual(writes[1], ['miniapp.drafts', JSON.stringify({})]);
+  assert.deepEqual(writes[0], ['miniapp.drafts', JSON.stringify({ 6: { value: 'draft text', ts: 1000 } })]);
+  assert.deepEqual(writes[1], ['miniapp.drafts', JSON.stringify({ 6: { value: '', ts: 1000 } })]);
   assert.equal(drafts.getDraft(6), '');
+});
+
+test('draft controller preserves newer drafts from another instance when persisting local changes', () => {
+  const storage = new Map();
+  storage.set('miniapp.drafts', JSON.stringify({
+    4: { value: 'remote newer', ts: 50 },
+    9: { value: 'remote only', ts: 60 },
+  }));
+  const localStorageRef = {
+    getItem(key) {
+      return storage.get(key) || null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const draftByChat = new Map();
+  const drafts = composerStateHelpers.createDraftController({
+    localStorageRef,
+    draftStorageKey: 'miniapp.drafts',
+    draftByChat,
+    nowMs: () => 40,
+  });
+
+  drafts.loadDraftsFromStorage();
+  drafts.setDraft(7, 'local draft');
+
+  assert.equal(drafts.getDraft(4), 'remote newer');
+  assert.equal(drafts.getDraft(7), 'local draft');
+  assert.equal(drafts.getDraft(9), 'remote only');
+  assert.deepEqual(JSON.parse(storage.get('miniapp.drafts')), {
+    4: { value: 'remote newer', ts: 50 },
+    7: { value: 'local draft', ts: 40 },
+    9: { value: 'remote only', ts: 60 },
+  });
 });

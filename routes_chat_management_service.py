@@ -1,11 +1,45 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+import fnmatch
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
 from file_refs import extract_file_refs
+
+DEFAULT_FILE_PREVIEW_DENY_BASENAME_GLOBS: tuple[str, ...] = (
+    ".env",
+    ".env.*",
+    "auth.json",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "*.kdbx",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+)
+DEFAULT_FILE_PREVIEW_DENY_PATH_GLOBS: tuple[str, ...] = (
+    "*/.env",
+    "*/.env.*",
+    ".env",
+    ".env.*",
+    "checkpoints/*",
+    "*/checkpoints/*",
+    "checkpoint/*",
+    "*/checkpoint/*",
+    "pre_restore*/*",
+    "*/pre_restore*/*",
+    ".git/*",
+    "*/.git/*",
+    ".ssh/*",
+    "*/.ssh/*",
+    ".gnupg/*",
+    "*/.gnupg/*",
+)
 
 
 class ChatManagementService:
@@ -269,6 +303,13 @@ class ChatManagementService:
 
         if not self.path_under_allowed_roots(target_path, allowed_roots):
             return self._json_error_fn("File is outside allowed roots.", 403)
+        deny_status = self._file_preview_deny_status(target_path, allowed_roots)
+        if deny_status is not None:
+            return {
+                "ok": False,
+                "error": "File preview is blocked for sensitive files.",
+                "file_preview_status": deny_status,
+            }, 403
 
         try:
             preview = self.build_file_preview(
@@ -286,7 +327,11 @@ class ChatManagementService:
         except OSError:
             return self._json_error_fn("Unable to read file preview", 500)
 
-        return {"ok": True, "preview": preview}, 200
+        return {
+            "ok": True,
+            "preview": preview,
+            "file_preview_status": {"state": "ok"},
+        }, 200
 
     def _file_preview_allowed_roots(self) -> list[Path]:
         raw = str(os.environ.get("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", "")).strip()
@@ -350,6 +395,60 @@ class ChatManagementService:
             except ValueError:
                 continue
         return False
+
+    def _file_preview_deny_basename_globs(self) -> tuple[str, ...]:
+        raw = str(os.environ.get("MINI_APP_FILE_PREVIEW_DENY_BASENAME_GLOBS", "")).strip()
+        if not raw:
+            return DEFAULT_FILE_PREVIEW_DENY_BASENAME_GLOBS
+        values = tuple(str(chunk or "").strip().lower() for chunk in raw.split(os.pathsep) if str(chunk or "").strip())
+        return values or DEFAULT_FILE_PREVIEW_DENY_BASENAME_GLOBS
+
+    def _file_preview_deny_path_globs(self) -> tuple[str, ...]:
+        raw = str(os.environ.get("MINI_APP_FILE_PREVIEW_DENY_PATH_GLOBS", "")).strip()
+        if not raw:
+            return DEFAULT_FILE_PREVIEW_DENY_PATH_GLOBS
+        values = tuple(str(chunk or "").strip().lower() for chunk in raw.split(os.pathsep) if str(chunk or "").strip())
+        return values or DEFAULT_FILE_PREVIEW_DENY_PATH_GLOBS
+
+    def _path_within_allowed_root(self, target: Path, roots: list[Path]) -> tuple[Path, Path] | None:
+        for root in roots:
+            try:
+                relative = target.relative_to(root)
+            except ValueError:
+                continue
+            return root, relative
+        return None
+
+    def _file_preview_deny_status(self, target: Path, roots: list[Path]) -> dict[str, str] | None:
+        match = self._path_within_allowed_root(target, roots)
+        if match is None:
+            return None
+        _, relative = match
+        basename = target.name.lower()
+        relative_path = relative.as_posix().lower()
+        anchored_relative_path = f"/{relative_path}" if relative_path else "/"
+
+        for pattern in self._file_preview_deny_basename_globs():
+            if fnmatch.fnmatch(basename, pattern):
+                return {
+                    "state": "blocked",
+                    "reason": "sensitive_file",
+                    "rule_type": "basename_glob",
+                }
+
+        for pattern in self._file_preview_deny_path_globs():
+            normalized = pattern if pattern.startswith("/") else f"/{pattern}"
+            if fnmatch.fnmatch(anchored_relative_path, normalized):
+                return {
+                    "state": "blocked",
+                    "reason": "sensitive_file",
+                    "rule_type": "path_glob",
+                }
+
+        return None
+
+    def _file_preview_is_denied(self, target: Path, roots: list[Path]) -> bool:
+        return self._file_preview_deny_status(target, roots) is not None
 
     def build_file_preview(
         self,

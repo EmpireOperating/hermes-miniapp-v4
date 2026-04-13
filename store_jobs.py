@@ -70,6 +70,38 @@ class StoreJobsMixin:
         self._job_claim_lock = new_lock
         return new_lock
 
+    def _enqueue_lock(self) -> threading.Lock:
+        lock = getattr(self, "_job_enqueue_lock", None)
+        if lock is not None and hasattr(lock, "acquire") and hasattr(lock, "release"):
+            return lock
+        new_lock = threading.Lock()
+        self._job_enqueue_lock = new_lock
+        return new_lock
+
+    def start_chat_job(self, *, user_id: str, chat_id: int, message: str, max_attempts: int = 4) -> dict[str, Any]:
+        with self._enqueue_lock():
+            open_job = self.get_open_job(user_id=user_id, chat_id=chat_id)
+            if open_job:
+                return {
+                    "created": False,
+                    "job_id": int(open_job["id"]),
+                    "operator_message_id": int(open_job["operator_message_id"]),
+                    "open_job": dict(open_job),
+                }
+            operator_message_id = self.add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
+            job_id = self.enqueue_chat_job(
+                user_id=user_id,
+                chat_id=chat_id,
+                operator_message_id=operator_message_id,
+                max_attempts=max_attempts,
+            )
+            return {
+                "created": True,
+                "job_id": int(job_id),
+                "operator_message_id": int(operator_message_id),
+                "open_job": None,
+            }
+
     def _record_preclaim_dead_letter_total(self, delta: int) -> None:
         increment = max(0, int(delta or 0))
         if increment <= 0:

@@ -592,7 +592,7 @@ def _append_client_boot_summary_log(summary: dict[str, object]) -> None:
         with CLIENT_BOOT_SUMMARY_LOG_PATH.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(summary, separators=(",", ":"), sort_keys=True))
             handle.write("\n")
-    except Exception:  # noqa: BLE001 - best-effort telemetry persistence must never break requests
+    except Exception:  # noqa: BLE001 - broad-except-policy: best-effort telemetry persistence must never break requests; intentional-no-log because operator telemetry failure should stay silent
         pass
 
 
@@ -609,11 +609,11 @@ def _load_recent_client_boot_summaries_from_log(limit: int = 50) -> list[dict[st
                     continue
                 try:
                     parsed = json.loads(line)
-                except Exception:
+                except Exception:  # noqa: BLE001 - broad-except-policy: skip malformed telemetry lines during best-effort log replay; intentional-no-log to avoid noisy recovery loops
                     continue
                 if isinstance(parsed, dict):
                     loaded.append(parsed)
-    except Exception:  # noqa: BLE001 - best-effort telemetry loading must never break requests
+    except Exception:  # noqa: BLE001 - broad-except-policy: best-effort telemetry loading must never break requests; intentional-no-log because missing telemetry should not break operator views
         return []
     if len(loaded) > limit:
         loaded = loaded[-limit:]

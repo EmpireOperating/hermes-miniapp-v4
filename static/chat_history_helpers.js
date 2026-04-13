@@ -1401,6 +1401,7 @@
       resumePendingChatStream,
       shouldResumeOnVisibilityChange,
     });
+    let visibleSyncGeneration = 0;
 
     async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) {
       const hydrateStartedAtMs = nowMs();
@@ -1508,10 +1509,12 @@
 
       const activeId = normalizeChatId(activeChatId);
       if (!activeId) return;
+      const visibleRequestId = visibleSyncGeneration + 1;
+      visibleSyncGeneration = visibleRequestId;
 
       let data = await loadChatHistory(activeId, { activate: false });
       const latestActiveId = normalizeChatId(getActiveChatId());
-      if (latestActiveId !== activeId) return;
+      if (latestActiveId !== activeId || visibleRequestId !== visibleSyncGeneration) return;
       const previousHistory = histories.get(activeId) || [];
       let restoredPendingSnapshot;
       let finalHistory;
@@ -1520,6 +1523,7 @@
         targetChatId: activeId,
         previousHistory,
         data,
+        requestId: visibleRequestId,
         retryEventName: 'visibility-unread-retry',
         retryActivate: false,
       });
@@ -1529,6 +1533,7 @@
         finalHistory,
         pendingState,
       } = hydrationState);
+      if (visibleRequestId !== visibleSyncGeneration || normalizeChatId(getActiveChatId()) !== activeId) return;
       const chatPending = pendingState.chatPending;
       const localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
       const snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;

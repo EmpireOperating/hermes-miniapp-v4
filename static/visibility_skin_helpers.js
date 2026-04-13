@@ -177,14 +177,9 @@
       return syncVisibleActiveChat(options);
     }
 
-    async function handleVisibilityChange() {
-      if (documentObject.visibilityState !== 'visible') {
-        await syncUnreadNotificationPresence({ visible: false });
-        markBackgrounded?.({ trigger: 'visibilitychange' });
-        return;
-      }
+    async function resumeVisibleApp(trigger = 'visibilitychange') {
       markVisibilityResume?.({
-        trigger: 'visibilitychange',
+        trigger,
         pendingChatCount: Number(pendingChats?.size || 0),
       });
       syncSkinFromStorage();
@@ -194,7 +189,7 @@
 
       const activeId = Number(getActiveChatId());
       if (activeId > 0) {
-        // Visibility changes are a common point where throttled UI work catches up.
+        // Visibility/focus resumption is a common point where throttled UI work catches up.
         // Force an immediate reconciliation from canonical history for the active chat.
         syncActiveMessageView(activeId, { preserveViewport: true });
       }
@@ -208,6 +203,15 @@
       } catch {
         // best effort sync
       }
+    }
+
+    async function handleVisibilityChange() {
+      if (documentObject.visibilityState !== 'visible') {
+        await syncUnreadNotificationPresence({ visible: false });
+        markBackgrounded?.({ trigger: 'visibilitychange' });
+        return;
+      }
+      await resumeVisibleApp('visibilitychange');
     }
 
     function handleStorageEvent(event) {
@@ -231,7 +235,11 @@
       });
 
       windowObject.addEventListener('focus', () => {
-        syncSkinFromStorage();
+        if (documentObject.visibilityState !== 'visible') {
+          syncSkinFromStorage();
+          return;
+        }
+        void resumeVisibleApp('focus');
       });
       windowObject.addEventListener?.('pagehide', () => {
         void syncUnreadNotificationPresence({ visible: false });

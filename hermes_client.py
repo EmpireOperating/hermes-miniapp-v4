@@ -1919,7 +1919,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             )
             sock.sendall((json.dumps(request_payload, separators=(",", ":")) + "\n").encode("utf-8"))
             return sock, sock.makefile("rb")
-        except Exception:
+        except Exception:  # noqa: BLE001 - broad-except-policy: close partially attached socket before re-raising; intentional-no-log because caller handles failure context
             self._close_attach_resume_resources(sock=sock)
             raise
 

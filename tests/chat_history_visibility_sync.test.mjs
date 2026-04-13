@@ -247,6 +247,56 @@ test('syncVisibleActiveChat forces resume when local pending assistant traces ex
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
 });
 
+test('syncVisibleActiveChat ignores stale overlapping refreshes for the same active chat', async () => {
+  let resolveFirst;
+  let resolveSecond;
+  const firstHistory = new Promise((resolve) => {
+    resolveFirst = resolve;
+  });
+  const secondHistory = new Promise((resolve) => {
+    resolveSecond = resolve;
+  });
+  let historyCallCount = 0;
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        historyCallCount += 1;
+        if (historyCallCount === 1) {
+          return firstHistory;
+        }
+        return secondHistory;
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  const firstSync = harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+  const secondSync = harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+
+  resolveSecond({
+    chat: { id: 7, pending: false, unread_count: 0 },
+    history: [{ id: 2, role: 'assistant', body: 'fresh response' }],
+  });
+  await secondSync;
+
+  resolveFirst({
+    chat: { id: 7, pending: false, unread_count: 0 },
+    history: [{ id: 1, role: 'assistant', body: 'stale response' }],
+  });
+  await firstSync;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.histories.get(7), [{ id: 2, role: 'assistant', body: 'fresh response' }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.resumedChats, []);
+});
+
 test('syncVisibleActiveChat skips rerender when hydrated active history is render-identical', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,

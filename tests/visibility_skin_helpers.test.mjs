@@ -211,7 +211,7 @@ test('saveSkinPreference persists through apiPost and applies returned skin', as
   assert.deepEqual(data, { skin: 'obsidian' });
 });
 
-test('installLifecycleListeners wires storage/focus/channel handlers', () => {
+test('installLifecycleListeners wires storage/focus/channel handlers', async () => {
   const harness = buildHarness();
 
   harness.controller.installLifecycleListeners();
@@ -224,7 +224,16 @@ test('installLifecycleListeners wires storage/focus/channel handlers', () => {
 
   harness.localStore.set('hermes_skin', 'obsidian');
   harness.windowObject.dispatch('focus');
+  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(harness.getCurrentSkin(), 'obsidian');
+  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
+  assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
+    hidden: false,
+    streamAbortControllers: harness.streamAbortControllers,
+  }]);
+  assert.equal(harness.visibilityResumes.length, 1);
+  assert.equal(harness.visibilityResumes[0].trigger, 'focus');
 });
 
 test('handleVisibilityChange refreshes lifecycle and delegates active-chat reconciliation when visible and authenticated', async () => {

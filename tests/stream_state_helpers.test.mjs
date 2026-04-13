@@ -260,6 +260,47 @@ test('createPersistenceController preserves collapsed pending tool traces across
   assert.equal(histories.get(6)[0].collapsed, true);
 });
 
+test('createPersistenceController refreshes existing pending assistant body from snapshot restore', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const histories = new Map([[8, [
+    { role: 'tool', body: 'tool A', pending: true, created_at: '2026-04-02T00:00:00Z' },
+    { role: 'hermes', body: 'older partial', pending: true, created_at: '2026-04-02T00:00:01Z' },
+  ]]]);
+  const chats = new Map([[8, { id: 8, pending: true }]]);
+
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
+    histories,
+    chats,
+    nowFn: () => 1_000,
+    dateNowFn: () => 1_000,
+  });
+
+  controller.persistPendingStreamSnapshot(8);
+  histories.set(8, [
+    { role: 'tool', body: 'tool A', pending: true, created_at: '2026-04-02T00:00:00Z' },
+    { role: 'hermes', body: 'stale placeholder', pending: true, created_at: '2026-04-02T00:00:01Z' },
+  ]);
+
+  const restored = controller.restorePendingStreamSnapshot(8);
+  assert.equal(restored, true);
+  assert.deepEqual(histories.get(8), [
+    { role: 'tool', body: 'tool A', pending: true, created_at: '2026-04-02T00:00:00Z', collapsed: false },
+    { role: 'hermes', body: 'older partial', pending: true, created_at: '2026-04-02T00:00:01Z' },
+  ]);
+});
+
 test('mergeSnapshotToolJournalLines preserves repeated identical tool lines in order', () => {
   const storage = new Map();
   const localStorageRef = {
@@ -306,7 +347,7 @@ test('createPersistenceController restores the full tool journal over a partial 
     },
   };
   const histories = new Map([[13, [
-    { role: 'tool', body: 'read_file\nsearch_files\napply_patch', pending: true, collapsed: false, created_at: '2026-04-02T00:00:00Z' },
+    { role: 'tool', body: 'line 1\nline 2', pending: true, created_at: '2026-04-02T00:00:00Z' },
   ]]]);
   const chats = new Map([[13, { id: 13, pending: true }]]);
 
@@ -317,20 +358,88 @@ test('createPersistenceController restores the full tool journal over a partial 
     pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
     histories,
     chats,
-    nowFn: () => 3_000,
-    dateNowFn: () => 3_000,
+    nowFn: () => 1_000,
+    dateNowFn: () => 1_000,
   });
 
-  const snapshot = controller.persistPendingStreamSnapshot(13);
-  assert.deepEqual(snapshot.tool_journal_lines, ['read_file', 'search_files', 'apply_patch']);
-
+  controller.persistPendingStreamSnapshot(13);
   histories.set(13, [
-    { role: 'tool', body: 'apply_patch', pending: true, collapsed: false, created_at: '2026-04-02T00:00:00Z' },
+    { role: 'tool', body: 'line 1', pending: true, created_at: '2026-04-02T00:00:00Z' },
   ]);
 
   const restored = controller.restorePendingStreamSnapshot(13);
   assert.equal(restored, true);
-  assert.equal(histories.get(13)[0].body, 'read_file\nsearch_files\napply_patch');
+  assert.equal(histories.get(13)[0].body, 'line 1\nline 2');
+});
+
+test('createPersistenceController keeps newer remote pending snapshots for other chats when persisting local updates', () => {
+  const storage = new Map();
+  storage.set('snapshot-key', JSON.stringify({
+    '22': {
+      ts: 2_000,
+      tool_journal_lines: ['remote line'],
+      tool: {
+        role: 'tool',
+        body: 'remote line',
+        created_at: '2026-04-02T00:00:00Z',
+        pending: true,
+        collapsed: false,
+      },
+      assistant: null,
+    },
+  }));
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const histories = new Map([[21, [
+    { role: 'tool', body: 'local line', pending: true, created_at: '2026-04-02T00:00:00Z' },
+  ]]]);
+  const chats = new Map([[21, { id: 21, pending: true }]]);
+
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
+    histories,
+    chats,
+    nowFn: () => 1_000,
+    dateNowFn: () => 1_000,
+  });
+
+  controller.persistPendingStreamSnapshot(21);
+
+  assert.deepEqual(JSON.parse(storage.get('snapshot-key')), {
+    '21': {
+      ts: 1000,
+      tool_journal_lines: ['local line'],
+      tool: {
+        role: 'tool',
+        body: 'local line',
+        created_at: '2026-04-02T00:00:00Z',
+        pending: true,
+        collapsed: false,
+      },
+      assistant: null,
+    },
+    '22': {
+      ts: 2000,
+      tool_journal_lines: ['remote line'],
+      tool: {
+        role: 'tool',
+        body: 'remote line',
+        created_at: '2026-04-02T00:00:00Z',
+        pending: true,
+        collapsed: false,
+      },
+      assistant: null,
+    },
+  });
 });
 
 test('createPersistenceController drops expired snapshots and clears storage when chat is no longer pending', () => {

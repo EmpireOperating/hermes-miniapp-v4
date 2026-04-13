@@ -117,6 +117,7 @@
 
       const payload = {};
       let stored = 0;
+      const seenKeys = new Set();
       for (const [chatId, value] of latencyByChat.entries()) {
         if (stored >= maxEntries) break;
         const key = normalizeChatId(chatId);
@@ -133,8 +134,28 @@
           value: normalized,
           ts: preserveTs ? Math.floor(existingTs) : timestamp,
         };
+        seenKeys.add(String(key));
         stored += 1;
       }
+
+      if (stored < maxEntries) {
+        for (const [chatId, existingEntry] of Object.entries(existing)) {
+          if (stored >= maxEntries) break;
+          if (seenKeys.has(chatId)) continue;
+          const key = normalizeChatId(chatId);
+          if (!key) continue;
+          const normalized = normalizeLatencyText(existingEntry?.value);
+          const existingTs = Number(existingEntry?.ts || 0);
+          if (!normalized || normalized === "--") continue;
+          if (!Number.isFinite(existingTs) || existingTs <= 0) continue;
+          payload[String(key)] = {
+            value: normalized,
+            ts: Math.floor(existingTs),
+          };
+          stored += 1;
+        }
+      }
+
       localStorageRef?.setItem?.(storageKey, JSON.stringify(payload));
       return stored;
     } catch {

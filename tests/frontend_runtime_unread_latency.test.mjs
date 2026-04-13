@@ -476,16 +476,17 @@ test('latency storage helpers drop expired entries by ttl', () => {
     latencyByChat: new Map([[7, '91ms']]),
     nowMs: 21_000,
   });
-  assert.equal(persistedCount, 1);
+  assert.equal(persistedCount, 2);
 
   const persistedPayload = JSON.parse(storage.get('latency-test'));
   assert.deepEqual(persistedPayload, {
     '7': { value: '1s', ts: 10_000 },
+    '19': { value: '2s', ts: 1_000 },
   });
 });
 
 
-test('latency storage helpers preserve timestamp for unchanged entries', () => {
+test('latency storage helpers preserve timestamp for unchanged entries and keep remote-only chats', () => {
   const storage = new Map();
   const localStorageRef = {
     getItem: (key) => storage.get(key) || null,
@@ -495,6 +496,7 @@ test('latency storage helpers preserve timestamp for unchanged entries', () => {
   storage.set('latency-test', JSON.stringify({
     '7': { value: '88ms', ts: 8_000 },
     '19': { value: '1.1s', ts: 9_000 },
+    '44': { value: '5.2s', ts: 7_000 },
   }));
 
   const persistedCount = runtime.persistLatencyByChatToStorage({
@@ -507,10 +509,11 @@ test('latency storage helpers preserve timestamp for unchanged entries', () => {
     nowMs: 10_000,
   });
 
-  assert.equal(persistedCount, 2);
+  assert.equal(persistedCount, 3);
   const persistedPayload = JSON.parse(storage.get('latency-test'));
   assert.deepEqual(persistedPayload, {
     '7': { value: '1s', ts: 8_000 },
     '19': { value: '3s', ts: 10_000 },
+    '44': { value: '6s', ts: 7_000 },
   });
 });

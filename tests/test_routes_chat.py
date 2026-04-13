@@ -299,6 +299,7 @@ def test_file_preview_reads_allowed_path(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ok"] is True
+    assert payload["file_preview_status"] == {"state": "ok"}
     assert payload["preview"]["path"] == str(target)
     assert payload["preview"]["line_start"] == 2
     assert payload["preview"]["window_start"] == 1
@@ -339,6 +340,7 @@ def test_file_preview_reads_by_ref_id(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ok"] is True
+    assert payload["file_preview_status"] == {"state": "ok"}
     assert payload["preview"]["path"] == str(target)
     assert payload["preview"]["line_start"] == 2
     assert payload["preview"]["total_lines"] == 3
@@ -366,6 +368,109 @@ def test_file_preview_history_extracts_dotfiles_and_common_root_files(monkeypatc
     refs = history_payload["history"][-1].get("file_refs") or []
     assert [ref["path"] for ref in refs] == [".env", "Dockerfile"]
     assert [ref["line_start"] for ref in refs] == [2, 1]
+
+
+def test_file_preview_blocks_sensitive_dotenv_by_path(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(tmp_path))
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    target = tmp_path / ".env"
+    target.write_text("ONE=1\nTWO=2\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/chats/file-preview",
+        json={"init_data": "ok", "chat_id": chat_id, "path": str(target), "line_start": 1},
+    )
+
+    assert response.status_code == 403
+    payload = response.get_json()
+    assert "blocked for sensitive files" in payload["error"].lower()
+    assert payload["file_preview_status"] == {
+        "state": "blocked",
+        "reason": "sensitive_file",
+        "rule_type": "basename_glob",
+    }
+
+
+def test_file_preview_blocks_sensitive_dotenv_by_ref_id(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(tmp_path))
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    target = tmp_path / ".env"
+    target.write_text("ONE=1\nTWO=2\n", encoding="utf-8")
+    server.store.add_message("123", chat_id, "hermes", "Check .env:2")
+
+    history_response = client.post(
+        "/api/chats/history",
+        json={"init_data": "ok", "chat_id": chat_id},
+    )
+    assert history_response.status_code == 200
+    refs = history_response.get_json()["history"][-1].get("file_refs") or []
+    assert refs
+
+    response = client.post(
+        "/api/chats/file-preview",
+        json={"init_data": "ok", "chat_id": chat_id, "ref_id": refs[0]["ref_id"]},
+    )
+
+    assert response.status_code == 403
+    payload = response.get_json()
+    assert "blocked for sensitive files" in payload["error"].lower()
+    assert payload["file_preview_status"] == {
+        "state": "blocked",
+        "reason": "sensitive_file",
+        "rule_type": "basename_glob",
+    }
+
+
+def test_file_preview_blocks_checkpoint_restore_copies(monkeypatch, tmp_path) -> None:
+    allowed_root = tmp_path / "workspace"
+    target = allowed_root / "checkpoints" / "run-1" / "notes.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("ONE=1\n", encoding="utf-8")
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(allowed_root))
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    response = client.post(
+        "/api/chats/file-preview",
+        json={"init_data": "ok", "chat_id": chat_id, "path": str(target), "line_start": 1},
+    )
+
+    assert response.status_code == 403
+    payload = response.get_json()
+    assert "blocked for sensitive files" in payload["error"].lower()
+    assert payload["file_preview_status"] == {
+        "state": "blocked",
+        "reason": "sensitive_file",
+        "rule_type": "path_glob",
+    }
+
+
+def test_file_preview_custom_denylist_can_block_additional_patterns(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(tmp_path))
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_DENY_BASENAME_GLOBS", "notes.txt")
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    target = tmp_path / "notes.txt"
+    target.write_text("private\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/chats/file-preview",
+        json={"init_data": "ok", "chat_id": chat_id, "path": str(target), "line_start": 1},
+    )
+
+    assert response.status_code == 403
+    payload = response.get_json()
+    assert "blocked for sensitive files" in payload["error"].lower()
+    assert payload["file_preview_status"] == {
+        "state": "blocked",
+        "reason": "sensitive_file",
+        "rule_type": "basename_glob",
+    }
 
 
 def test_file_preview_reads_relative_path_within_allowed_root(monkeypatch, tmp_path) -> None:
@@ -533,6 +638,49 @@ def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None
     assert response.status_code == 409
     body = response.get_data(as_text=True)
     assert "already working" in body
+
+
+def test_stream_chat_rejects_late_duplicate_start_without_appending_operator_message(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    operator_message_id = server.store.add_message("123", chat_id, "operator", "already running")
+    server.store.enqueue_chat_job("123", chat_id, operator_message_id)
+
+    open_job = server.store.get_open_job("123", chat_id)
+    assert open_job is not None
+
+    call_count = {"get_open_job": 0}
+    original_get_open_job = server.store.get_open_job
+
+    def _get_open_job(*, user_id: str, chat_id: int):
+        call_count["get_open_job"] += 1
+        if call_count["get_open_job"] == 1:
+            return None
+        return original_get_open_job(user_id, chat_id)
+
+    monkeypatch.setattr(server.store, "get_open_job", _get_open_job)
+    monkeypatch.setattr(
+        server.store,
+        "start_chat_job",
+        lambda **_kwargs: {
+            "created": False,
+            "job_id": int(open_job["id"]),
+            "operator_message_id": int(open_job["operator_message_id"]),
+            "open_job": dict(open_job),
+        },
+    )
+
+    before_history = server.store.get_history("123", chat_id)
+    response = client.post(
+        "/api/chat/stream",
+        json={"init_data": "ok", "chat_id": chat_id, "message": "second"},
+    )
+    after_history = server.store.get_history("123", chat_id)
+
+    assert response.status_code == 409
+    assert "already working" in response.get_data(as_text=True)
+    assert [turn.body for turn in after_history] == [turn.body for turn in before_history]
 
 
 def test_stream_chat_interrupts_open_job_when_requested(monkeypatch, tmp_path) -> None:

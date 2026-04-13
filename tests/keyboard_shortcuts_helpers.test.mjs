@@ -17,7 +17,7 @@ test('getOrderedChatIds normalizes and sorts valid positive chat ids', () => {
   assert.deepEqual(keyboard.getOrderedChatIds(chats), [4, 7, 9]);
 });
 
-test('handleGlobalTabCycle opens next chat for desktop ArrowRight', () => {
+test('handleGlobalTabCycle opens next chat for desktop ArrowRight outside text entry', () => {
   const opened = [];
   let prevented = false;
   const event = {
@@ -26,6 +26,7 @@ test('handleGlobalTabCycle opens next chat for desktop ArrowRight', () => {
     altKey: false,
     ctrlKey: false,
     metaKey: false,
+    shiftKey: false,
     key: 'ArrowRight',
     target: { id: 'outside-input' },
     preventDefault: () => {
@@ -39,14 +40,16 @@ test('handleGlobalTabCycle opens next chat for desktop ArrowRight', () => {
     settingsModal: null,
     isTextEntryElementFn: () => false,
     activeChatId: 4,
+    promptEl: { id: 'composer' },
     chats: new Map([
       [2, { id: 2 }],
       [4, { id: 4 }],
       [8, { id: 8 }],
     ]),
-    getNextChatTabId: ({ orderedChatIds, activeChatId }) => {
+    getNextChatTabId: ({ orderedChatIds, activeChatId, reverse }) => {
       assert.deepEqual(orderedChatIds, [2, 4, 8]);
       assert.equal(activeChatId, 4);
+      assert.equal(reverse, false);
       return 8;
     },
     openChat: (chatId) => {
@@ -56,6 +59,62 @@ test('handleGlobalTabCycle opens next chat for desktop ArrowRight', () => {
 
   assert.equal(prevented, true);
   assert.deepEqual(opened, [8]);
+});
+
+test('handleGlobalTabCycle opens previous/next chat from composer only on Shift+ArrowLeft/ArrowRight', () => {
+  const opened = [];
+  const promptEl = { id: 'composer' };
+  const makeEvent = (key, shiftKey) => {
+    let prevented = false;
+    return {
+      event: {
+        defaultPrevented: false,
+        isComposing: false,
+        altKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        shiftKey,
+        key,
+        target: promptEl,
+        preventDefault: () => {
+          prevented = true;
+        },
+      },
+      wasPrevented: () => prevented,
+    };
+  };
+
+  const commonOptions = {
+    mobileQuoteMode: false,
+    isDesktopViewportFn: () => true,
+    settingsModal: null,
+    isTextEntryElementFn: (element) => element === promptEl,
+    activeChatId: 4,
+    promptEl,
+    chats: new Map([
+      [2, { id: 2 }],
+      [4, { id: 4 }],
+      [8, { id: 8 }],
+    ]),
+    getNextChatTabId: ({ reverse }) => (reverse ? 2 : 8),
+    openChat: (chatId) => {
+      opened.push(chatId);
+    },
+  };
+
+  const plainRight = makeEvent('ArrowRight', false);
+  keyboard.handleGlobalTabCycle(plainRight.event, commonOptions);
+  assert.equal(plainRight.wasPrevented(), false);
+
+  const shiftLeft = makeEvent('ArrowLeft', true);
+  keyboard.handleGlobalTabCycle(shiftLeft.event, commonOptions);
+  assert.equal(shiftLeft.wasPrevented(), true);
+
+  const shiftRight = makeEvent('ArrowRight', true);
+  keyboard.handleGlobalTabCycle(shiftRight.event, commonOptions);
+  assert.equal(shiftRight.wasPrevented(), true);
+
+  assert.deepEqual(opened, [2, 8]);
 });
 
 test('handleGlobalArrowJump dispatches shift jump action and plain scroll action', () => {

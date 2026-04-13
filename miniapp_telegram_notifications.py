@@ -54,6 +54,17 @@ def build_unread_reply_notification_text(*, chat_title: str) -> str:
     return f"🔔 {title} — New unread reply"
 
 
+def _normalize_notification_result(raw_result: object) -> TelegramNotificationResult:
+    if isinstance(raw_result, TelegramNotificationResult):
+        return raw_result
+    return TelegramNotificationResult(
+        ok=bool(getattr(raw_result, "ok", False)),
+        status_code=getattr(raw_result, "status_code", None),
+        error=str(getattr(raw_result, "error", "") or "") or None,
+        response_text=str(getattr(raw_result, "response_text", "") or "") or None,
+    )
+
+
 def should_send_unread_reply_notification(
     *,
     notifications_enabled: bool,
@@ -131,9 +142,11 @@ class TelegramUnreadReplyNotifier:
                 result=result,
             )
             return result
-        result = self.sender.send_text(
-            chat_id=user_id,
-            text=build_unread_reply_notification_text(chat_title=chat_title),
+        result = _normalize_notification_result(
+            self.sender.send_text(
+                chat_id=user_id,
+                text=build_unread_reply_notification_text(chat_title=chat_title),
+            )
         )
         self.store.record_telegram_notification_attempt(
             user_id=user_id,

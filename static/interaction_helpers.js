@@ -14,10 +14,22 @@
       return;
     }
 
-    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.key !== "Enter") return;
+
+    const chatId = Number(activeChatId);
+    if (event.shiftKey) {
+      return;
+    }
+
+    if (event.altKey) {
+      event.preventDefault();
+      if (chatId > 0) {
+        focusMessagesPaneIfActiveChat(chatId);
+      }
+      return;
+    }
 
     event.preventDefault();
-    const chatId = Number(activeChatId);
     if (chatId > 0) {
       focusMessagesPaneIfActiveChat(chatId);
     }
@@ -262,6 +274,7 @@
     promptEl,
     formatQuoteBlockFn = formatQuoteBlock,
     ensureComposerVisible = () => {},
+    focusComposerAfterQuoteInsertionFn = null,
     mobileQuoteMode = false,
     documentObject = (typeof document !== "undefined" ? document : null),
     windowObject = (typeof window !== "undefined" ? window : null),
@@ -288,6 +301,11 @@
     } catch {
       // Non-fatal: draft sync listeners may be unavailable in tests.
     }
+    if (typeof focusComposerAfterQuoteInsertionFn === 'function') {
+      focusComposerAfterQuoteInsertionFn(nextCaret);
+      return;
+    }
+
     focusPromptAfterQuoteInsertion({
       promptEl,
       ensureComposerVisible,

@@ -1036,83 +1036,63 @@ def test_revoke_all_auth_sessions_and_prune(tmp_path) -> None:
     assert deleted >= 1
 
 
-+def test_telegram_notification_attempt_round_trip_and_streak_queries(tmp_path) -> None:
-+    store = _store(tmp_path)
-+    user_id = "notify-user"
-+    chat_id = store.ensure_default_chat(user_id)
-+    store.add_message(user_id, chat_id, "operator", "hello")
-+
-+    attempt_id = store.record_telegram_notification_attempt(
-+        user_id=user_id,
-+        chat_id=chat_id,
-+        unread_streak_key=0,
-+        prior_unread_count=0,
-+        notifications_enabled=True,
-+        active_chat_id=11,
-+        visibly_open_chat_id=None,
-+        decision_reason="send",
-+        send_attempted=True,
-+        send_ok=False,
-+        status_code=None,
-+        error="network down",
-+        response_text=None,
-+    )
-+
-+    assert attempt_id > 0
-+    assert store.count_telegram_notification_send_attempts(user_id, chat_id, 0) == 1
-+    assert store.has_successful_telegram_notification_for_streak(user_id, chat_id, 0) is False
-+
-+    store.record_telegram_notification_attempt(
-+        user_id=user_id,
-+        chat_id=chat_id,
-+        unread_streak_key=0,
-+        prior_unread_count=2,
-+        notifications_enabled=True,
-+        active_chat_id=11,
-+        visibly_open_chat_id=None,
-+        decision_reason="send_retry",
-+        send_attempted=True,
-+        send_ok=True,
-+        status_code=200,
-+        error=None,
-+        response_text='{"ok":true}',
-+    )
-+
-+    attempts = store.list_telegram_notification_attempts(user_id, chat_id=chat_id)
-+    assert [attempt["decision_reason"] for attempt in attempts] == ["send", "send_retry"]
-+    assert store.count_telegram_notification_send_attempts(user_id, chat_id, 0) == 2
-+    assert store.has_successful_telegram_notification_for_streak(user_id, chat_id, 0) is True
-+
-+
-+def test_store_init_creates_telegram_notification_attempt_schema(tmp_path) -> None:
-+    import sqlite3
-+
-+    db_path = tmp_path / "sessions.db"
-+    store = SessionStore(db_path)
-+    user_id = "schema-user"
-+    chat_id = store.ensure_default_chat(user_id)
-+
-+    store.record_telegram_notification_attempt(
-+        user_id=user_id,
-+        chat_id=chat_id,
-+        unread_streak_key=0,
-+        prior_unread_count=0,
-+        notifications_enabled=False,
-+        active_chat_id=None,
-+        visibly_open_chat_id=None,
-+        decision_reason="disabled",
-+        send_attempted=False,
-+        send_ok=False,
-+        status_code=None,
-+        error="suppressed:disabled",
-+        response_text=None,
-+    )
-+
-+    conn = sqlite3.connect(db_path)
-+    columns = {row[1] for row in conn.execute("PRAGMA table_info(telegram_notification_attempts)").fetchall()}
-+    assert "decision_reason" in columns
-+    assert "send_attempted" in columns
-+    assert "send_ok" in columns
-+    indexes = {row[1] for row in conn.execute("PRAGMA index_list('telegram_notification_attempts')").fetchall()}
-+    assert "idx_telegram_notification_attempts_chat_streak" in indexes
-+    conn.close()
+def test_telegram_notification_attempt_round_trip_tracks_success_per_unread_anchor(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "notify-user"
+    chat_id = store.ensure_default_chat(user_id)
+    store.add_message(user_id, chat_id, "operator", "hello")
+    unread_anchor_message_id = store.add_message(user_id, chat_id, "hermes", "reply one")
+
+    store.record_telegram_notification_attempt(
+        user_id=user_id,
+        chat_id=chat_id,
+        unread_anchor_message_id=unread_anchor_message_id,
+        prior_unread_count=0,
+        decision_reason="send",
+        result=type("Result", (), {"ok": False, "status_code": None, "error": "network down", "response_text": None})(),
+    )
+
+    assert store.unread_reply_notification_sent_for_anchor(user_id, chat_id, unread_anchor_message_id) is False
+
+    store.record_telegram_notification_attempt(
+        user_id=user_id,
+        chat_id=chat_id,
+        unread_anchor_message_id=unread_anchor_message_id,
+        prior_unread_count=2,
+        decision_reason="retry_pending_unread",
+        result=type("Result", (), {"ok": True, "status_code": 200, "error": None, "response_text": '{"ok":true}'})(),
+    )
+
+    attempts = store.list_telegram_notification_attempts(user_id=user_id, chat_id=chat_id, limit=5)
+    assert [attempt["decision_reason"] for attempt in attempts] == ["retry_pending_unread", "send"]
+    assert attempts[0]["ok"] is True
+    assert attempts[1]["error"] == "network down"
+    assert store.unread_reply_notification_sent_for_anchor(user_id, chat_id, unread_anchor_message_id) is True
+
+
+def test_store_init_creates_telegram_notification_attempt_schema(tmp_path) -> None:
+    import sqlite3
+
+    db_path = tmp_path / "sessions.db"
+    store = SessionStore(db_path)
+    user_id = "schema-user"
+    chat_id = store.ensure_default_chat(user_id)
+
+    store.record_telegram_notification_attempt(
+        user_id=user_id,
+        chat_id=chat_id,
+        unread_anchor_message_id=None,
+        prior_unread_count=0,
+        decision_reason="disabled",
+        result=type("Result", (), {"ok": False, "status_code": None, "error": "suppressed:disabled", "response_text": None})(),
+    )
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(telegram_notification_attempts)").fetchall()}
+    assert "decision_reason" in columns
+    assert "unread_anchor_message_id" in columns
+    assert "attempt_ok" in columns
+    indexes = {row[1] for row in conn.execute("PRAGMA index_list('telegram_notification_attempts')").fetchall()}
+    assert "idx_tg_notification_attempts_chat" in indexes
+    assert "idx_tg_notification_attempts_anchor" in indexes
+    conn.close()

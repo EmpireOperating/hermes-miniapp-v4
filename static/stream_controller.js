@@ -751,14 +751,14 @@
       }
       void hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted: true });
       const deliveredLatency = formatLatency(payload.latency_ms);
-      if (typeof deps.markStreamComplete === 'function') {
+      if (typeof deps.markStreamComplete === "function") {
         deps.markStreamComplete(chatId, deliveredLatency);
       } else {
         setChatLatency(chatId, deliveredLatency);
         setStreamStatusForVisibleChat(chatId, `Reply received in ${chatLabel(chatId)}`);
         setStreamChipForVisibleChat(chatId, `stream: complete · ${compactChatLabel(chatId)}`);
       }
-      renderTraceLog('stream-done-state', {
+      renderTraceLog("stream-done-state", {
         chatId: Number(chatId),
         activeChatId: doneActiveChatId,
         hidden: doneHidden,
@@ -927,7 +927,7 @@
       if (!patchedToolTrace) {
         reconcileVisibleTranscriptFallback(chatId);
       }
-      if (typeof deps.markToolActivity === 'function') {
+      if (typeof deps.markToolActivity === "function") {
         deps.markToolActivity(chatId);
       } else {
         setStreamStatusForVisibleChat(chatId, `Using tools in ${chatLabel(chatId)}`);
@@ -1768,10 +1768,11 @@
           return { wasAborted, completed: true, shouldContinue: false };
         }
         const transientReconnectFailure = isTransientResumeRecoveryError(error);
+        const RESUME_RECOVERY_MAX_ATTEMPTS = maxAttempts;
         const hasAttemptsRemaining = transientReconnectFailure && attempt < maxAttempts;
         if (hasAttemptsRemaining) {
           wasAborted = true;
-          console.warn(`[W_STREAM_RECONNECT_RETRY] chat=${key} attempt=${attempt}/${maxAttempts}`, error);
+          console.warn(`[W_STREAM_RECONNECT_RETRY] chat=${key} attempt=${attempt}/${RESUME_RECOVERY_MAX_ATTEMPTS}`, error);
           if (Number(getActiveChatId()) === key) {
             deps.markStreamReconnecting?.(key, {
               attempt: attempt + 1,

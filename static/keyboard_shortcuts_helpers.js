@@ -61,6 +61,7 @@
     documentObject,
     isTextEntryElementFn,
     activeChatId,
+    promptEl,
     chats,
     getNextChatTabId,
     openChat,
@@ -76,7 +77,10 @@
     if (!isArrowLeft && !isArrowRight) return;
 
     const target = event.target;
-    if (isTextEntryElementFn(target)) return;
+    const isTextEntryTarget = isTextEntryElementFn(target);
+    const isComposerTarget = Boolean(promptEl && target === promptEl);
+    if (isTextEntryTarget && !(isComposerTarget && event.shiftKey)) return;
+    if (isComposerTarget && !event.shiftKey) return;
 
     const current = Number(activeChatId);
     if (!current) return;
@@ -381,6 +385,7 @@
         documentObject,
         isTextEntryElementFn: isTextEntryElement,
         activeChatId: getActiveChatId(),
+        promptEl,
         chats,
         getNextChatTabId,
         openChat,

@@ -236,7 +236,17 @@
     }
 
     function writePendingStreamSnapshotMap(nextMap) {
-      writeJsonMap(pendingStreamSnapshotStorageKey, nextMap);
+      const existingMap = readPendingStreamSnapshotMap();
+      const mergedMap = { ...existingMap };
+      for (const [chatId, snapshot] of Object.entries(nextMap || {})) {
+        const existingSnapshot = existingMap[String(chatId)];
+        const incomingTs = Number(snapshot?.ts || 0);
+        const existingTs = Number(existingSnapshot?.ts || 0);
+        if (!existingSnapshot || incomingTs >= existingTs) {
+          mergedMap[String(chatId)] = snapshot;
+        }
+      }
+      writeJsonMap(pendingStreamSnapshotStorageKey, mergedMap);
     }
 
     function clearPendingStreamSnapshot(chatId) {
@@ -245,7 +255,7 @@
       const nextMap = readPendingStreamSnapshotMap();
       if (!(String(key) in nextMap)) return false;
       delete nextMap[String(key)];
-      writePendingStreamSnapshotMap(nextMap);
+      writeJsonMap(pendingStreamSnapshotStorageKey, nextMap);
       return true;
     }
 
@@ -258,7 +268,7 @@
       const snapshotTs = Number(snapshot.ts || 0);
       if (!Number.isFinite(snapshotTs) || snapshotTs <= 0 || (currentTimeMs() - snapshotTs) > Number(pendingStreamSnapshotMaxAgeMs || 0)) {
         delete nextMap[String(key)];
-        writePendingStreamSnapshotMap(nextMap);
+        writeJsonMap(pendingStreamSnapshotStorageKey, nextMap);
         return false;
       }
       return true;
@@ -411,9 +421,27 @@
           changed = true;
         }
       }
-      if (pendingAssistantIndex < 0 && snapshot.assistant && (String(snapshot.assistant.body || "").trim() || snapshot.assistant.pending)) {
-        history.push({ ...snapshot.assistant });
-        changed = true;
+      if (snapshot.assistant && (String(snapshot.assistant.body || "").trim() || snapshot.assistant.pending)) {
+        if (pendingAssistantIndex >= 0) {
+          const currentAssistant = history[pendingAssistantIndex] || {};
+          const currentBody = String(currentAssistant?.body || "");
+          const nextAssistant = {
+            ...currentAssistant,
+            ...snapshot.assistant,
+            pending: true,
+          };
+          if (
+            currentBody !== String(nextAssistant.body || "")
+            || currentAssistant.pending !== true
+            || String(currentAssistant.created_at || "") !== String(nextAssistant.created_at || "")
+          ) {
+            history[pendingAssistantIndex] = nextAssistant;
+            changed = true;
+          }
+        } else {
+          history.push({ ...snapshot.assistant });
+          changed = true;
+        }
       }
       if (!changed) return false;
       histories?.set?.(key, history);

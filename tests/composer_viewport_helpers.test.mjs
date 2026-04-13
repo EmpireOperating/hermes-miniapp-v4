@@ -282,6 +282,31 @@ test('focusComposerForNewChat skips retries when a dialog is open after the init
   assert.deepEqual(harness.timeoutCalls.slice(0, 2), [0, 180]);
 });
 
+test('focusComposerAfterQuoteInsertion uses a longer retry burst so quote insertion leaves the composer focused and caret-ready on mobile', () => {
+  const harness = buildHarness({ mobileQuoteMode: true });
+  harness.documentObject.activeElement = harness.documentObject.body;
+  harness.promptEl.value = 'quote block plus draft';
+
+  harness.controller.focusComposerAfterQuoteInsertion(7);
+
+  assert.deepEqual(harness.promptEl.focusCalls, [null, null, null, null, null, null, null, null]);
+  assert.deepEqual(harness.promptEl.selectionRanges, [[7, 7], [7, 7], [7, 7], [7, 7], [7, 7], [7, 7], [7, 7], [7, 7]]);
+  assert.deepEqual(harness.timeoutCalls, [0, 90, 220, 420, 700, 1000]);
+  assert.ok(harness.form.scrollIntoViewCalls.length >= 7);
+});
+
+test('focusComposerAfterQuoteInsertion skips retries when a dialog opens after the initial focus', () => {
+  const harness = buildHarness({ mobileQuoteMode: true });
+  harness.documentObject.activeElement = harness.documentObject.body;
+  harness.queryTargets['dialog[open]'] = { nodeName: 'DIALOG' };
+
+  harness.controller.focusComposerAfterQuoteInsertion(4);
+
+  assert.deepEqual(harness.promptEl.focusCalls, [null]);
+  assert.deepEqual(harness.promptEl.selectionRanges, [[4, 4]]);
+  assert.deepEqual(harness.timeoutCalls, [0, 90, 220, 420, 700, 1000]);
+});
+
 test('dismissKeyboard blurs active text entry element', () => {
   const harness = buildHarness();
   harness.documentObject.activeElement = harness.promptEl;

@@ -121,6 +121,10 @@ Optional hardening settings:
 - `MINI_APP_JOB_RETRY_BASE_SECONDS=2` (exponential backoff base seconds)
 - `MINI_APP_JOB_EVENT_HISTORY_MAX_JOBS=256` (cap in-memory SSE history cache)
 - `MINI_APP_JOB_EVENT_HISTORY_TTL_SECONDS=1800` (expire idle SSE history)
+- `MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS=/home/hermes-agent/workspace:/home/hermes-agent/.hermes/hermes-agent/docs` (colon-separated preview roots)
+- `MINI_APP_FILE_PREVIEW_DENY_BASENAME_GLOBS=.env:.env.*:auth.json:*.pem:*.key:id_ed25519` (optional basename denylist override; colon-separated)
+- `MINI_APP_FILE_PREVIEW_DENY_PATH_GLOBS=*/.env:*/.env.*:*/checkpoints/*:*/.ssh/*` (optional relative-path denylist override; colon-separated)
+- file preview denylist responses include `file_preview_status` with only a coarse rule class like `basename_glob` or `path_glob`; matched secrets/patterns are not exposed
 - `MINI_APP_CHILD_SPAWN_CAPS_ENABLED=1` (enabled by default; set to `0` only for emergency rollback/debugging)
 - `MINI_APP_CHILD_SPAWN_CAP_TOTAL=16` (global active child process cap)
 - `MINI_APP_CHILD_SPAWN_CAP_PER_CHAT=4` (active child cap per chat)

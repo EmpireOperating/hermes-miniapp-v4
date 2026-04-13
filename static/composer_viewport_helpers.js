@@ -19,6 +19,7 @@
     const MOBILE_COMPOSER_TAP_SLOP_PX = 14;
     let viewportMutationSeq = 0;
     let focusComposerForNewChatRequestId = 0;
+    let focusComposerAfterQuoteRequestId = 0;
 
     function syncViewportCssVars() {
       const rootStyle = documentObject?.documentElement?.style;
@@ -230,6 +231,63 @@
       }
       windowObject.setTimeout(() => focusComposer(), 0);
       windowObject.setTimeout(() => focusComposer(), 180);
+    }
+
+    function focusComposerAfterQuoteInsertion(caretPosition = null) {
+      if (!promptEl || promptEl.disabled) return;
+      if (documentObject.visibilityState !== 'visible') return;
+
+      const requestId = ++focusComposerAfterQuoteRequestId;
+      const desiredCaret = Math.min(
+        Math.max(0, Number.isInteger(caretPosition) ? caretPosition : String(promptEl.value || '').length),
+        String(promptEl.value || '').length,
+      );
+
+      const shouldKeepRetryingFocus = () => {
+        if (requestId !== focusComposerAfterQuoteRequestId) return false;
+        if (!promptEl || promptEl.disabled) return false;
+        if (documentObject.visibilityState !== 'visible') return false;
+        if (documentObject.querySelector?.('dialog[open]')) return false;
+
+        const activeEl = documentObject.activeElement;
+        if (!activeEl) return true;
+        if (activeEl === promptEl) return true;
+        if (activeEl === documentObject.body || activeEl === documentObject.documentElement) return true;
+        return false;
+      };
+
+      const focusComposer = ({ allowForce = false } = {}) => {
+        if (!allowForce && !shouldKeepRetryingFocus()) return;
+
+        ensureComposerVisible({ smooth: false });
+        if (mobileQuoteMode) {
+          promptEl.focus();
+        } else {
+          try {
+            promptEl.focus({ preventScroll: true });
+          } catch {
+            promptEl.focus();
+          }
+        }
+        try {
+          promptEl.setSelectionRange?.(desiredCaret, desiredCaret);
+        } catch {
+          // Some mobile webviews reject setSelectionRange during keyboard transitions.
+        }
+        ensureComposerVisible({ smooth: false });
+      };
+
+      focusComposer({ allowForce: true });
+      const raf = windowObject.requestAnimationFrame || globalScope.requestAnimationFrame;
+      if (typeof raf === 'function') {
+        raf(() => focusComposer());
+      }
+      windowObject.setTimeout(() => focusComposer(), 0);
+      windowObject.setTimeout(() => focusComposer(), 90);
+      windowObject.setTimeout(() => focusComposer(), 220);
+      windowObject.setTimeout(() => focusComposer(), 420);
+      windowObject.setTimeout(() => focusComposer(), 700);
+      windowObject.setTimeout(() => focusComposer(), 1000);
     }
 
     function dismissKeyboard() {
@@ -506,6 +564,7 @@
       runAfterUiMutation,
       preserveViewportDuringUiMutation,
       focusComposerForNewChat,
+      focusComposerAfterQuoteInsertion,
       dismissKeyboard,
       installTapToDismissKeyboard,
       installKeyboardViewportSync,

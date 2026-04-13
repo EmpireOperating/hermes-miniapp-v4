@@ -34,6 +34,66 @@ test('handleComposerSubmitShortcut submits on Enter without Shift in desktop mod
   assert.equal(submitted, 1);
 });
 
+test('handleComposerSubmitShortcut moves focus to messages without submitting on Alt+Enter in desktop mode', () => {
+  let focusedChatId = null;
+  let submitted = 0;
+  let prevented = false;
+  const event = {
+    isComposing: false,
+    key: 'Enter',
+    shiftKey: false,
+    altKey: true,
+    preventDefault: () => {
+      prevented = true;
+    },
+  };
+
+  interaction.handleComposerSubmitShortcut(event, {
+    mobileQuoteMode: false,
+    activeChatId: '42',
+    focusMessagesPaneIfActiveChat: (chatId) => {
+      focusedChatId = chatId;
+    },
+    submitPromptWithUiError: () => {
+      submitted += 1;
+    },
+  });
+
+  assert.equal(prevented, true);
+  assert.equal(focusedChatId, 42);
+  assert.equal(submitted, 0);
+});
+
+test('handleComposerSubmitShortcut leaves Shift+Enter alone so the textarea can insert a newline', () => {
+  let focusedChatId = null;
+  let submitted = 0;
+  let prevented = false;
+  const event = {
+    isComposing: false,
+    key: 'Enter',
+    shiftKey: true,
+    altKey: false,
+    preventDefault: () => {
+      prevented = true;
+    },
+  };
+
+  interaction.handleComposerSubmitShortcut(event, {
+    mobileQuoteMode: false,
+    activeChatId: '42',
+    focusMessagesPaneIfActiveChat: (chatId) => {
+      focusedChatId = chatId;
+    },
+    submitPromptWithUiError: () => {
+      submitted += 1;
+    },
+  });
+
+  assert.equal(prevented, false);
+  assert.equal(focusedChatId, null);
+  assert.equal(submitted, 0);
+});
+
 test('handleComposerSubmitShortcut no-ops on mobile quote mode', () => {
   let submitted = 0;
   let prevented = false;
@@ -241,6 +301,54 @@ test('scheduleSelectionQuoteSync cancels pending timers and schedules sync actio
 
   callbacks.sync();
   assert.deepEqual(calls, ['cancel-sync', 'cancel-settle', 'schedule:sync:140', 'sync-action']);
+});
+
+test('applyQuoteIntoPrompt delegates post-insert focus hardening to the composer viewport controller when provided', () => {
+  const dispatched = [];
+  const focusCalls = [];
+  const delegatedCarets = [];
+  const promptEl = {
+    value: 'Hello world',
+    maxLength: 6000,
+    selectionStart: 6,
+    selectionEnd: 11,
+    ownerDocument: { defaultView: { Event: class Event { constructor(type, options = {}) { this.type = type; this.bubbles = Boolean(options.bubbles); } } } },
+    focus(...args) {
+      focusCalls.push(args);
+    },
+    dispatchEvent(event) {
+      dispatched.push([event.type, event.bubbles]);
+    },
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
+    },
+  };
+
+  interaction.applyQuoteIntoPrompt('quoted line', {
+    promptEl,
+    formatQuoteBlockFn: interaction.formatQuoteBlock,
+    ensureComposerVisible: () => {},
+    focusComposerAfterQuoteInsertionFn: (caretPosition) => {
+      delegatedCarets.push(caretPosition);
+    },
+    mobileQuoteMode: true,
+    documentObject: { activeElement: null, body: {}, documentElement: {}, querySelector: () => null },
+    windowObject: {
+      requestAnimationFrame() {
+        throw new Error('local focus fallback should not schedule raf when viewport controller callback is provided');
+      },
+      setTimeout() {
+        throw new Error('local focus fallback should not schedule timeouts when viewport controller callback is provided');
+      },
+    },
+  });
+
+  assert.equal(promptEl.value.includes('┌ Quote\n│ quoted line\n└\n\n\n'), true);
+  assert.equal(promptEl.selectionStart, promptEl.selectionEnd);
+  assert.deepEqual(dispatched, [['input', true]]);
+  assert.deepEqual(focusCalls, []);
+  assert.deepEqual(delegatedCarets, [promptEl.selectionStart]);
 });
 
 test('applyQuoteIntoPrompt inserts quote block at cursor, dispatches input, and aggressively refocuses the composer in mobile quote mode', () => {

@@ -60,6 +60,11 @@ test('app.js interaction wrappers delegate through interactionController', async
   );
   assert.match(
     applyQuoteBody,
+    /focusComposerAfterQuoteInsertionFn:\s*\(caretPosition\)\s*=>\s*composerViewportController\.focusComposerAfterQuoteInsertion\(caretPosition\)/,
+    'applyQuoteIntoPrompt should delegate post-insert focus hardening to composerViewportController so quote insertion uses the same hardened composer-focus path as other reveal flows',
+  );
+  assert.match(
+    applyQuoteBody,
     /mobileQuoteMode\s*,/,
     'applyQuoteIntoPrompt should pass mobileQuoteMode so quote insertion uses the correct focus behavior',
   );

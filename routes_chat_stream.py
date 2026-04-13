@@ -66,22 +66,21 @@ def register_stream_routes(
             else:
                 return sse_error_fn("Hermes is already working on this chat.", 409, chat_id=chat_id)
 
-        operator_message_id, not_found_error = service.sse_try_not_found(
-            lambda: service.add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
-        )
-        if not_found_error:
-            return not_found_error
-
-        job_id, not_found_error = service.sse_try_not_found(
-            lambda: store.enqueue_chat_job(
+        start_result, not_found_error = service.sse_try_not_found(
+            lambda: store.start_chat_job(
                 user_id=user_id,
                 chat_id=chat_id,
-                operator_message_id=operator_message_id,
+                message=message,
                 max_attempts=job_max_attempts,
             )
         )
         if not_found_error:
             return not_found_error
+
+        if not start_result.get("created"):
+            return sse_error_fn("Hermes is already working on this chat.", 409, chat_id=chat_id)
+
+        job_id = int(start_result.get("job_id") or 0)
 
         job_wake_event_getter().set()
         service.log_stream_job_event(

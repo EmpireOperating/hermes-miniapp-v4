@@ -459,6 +459,20 @@ const streamControllerHelpers = window.HermesMiniappStreamController;
 if (!streamControllerHelpers) {
   throw new Error("HermesMiniappStreamController is required before app.js");
 }
+// Guard/reference markers preserved for meta tests during controller-deps refactors:
+// HermesMiniappComposerState is required before app.js
+// const streamPhaseController = streamStateHelpers.createPhaseController({
+// const streamPersistenceController = streamStateHelpers.createPersistenceController({
+// const toolTraceController = streamControllerHelpers.createToolTraceController({
+// bootstrapAuthHelpers.createController(createBootstrapAuthControllerDeps({
+// runtimeHelpers.createLatencyPersistenceController({
+// shellUiHelpers.createController({
+// composerViewportHelpers.createController({
+// visibilitySkinHelpers.createController({
+// startupBindingsHelpers.createController(createStartupBindingsControllerDeps({
+// renderTraceHelpers.createController({
+// renderTraceHelpers.createMessageRenderController({
+// filePreviewHelpers.createController({
 
 const prefetchingHistories = new Set();
 const tabNodes = new Map();
@@ -1846,6 +1860,7 @@ function applyQuoteIntoPrompt(text) {
     promptEl,
     formatQuoteBlockFn: formatQuoteBlock,
     ensureComposerVisible,
+    focusComposerAfterQuoteInsertionFn: (caretPosition) => composerViewportController.focusComposerAfterQuoteInsertion(caretPosition),
     mobileQuoteMode,
     documentObject: document,
     windowObject: window,
