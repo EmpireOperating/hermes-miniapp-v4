@@ -110,6 +110,29 @@
       }
     }
 
+    function revealPromptCaret(desiredCaret = null) {
+      if (!promptEl) return;
+      const value = String(promptEl.value || '');
+      const caret = Math.min(
+        Math.max(0, Number.isInteger(desiredCaret) ? desiredCaret : value.length),
+        value.length,
+      );
+      try {
+        promptEl.setSelectionRange?.(caret, caret);
+      } catch {
+        // Some mobile webviews reject setSelectionRange during keyboard transitions.
+      }
+
+      const scrollHeight = Number(promptEl.scrollHeight);
+      const clientHeight = Number(promptEl.clientHeight);
+      if (Number.isFinite(scrollHeight) && Number.isFinite(clientHeight) && scrollHeight > clientHeight) {
+        const caretAtOrNearEnd = caret >= Math.max(0, value.length - 1);
+        if (caretAtOrNearEnd && typeof promptEl.scrollTop === 'number') {
+          promptEl.scrollTop = Math.max(0, scrollHeight - clientHeight);
+        }
+      }
+    }
+
     function runAfterUiMutation(callback) {
       let settled = false;
       let timeoutId = null;
@@ -260,20 +283,8 @@
         if (!allowForce && !shouldKeepRetryingFocus()) return;
 
         ensureComposerVisible({ smooth: false });
-        if (mobileQuoteMode) {
-          promptEl.focus();
-        } else {
-          try {
-            promptEl.focus({ preventScroll: true });
-          } catch {
-            promptEl.focus();
-          }
-        }
-        try {
-          promptEl.setSelectionRange?.(desiredCaret, desiredCaret);
-        } catch {
-          // Some mobile webviews reject setSelectionRange during keyboard transitions.
-        }
+        promptEl.focus();
+        revealPromptCaret(desiredCaret);
         ensureComposerVisible({ smooth: false });
       };
 

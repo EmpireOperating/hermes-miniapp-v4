@@ -223,6 +223,26 @@
   } = {}) {
     if (!promptEl || promptEl.disabled) return;
 
+    const revealPromptCaret = () => {
+      const caret = Math.min(
+        Number.isInteger(promptEl.selectionEnd) ? promptEl.selectionEnd : String(promptEl.value || '').length,
+        String(promptEl.value || '').length,
+      );
+      try {
+        promptEl.setSelectionRange?.(caret, caret);
+      } catch {
+        // Some mobile webviews reject setSelectionRange during keyboard transitions.
+      }
+      const scrollHeight = Number(promptEl.scrollHeight);
+      const clientHeight = Number(promptEl.clientHeight);
+      if (Number.isFinite(scrollHeight) && Number.isFinite(clientHeight) && scrollHeight > clientHeight) {
+        const caretAtOrNearEnd = caret >= Math.max(0, String(promptEl.value || '').length - 1);
+        if (caretAtOrNearEnd && typeof promptEl.scrollTop === 'number') {
+          promptEl.scrollTop = Math.max(0, scrollHeight - clientHeight);
+        }
+      }
+    };
+
     const focusPrompt = ({ allowForce = false } = {}) => {
       if (!allowForce) {
         if (!promptEl || promptEl.disabled) return false;
@@ -234,24 +254,8 @@
       }
 
       ensureComposerVisible({ smooth: false });
-      if (mobileQuoteMode) {
-        promptEl.focus?.();
-      } else {
-        try {
-          promptEl.focus?.({ preventScroll: true });
-        } catch {
-          promptEl.focus?.();
-        }
-      }
-      const caret = Math.min(
-        Number.isInteger(promptEl.selectionEnd) ? promptEl.selectionEnd : String(promptEl.value || '').length,
-        String(promptEl.value || '').length,
-      );
-      try {
-        promptEl.setSelectionRange?.(caret, caret);
-      } catch {
-        // Some mobile webviews reject setSelectionRange during keyboard transitions.
-      }
+      promptEl.focus?.();
+      revealPromptCaret();
       ensureComposerVisible({ smooth: false });
       return documentObject?.activeElement === promptEl || !documentObject;
     };

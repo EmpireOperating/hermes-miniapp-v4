@@ -46,6 +46,14 @@ test('interaction helpers load before app.js so quote-selection bindings and mob
   );
 });
 
+test('selection quote button opts out of sticky control-focus cleanup so quote insertion can leave the composer caret active', () => {
+  assert.match(
+    templateSource,
+    /<button type="button" id="selection-quote-button" class="selection-quote-button" data-skip-control-focus-release="true" hidden>Quote<\/button>/,
+    'expected the selection quote button to preserve composer focus after click',
+  );
+});
+
 test('runtime helper chain and startup bindings load before app.js so bootstrap dependencies exist synchronously', () => {
   const appIndex = indexOfScript('/static/app.js?v={{ app_js_version }}');
   const runtimeAttentionIndex = indexOfScript('/static/runtime_attention_effects.js?v={{ runtime_attention_effects_version }}');

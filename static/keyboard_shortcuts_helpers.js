@@ -1,5 +1,6 @@
 (function initHermesMiniappKeyboardShortcuts(globalScope) {
   const CONTROL_FOCUS_SELECTOR = "button, [role='button'], .chat-tab, .pinned-chat-item__open, [data-pinned-chat-menu-trigger]";
+  const CONTROL_FOCUS_RELEASE_SKIP_SELECTOR = '[data-skip-control-focus-release="true"]';
 
   function getOrderedChatIds(chatsMap) {
     return [...chatsMap.values()]
@@ -326,6 +327,14 @@
     return Boolean(control);
   }
 
+  function shouldSkipControlFocusReleaseAfterClick(target, {
+    skipSelector = CONTROL_FOCUS_RELEASE_SKIP_SELECTOR,
+  } = {}) {
+    if (typeof Element === "undefined") return false;
+    if (!target || !(target instanceof Element)) return false;
+    return Boolean(target.closest(skipSelector));
+  }
+
   function releaseStickyControlFocus({
     mobileQuoteMode,
     isDesktopViewportFn,
@@ -364,10 +373,12 @@
 
   function handleGlobalControlClickFocusCleanup(event, {
     shouldReleaseControlFocusAfterClickFn,
+    shouldSkipControlFocusReleaseAfterClickFn,
     releaseStickyControlFocusFn,
     windowObject,
   }) {
     if (!shouldReleaseControlFocusAfterClickFn(event.target)) return;
+    if (shouldSkipControlFocusReleaseAfterClickFn?.(event.target)) return;
     windowObject.setTimeout(() => {
       releaseStickyControlFocusFn();
     }, 0);
@@ -569,6 +580,7 @@
     function handleGlobalControlClickFocusCleanupFromState(event) {
       return handleGlobalControlClickFocusCleanup(event, {
         shouldReleaseControlFocusAfterClickFn: shouldReleaseControlFocusAfterClickFromState,
+        shouldSkipControlFocusReleaseAfterClickFn: shouldSkipControlFocusReleaseAfterClick,
         releaseStickyControlFocusFn: releaseStickyControlFocusFromState,
         windowObject,
       });
@@ -617,6 +629,7 @@
 
   const api = {
     CONTROL_FOCUS_SELECTOR,
+    CONTROL_FOCUS_RELEASE_SKIP_SELECTOR,
     createController,
     getOrderedChatIds,
     isTextEntryElement,
@@ -631,6 +644,7 @@
     handleGlobalChatActionShortcut,
     handleGlobalShortcutsHelpShortcut,
     shouldReleaseControlFocusAfterClick,
+    shouldSkipControlFocusReleaseAfterClick,
     releaseStickyControlFocus,
     handleGlobalControlClickFocusCleanup,
     handleGlobalControlMouseDownFocusGuard,

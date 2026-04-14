@@ -61,6 +61,9 @@ function buildHarness({
     blurCalls: 0,
     focusCalls: [],
     selectionRanges: [],
+    scrollTop: 0,
+    scrollHeight: 320,
+    clientHeight: 104,
     blur() {
       this.blurCalls += 1;
       documentObject.activeElement = documentObject.body;
@@ -293,6 +296,21 @@ test('focusComposerAfterQuoteInsertion uses a longer retry burst so quote insert
   assert.deepEqual(harness.promptEl.selectionRanges, [[7, 7], [7, 7], [7, 7], [7, 7], [7, 7], [7, 7], [7, 7], [7, 7]]);
   assert.deepEqual(harness.timeoutCalls, [0, 90, 220, 420, 700, 1000]);
   assert.ok(harness.form.scrollIntoViewCalls.length >= 7);
+});
+
+test('focusComposerAfterQuoteInsertion on desktop avoids preventScroll focus and reveals the caret at the lower quote follow-up lines', () => {
+  const harness = buildHarness({ mobileQuoteMode: false });
+  harness.documentObject.activeElement = harness.documentObject.body;
+  harness.promptEl.value = 'quoted draft with breathing room';
+  harness.promptEl.scrollTop = 0;
+  const caret = harness.promptEl.value.length;
+
+  harness.controller.focusComposerAfterQuoteInsertion(caret);
+
+  assert.equal(harness.promptEl.focusCalls[0], null);
+  assert.deepEqual(harness.promptEl.selectionRanges[0], [caret, caret]);
+  assert.equal(harness.promptEl.scrollTop, harness.promptEl.scrollHeight - harness.promptEl.clientHeight);
+  assert.ok(harness.form.scrollIntoViewCalls.length >= 2);
 });
 
 test('focusComposerAfterQuoteInsertion skips retries when a dialog opens after the initial focus', () => {

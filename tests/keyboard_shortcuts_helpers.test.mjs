@@ -5,6 +5,29 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const keyboard = require('../static/keyboard_shortcuts_helpers.js');
 
+function withFakeDomClasses(run) {
+  const previousElement = globalThis.Element;
+  const previousHTMLElement = globalThis.HTMLElement;
+  class FakeElement {}
+  class FakeHTMLElement extends FakeElement {}
+  globalThis.Element = FakeElement;
+  globalThis.HTMLElement = FakeHTMLElement;
+  try {
+    return run({ FakeElement, FakeHTMLElement });
+  } finally {
+    if (previousElement === undefined) {
+      delete globalThis.Element;
+    } else {
+      globalThis.Element = previousElement;
+    }
+    if (previousHTMLElement === undefined) {
+      delete globalThis.HTMLElement;
+    } else {
+      globalThis.HTMLElement = previousHTMLElement;
+    }
+  }
+}
+
 test('getOrderedChatIds normalizes and sorts valid positive chat ids', () => {
   const chats = new Map([
     [9, { id: '9' }],
@@ -507,16 +530,41 @@ test('handleGlobalShortcutsHelpShortcut ignores text entry, modifiers, and open 
   assert.deepEqual(calls, []);
 });
 
-test('createController resolves active chat lazily for keyboard handlers', () => {
-  let activeChatId = 4;
+test('handleGlobalControlClickFocusCleanup skips sticky-focus release for quote-style controls that explicitly preserve composer focus', () => {
+  withFakeDomClasses(({ FakeElement }) => {
+    let releaseCalls = 0;
+    const skipTarget = new FakeElement();
+    skipTarget.closest = (selector) => selector === keyboard.CONTROL_FOCUS_RELEASE_SKIP_SELECTOR ? skipTarget : null;
+
+    keyboard.handleGlobalControlClickFocusCleanup({ target: skipTarget }, {
+      shouldReleaseControlFocusAfterClickFn: () => true,
+      shouldSkipControlFocusReleaseAfterClickFn: keyboard.shouldSkipControlFocusReleaseAfterClick,
+      releaseStickyControlFocusFn: () => {
+        releaseCalls += 1;
+      },
+      windowObject: {
+        setTimeout() {
+          throw new Error('skip-marked quote controls should not schedule sticky focus cleanup');
+        },
+      },
+    });
+
+    assert.equal(releaseCalls, 0);
+  });
+});
+
+test('controller methods read state lazily so chat switching actions use the latest active chat id', () => {
   const opened = [];
   const actions = [];
+  let activeChatId = 4;
   const controller = keyboard.createController({
-    windowObject: { innerWidth: 1200, matchMedia: () => ({ matches: true }), setTimeout: (fn) => fn() },
+    windowObject: { innerWidth: 1200 },
     documentObject: { activeElement: null, querySelector: () => null },
-    messagesEl: { clientHeight: 1000, scrollTop: 0, contains: () => false },
-    promptEl: { focus() {} },
+    tabsEl: {},
+    tabNodes: new Map(),
     settingsModal: null,
+    promptEl: { focus() {} },
+    messagesEl: {},
     jumpLatestButton: { hidden: false },
     jumpLastStartButton: { hidden: false },
     chats: new Map([

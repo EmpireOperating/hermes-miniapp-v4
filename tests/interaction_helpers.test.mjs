@@ -444,6 +444,9 @@ test('applyQuoteIntoPrompt desktop focus retries respect active modal focus owne
     maxLength: 6000,
     selectionStart: 0,
     selectionEnd: 0,
+    scrollTop: 0,
+    scrollHeight: 260,
+    clientHeight: 100,
     ownerDocument: { defaultView: { Event: class Event { constructor(type, options = {}) { this.type = type; this.bubbles = Boolean(options.bubbles); } } } },
     focus(...args) {
       focusCalls.push(args);
@@ -474,7 +477,8 @@ test('applyQuoteIntoPrompt desktop focus retries respect active modal focus owne
   });
 
   assert.equal(focusCalls.length, 1);
-  assert.deepEqual(focusCalls[0], [{ preventScroll: true }]);
+  assert.deepEqual(focusCalls[0], []);
+  assert.equal(promptEl.scrollTop, promptEl.scrollHeight - promptEl.clientHeight);
 
   documentObject.activeElement = modalInput;
   rafCallbacks[0]();
