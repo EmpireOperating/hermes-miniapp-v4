@@ -97,6 +97,7 @@ function buildHarness(overrides = {}) {
     disabled: false,
     title: '',
     textContent: '',
+    dataset: {},
     attributes: new Map(),
     setAttribute(name, value) {
       this.attributes.set(name, value);
@@ -514,7 +515,7 @@ test('removeActiveChat switches away from the closing tab before the backend res
       if (path !== '/api/chats/remove') {
         throw new Error(`unexpected api path ${path}`);
       }
-      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false });
+      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false, preferred_chat_id: 9 });
       return removePromise;
     },
   });
@@ -541,7 +542,7 @@ test('removeActiveChat switches away from the closing tab before the backend res
   assert.deepEqual(harness.renderedMessages, [9, 9]);
 });
 
-test('removeActiveChat chooses the next active chat from visual tab order, not numeric chat-id order', async () => {
+test('removeActiveChat prefers the tab to the right in visual tab order before falling back left', async () => {
   let resolveRemove;
   const removePromise = new Promise((resolve) => {
     resolveRemove = resolve;
@@ -554,14 +555,15 @@ test('removeActiveChat chooses the next active chat from visual tab order, not n
     ],
     initialHistories: [
       [7, [{ id: 1, body: 'old' }]],
-      [13, [{ id: 2, body: 'cached next' }]],
+      [11, [{ id: 2, body: 'cached left' }]],
+      [13, [{ id: 3, body: 'cached right' }]],
     ],
     orderedChatIds: [11, 7, 13],
     apiPost: async (path, payload) => {
       if (path !== '/api/chats/remove') {
         throw new Error(`unexpected api path ${path}`);
       }
-      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false });
+      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false, preferred_chat_id: 13 });
       return removePromise;
     },
   });
@@ -575,7 +577,7 @@ test('removeActiveChat chooses the next active chat from visual tab order, not n
   resolveRemove({
     removed_chat_id: 7,
     active_chat_id: 13,
-    active_chat: { id: 13, title: 'Newest chat' },
+    active_chat: { id: 13, title: 'Newest chat', is_pinned: false },
     chats: [
       { id: 11, title: 'Pinned reopened', is_pinned: true },
       { id: 13, title: 'Newest chat', is_pinned: false },
@@ -659,7 +661,7 @@ test('removeActiveChat reopens the server-selected next chat when the remove res
       if (path !== '/api/chats/remove') {
         throw new Error(`unexpected api path ${path}`);
       }
-      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false });
+      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false, preferred_chat_id: 9 });
       return {
         removed_chat_id: 7,
         active_chat_id: 9,
@@ -689,32 +691,32 @@ test('forkChatFrom clones chat history into a new active branch', async () => {
   assert.deepEqual(harness.renderedMessages, [19]);
 });
 
-test('forkChatFrom rejects chats with active local work before calling the backend', async () => {
+test('forkChatFrom still calls the backend when the source chat has active local work', async () => {
   const harness = buildHarness();
   harness.pendingChats.add(7);
 
-  await assert.rejects(
-    harness.controller.forkChatFrom(7),
-    /Wait for Hermes to finish before branching this chat\./,
-  );
+  await harness.controller.forkChatFrom(7);
 
-  assert.deepEqual(harness.apiCalls, []);
-  assert.equal(harness.histories.has(19), false);
-  assert.deepEqual(harness.setActiveCalls, []);
+  assert.deepEqual(harness.apiCalls[0], {
+    path: '/api/chats/branch',
+    payload: { chat_id: 7, title: '[bug]Current #2' },
+  });
+  assert.deepEqual(harness.histories.get(19), [{ id: 200, body: 'old' }]);
+  assert.deepEqual(harness.setActiveCalls, [19]);
 });
 
-test('forkChatFrom rejects chats marked pending by server state before calling the backend', async () => {
+test('forkChatFrom still calls the backend when the source chat is marked pending by server state', async () => {
   const harness = buildHarness();
   harness.chats.set(7, { ...harness.chats.get(7), pending: true });
 
-  await assert.rejects(
-    harness.controller.forkChatFrom(7),
-    /Wait for Hermes to finish before branching this chat\./,
-  );
+  await harness.controller.forkChatFrom(7);
 
-  assert.deepEqual(harness.apiCalls, []);
-  assert.equal(harness.histories.has(19), false);
-  assert.deepEqual(harness.setActiveCalls, []);
+  assert.deepEqual(harness.apiCalls[0], {
+    path: '/api/chats/branch',
+    payload: { chat_id: 7, title: '[bug]Current #2' },
+  });
+  assert.deepEqual(harness.histories.get(19), [{ id: 200, body: 'old' }]);
+  assert.deepEqual(harness.setActiveCalls, [19]);
 });
 
 test('openPinnedChat reuses reopen payload history for missing pinned chats instead of refetching immediately', async () => {
@@ -845,7 +847,7 @@ test('chat tab context menu open/close clamps viewport coordinates', () => {
   assert.equal(harness.chatTabContextMenu.hidden, true);
 });
 
-test('chat tab context menu stays open and disables only blocked actions for pending chats', () => {
+test('chat tab context menu stays open and only close remains blocked for pending chats', () => {
   const harness = buildHarness();
   harness.chats.set(7, { ...harness.chats.get(7), pending: true });
 
@@ -855,9 +857,9 @@ test('chat tab context menu stays open and disables only blocked actions for pen
   assert.equal(harness.chatTabContextRename.disabled, false);
   assert.equal(harness.chatTabContextPin.disabled, false);
   assert.equal(harness.chatTabContextClose.disabled, true);
-  assert.equal(harness.chatTabContextFork.disabled, true);
-  assert.equal(harness.chatTabContextFork.attributes.get('aria-disabled'), 'true');
-  assert.match(harness.chatTabContextFork.title, /Wait for Hermes to finish/);
+  assert.equal(harness.chatTabContextFork.disabled, false);
+  assert.equal(harness.chatTabContextFork.attributes.get('aria-disabled'), 'false');
+  assert.equal(harness.chatTabContextFork.title, 'Branch chat');
 });
 
 test('getNextBranchTitle follows Hermes lineage numbering semantics', () => {
@@ -928,7 +930,7 @@ test('tab-context fork and global-dismiss handlers close menu and preserve insid
   });
 
   harness.controller.openChatTabContextMenu(7, 40, 40);
-  await harness.controller.handleTabContextForkClick({ preventDefault() {} });
+  await harness.controller.handleTabContextForkClick({ preventDefault() {}, currentTarget: harness.chatTabContextFork });
   assert.equal(harness.chatTabContextMenu.hidden, true);
   assert.equal(harness.apiCalls.at(-1).path, '/api/chats/branch');
 
@@ -937,4 +939,19 @@ test('tab-context fork and global-dismiss handlers close menu and preserve insid
   assert.equal(harness.chatTabContextMenu.hidden, false);
   harness.controller.handleGlobalChatContextMenuDismiss({ target: {} });
   assert.equal(harness.chatTabContextMenu.hidden, true);
+});
+
+test('tab-context fork still branches when menu state was cleared before click handler runs', async () => {
+  const harness = buildHarness();
+
+  harness.controller.openChatTabContextMenu(7, 40, 40);
+  harness.controller.closeChatTabContextMenu();
+
+  await harness.controller.handleTabContextForkClick({
+    preventDefault() {},
+    currentTarget: harness.chatTabContextFork,
+  });
+
+  assert.equal(harness.apiCalls.at(-1).path, '/api/chats/branch');
+  assert.equal(harness.apiCalls.at(-1).payload.chat_id, 7);
 });

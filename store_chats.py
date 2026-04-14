@@ -329,6 +329,18 @@ class StoreChatsMixin:
             if len(cleaned_title) > MAX_TITLE_LEN:
                 raise ValueError(f"Title exceeds {MAX_TITLE_LEN} characters")
 
+            cutoff_row = conn.execute(
+                """
+                SELECT MAX(id) AS cutoff_message_id
+                FROM chat_messages
+                WHERE user_id = ? AND chat_id = ? AND role = 'hermes'
+                """,
+                (user_id, source_chat_id),
+            ).fetchone()
+            cutoff_message_id = int(cutoff_row["cutoff_message_id"] or 0) if cutoff_row else 0
+            if cutoff_message_id <= 0:
+                raise ValueError("Nothing completed yet to branch from.")
+
             cursor = conn.execute(
                 "INSERT INTO chat_threads (user_id, title, parent_chat_id, is_archived) VALUES (?, ?, ?, 0)",
                 (user_id, cleaned_title, source_chat_id),
@@ -339,10 +351,10 @@ class StoreChatsMixin:
                 """
                 SELECT role, body
                 FROM chat_messages
-                WHERE user_id = ? AND chat_id = ?
+                WHERE user_id = ? AND chat_id = ? AND id <= ?
                 ORDER BY id ASC
                 """,
-                (user_id, source_chat_id),
+                (user_id, source_chat_id, cutoff_message_id),
             ).fetchall()
 
             for row in source_rows:

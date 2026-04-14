@@ -71,6 +71,17 @@ def register_chat_management_routes(
             return False, None
         return None, json_error_fn("Invalid allow_empty flag. Expected boolean.", 400)
 
+    def _parse_preferred_chat_id(payload: dict[str, object]) -> tuple[int | None, tuple[dict[str, object], int] | None]:
+        if "preferred_chat_id" not in payload or payload.get("preferred_chat_id") in (None, ""):
+            return None, None
+        try:
+            preferred_chat_id = int(payload.get("preferred_chat_id"))
+        except (TypeError, ValueError):
+            return None, json_error_fn("Invalid preferred_chat_id. Expected positive integer.", 400)
+        if preferred_chat_id <= 0:
+            return None, json_error_fn("Invalid preferred_chat_id. Expected positive integer.", 400)
+        return preferred_chat_id, None
+
     def _parse_bool_flag(
         payload: dict[str, object],
         key: str,
@@ -279,6 +290,9 @@ def register_chat_management_routes(
         allow_empty, allow_empty_error = _parse_allow_empty_flag(payload)
         if allow_empty_error:
             return allow_empty_error
+        preferred_chat_id, preferred_chat_id_error = _parse_preferred_chat_id(payload)
+        if preferred_chat_id_error:
+            return preferred_chat_id_error
         include_full_state, include_full_state_error = _parse_bool_flag(
             payload,
             "include_full_state",
@@ -292,6 +306,7 @@ def register_chat_management_routes(
             chat_id=chat_id,
             allow_empty=bool(allow_empty),
             include_full_state=bool(include_full_state),
+            preferred_chat_id=preferred_chat_id,
         )
 
     @api_bp.post("/chats/status")

@@ -104,6 +104,39 @@ def test_fork_chat_clones_history_without_mutating_source_chat(tmp_path) -> None
 
 
 
+def test_fork_chat_drops_inflight_operator_tail_and_stays_non_pending(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u4fork-tail"
+    source_chat = store.create_chat(user_id, "Source")
+
+    store.add_message(user_id, source_chat.id, "operator", "review /tmp/demo.py:12")
+    store.add_message(user_id, source_chat.id, "hermes", "looks good")
+    operator_message_id = store.add_message(user_id, source_chat.id, "operator", "keep going")
+    store.enqueue_chat_job(user_id, source_chat.id, operator_message_id)
+
+    forked_chat = store.fork_chat(user_id=user_id, source_chat_id=source_chat.id, title="Source #2")
+
+    source_history = store.get_history(user_id, source_chat.id)
+    fork_history = store.get_history(user_id, forked_chat.id)
+    assert [turn.role for turn in source_history] == ["operator", "hermes", "operator"]
+    assert [turn.role for turn in fork_history] == ["operator", "hermes"]
+    assert [turn.body for turn in fork_history] == ["review /tmp/demo.py:12", "looks good"]
+    assert store.get_chat(user_id, source_chat.id).pending is True
+    assert store.get_chat(user_id, forked_chat.id).pending is False
+
+
+
+def test_fork_chat_requires_a_completed_assistant_message(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u4fork-no-assistant"
+    source_chat = store.create_chat(user_id, "Source")
+
+    store.add_message(user_id, source_chat.id, "operator", "still working")
+
+    with pytest.raises(ValueError, match="Nothing completed yet to branch from"):
+        store.fork_chat(user_id=user_id, source_chat_id=source_chat.id, title="Source #2")
+
+
 def test_fork_chat_defaults_to_lineage_title_and_increments_suffixes(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u4branch-default"

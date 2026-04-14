@@ -85,6 +85,28 @@ def test_remove_chat_can_return_no_active_chat_when_allow_empty_requested(monkey
     assert payload["chats"] == []
 
 
+def test_remove_chat_honors_preferred_replacement_chat(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    left_chat_id = server.store.ensure_default_chat("123")
+    closing_chat = server.store.create_chat("123", "Current")
+    right_chat = server.store.create_chat("123", "Right")
+    server.store.set_active_chat("123", closing_chat.id)
+
+    response = client.post(
+        "/api/chats/remove",
+        json={"init_data": "ok", "chat_id": closing_chat.id, "allow_empty": True, "preferred_chat_id": right_chat.id},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["removed_chat_id"] == closing_chat.id
+    assert payload["active_chat_id"] == right_chat.id
+    assert payload["active_chat"]["id"] == right_chat.id
+    assert [chat["id"] for chat in payload["chats"]] == [left_chat_id, right_chat.id]
+    assert server.store.get_active_chat("123") == right_chat.id
+
+
 def test_closing_pinned_chat_keeps_it_in_pinned_list_for_reopen(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -173,7 +195,38 @@ def test_branch_chat_creates_new_chat_with_source_history(monkeypatch, tmp_path)
     assert any(chat["id"] == payload["chat"]["id"] for chat in payload["chats"])
 
 
-def test_branch_chat_rejects_active_work(monkeypatch, tmp_path) -> None:
+def test_branch_chat_allows_active_work_but_cuts_branch_at_last_assistant_message(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    source_chat = server.store.create_chat("123", "Busy")
+    server.store.add_message("123", source_chat.id, "operator", "prior")
+    server.store.add_message("123", source_chat.id, "hermes", "done")
+    operator_message_id = server.store.add_message("123", source_chat.id, "operator", "still working")
+    server.store.enqueue_chat_job("123", source_chat.id, operator_message_id)
+    server.store.set_runtime_checkpoint(
+        session_id=f"miniapp-123-{source_chat.id}",
+        user_id="123",
+        chat_id=source_chat.id,
+        pending_tool_lines=["search_files"],
+        pending_assistant="Thinking",
+    )
+
+    response = client.post(
+        "/api/chats/branch",
+        json={"init_data": "ok", "chat_id": source_chat.id, "title": "Busy alt"},
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["chat"]["title"] == "Busy alt"
+    assert payload["chat"]["pending"] is False
+    assert [turn["body"] for turn in payload["history"]] == ["prior", "done"]
+    assert all(not turn.get("pending") for turn in payload["history"])
+    assert [chat.title for chat in server.store.list_chats("123")] == ["Busy", "Busy alt"]
+
+
+
+def test_branch_chat_rejects_source_without_completed_assistant_message(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 
     source_chat = server.store.create_chat("123", "Busy")
@@ -187,7 +240,7 @@ def test_branch_chat_rejects_active_work(monkeypatch, tmp_path) -> None:
 
     assert response.status_code == 409
     payload = response.get_json()
-    assert "finish before branching" in payload["error"].lower()
+    assert payload["error"] == "Nothing completed yet to branch from."
     assert [chat.title for chat in server.store.list_chats("123")] == ["Busy"]
 
 

@@ -264,45 +264,47 @@
       }
     }
 
-    function isChatForkBlocked(chatId) {
-      const key = Number(chatId);
-      if (!key) return false;
-      return pendingChats.has(key) || Boolean(chats.get(key)?.pending);
-    }
-
-    function syncContextActionButton(button, { disabled = false, title = '' } = {}) {
+    function syncContextActionButton(button, { disabled = false, title = '', chatId = null } = {}) {
       if (!button) return;
       button.disabled = Boolean(disabled);
       button.setAttribute('aria-disabled', disabled ? 'true' : 'false');
       button.title = title || '';
+      if (button.dataset) {
+        if (Number(chatId) > 0) {
+          button.dataset.chatId = String(Number(chatId));
+        } else {
+          delete button.dataset.chatId;
+        }
+      }
     }
 
     function syncChatTabContextMenuState(chatId) {
       const targetChatId = Number(chatId);
       if (!tabActionsMenuEnabled || !targetChatId) {
-        syncContextActionButton(chatTabContextRename, { disabled: true });
-        syncContextActionButton(chatTabContextPin, { disabled: true });
-        syncContextActionButton(chatTabContextClose, { disabled: true });
-        syncContextActionButton(chatTabContextFork, { disabled: true });
+        syncContextActionButton(chatTabContextRename, { disabled: true, chatId: null });
+        syncContextActionButton(chatTabContextPin, { disabled: true, chatId: null });
+        syncContextActionButton(chatTabContextClose, { disabled: true, chatId: null });
+        syncContextActionButton(chatTabContextFork, { disabled: true, chatId: null });
         return;
       }
 
       const chat = getChatRecord(targetChatId);
       const isPinned = Boolean(chat?.is_pinned);
       const closeBlocked = pendingChats.has(targetChatId) || Boolean(chat?.pending);
-      const branchBlocked = isChatForkBlocked(targetChatId);
-      syncContextActionButton(chatTabContextRename, { disabled: false, title: 'Rename chat' });
+      syncContextActionButton(chatTabContextRename, { disabled: false, title: 'Rename chat', chatId: targetChatId });
       if (chatTabContextPin) {
         chatTabContextPin.textContent = isPinned ? 'Unpin chat' : 'Pin chat';
       }
-      syncContextActionButton(chatTabContextPin, { disabled: false, title: isPinned ? 'Unpin chat' : 'Pin chat' });
+      syncContextActionButton(chatTabContextPin, { disabled: false, title: isPinned ? 'Unpin chat' : 'Pin chat', chatId: targetChatId });
       syncContextActionButton(chatTabContextClose, {
         disabled: closeBlocked,
         title: closeBlocked ? 'Wait for Hermes to finish before closing this chat.' : 'Close chat',
+        chatId: targetChatId,
       });
       syncContextActionButton(chatTabContextFork, {
-        disabled: branchBlocked,
-        title: branchBlocked ? 'Wait for Hermes to finish before branching this chat.' : 'Branch chat',
+        disabled: false,
+        title: 'Branch chat',
+        chatId: targetChatId,
       });
     }
 
@@ -318,12 +320,6 @@
         disabled: removeBlocked,
         title: removeBlocked ? 'Wait for Hermes to finish before removing this chat.' : 'Remove chat',
       });
-    }
-
-    function ensureForkChatAllowed(chatId) {
-      if (isChatForkBlocked(chatId)) {
-        throw new Error('Wait for Hermes to finish before branching this chat.');
-      }
     }
 
     function getNextBranchTitle(sourceTitle) {
@@ -385,12 +381,16 @@
             .map((chatId) => Number(chatId))
             .filter((chatId) => chatId > 0)
         : [];
-      const closingIndex = orderedIds.indexOf(closingId);
+      const visibleOrderedIds = orderedIds.filter((chatId) => chatId === closingId || chats.has(chatId));
+      const closingIndex = visibleOrderedIds.indexOf(closingId);
       if (closingIndex >= 0) {
-        const nextOrderedIds = orderedIds.filter((chatId) => chatId !== closingId && chats.has(chatId));
-        if (nextOrderedIds.length) {
-          const nextIndex = closingIndex >= nextOrderedIds.length ? 0 : closingIndex;
-          return nextOrderedIds[nextIndex] || 0;
+        const rightNeighborId = visibleOrderedIds[closingIndex + 1] || 0;
+        if (rightNeighborId > 0 && rightNeighborId !== closingId && chats.has(rightNeighborId)) {
+          return rightNeighborId;
+        }
+        const leftNeighborId = visibleOrderedIds[closingIndex - 1] || 0;
+        if (leftNeighborId > 0 && leftNeighborId !== closingId && chats.has(leftNeighborId)) {
+          return leftNeighborId;
         }
       }
 
@@ -492,6 +492,7 @@
           chat_id: activeChatId,
           allow_empty: true,
           include_full_state: false,
+          ...(optimisticNextChatId > 0 ? { preferred_chat_id: optimisticNextChatId } : {}),
         });
       } catch (error) {
         restoreMap(chats, optimisticSnapshot.chats);
@@ -575,7 +576,6 @@
     async function forkChatFrom(chatId) {
       const sourceChatId = Number(chatId);
       if (!sourceChatId) return;
-      ensureForkChatAllowed(sourceChatId);
 
       const sourceTitleRaw = String(chatLabel(sourceChatId) || `Chat ${sourceChatId}`).trim();
       const parsed = parseTaggedChatTitle(sourceTitleRaw);
@@ -710,9 +710,16 @@
       closePinnedChatContextMenu();
     }
 
+    function resolveContextActionChatId(event, fallbackChatId) {
+      const fallback = Number(fallbackChatId || 0);
+      const currentTargetId = Number(event?.currentTarget?.dataset?.chatId || 0);
+      const targetId = Number(event?.target?.dataset?.chatId || 0);
+      return currentTargetId || targetId || fallback;
+    }
+
     async function handleTabContextRenameClick(event) {
       event?.preventDefault?.();
-      const chatId = Number(tabContextTargetChatId || 0);
+      const chatId = resolveContextActionChatId(event, tabContextTargetChatId);
       closeChatTabContextMenu();
       if (!chatId) return;
       await renameChatById(chatId);
@@ -720,7 +727,7 @@
 
     async function handleTabContextPinClick(event) {
       event?.preventDefault?.();
-      const chatId = Number(tabContextTargetChatId || 0);
+      const chatId = resolveContextActionChatId(event, tabContextTargetChatId);
       closeChatTabContextMenu();
       if (!chatId) return;
       await toggleChatPin(chatId);
@@ -728,7 +735,7 @@
 
     async function handleTabContextCloseClick(event) {
       event?.preventDefault?.();
-      const chatId = Number(tabContextTargetChatId || 0);
+      const chatId = resolveContextActionChatId(event, tabContextTargetChatId);
       closeChatTabContextMenu();
       if (!chatId) return;
       await removeChatById(chatId);
@@ -736,7 +743,7 @@
 
     async function handleTabContextForkClick(event) {
       event?.preventDefault?.();
-      const chatId = Number(tabContextTargetChatId || 0);
+      const chatId = resolveContextActionChatId(event, tabContextTargetChatId);
       closeChatTabContextMenu();
       if (!chatId) return;
       await forkChatFrom(chatId);

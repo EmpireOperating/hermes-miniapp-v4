@@ -175,9 +175,10 @@ class ChatManagementService:
         requested_title: str | None,
     ) -> tuple[dict[str, object], int]:
         store = self._store_getter()
-        if store.has_open_job(user_id=user_id, chat_id=chat_id):
-            return self._json_error_fn("Wait for Hermes to finish before branching this chat.", 409)
-        forked_chat = store.fork_chat(user_id=user_id, source_chat_id=chat_id, title=requested_title)
+        try:
+            forked_chat = store.fork_chat(user_id=user_id, source_chat_id=chat_id, title=requested_title)
+        except ValueError as exc:
+            return self._json_error_fn(str(exc), 409)
         store.set_active_chat(user_id=user_id, chat_id=forked_chat.id)
         store.mark_chat_read(user_id=user_id, chat_id=forked_chat.id)
 
@@ -210,11 +211,21 @@ class ChatManagementService:
         chat_id: int,
         allow_empty: bool,
         include_full_state: bool = True,
+        preferred_chat_id: int | None = None,
     ) -> tuple[dict[str, object], int]:
         store = self._store_getter()
         previous_active_chat_id = store.get_active_chat(user_id)
         self.evict_chat_runtime(user_id=user_id, chat_id=chat_id, reason="invalidated_by_remove")
         next_chat_id = store.remove_chat(user_id=user_id, chat_id=chat_id, allow_empty=allow_empty)
+        preferred_next_chat_id = preferred_chat_id if preferred_chat_id and preferred_chat_id != chat_id else None
+        if preferred_next_chat_id is not None:
+            try:
+                store.get_chat(user_id=user_id, chat_id=preferred_next_chat_id)
+            except KeyError:
+                preferred_next_chat_id = None
+            else:
+                next_chat_id = preferred_next_chat_id
+
         preserved_active_chat_id = previous_active_chat_id if previous_active_chat_id and previous_active_chat_id != chat_id else None
         if preserved_active_chat_id is not None:
             try:

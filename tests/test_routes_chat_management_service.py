@@ -48,7 +48,34 @@ def test_create_chat_response_sets_active_chat_and_returns_serialized_history(mo
 
 
 
-def test_branch_chat_response_returns_conflict_when_source_chat_has_open_job(monkeypatch, tmp_path) -> None:
+def test_branch_chat_response_allows_open_job_and_cuts_branch_at_last_assistant_message(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    source_chat = server.store.create_chat("123", "Busy")
+    server.store.add_message("123", source_chat.id, "operator", "prior")
+    server.store.add_message("123", source_chat.id, "hermes", "done")
+    operator_message_id = server.store.add_message("123", source_chat.id, "operator", "still working")
+    server.store.enqueue_chat_job("123", source_chat.id, operator_message_id)
+    server.store.set_runtime_checkpoint(
+        session_id=f"miniapp-123-{source_chat.id}",
+        user_id="123",
+        chat_id=source_chat.id,
+        pending_tool_lines=["read_file"],
+        pending_assistant="Thinking",
+    )
+
+    payload, status = service.branch_chat_response(user_id="123", chat_id=source_chat.id, requested_title="Busy alt")
+
+    assert status == 201
+    assert payload["chat"]["title"] == "Busy alt"
+    assert payload["chat"]["pending"] is False
+    assert [item["body"] for item in payload["history"]] == ["prior", "done"]
+    assert all(not item.get("pending") for item in payload["history"])
+
+
+
+def test_branch_chat_response_returns_conflict_when_no_completed_assistant_message_exists(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
     service = _build_service(server)
 
@@ -59,8 +86,7 @@ def test_branch_chat_response_returns_conflict_when_source_chat_has_open_job(mon
     payload, status = service.branch_chat_response(user_id="123", chat_id=source_chat.id, requested_title="Busy alt")
 
     assert status == 409
-    assert payload == {"ok": False, "error": "Wait for Hermes to finish before branching this chat."}
-
+    assert payload == {"ok": False, "error": "Nothing completed yet to branch from."}
 
 
 def test_remove_chat_response_evicts_runtime_and_can_leave_no_active_chat(monkeypatch, tmp_path) -> None:
@@ -124,6 +150,32 @@ def test_remove_chat_response_can_skip_full_state_payload(monkeypatch, tmp_path)
         "active_chat_id": first_chat_id,
     }
     assert serialized_calls == []
+
+
+def test_remove_chat_response_prefers_requested_replacement_chat_when_it_still_exists(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    left_chat_id = server.store.ensure_default_chat("123")
+    closing_chat = server.store.create_chat("123", "Current")
+    right_chat = server.store.create_chat("123", "Right")
+    server.store.set_active_chat("123", closing_chat.id)
+
+    payload, status = service.remove_chat_response(
+        user_id="123",
+        chat_id=closing_chat.id,
+        allow_empty=True,
+        include_full_state=False,
+        preferred_chat_id=right_chat.id,
+    )
+
+    assert status == 200
+    assert payload == {
+        "ok": True,
+        "removed_chat_id": closing_chat.id,
+        "active_chat_id": right_chat.id,
+    }
+    assert server.store.get_active_chat("123") == right_chat.id
 
 
 def test_chat_history_payload_with_activate_false_preserves_unread_state(monkeypatch, tmp_path) -> None:
