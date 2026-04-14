@@ -571,7 +571,7 @@
  - Validation steps:
    - `node --test tests/stream_controller.test.mjs tests/frontend_runtime.test.mjs`
    - `.venv/bin/python -m pytest -q tests/test_routes_chat.py tests/test_streaming_hardening_guards.py`
-   - Live browser smoke against `app.cronpulse.app` with dev auth and a tool-heavy prompt.
+   - Live browser smoke against the deployed Mini App with dev auth and a tool-heavy prompt.
  - Notes/dependencies: Pair naturally with R25 but can start earlier as a targeted hardening pass.
  - Execution result: Completed 2026-03-28. Moved `hydrateChatAfterGracefulResumeCompletion(...)` and `consumeStreamWithReconnect(...)` into `static/stream_controller.js`, wired `app.js` through controller delegates, and added direct Node contract tests (`tests/stream_controller.test.mjs`) plus guard coverage in `tests/test_streaming_hardening_guards.py` / `tests/test_routes_meta.py`. Browser smoke confirmed the desktop entry path still works after the consolidation.
 
@@ -810,7 +810,7 @@
   - `git status --short --branch` → dirty working tree centered in stream/auth/server/frontend files with untracked local scratch demos.
   - Python hotspot scan: `job_runtime.py` (627), `server.py` (436), `routes_chat_stream.py` (308), `routes_auth.py` (180), `miniapp_config.py` (157).
   - Frontend hotspot scan: `static/app.js` (3562), `static/stream_controller.js` (410), helper modules all far smaller (`<= 299`).
-  - Live browser QA against `https://app.cronpulse.app/app` now works via dev auth; console showed that after SSE framing fix, live `meta`/`tool`/`chunk`/`done` events parse correctly and render during pending state.
+  - Live browser QA against the deployed `/app` route now works via dev auth; console showed that after SSE framing fix, live `meta`/`tool`/`chunk`/`done` events parse correctly and render during pending state.
   - Service logs during that QA captured `GET /app?dev_secret=*** plus TelegramBot preview traffic to the same path, proving current query-string desktop bootstrap leaks secrets into logs and previews.
   - Production `.env` currently keeps `MINIAPP_REQUEST_DEBUG=1` and `MINI_APP_STREAM_TIMING_DEBUG=1`, which was useful for forensics but increases log volume and sensitive preview exposure.
 - Refactor refresh evidence (2026-04-02):

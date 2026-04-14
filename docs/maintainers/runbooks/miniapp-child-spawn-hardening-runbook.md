@@ -86,8 +86,8 @@ journalctl --user -u hermes-miniapp-v4.service -n 200 --no-pager
 
 6) Run deterministic local repro signatures (safe sandbox only)
 ```bash
-source /home/hermes-agent/.hermes/hermes-agent/venv/bin/activate
-cd /home/hermes-agent/workspace/active/hermes_miniapp_v4
+source /path/to/hermes-agent/venv/bin/activate
+cd /path/to/hermes-miniapp-v4
 python scripts/repro_fanout_storm.py --scenario all
 ```
 - Scenarios emitted:
@@ -98,8 +98,8 @@ python scripts/repro_fanout_storm.py --scenario all
 
 7) Regression tests for forensics signatures
 ```bash
-source /home/hermes-agent/.hermes/hermes-agent/venv/bin/activate
-cd /home/hermes-agent/workspace/active/hermes_miniapp_v4
+source /path/to/hermes-agent/venv/bin/activate
+cd /path/to/hermes-miniapp-v4
 python -m pytest -q tests/test_fanout_storm_forensics.py
 ```
 

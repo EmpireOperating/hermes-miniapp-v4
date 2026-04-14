@@ -63,7 +63,7 @@ test('renderBody does not linkify plain text paths without metadata or allowed r
 
   renderTraceTextHelpers.renderBody(
     container,
-    'Try /home/hermes-agent/workspace/active/hermes_miniapp_v4/miniapp_config.py:1 now',
+    'Try /workspace/hermes-miniapp-v4/miniapp_config.py:1 now',
     {
       cleanDisplayTextFn,
       escapeHtmlFn,
@@ -73,7 +73,7 @@ test('renderBody does not linkify plain text paths without metadata or allowed r
   );
 
   assert.doesNotMatch(container.innerHTML, /message-file-ref/);
-  assert.match(container.innerHTML, /\/home\/hermes-agent\/workspace\/active\/hermes_miniapp_v4\/miniapp_config.py:1/);
+  assert.match(container.innerHTML, /\/workspace\/hermes-miniapp-v4\/miniapp_config.py:1/);
 });
 
 test('renderBody does not linkify plain text paths without server metadata even when allowed roots are provided', () => {
@@ -83,17 +83,17 @@ test('renderBody does not linkify plain text paths without server metadata even 
 
   renderTraceTextHelpers.renderBody(
     container,
-    'Open /home/hermes-agent/workspace/active/hermes_miniapp_v4/miniapp_config.py:1 and /tmp/outside.py:1',
+    'Open /workspace/hermes-miniapp-v4/miniapp_config.py:1 and /tmp/outside.py:1',
     {
       cleanDisplayTextFn,
       escapeHtmlFn,
       fileRefs: null,
-      allowedRoots: ['/home/hermes-agent/workspace/active/hermes_miniapp_v4'],
+      allowedRoots: ['/workspace/hermes-miniapp-v4'],
     },
   );
 
   assert.doesNotMatch(container.innerHTML, /message-file-ref/);
-  assert.match(container.innerHTML, /\/home\/hermes-agent\/workspace\/active\/hermes_miniapp_v4\/miniapp_config.py:1/);
+  assert.match(container.innerHTML, /\/workspace\/hermes-miniapp-v4\/miniapp_config.py:1/);
   assert.match(container.innerHTML, /\/tmp\/outside.py:1/);
 });
 
