@@ -63,6 +63,7 @@
     activeChatId,
     promptEl,
     chats,
+    getOrderedChatIdsFromState = null,
     getNextChatTabId,
     openChat,
   }) {
@@ -87,8 +88,12 @@
     const current = Number(activeChatId);
     if (!current) return;
 
+    const orderedChatIds = typeof getOrderedChatIdsFromState === "function"
+      ? getOrderedChatIdsFromState()
+      : getOrderedChatIds(chats);
+
     const nextChatId = getNextChatTabId({
-      orderedChatIds: getOrderedChatIds(chats),
+      orderedChatIds,
       activeChatId: current,
       reverse: isArrowLeft,
     });
@@ -368,6 +373,7 @@
       jumpLatestButton,
       jumpLastStartButton,
       chats,
+      getOrderedChatIds,
       getActiveChatId,
       getMobileQuoteMode,
       openChat,
@@ -382,7 +388,10 @@
     } = deps;
 
     function getOrderedChatIdsFromState() {
-      return getOrderedChatIds(chats);
+      if (typeof getOrderedChatIds === 'function') {
+        return getOrderedChatIds();
+      }
+      return globalScope.HermesMiniappKeyboardShortcuts.getOrderedChatIds(chats);
     }
 
     function isDesktopViewportFromState() {
@@ -414,6 +423,7 @@
         activeChatId: getActiveChatId(),
         promptEl,
         chats,
+        getOrderedChatIdsFromState,
         getNextChatTabId,
         openChat,
       });

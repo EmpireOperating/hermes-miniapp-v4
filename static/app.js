@@ -385,6 +385,7 @@ const pinnedChatsToggleButton = document.getElementById("pinned-chats-toggle");
 const fullscreenAppTopButton = document.getElementById("fullscreen-app-top");
 const closeAppTopButton = document.getElementById("close-app-top");
 const settingsButton = document.getElementById("settings-button");
+const keyboardShortcutsTopButton = document.getElementById("keyboard-shortcuts-top-button");
 const keyboardShortcutsButton = document.getElementById("keyboard-shortcuts-button");
 const devAuthControls = document.getElementById("dev-auth-controls");
 const devModeBadge = document.getElementById("dev-mode-badge");
@@ -2448,6 +2449,7 @@ const chatAdminController = chatAdminHelpers.createController({
   renderPinnedChats,
   syncPinChatButton,
   moveChatToEnd: (chatId) => chatTabsController.moveChatToEnd(chatId),
+  getOrderedChatIds: () => chatTabsController.getOrderedChatIds(),
   chatLabel,
   getActiveChatId: () => Number(activeChatId),
   openChat,
@@ -2635,6 +2637,7 @@ function createStartupBindingsControllerElementDeps({
     closeAppTopButton,
     renderTraceBadge,
     settingsButton,
+    keyboardShortcutsTopButton,
     keyboardShortcutsButton,
     devSignInButton,
     settingsClose,
@@ -3180,6 +3183,7 @@ const keyboardShortcutsController = keyboardShortcutsHelpers.createController({
   jumpLatestButton,
   jumpLastStartButton,
   chats,
+  getOrderedChatIds: () => chatTabsController.getOrderedChatIds(),
   getActiveChatId: () => Number(activeChatId),
   getMobileQuoteMode: () => mobileQuoteMode,
   openChat,

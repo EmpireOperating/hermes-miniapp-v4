@@ -1325,10 +1325,11 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert '/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}' in template
     assert '/static/interaction_helpers.js?v={{ interaction_helpers_version }}' in template
     assert '/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}' in template
+    assert 'id="keyboard-shortcuts-top-button"' in template
     assert 'id="keyboard-shortcuts-button"' in template
     assert 'id="keyboard-shortcuts-modal"' in template
     assert 'id="keyboard-shortcuts-close"' in template
-    assert 'aria-controls="keyboard-shortcuts-modal"' in template
+    assert template.count('aria-controls="keyboard-shortcuts-modal"') >= 2
     assert '/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}' in template
     assert '/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}' in template
     assert '/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}' in template

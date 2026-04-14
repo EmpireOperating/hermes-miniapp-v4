@@ -438,6 +438,7 @@
       closeAppTopButton,
       renderTraceBadge,
       settingsButton,
+      keyboardShortcutsTopButton,
       keyboardShortcutsButton,
       devSignInButton,
       settingsClose,
@@ -462,6 +463,7 @@
       closeAppTopButton?.addEventListener('click', handleCloseApp);
       renderTraceBadge?.addEventListener('click', handleRenderTraceBadgeClick);
       settingsButton?.addEventListener('click', openSettingsModal);
+      keyboardShortcutsTopButton?.addEventListener('click', openKeyboardShortcutsModal);
       keyboardShortcutsButton?.addEventListener('click', openKeyboardShortcutsModal);
       devSignInButton?.addEventListener('click', () => {
         void (async () => {

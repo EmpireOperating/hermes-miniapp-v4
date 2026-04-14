@@ -171,6 +171,10 @@
       syncOrderedChatIds({ appendChatIds: [chatId] });
     }
 
+    function getOrderedChatIds() {
+      return syncOrderedChatIds();
+    }
+
     function upsertChat(chat) {
       const normalized = normalizeChat(chat);
       chats.set(Number(normalized.id), normalized);
@@ -236,6 +240,7 @@
 
     return {
       normalizeChat,
+      getOrderedChatIds,
       moveChatToEnd,
       upsertChat,
       syncPinnedChats,
@@ -904,6 +909,7 @@
     });
     const {
       normalizeChat,
+      getOrderedChatIds,
       moveChatToEnd,
       upsertChat,
       syncPinnedChats,
@@ -1041,6 +1047,7 @@
 
     return {
       normalizeChat,
+      getOrderedChatIds,
       moveChatToEnd,
       upsertChat,
       syncPinnedChats,

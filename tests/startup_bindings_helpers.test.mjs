@@ -80,6 +80,7 @@ function buildHarness({
   const clearSelectionQuoteStateCalls = [];
   const saveSkinCalls = [];
   const closeSettingsCalls = [];
+  const openKeyboardShortcutsCalls = [];
   const signInCalls = [];
   const syncDevAuthUiCalls = [];
   const logBootStages = [];
@@ -113,6 +114,7 @@ function buildHarness({
   const closeAppTopButton = createEventTarget();
   const renderTraceBadge = createEventTarget();
   const settingsButton = createEventTarget();
+  const keyboardShortcutsTopButton = createEventTarget();
   const devSignInButton = createEventTarget();
   const settingsClose = createEventTarget();
   const settingsModal = createEventTarget();
@@ -190,6 +192,7 @@ function buildHarness({
     closeAppTopButton,
     renderTraceBadge,
     settingsButton,
+    keyboardShortcutsTopButton,
     devSignInButton,
     settingsClose,
     settingsModal,
@@ -239,6 +242,8 @@ function buildHarness({
     handleRenderTraceBadgeClick: () => {},
     openSettingsModal: () => {},
     closeSettingsModal: () => closeSettingsCalls.push(true),
+    openKeyboardShortcutsModal: () => openKeyboardShortcutsCalls.push(true),
+    closeKeyboardShortcutsModal: () => {},
     signInWithDevAuth: async (options = {}) => {
       signInCalls.push(options);
       if (desktopTestingEnabled && bootstrapResponse?.response?.ok === false) {
@@ -319,6 +324,7 @@ function buildHarness({
     jumpLastStartButton,
     skinButton,
     removeChatButton,
+    keyboardShortcutsTopButton,
     devSignInButton,
     settingsModal,
     documentObject,
@@ -337,6 +343,7 @@ function buildHarness({
     clearSelectionQuoteStateCalls,
     saveSkinCalls,
     closeSettingsCalls,
+    openKeyboardShortcutsCalls,
     signInCalls,
     syncDevAuthUiCalls,
     logBootStages,
@@ -498,13 +505,15 @@ test('installActionButtonBindings saves skin and closes settings when authentica
   assert.equal(harness.closeSettingsCalls.length, 1);
 });
 
-test('installShellModalBindings handles dev sign-in failures', async () => {
+test('installShellModalBindings handles top shortcuts button, dev sign-in failures, and modal cancel', async () => {
   const harness = buildHarness();
 
   harness.controller.installShellModalBindings();
+  harness.keyboardShortcutsTopButton.dispatch('click');
   harness.devSignInButton.dispatch('click');
   await flushAsync();
 
+  assert.equal(harness.openKeyboardShortcutsCalls.length, 1);
   assert.equal(harness.signInCalls.length, 1);
   assert.equal(harness.authStatusEl.textContent, 'Dev sign-in error');
   assert.deepEqual(harness.appendMessages, ['Dev sign-in failed: boom']);

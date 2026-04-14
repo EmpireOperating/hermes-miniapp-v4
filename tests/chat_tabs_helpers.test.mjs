@@ -659,6 +659,7 @@ test('moveChatToEnd moves a reopened pinned chat to the right of tab and overvie
 
   assert.deepEqual(h.renderTabsCalls.at(-1).orderedChats.map((chat) => Number(chat.id)), [7, 11, 2]);
   assert.deepEqual(h.tabOverviewEl.children.map((child) => Number(child.dataset.chatId)), [7, 11, 2]);
+  assert.deepEqual(h.controller.getOrderedChatIds(), [7, 11, 2]);
 });
 
 test('mobile carousel overview unread markers stay dot-only even for active unread chats or unread activity without a count', () => {

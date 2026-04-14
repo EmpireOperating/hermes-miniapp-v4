@@ -39,6 +39,7 @@
       renderPinnedChats,
       syncPinChatButton,
       moveChatToEnd,
+      getOrderedChatIds,
       chatLabel,
       getActiveChatId,
       openChat,
@@ -373,10 +374,27 @@
     }
 
     function getOptimisticNextActiveChatId(closingChatId) {
-      return [...chats.keys()]
+      const closingId = Number(closingChatId) || 0;
+      const fallbackIds = [...chats.keys()]
         .map((chatId) => Number(chatId))
-        .filter((chatId) => chatId > 0 && chatId !== Number(closingChatId))
-        .sort((a, b) => a - b)[0] || 0;
+        .filter((chatId) => chatId > 0 && chatId !== closingId)
+        .sort((a, b) => a - b);
+
+      const orderedIds = typeof getOrderedChatIds === 'function'
+        ? getOrderedChatIds()
+            .map((chatId) => Number(chatId))
+            .filter((chatId) => chatId > 0)
+        : [];
+      const closingIndex = orderedIds.indexOf(closingId);
+      if (closingIndex >= 0) {
+        const nextOrderedIds = orderedIds.filter((chatId) => chatId !== closingId && chats.has(chatId));
+        if (nextOrderedIds.length) {
+          const nextIndex = closingIndex >= nextOrderedIds.length ? 0 : closingIndex;
+          return nextOrderedIds[nextIndex] || 0;
+        }
+      }
+
+      return fallbackIds[0] || 0;
     }
 
     async function removeChatById(chatId) {

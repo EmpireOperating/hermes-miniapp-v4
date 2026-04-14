@@ -61,6 +61,52 @@ test('handleGlobalTabCycle opens next chat for desktop ArrowRight outside text e
   assert.deepEqual(opened, [8]);
 });
 
+test('handleGlobalTabCycle respects externally supplied visual tab order over numeric chat-id order', () => {
+  const opened = [];
+  let prevented = false;
+  const event = {
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    key: 'ArrowRight',
+    target: { id: 'outside-input' },
+    preventDefault: () => {
+      prevented = true;
+    },
+  };
+
+  keyboard.handleGlobalTabCycle(event, {
+    mobileQuoteMode: false,
+    isDesktopViewportFn: () => true,
+    settingsModal: null,
+    documentObject: { querySelector: () => null },
+    isTextEntryElementFn: () => false,
+    activeChatId: 11,
+    promptEl: { id: 'composer' },
+    chats: new Map([
+      [2, { id: 2 }],
+      [7, { id: 7 }],
+      [11, { id: 11 }],
+    ]),
+    getOrderedChatIdsFromState: () => [7, 11, 2],
+    getNextChatTabId: ({ orderedChatIds, activeChatId, reverse }) => {
+      assert.deepEqual(orderedChatIds, [7, 11, 2]);
+      assert.equal(activeChatId, 11);
+      assert.equal(reverse, false);
+      return 2;
+    },
+    openChat: (chatId) => {
+      opened.push(chatId);
+    },
+  });
+
+  assert.equal(prevented, true);
+  assert.deepEqual(opened, [2]);
+});
+
 test('handleGlobalTabCycle opens previous/next chat from composer only on Ctrl+Alt+ArrowLeft/ArrowRight', () => {
   const opened = [];
   const promptEl = { id: 'composer' };

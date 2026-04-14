@@ -39,9 +39,11 @@ test('app.js keyboard shortcut wrappers keep delegating to keyboardShortcutsCont
   ];
 
   const elementExpectations = [
+    'const keyboardShortcutsTopButton = document.getElementById("keyboard-shortcuts-top-button");',
     'const keyboardShortcutsButton = document.getElementById("keyboard-shortcuts-button");',
     'const keyboardShortcutsModal = document.getElementById("keyboard-shortcuts-modal");',
     'const keyboardShortcutsClose = document.getElementById("keyboard-shortcuts-close");',
+    'keyboardShortcutsTopButton,',
     'keyboardShortcutsButton,',
     'keyboardShortcutsModal,',
     'keyboardShortcutsClose,',

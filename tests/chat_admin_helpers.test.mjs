@@ -248,6 +248,7 @@ function buildHarness(overrides = {}) {
     renderPinnedChats: () => renderedPinnedChats.push('pinned'),
     syncPinChatButton: () => syncPinCalls.push('pin'),
     moveChatToEnd: (chatId) => movedChatIds.push(Number(chatId)),
+    getOrderedChatIds: () => overrides.orderedChatIds || [...chats.keys()].map((chatId) => Number(chatId)).filter((chatId) => chatId > 0),
     chatLabel: (chatId) => chats.get(Number(chatId))?.title || `Chat ${chatId}`,
     getActiveChatId: () => activeChatId,
     openChat: async (chatId) => {
@@ -538,6 +539,53 @@ test('removeActiveChat switches away from the closing tab before the backend res
 
   await pendingRemoval;
   assert.deepEqual(harness.renderedMessages, [9, 9]);
+});
+
+test('removeActiveChat chooses the next active chat from visual tab order, not numeric chat-id order', async () => {
+  let resolveRemove;
+  const removePromise = new Promise((resolve) => {
+    resolveRemove = resolve;
+  });
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true }],
+      [11, { id: 11, title: 'Pinned reopened', is_pinned: true }],
+      [13, { id: 13, title: 'Newest chat', is_pinned: false }],
+    ],
+    initialHistories: [
+      [7, [{ id: 1, body: 'old' }]],
+      [13, [{ id: 2, body: 'cached next' }]],
+    ],
+    orderedChatIds: [11, 7, 13],
+    apiPost: async (path, payload) => {
+      if (path !== '/api/chats/remove') {
+        throw new Error(`unexpected api path ${path}`);
+      }
+      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false });
+      return removePromise;
+    },
+  });
+
+  const pendingRemoval = harness.controller.removeActiveChat();
+
+  assert.equal(harness.activeChatId, 13);
+  assert.deepEqual(harness.setActiveCalls, [13]);
+  assert.deepEqual(harness.renderedMessages, [13]);
+
+  resolveRemove({
+    removed_chat_id: 7,
+    active_chat_id: 13,
+    active_chat: { id: 13, title: 'Newest chat' },
+    chats: [
+      { id: 11, title: 'Pinned reopened', is_pinned: true },
+      { id: 13, title: 'Newest chat', is_pinned: false },
+    ],
+    pinned_chats: [{ id: 11, title: 'Pinned reopened', is_pinned: true }],
+    history: [{ id: 99, body: 'fresh' }],
+  });
+
+  await pendingRemoval;
+  assert.deepEqual(harness.renderedMessages, [13, 13]);
 });
 
 test('removeActiveChat rolls back the optimistic close if the backend request fails', async () => {
