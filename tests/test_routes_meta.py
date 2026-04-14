@@ -1326,7 +1326,9 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert '/static/interaction_helpers.js?v={{ interaction_helpers_version }}' in template
     assert '/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}' in template
     assert 'id="keyboard-shortcuts-top-button"' in template
+    assert 'class="status-pill status-pill--muted status-pill-button status-pill-button--icon desktop-shortcuts-only"' in template
     assert 'id="keyboard-shortcuts-button"' in template
+    assert 'class="settings-modal__section desktop-shortcuts-only"' in template
     assert 'id="keyboard-shortcuts-modal"' in template
     assert 'id="keyboard-shortcuts-close"' in template
     assert template.count('aria-controls="keyboard-shortcuts-modal"') >= 2

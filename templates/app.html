@@ -105,7 +105,7 @@
             </div>
 
             <div class="status-group status-group--settings">
-              <button type="button" class="status-pill status-pill--muted status-pill-button status-pill-button--icon" id="keyboard-shortcuts-top-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" aria-haspopup="dialog" aria-controls="keyboard-shortcuts-modal">?</button>
+              <button type="button" class="status-pill status-pill--muted status-pill-button status-pill-button--icon desktop-shortcuts-only" id="keyboard-shortcuts-top-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" aria-haspopup="dialog" aria-controls="keyboard-shortcuts-modal">?</button>
               <button type="button" class="status-pill status-pill--muted status-pill-button status-pill-button--icon" id="settings-button" aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-controls="settings-modal">⚙︎</button>
             </div>
           </div>
@@ -222,7 +222,7 @@
             <span>Telegram alerts for unread chats</span>
           </label>
         </div>
-        <div class="settings-modal__section">
+        <div class="settings-modal__section desktop-shortcuts-only">
           <p class="modal__hint">Desktop</p>
           <button type="button" class="action-button action-button--subtle" id="keyboard-shortcuts-button" aria-haspopup="dialog" aria-controls="keyboard-shortcuts-modal">Keyboard shortcuts</button>
         </div>
@@ -245,18 +245,18 @@
         <h2 id="keyboard-shortcuts-modal-title" class="modal__title">Keyboard shortcuts</h2>
         <p class="modal__hint">Desktop-only shortcuts for moving fast without leaving the keyboard.</p>
         <div class="settings-modal__section">
-          <div class="kv"><span>?</span><strong>Open this shortcuts panel</strong></div>
-          <div class="kv"><span>ArrowLeft / ArrowRight</span><strong>Cycle chat tabs from the transcript or unfocused shell</strong></div>
-          <div class="kv"><span>Ctrl+Alt+ArrowLeft / Ctrl+Alt+ArrowRight</span><strong>Cycle chat tabs without leaving the composer</strong></div>
-          <div class="kv"><span>ArrowUp / ArrowDown</span><strong>Scroll the transcript</strong></div>
-          <div class="kv"><span>Shift+ArrowUp</span><strong>Jump to the start of the latest assistant reply</strong></div>
-          <div class="kv"><span>Shift+ArrowDown</span><strong>Jump to the latest message</strong></div>
-          <div class="kv"><span>Enter (while transcript is focused)</span><strong>Move focus to the composer</strong></div>
-          <div class="kv"><span>Enter (in composer)</span><strong>Send and keep transcript focus on desktop</strong></div>
-          <div class="kv"><span>Alt+Enter (in composer)</span><strong>Move focus to the transcript without sending</strong></div>
-          <div class="kv"><span>Shift+Enter (in composer)</span><strong>Insert a newline</strong></div>
-          <div class="kv"><span>`</span><strong>Create a new chat</strong></div>
-          <div class="kv"><span>Escape</span><strong>Close the current chat tab</strong></div>
+          <div class="kv"><span>?</span><strong>Open shortcuts</strong></div>
+          <div class="kv"><span>← / →</span><strong>Switch chats</strong></div>
+          <div class="kv"><span>Ctrl+Alt+← / →</span><strong>Switch chats from composer</strong></div>
+          <div class="kv"><span>↑ / ↓</span><strong>Scroll chat</strong></div>
+          <div class="kv"><span>Shift+↑</span><strong>Jump to latest reply</strong></div>
+          <div class="kv"><span>Shift+↓</span><strong>Jump to bottom</strong></div>
+          <div class="kv"><span>Enter (chat)</span><strong>Focus composer</strong></div>
+          <div class="kv"><span>Enter (composer)</span><strong>Send</strong></div>
+          <div class="kv"><span>Alt+Enter</span><strong>Focus chat</strong></div>
+          <div class="kv"><span>Shift+Enter</span><strong>New line</strong></div>
+          <div class="kv"><span>Backtick (`)</span><strong>New chat</strong></div>
+          <div class="kv"><span>Esc</span><strong>Close chat</strong></div>
         </div>
         <div class="modal__actions">
           <button type="button" id="keyboard-shortcuts-close" class="action-button">Close</button>
