@@ -3179,6 +3179,8 @@ const keyboardShortcutsController = keyboardShortcutsHelpers.createController({
   messagesEl,
   promptEl,
   settingsModal,
+  tabsEl,
+  tabNodes,
   telegramUnreadNotificationsToggle,
   jumpLatestButton,
   jumpLastStartButton,

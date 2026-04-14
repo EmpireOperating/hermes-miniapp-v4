@@ -54,6 +54,51 @@
     void openPinnedChat(chatId);
   }
 
+  function ensureTabFullyVisible({
+    tabsEl,
+    tabNode,
+    visibilityBufferPx = 14,
+    behavior = "auto",
+  } = {}) {
+    if (!tabsEl || !tabNode) return false;
+    if (typeof tabsEl.getBoundingClientRect !== "function" || typeof tabNode.getBoundingClientRect !== "function") {
+      return false;
+    }
+
+    const tabsRect = tabsEl.getBoundingClientRect();
+    const tabRect = tabNode.getBoundingClientRect();
+    const buffer = Math.max(0, Number(visibilityBufferPx) || 0);
+    const leftOverflow = (Number(tabsRect.left) + buffer) - Number(tabRect.left);
+    const rightOverflow = Number(tabRect.right) - (Number(tabsRect.right) - buffer);
+
+    let delta = 0;
+    if (leftOverflow > 0) {
+      delta = -leftOverflow;
+    } else if (rightOverflow > 0) {
+      delta = rightOverflow;
+    }
+
+    if (Math.abs(delta) < 1) return false;
+
+    const currentScrollLeft = Number(tabsEl.scrollLeft || 0);
+    const scrollWidth = Number(tabsEl.scrollWidth || 0);
+    const clientWidth = Number(tabsEl.clientWidth || 0);
+    const maxScrollLeft = scrollWidth > 0 && clientWidth >= 0
+      ? Math.max(0, scrollWidth - clientWidth)
+      : null;
+    const unclampedScrollLeft = currentScrollLeft + delta;
+    const nextScrollLeft = maxScrollLeft == null
+      ? Math.max(0, unclampedScrollLeft)
+      : Math.min(maxScrollLeft, Math.max(0, unclampedScrollLeft));
+
+    if (typeof tabsEl.scrollTo === "function") {
+      tabsEl.scrollTo({ left: nextScrollLeft, behavior });
+    } else {
+      tabsEl.scrollLeft = nextScrollLeft;
+    }
+    return true;
+  }
+
   function handleGlobalTabCycle(event, {
     mobileQuoteMode,
     isDesktopViewportFn,
@@ -63,9 +108,12 @@
     activeChatId,
     promptEl,
     chats,
+    tabsEl = null,
+    tabNodes = null,
     getOrderedChatIdsFromState = null,
     getNextChatTabId,
     openChat,
+    ensureTabVisibilityFn = ensureTabFullyVisible,
   }) {
     if (event.defaultPrevented) return;
     if (event.isComposing) return;
@@ -99,8 +147,19 @@
     });
     if (!nextChatId || nextChatId === current) return;
 
+    const revealNextTab = () => ensureTabVisibilityFn({
+      tabsEl,
+      tabNode: tabNodes?.get?.(Number(nextChatId)) || null,
+      visibilityBufferPx: 14,
+      behavior: "auto",
+    });
+
     event.preventDefault();
-    void openChat(nextChatId);
+    revealNextTab();
+    const openResult = openChat(nextChatId);
+    if (openResult && typeof openResult.finally === "function") {
+      openResult.finally(revealNextTab);
+    }
   }
 
   function scrollMessagesByArrow(messagesEl, direction) {
@@ -370,6 +429,8 @@
       messagesEl,
       promptEl,
       settingsModal,
+      tabsEl,
+      tabNodes,
       jumpLatestButton,
       jumpLastStartButton,
       chats,
@@ -423,6 +484,8 @@
         activeChatId: getActiveChatId(),
         promptEl,
         chats,
+        tabsEl,
+        tabNodes,
         getOrderedChatIdsFromState,
         getNextChatTabId,
         openChat,
@@ -560,6 +623,7 @@
     isDesktopViewport,
     handleTabClick,
     handlePinnedChatClick,
+    ensureTabFullyVisible,
     handleGlobalTabCycle,
     scrollMessagesByArrow,
     handleGlobalArrowJump,

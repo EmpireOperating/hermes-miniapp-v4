@@ -17,7 +17,43 @@ test('getOrderedChatIds normalizes and sorts valid positive chat ids', () => {
   assert.deepEqual(keyboard.getOrderedChatIds(chats), [4, 7, 9]);
 });
 
-test('handleGlobalTabCycle opens next chat for desktop ArrowRight outside text entry', () => {
+test('ensureTabFullyVisible nudges scroller just enough to reveal a clipped right-edge tab', () => {
+  const scrollCalls = [];
+  const tabsEl = {
+    scrollLeft: 24,
+    scrollWidth: 600,
+    clientWidth: 200,
+    getBoundingClientRect: () => ({ left: 100, right: 300 }),
+    scrollTo: (options) => scrollCalls.push(options),
+  };
+  const tabNode = {
+    getBoundingClientRect: () => ({ left: 230, right: 332 }),
+  };
+
+  const moved = keyboard.ensureTabFullyVisible({ tabsEl, tabNode, visibilityBufferPx: 14 });
+
+  assert.equal(moved, true);
+  assert.deepEqual(scrollCalls, [{ left: 70, behavior: 'auto' }]);
+});
+
+test('ensureTabFullyVisible nudges scroller left to reveal a clipped left-edge tab', () => {
+  const tabsEl = {
+    scrollLeft: 90,
+    scrollWidth: 600,
+    clientWidth: 200,
+    getBoundingClientRect: () => ({ left: 100, right: 300 }),
+  };
+  const tabNode = {
+    getBoundingClientRect: () => ({ left: 102, right: 190 }),
+  };
+
+  const moved = keyboard.ensureTabFullyVisible({ tabsEl, tabNode, visibilityBufferPx: 14 });
+
+  assert.equal(moved, true);
+  assert.equal(tabsEl.scrollLeft, 78);
+});
+
+test('handleGlobalTabCycle opens next chat for desktop ArrowRight outside text entry and reveals clipped tab', () => {
   const opened = [];
   let prevented = false;
   const event = {
@@ -33,6 +69,8 @@ test('handleGlobalTabCycle opens next chat for desktop ArrowRight outside text e
       prevented = true;
     },
   };
+  const revealed = [];
+  const tabNodes = new Map([[8, { dataset: { chatId: '8' } }]]);
 
   keyboard.handleGlobalTabCycle(event, {
     mobileQuoteMode: false,
@@ -46,6 +84,8 @@ test('handleGlobalTabCycle opens next chat for desktop ArrowRight outside text e
       [4, { id: 4 }],
       [8, { id: 8 }],
     ]),
+    tabsEl: { id: 'chat-tabs' },
+    tabNodes,
     getNextChatTabId: ({ orderedChatIds, activeChatId, reverse }) => {
       assert.deepEqual(orderedChatIds, [2, 4, 8]);
       assert.equal(activeChatId, 4);
@@ -55,10 +95,20 @@ test('handleGlobalTabCycle opens next chat for desktop ArrowRight outside text e
     openChat: (chatId) => {
       opened.push(chatId);
     },
+    ensureTabVisibilityFn: ({ tabsEl, tabNode, visibilityBufferPx, behavior }) => {
+      revealed.push({ tabsEl, tabNode, visibilityBufferPx, behavior });
+      return true;
+    },
   });
 
   assert.equal(prevented, true);
   assert.deepEqual(opened, [8]);
+  assert.deepEqual(revealed, [{
+    tabsEl: { id: 'chat-tabs' },
+    tabNode: tabNodes.get(8),
+    visibilityBufferPx: 14,
+    behavior: 'auto',
+  }]);
 });
 
 test('handleGlobalTabCycle respects externally supplied visual tab order over numeric chat-id order', () => {
