@@ -6,7 +6,7 @@ Contents:
 - `runbooks/`: operator/debugging procedures and incident-response notes
 - `plans/`: active or near-active planning/spec documents that still guide current work
 - `history/`: long-running refactor and backlog documents
-- `archive/`: preserved historical snapshots, completed dated plans, and repository archaeology
+- `archive/`: preserved historical design snapshots and a trimmed archive of dated plans
 
 These files may include machine-specific paths, past deployment assumptions, worktree references, and historical validation commands. Treat them as Mini App maintainer context, not as the canonical public setup path.
 

@@ -40,7 +40,7 @@ These files are useful for Mini App implementation history, incident response, a
 - `maintainers/plans/`
   - active or near-active planning/spec documents that still guide current work
 - `maintainers/archive/`
-  - preserved historical snapshots, archived dated plans, and repository archaeology
+  - preserved historical design snapshots and a trimmed archive of dated plans
 
 ## Important note
 

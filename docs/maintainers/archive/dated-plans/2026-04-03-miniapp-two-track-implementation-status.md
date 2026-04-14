@@ -3,8 +3,9 @@
 Linked primary plan:
 - `docs/maintainers/archive/dated-plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
 
-Primary remaining-work checklist:
-- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-backend-swap-updated-todo-checklist.md`
+Primary companion docs:
+- `docs/maintainers/archive/dated-plans/2026-04-02-miniapp-chat-isolation-two-track-plan.md`
+- `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-worker-owned-warm-session-contract.md`
 
 Warm-session ownership decision:
 - `docs/maintainers/archive/dated-plans/2026-04-03-miniapp-warm-session-ownership-decision.md`
@@ -168,8 +169,7 @@ Notable regression coverage now explicitly includes:
 - active-chat visibility reconciliation
 - same-chat conflict rejection without blocking a different chat from starting its own stream
 
-Additional live validation is captured in:
-- `docs/maintainers/archive/dated-plans/2026-04-04-miniapp-worker-owned-warm-continuity-qa-checklist.md`
+Additional live validation from this phase originally lived in a dated QA checklist that was dropped during OSS cleanup because it mostly captured environment-specific run notes.
 
 That live validation covered:
 - first-turn queue/SSE `done` handoff
