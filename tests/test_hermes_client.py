@@ -1889,7 +1889,7 @@ def test_direct_agent_timeout_resets_on_progress_events(monkeypatch) -> None:
     client = hermes_client.HermesClient()
     monkeypatch.setattr(os.path, "exists", lambda _path: True)
     client.agent_python = sys.executable
-    client.agent_workdir = "/home/hermes-agent/workspace/active/hermes_miniapp_v4"
+    client.agent_workdir = str(Path(__file__).resolve().parents[1])
     monkeypatch.setattr(
         client,
         "_agent_runner_script",
