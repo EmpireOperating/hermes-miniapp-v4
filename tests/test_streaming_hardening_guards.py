@@ -112,7 +112,9 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "const alreadyWorking = response.status === 409;" in stream_controller_js
     assert "await resumePendingChatStream(chatId, { force: true });" in stream_controller_js
     assert "await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });" in stream_controller_js
-    assert "triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });" in stream_controller_js
+    assert "executeAttentionEffect({" in stream_controller_js
+    assert "effect: describeResumeCompletionAttentionEffect({ chatId: key })," in stream_controller_js
+    assert "triggerIncomingMessageHaptic," in stream_controller_js
     assert "deps.markResumeAlreadyComplete?.(key);" in stream_controller_js
     assert "const transientReconnectFailure = isTransientResumeRecoveryError(error);" in stream_controller_js
     assert "console.warn(`[W_STREAM_RECONNECT_RETRY] chat=${key} attempt=${attempt}/${RESUME_RECOVERY_MAX_ATTEMPTS}`, error);" in stream_controller_js
@@ -144,7 +146,8 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "setChatLatency?.(key, \"reconnecting...\");" in runtime_latency_helpers_js
     assert "setStreamStatus?.(\"Reconnect recovery paused — action needed\");" in runtime_latency_helpers_js
     assert "setActivityChip?.(streamChip, \"stream: recovery paused\");" in runtime_latency_helpers_js
-    assert "function createHapticUnreadController({" in runtime_unread_helpers_js
+    assert "function createHapticUnreadController(args) {" in runtime_unread_helpers_js
+    assert "return attentionEffects.createAttentionEffectsController(args);" in runtime_unread_helpers_js
     assert "consumeStreamWithReconnect(key, response, builtReplyRef" in stream_controller_js
     assert "const queueLabel = Number.isFinite(queuedAhead) && queuedAhead > 0" in _read_static("stream_controller.js")
     assert "const queueLabel = Number.isFinite(normalizedQueuedAhead) && normalizedQueuedAhead > 0" in runtime_latency_helpers_js

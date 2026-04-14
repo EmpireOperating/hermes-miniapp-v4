@@ -226,6 +226,17 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     def fake_asset_version(filename: str) -> str:
         return {
             "app.css": "css-v",
+            "runtime_attention_effects.js": "runtime-attention-v",
+            "runtime_read_state.js": "runtime-read-state-v",
+            "runtime_chat_history_sync.js": "runtime-chat-history-sync-v",
+            "runtime_visible_history_sync.js": "runtime-visible-history-sync-v",
+            "runtime_hydration_state.js": "runtime-hydration-state-v",
+            "runtime_hydration_apply.js": "runtime-hydration-apply-v",
+            "runtime_visible_hydration.js": "runtime-visible-hydration-v",
+            "runtime_hydration_flow.js": "runtime-hydration-flow-v",
+            "runtime_open_flow.js": "runtime-open-flow-v",
+            "runtime_chat_meta.js": "runtime-chat-meta-v",
+            "runtime_local_mutation.js": "runtime-local-mutation-v",
             "runtime_unread_helpers.js": "runtime-unread-v",
             "runtime_latency_helpers.js": "runtime-latency-v",
             "runtime_history_helpers.js": "runtime-history-v",
@@ -235,6 +246,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
             "chat_tabs_helpers.js": "chat-tabs-v",
             "message_actions_helpers.js": "actions-v",
             "stream_state_helpers.js": "stream-state-v",
+            "runtime_transcript_authority.js": "runtime-transcript-v",
             "stream_controller.js": "stream-controller-v",
             "composer_state_helpers.js": "composer-v",
             "keyboard_shortcuts_helpers.js": "keyboard-v",
@@ -261,6 +273,17 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
 
     assert response.status_code == 200
     page = response.get_data(as_text=True)
+    runtime_attention_src = '/static/runtime_attention_effects.js?v=runtime-attention-v'
+    runtime_read_state_src = '/static/runtime_read_state.js?v=runtime-read-state-v'
+    runtime_chat_history_sync_src = '/static/runtime_chat_history_sync.js?v=runtime-chat-history-sync-v'
+    runtime_visible_history_sync_src = '/static/runtime_visible_history_sync.js?v=runtime-visible-history-sync-v'
+    runtime_hydration_state_src = '/static/runtime_hydration_state.js?v=runtime-hydration-state-v'
+    runtime_hydration_apply_src = '/static/runtime_hydration_apply.js?v=runtime-hydration-apply-v'
+    runtime_visible_hydration_src = '/static/runtime_visible_hydration.js?v=runtime-visible-hydration-v'
+    runtime_hydration_flow_src = '/static/runtime_hydration_flow.js?v=runtime-hydration-flow-v'
+    runtime_open_flow_src = '/static/runtime_open_flow.js?v=runtime-open-flow-v'
+    runtime_chat_meta_src = '/static/runtime_chat_meta.js?v=runtime-chat-meta-v'
+    runtime_local_mutation_src = '/static/runtime_local_mutation.js?v=runtime-local-mutation-v'
     runtime_unread_src = '/static/runtime_unread_helpers.js?v=runtime-unread-v'
     runtime_latency_src = '/static/runtime_latency_helpers.js?v=runtime-latency-v'
     runtime_history_src = '/static/runtime_history_helpers.js?v=runtime-history-v'
@@ -270,6 +293,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     chat_tabs_src = '/static/chat_tabs_helpers.js?v=chat-tabs-v'
     actions_src = '/static/message_actions_helpers.js?v=actions-v'
     stream_state_src = '/static/stream_state_helpers.js?v=stream-state-v'
+    runtime_transcript_src = '/static/runtime_transcript_authority.js?v=runtime-transcript-v'
     stream_controller_src = '/static/stream_controller.js?v=stream-controller-v'
     composer_src = '/static/composer_state_helpers.js?v=composer-v'
     keyboard_src = '/static/keyboard_shortcuts_helpers.js?v=keyboard-v'
@@ -289,6 +313,17 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     render_trace_src = '/static/render_trace_helpers.js?v=render-trace-v'
     file_preview_src = '/static/file_preview_helpers.js?v=file-preview-v'
     app_src = '/static/app.js?v=app-v'
+    assert runtime_attention_src in page
+    assert runtime_read_state_src in page
+    assert runtime_chat_history_sync_src in page
+    assert runtime_visible_history_sync_src in page
+    assert runtime_hydration_state_src in page
+    assert runtime_hydration_apply_src in page
+    assert runtime_visible_hydration_src in page
+    assert runtime_hydration_flow_src in page
+    assert runtime_open_flow_src in page
+    assert runtime_chat_meta_src in page
+    assert runtime_local_mutation_src in page
     assert runtime_unread_src in page
     assert runtime_latency_src in page
     assert runtime_history_src in page
@@ -298,6 +333,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert chat_tabs_src in page
     assert actions_src in page
     assert stream_state_src in page
+    assert runtime_transcript_src in page
     assert stream_controller_src in page
     assert composer_src in page
     assert keyboard_src in page
@@ -317,6 +353,15 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert render_trace_src in page
     assert file_preview_src in page
     assert app_src in page
+    runtime_chat_history_sync_pos = page.rindex(runtime_chat_history_sync_src)
+    runtime_visible_history_sync_pos = page.rindex(runtime_visible_history_sync_src)
+    runtime_hydration_state_pos = page.rindex(runtime_hydration_state_src)
+    runtime_hydration_apply_pos = page.rindex(runtime_hydration_apply_src)
+    runtime_visible_hydration_pos = page.rindex(runtime_visible_hydration_src)
+    runtime_hydration_flow_pos = page.rindex(runtime_hydration_flow_src)
+    runtime_open_flow_pos = page.rindex(runtime_open_flow_src)
+    runtime_chat_meta_pos = page.rindex(runtime_chat_meta_src)
+    runtime_local_mutation_pos = page.rindex(runtime_local_mutation_src)
     runtime_unread_pos = page.rindex(runtime_unread_src)
     runtime_latency_pos = page.rindex(runtime_latency_src)
     runtime_history_pos = page.rindex(runtime_history_src)
@@ -346,7 +391,7 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     file_preview_pos = page.rindex(file_preview_src)
     visibility_skin_pos = page.rindex(visibility_skin_src)
 
-    assert shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < interaction_pos < runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < startup_bindings_pos < app_pos < chat_admin_pos < actions_pos < keyboard_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
+    assert shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < runtime_chat_history_sync_pos < runtime_visible_history_sync_pos < runtime_hydration_state_pos < runtime_hydration_apply_pos < runtime_visible_hydration_pos < runtime_hydration_flow_pos < runtime_open_flow_pos < runtime_chat_meta_pos < runtime_local_mutation_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < interaction_pos < runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < startup_bindings_pos < app_pos < chat_admin_pos < actions_pos < keyboard_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
 
 
 def test_app_hides_dev_stream_and_source_pills_from_main_ui(monkeypatch, tmp_path) -> None:
@@ -939,12 +984,12 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "HermesMiniappChatHistory" in chat_history_script
     assert "function createController(deps)" in chat_history_script
     assert "function createMetaController(deps)" in chat_history_script
-    assert "function addLocalMessage(chatId, message)" in chat_history_script
-    assert "function appendSystemMessage(text, chatIdOverride = null)" in chat_history_script
-    assert "function updatePendingAssistant(chatId, nextBody, pendingState = true)" in chat_history_script
-    assert "function syncActiveMessageView(chatId, options = {})" in chat_history_script
-    assert "function scheduleActiveMessageView(chatId)" in chat_history_script
-    assert "function maybeMarkRead(chatId, { force = false } = {})" in chat_history_script
+    assert "return chatMetaHelpers.createMetaController(deps);" in chat_history_script
+    assert "function createLocalMutationController(deps)" in chat_history_script
+    assert "return localMutationHelpers.createLocalMutationController({" in chat_history_script
+    assert "normalizeChatId," in chat_history_script
+    assert "reconcilePendingAssistantUpdate," in chat_history_script
+    assert "maybeMarkRead: readSyncController.maybeMarkRead," in chat_history_script or "function maybeMarkRead(chatId, { force = false } = {})" in chat_history_script
     assert "chatHistoryHelpers.createController({" in app_script
     assert "chatHistoryHelpers.createMetaController({" in app_script
     assert "activeChatMetaController.setActiveChatMeta(chatId, options)" in app_script
@@ -1263,11 +1308,27 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert 'window.__HERMES_BOOTSTRAP_VERSION__ = "{{ bootstrap_version }}";' in template
     assert '/static/chat_tabs_helpers.js?v={{ chat_tabs_helpers_version }}' in template
     assert '/static/message_actions_helpers.js?v={{ message_actions_helpers_version }}' in template
+    assert '/static/runtime_transcript_authority.js?v={{ runtime_transcript_authority_version }}' in template
+    assert '/static/runtime_attention_effects.js?v={{ runtime_attention_effects_version }}' in template
+    assert '/static/runtime_read_state.js?v={{ runtime_read_state_version }}' in template
+    assert '/static/runtime_chat_history_sync.js?v={{ runtime_chat_history_sync_version }}' in template
+    assert '/static/runtime_visible_history_sync.js?v={{ runtime_visible_history_sync_version }}' in template
+    assert '/static/runtime_hydration_state.js?v={{ runtime_hydration_state_version }}' in template
+    assert '/static/runtime_hydration_apply.js?v={{ runtime_hydration_apply_version }}' in template
+    assert '/static/runtime_visible_hydration.js?v={{ runtime_visible_hydration_version }}' in template
+    assert '/static/runtime_hydration_flow.js?v={{ runtime_hydration_flow_version }}' in template
+    assert '/static/runtime_open_flow.js?v={{ runtime_open_flow_version }}' in template
+    assert '/static/runtime_chat_meta.js?v={{ runtime_chat_meta_version }}' in template
+    assert '/static/runtime_local_mutation.js?v={{ runtime_local_mutation_version }}' in template
     assert '/static/stream_controller.js?v={{ stream_controller_version }}' in template
     assert '/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}' in template
     assert '/static/keyboard_shortcuts_helpers.js?v={{ keyboard_shortcuts_helpers_version }}' in template
     assert '/static/interaction_helpers.js?v={{ interaction_helpers_version }}' in template
     assert '/static/shell_ui_helpers.js?v={{ shell_ui_helpers_version }}' in template
+    assert 'id="keyboard-shortcuts-button"' in template
+    assert 'id="keyboard-shortcuts-modal"' in template
+    assert 'id="keyboard-shortcuts-close"' in template
+    assert 'aria-controls="keyboard-shortcuts-modal"' in template
     assert '/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}' in template
     assert '/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}' in template
     assert '/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}' in template

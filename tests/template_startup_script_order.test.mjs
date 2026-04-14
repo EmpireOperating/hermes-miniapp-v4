@@ -48,15 +48,58 @@ test('interaction helpers load before app.js so quote-selection bindings and mob
 
 test('runtime helper chain and startup bindings load before app.js so bootstrap dependencies exist synchronously', () => {
   const appIndex = indexOfScript('/static/app.js?v={{ app_js_version }}');
+  const runtimeAttentionIndex = indexOfScript('/static/runtime_attention_effects.js?v={{ runtime_attention_effects_version }}');
+  const runtimeReadStateIndex = indexOfScript('/static/runtime_read_state.js?v={{ runtime_read_state_version }}');
+  const runtimeChatHistorySyncIndex = indexOfScript('/static/runtime_chat_history_sync.js?v={{ runtime_chat_history_sync_version }}');
+  const runtimeVisibleHistorySyncIndex = indexOfScript('/static/runtime_visible_history_sync.js?v={{ runtime_visible_history_sync_version }}');
+  const runtimeHydrationStateIndex = indexOfScript('/static/runtime_hydration_state.js?v={{ runtime_hydration_state_version }}');
+  const runtimeHydrationApplyIndex = indexOfScript('/static/runtime_hydration_apply.js?v={{ runtime_hydration_apply_version }}');
+  const runtimeVisibleHydrationIndex = indexOfScript('/static/runtime_visible_hydration.js?v={{ runtime_visible_hydration_version }}');
+  const runtimeHydrationFlowIndex = indexOfScript('/static/runtime_hydration_flow.js?v={{ runtime_hydration_flow_version }}');
+  const runtimeOpenFlowIndex = indexOfScript('/static/runtime_open_flow.js?v={{ runtime_open_flow_version }}');
+  const runtimeChatMetaIndex = indexOfScript('/static/runtime_chat_meta.js?v={{ runtime_chat_meta_version }}');
+  const runtimeLocalMutationIndex = indexOfScript('/static/runtime_local_mutation.js?v={{ runtime_local_mutation_version }}');
   const runtimeUnreadIndex = indexOfScript('/static/runtime_unread_helpers.js?v={{ runtime_unread_helpers_version }}');
   const runtimeLatencyIndex = indexOfScript('/static/runtime_latency_helpers.js?v={{ runtime_latency_helpers_version }}');
   const runtimeHistoryIndex = indexOfScript('/static/runtime_history_helpers.js?v={{ runtime_history_helpers_version }}');
+  const transcriptAuthorityIndex = indexOfScript('/static/runtime_transcript_authority.js?v={{ runtime_transcript_authority_version }}');
+  const streamControllerIndex = indexOfScript('/static/stream_controller.js?v={{ stream_controller_version }}');
+  const chatHistoryIndex = indexOfScript('/static/chat_history_helpers.js?v={{ chat_history_helpers_version }}');
   const runtimeIndex = indexOfScript('/static/runtime_helpers.js?v={{ helpers_version }}');
   const startupBindingsIndex = indexOfScript('/static/startup_bindings_helpers.js?v={{ startup_bindings_helpers_version }}');
 
+  assert.ok(runtimeAttentionIndex < runtimeReadStateIndex, 'expected runtime_attention_effects.js to load before runtime_read_state.js');
+  assert.ok(runtimeAttentionIndex < runtimeChatHistorySyncIndex, 'expected runtime_attention_effects.js to load before runtime_chat_history_sync.js');
+  assert.ok(runtimeAttentionIndex < streamControllerIndex, 'expected runtime_attention_effects.js to load before stream_controller.js');
+  assert.ok(runtimeAttentionIndex < chatHistoryIndex, 'expected runtime_attention_effects.js to load before chat_history_helpers.js');
+  assert.ok(runtimeAttentionIndex < runtimeUnreadIndex, 'expected runtime_attention_effects.js to load before runtime_unread_helpers.js');
+  assert.ok(runtimeAttentionIndex < runtimeIndex, 'expected runtime_attention_effects.js to load before runtime_helpers.js');
+  assert.ok(runtimeReadStateIndex < runtimeChatHistorySyncIndex, 'expected runtime_read_state.js to load before runtime_chat_history_sync.js');
+  assert.ok(runtimeReadStateIndex < chatHistoryIndex, 'expected runtime_read_state.js to load before chat_history_helpers.js');
+  assert.ok(runtimeReadStateIndex < runtimeIndex, 'expected runtime_read_state.js to load before runtime_helpers.js');
+  assert.ok(runtimeChatHistorySyncIndex < runtimeVisibleHistorySyncIndex, 'expected runtime_chat_history_sync.js to load before runtime_visible_history_sync.js');
+  assert.ok(runtimeVisibleHistorySyncIndex < runtimeHydrationStateIndex, 'expected runtime_visible_history_sync.js to load before runtime_hydration_state.js');
+  assert.ok(runtimeHydrationStateIndex < runtimeHydrationApplyIndex, 'expected runtime_hydration_state.js to load before runtime_hydration_apply.js');
+  assert.ok(runtimeHydrationApplyIndex < runtimeVisibleHydrationIndex, 'expected runtime_hydration_apply.js to load before runtime_visible_hydration.js');
+  assert.ok(runtimeVisibleHydrationIndex < runtimeHydrationFlowIndex, 'expected runtime_visible_hydration.js to load before runtime_hydration_flow.js');
+  assert.ok(runtimeHydrationFlowIndex < runtimeOpenFlowIndex, 'expected runtime_hydration_flow.js to load before runtime_open_flow.js');
+  assert.ok(runtimeOpenFlowIndex < runtimeChatMetaIndex, 'expected runtime_open_flow.js to load before runtime_chat_meta.js');
+  assert.ok(runtimeChatMetaIndex < runtimeLocalMutationIndex, 'expected runtime_chat_meta.js to load before runtime_local_mutation.js');
+  assert.ok(runtimeVisibleHistorySyncIndex < runtimeHydrationApplyIndex, 'expected runtime_visible_history_sync.js to load before runtime_hydration_apply.js');
+  assert.ok(runtimeOpenFlowIndex < chatHistoryIndex, 'expected runtime_open_flow.js to load before chat_history_helpers.js');
+  assert.ok(runtimeChatMetaIndex < chatHistoryIndex, 'expected runtime_chat_meta.js to load before chat_history_helpers.js');
+  assert.ok(runtimeLocalMutationIndex < chatHistoryIndex, 'expected runtime_local_mutation.js to load before chat_history_helpers.js');
+  assert.ok(runtimeHydrationFlowIndex < chatHistoryIndex, 'expected runtime_hydration_flow.js to load before chat_history_helpers.js');
+  assert.ok(runtimeVisibleHydrationIndex < chatHistoryIndex, 'expected runtime_visible_hydration.js to load before chat_history_helpers.js');
+  assert.ok(runtimeHydrationApplyIndex < chatHistoryIndex, 'expected runtime_hydration_apply.js to load before chat_history_helpers.js');
+  assert.ok(runtimeHydrationStateIndex < chatHistoryIndex, 'expected runtime_hydration_state.js to load before chat_history_helpers.js');
+  assert.ok(runtimeVisibleHistorySyncIndex < chatHistoryIndex, 'expected runtime_visible_history_sync.js to load before chat_history_helpers.js');
+  assert.ok(runtimeChatHistorySyncIndex < chatHistoryIndex, 'expected runtime_chat_history_sync.js to load before chat_history_helpers.js');
   assert.ok(runtimeUnreadIndex < runtimeIndex, 'expected runtime_unread_helpers.js to load before runtime_helpers.js');
   assert.ok(runtimeLatencyIndex < runtimeIndex, 'expected runtime_latency_helpers.js to load before runtime_helpers.js');
   assert.ok(runtimeHistoryIndex < runtimeIndex, 'expected runtime_history_helpers.js to load before runtime_helpers.js');
+  assert.ok(transcriptAuthorityIndex < streamControllerIndex, 'expected runtime_transcript_authority.js to load before stream_controller.js');
+  assert.ok(transcriptAuthorityIndex < chatHistoryIndex, 'expected runtime_transcript_authority.js to load before chat_history_helpers.js');
   assert.ok(runtimeIndex < appIndex, 'expected runtime_helpers.js to load before app.js');
   assert.ok(startupBindingsIndex < appIndex, 'expected startup_bindings_helpers.js to load before app.js');
 });
@@ -83,6 +126,18 @@ test('non-critical startup helpers load after app.js', () => {
 
 test('critical startup scripts are preloaded before deferred execution', () => {
   const preloadFragments = [
+    '/static/runtime_transcript_authority.js?v={{ runtime_transcript_authority_version }}',
+    '/static/runtime_attention_effects.js?v={{ runtime_attention_effects_version }}',
+    '/static/runtime_read_state.js?v={{ runtime_read_state_version }}',
+    '/static/runtime_chat_history_sync.js?v={{ runtime_chat_history_sync_version }}',
+    '/static/runtime_visible_history_sync.js?v={{ runtime_visible_history_sync_version }}',
+    '/static/runtime_hydration_state.js?v={{ runtime_hydration_state_version }}',
+    '/static/runtime_hydration_apply.js?v={{ runtime_hydration_apply_version }}',
+    '/static/runtime_visible_hydration.js?v={{ runtime_visible_hydration_version }}',
+    '/static/runtime_hydration_flow.js?v={{ runtime_hydration_flow_version }}',
+    '/static/runtime_open_flow.js?v={{ runtime_open_flow_version }}',
+    '/static/runtime_chat_meta.js?v={{ runtime_chat_meta_version }}',
+    '/static/runtime_local_mutation.js?v={{ runtime_local_mutation_version }}',
     '/static/stream_controller.js?v={{ stream_controller_version }}',
     '/static/bootstrap_auth_helpers.js?v={{ bootstrap_auth_helpers_version }}',
     '/static/chat_history_helpers.js?v={{ chat_history_helpers_version }}',

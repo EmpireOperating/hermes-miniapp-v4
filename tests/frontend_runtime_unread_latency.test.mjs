@@ -76,7 +76,7 @@ test('unread increments for backgrounded app even on active chat', () => {
 });
 
 
-test('latestCompletedAssistantHapticKey resolves stable key from most recent completed assistant/hermes message', () => {
+test('latestCompletedAssistantEffectKey resolves stable key from most recent completed assistant/hermes message', () => {
   const histories = new Map([
     [
       9,
@@ -87,12 +87,13 @@ test('latestCompletedAssistantHapticKey resolves stable key from most recent com
     ],
   ]);
 
+  assert.equal(runtime.latestCompletedAssistantEffectKey({ chatId: 9, histories }), 'chat:9:msg:42');
   assert.equal(runtime.latestCompletedAssistantHapticKey({ chatId: 9, histories }), 'chat:9:msg:42');
-  assert.equal(runtime.latestCompletedAssistantHapticKey({ chatId: 999, histories }), '');
+  assert.equal(runtime.latestCompletedAssistantEffectKey({ chatId: 999, histories }), '');
 });
 
 
-test('createHapticUnreadController dedupes haptics and applies unread policy using active chat + hidden state', () => {
+test('createAttentionEffectsController dedupes haptics and applies unread policy using active chat + hidden state', () => {
   const histories = new Map([
     [
       7,
@@ -109,7 +110,7 @@ test('createHapticUnreadController dedupes haptics and applies unread policy usi
   let hidden = false;
   const traceLogs = [];
 
-  const controller = runtime.createHapticUnreadController({
+  const controller = runtime.createAttentionEffectsController({
     tg: {
       HapticFeedback: {
         impactOccurred: (style) => {

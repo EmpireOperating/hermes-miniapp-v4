@@ -1,4 +1,48 @@
 (function initHermesMiniappStreamController(globalScope) {
+  function resolveTranscriptAuthorityHelpers() {
+    if (globalScope.HermesMiniappRuntimeTranscriptAuthority) {
+      return globalScope.HermesMiniappRuntimeTranscriptAuthority;
+    }
+    if (typeof module !== "undefined" && module.exports && typeof require === "function") {
+      try {
+        return require("./runtime_transcript_authority.js");
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  const transcriptAuthority = resolveTranscriptAuthorityHelpers();
+  if (!transcriptAuthority) {
+    throw new Error("HermesMiniappRuntimeTranscriptAuthority is required before stream_controller.js");
+  }
+
+  function resolveAttentionEffectsHelpers() {
+    if (globalScope.HermesMiniappRuntimeAttentionEffects) {
+      return globalScope.HermesMiniappRuntimeAttentionEffects;
+    }
+    if (typeof module !== "undefined" && module.exports && typeof require === "function") {
+      try {
+        return require("./runtime_attention_effects.js");
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  const attentionEffects = resolveAttentionEffectsHelpers();
+  if (!attentionEffects) {
+    throw new Error("HermesMiniappRuntimeAttentionEffects is required before stream_controller.js");
+  }
+
+  const createFirstAssistantNotificationController = attentionEffects.createFirstAssistantNotificationController;
+  const describeDoneAttentionEffect = attentionEffects.describeDoneAttentionEffect;
+  const describeEarlyCloseAttentionEffect = attentionEffects.describeEarlyCloseAttentionEffect;
+  const describeResumeCompletionAttentionEffect = attentionEffects.describeResumeCompletionAttentionEffect;
+  const executeAttentionEffect = attentionEffects.executeAttentionEffect;
+
   function createResumeRecoveryPolicy({
     setTimeoutFn = (...args) => setTimeout(...args),
     randomFn = () => Math.random(),
@@ -384,57 +428,6 @@
     };
   }
 
-  function createFirstAssistantNotificationController({
-    getActiveChatId,
-    triggerIncomingMessageHaptic,
-    incrementUnread,
-    renderTabs,
-  }) {
-    const firstAssistantNotificationStateByChat = new Map();
-    const immediateFinalizedChats = new Set();
-    let nextAssistantNotificationId = 0;
-
-    function consumeFirstAssistantNotification(chatId) {
-      const key = Number(chatId);
-      const notificationState = firstAssistantNotificationStateByChat.get(key) || null;
-      firstAssistantNotificationStateByChat.delete(key);
-      return notificationState;
-    }
-
-    function notifyFirstAssistantChunk(chatId) {
-      const key = Number(chatId);
-      if (!key || firstAssistantNotificationStateByChat.has(key)) {
-        return false;
-      }
-      const isActiveChatSelected = Number(getActiveChatId()) === key;
-      const isVisibleActiveChat = Boolean(
-        isActiveChatSelected
-        && (typeof document === "undefined" || document.visibilityState === "visible")
-      );
-      nextAssistantNotificationId += 1;
-      const messageKey = `chat:${key}:assistant-stream:${nextAssistantNotificationId}`;
-      const notificationState = {
-        messageKey,
-        unreadIncremented: false,
-      };
-      firstAssistantNotificationStateByChat.set(key, notificationState);
-      triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory: false });
-      if (!isActiveChatSelected) {
-        incrementUnread(chatId);
-        renderTabs();
-        notificationState.unreadIncremented = true;
-      }
-      return true;
-    }
-
-    return {
-      firstAssistantNotificationStateByChat,
-      immediateFinalizedChats,
-      consumeFirstAssistantNotification,
-      notifyFirstAssistantChunk,
-    };
-  }
-
   function createStreamSessionController({
     getActiveChatId,
     setStreamStatus,
@@ -457,6 +450,7 @@
     const abortRegistry = createStreamAbortRegistry();
     const notificationController = createFirstAssistantNotificationController({
       getActiveChatId,
+      isDocumentHidden: () => (typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false),
       triggerIncomingMessageHaptic,
       incrementUnread,
       renderTabs,
@@ -471,138 +465,12 @@
   }
 
   function createTranscriptSignatureHelpers() {
-    function latestAssistantMessage(history) {
-      const items = Array.isArray(history) ? history : [];
-      for (let index = items.length - 1; index >= 0; index -= 1) {
-        const item = items[index];
-        const role = String(item?.role || '').toLowerCase();
-        if (role !== 'hermes' && role !== 'assistant') continue;
-        return item;
-      }
-      return null;
-    }
-
-    function latestCompletedAssistantRecord(history) {
-      const items = Array.isArray(history) ? history : [];
-      for (let index = items.length - 1; index >= 0; index -= 1) {
-        const item = items[index];
-        const role = String(item?.role || '').toLowerCase();
-        if (role !== 'hermes' && role !== 'assistant') continue;
-        if (Boolean(item?.pending)) continue;
-        const body = String(item?.body || '').trim();
-        if (!body) continue;
-        return { item, index };
-      }
-      return null;
-    }
-
-    function countUserMessagesThroughIndex(history, endIndex) {
-      const items = Array.isArray(history) ? history : [];
-      if (!items.length) return 0;
-      const targetIndex = Math.max(0, Math.min(items.length - 1, Number(endIndex) || 0));
-      let count = 0;
-      for (let index = 0; index <= targetIndex; index += 1) {
-        if (String(items[index]?.role || '').toLowerCase() === 'user') {
-          count += 1;
-        }
-      }
-      return count;
-    }
-
-    function latestAssistantRenderSignature(history) {
-      const item = latestAssistantMessage(history);
-      if (!item) {
-        return '';
-      }
-      const role = String(item?.role || '').toLowerCase();
-      const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
-      const fileRefSignature = fileRefs
-        .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
-        .join('|');
-      return [
-        role,
-        String(item?.body || ''),
-        item?.pending ? 'pending' : 'final',
-        fileRefSignature,
-      ].join('::');
-    }
-
-    function preserveLatestCompletedAssistantMessage(previousHistory, nextHistory) {
-      const previousRecord = latestCompletedAssistantRecord(previousHistory);
-      const incoming = Array.isArray(nextHistory) ? nextHistory.slice() : [];
-      const previousAssistant = previousRecord?.item || null;
-      const previousBody = String(previousAssistant?.body || '').trim();
-      if (!previousAssistant || !previousBody) {
-        return incoming;
-      }
-      const matchingIncomingIndex = incoming.findIndex((item) => {
-        const role = String(item?.role || '').toLowerCase();
-        if (role !== 'hermes' && role !== 'assistant') return false;
-        return String(item?.body || '').trim() === previousBody;
-      });
-      if (matchingIncomingIndex >= 0) {
-        const candidate = incoming[matchingIncomingIndex] || {};
-        incoming[matchingIncomingIndex] = {
-          ...candidate,
-          pending: false,
-        };
-        return incoming;
-      }
-
-      const latestIncomingRecord = latestCompletedAssistantRecord(incoming);
-      const previousTurn = countUserMessagesThroughIndex(previousHistory, previousRecord.index);
-      const incomingTurn = latestIncomingRecord
-        ? countUserMessagesThroughIndex(incoming, latestIncomingRecord.index)
-        : -1;
-
-      if (latestIncomingRecord && incomingTurn === previousTurn) {
-        incoming[latestIncomingRecord.index] = {
-          ...latestIncomingRecord.item,
-          ...previousAssistant,
-          pending: false,
-        };
-        return incoming;
-      }
-
-      if (latestIncomingRecord && incomingTurn > previousTurn) {
-        return incoming;
-      }
-
-      incoming.push({
-        ...previousAssistant,
-        pending: false,
-      });
-      return incoming;
-    }
-
-    function transcriptRenderSignature(history) {
-      const items = Array.isArray(history) ? history : [];
-      return items
-        .filter((item) => {
-          const role = String(item?.role || '').toLowerCase();
-          return role === 'user' || role === 'tool' || role === 'hermes' || role === 'assistant';
-        })
-        .map((item) => {
-          const role = String(item?.role || '').toLowerCase();
-          const fileRefs = Array.isArray(item?.file_refs) ? item.file_refs : [];
-          const fileRefSignature = fileRefs
-            .map((ref) => `${String(ref?.ref_id || '')}:${String(ref?.path || '')}:${String(ref?.label || '')}`)
-            .join('|');
-          return [
-            role,
-            String(item?.body || ''),
-            item?.pending ? 'pending' : 'final',
-            item?.collapsed ? 'collapsed' : 'expanded',
-            fileRefSignature,
-          ].join('::');
-        })
-        .join('||');
-    }
-
     return {
-      latestAssistantRenderSignature,
-      preserveLatestCompletedAssistantMessage,
-      transcriptRenderSignature,
+      latestAssistantRenderSignature: transcriptAuthority.latestAssistantRenderSignature,
+      preserveLatestCompletedAssistantMessage: transcriptAuthority.preserveLatestCompletedAssistantMessage,
+      transcriptRenderSignature: transcriptAuthority.transcriptRenderSignature,
+      describeActiveTranscriptRender: transcriptAuthority.describeActiveTranscriptRender,
+      describeSpeculativeHistoryCommit: transcriptAuthority.describeSpeculativeHistoryCommit,
     };
   }
 
@@ -627,6 +495,8 @@
       latestAssistantRenderSignature,
       preserveLatestCompletedAssistantMessage,
       transcriptRenderSignature,
+      describeActiveTranscriptRender,
+      describeSpeculativeHistoryCommit,
     } = signatureHelpers;
 
     async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {}) {
@@ -665,12 +535,16 @@
         const nextTranscriptSignature = transcriptRenderSignature(nextHistory);
         const localChat = chats?.get?.(key) || null;
         const localPending = Boolean(localChat?.pending) || Boolean(pendingChats?.has?.(key));
-        const shouldSkipInactiveTerminalCommit = Boolean(
-          forceCompleted
-          && !isActiveChat
-          && localPending
-          && previousTranscriptSignature === nextTranscriptSignature
-        );
+        const speculativeCommitDecision = describeSpeculativeHistoryCommit({
+          currentChat: localChat,
+          incomingChat: hydratedChat,
+          currentHistory: previousHistory,
+          incomingHistory: nextHistory,
+          source: forceCompleted ? 'inactive-terminal-reconcile' : 'activate-open',
+          isActiveChat,
+          localPending,
+        });
+        const shouldSkipInactiveTerminalCommit = !speculativeCommitDecision.commit;
         renderTraceLog("stream-done-hydrate-commit-check", {
           chatId: key,
           forceCompleted: Boolean(forceCompleted),
@@ -679,6 +553,7 @@
           previousTranscriptSignature,
           nextTranscriptSignature,
           skipped: shouldSkipInactiveTerminalCommit,
+          unchangedWhilePending: Boolean(speculativeCommitDecision.reasons?.unchangedWhilePending),
         });
         if (shouldSkipInactiveTerminalCommit) {
           return;
@@ -687,16 +562,16 @@
           upsertChat(hydratedChat);
         }
         histories?.set?.(key, nextHistory);
-        const renderedTranscriptSignature = isActiveChat && typeof getRenderedTranscriptSignature === 'function'
-          ? String(getRenderedTranscriptSignature(key) || '')
-          : '';
+        const renderDecision = describeActiveTranscriptRender({
+          previousHistory,
+          incomingHistory: nextHistory,
+          renderedTranscriptSignature: isActiveChat && typeof getRenderedTranscriptSignature === 'function'
+            ? String(getRenderedTranscriptSignature(key) || '')
+            : '',
+        });
         const shouldRenderActiveChat = Number(getActiveChatId()) === key
           && typeof renderMessages === "function"
-          && (
-            previousAssistantSignature !== nextAssistantSignature
-            || previousTranscriptSignature !== nextTranscriptSignature
-            || (renderedTranscriptSignature && renderedTranscriptSignature !== nextTranscriptSignature)
-          );
+          && renderDecision.shouldRenderActiveHistory;
         renderTraceLog("stream-done-hydrate", {
           chatId: key,
           forceCompleted: Boolean(forceCompleted),
@@ -705,7 +580,8 @@
           nextAssistantSignature,
           previousTranscriptSignature,
           nextTranscriptSignature,
-          renderedTranscriptSignature,
+          renderedTranscriptSignature: renderDecision.renderedTranscriptSignature,
+          shouldForceStaleRenderedTranscriptRender: Boolean(renderDecision.shouldForceStaleRenderedTranscriptRender),
         });
         if (shouldRenderActiveChat) {
           renderMessages(key, { preserveViewport: true });
@@ -788,25 +664,24 @@
       updatePendingAssistant(chatId, builtReplyRef.value, false);
       deps.clearPendingStreamSnapshot?.(chatId);
       const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
-      const hadEarlyAssistantHaptic = Boolean(String(earlyAssistantNotification?.messageKey || '').trim());
-      const hadEarlyAssistantUnread = Boolean(earlyAssistantNotification?.unreadIncremented);
       const doneTurnCount = Number(payload?.turn_count || 0);
-      const doneMessageKey = doneTurnCount > 0 ? `chat:${Number(chatId)}:turn:${doneTurnCount}` : '';
       const doneActiveChatId = Number(getActiveChatId());
       const doneHidden = typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false;
-      const shouldIncrementUnreadOnDone = Boolean(
-        updateUnread
-        && !hadEarlyAssistantUnread
-        && doneActiveChatId !== Number(chatId)
-      );
-      const shouldTriggerHapticOnDone = Boolean(
-        !hadEarlyAssistantHaptic
-        && !hadEarlyAssistantUnread
-        && (doneActiveChatId !== Number(chatId) || doneHidden)
-      );
-      if (shouldTriggerHapticOnDone) {
-        triggerIncomingMessageHaptic(chatId, { messageKey: doneMessageKey });
-      }
+      const doneAttention = describeDoneAttentionEffect({
+        chatId,
+        activeChatId: doneActiveChatId,
+        hidden: doneHidden,
+        updateUnread,
+        earlyAssistantNotification,
+        doneTurnCount,
+      });
+      executeAttentionEffect({
+        chatId,
+        effect: doneAttention,
+        triggerIncomingMessageHaptic,
+        incrementUnread,
+        renderTabs,
+      });
       markStreamUpdate(chatId);
       const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, false);
       const patchedToolTrace = patchVisibleToolTrace(chatId);
@@ -834,37 +709,39 @@
         activeChatId: doneActiveChatId,
         hidden: doneHidden,
         updateUnread: Boolean(updateUnread),
-        hadEarlyAssistantHaptic,
-        hadEarlyAssistantUnread,
-        shouldTriggerHapticOnDone,
-        shouldIncrementUnreadOnDone,
+        hadEarlyAssistantHaptic: doneAttention.hadEarlyAssistantHaptic,
+        hadEarlyAssistantUnread: doneAttention.hadEarlyAssistantUnread,
+        shouldTriggerHapticOnDone: doneAttention.shouldTriggerHaptic,
+        shouldIncrementUnreadOnDone: doneAttention.shouldIncrementUnread,
         doneTurnCount,
-        doneMessageKey,
+        doneMessageKey: doneAttention.messageKey,
         latencyMs: Number(payload?.latency_ms || 0),
         replyLength: builtReplyRef.value.length,
       });
       immediateFinalizedChats.add(Number(chatId));
       finalizeStreamPendingState(chatId, false);
-      if (shouldIncrementUnreadOnDone) {
-        incrementUnread(chatId);
-        renderTabs();
-      }
+      
     }
 
     function applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent) {
       const fallbackReply = builtReplyRef.value || 'The response ended before completion.';
       finalizeInlineToolTrace(chatId);
       const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
-      const hadEarlyAssistantUnread = Boolean(earlyAssistantNotification?.unreadIncremented);
       const earlyCloseHidden = typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false;
       updatePendingAssistant(chatId, fallbackReply, false);
-      const shouldTriggerHapticOnEarlyClose = Boolean(
-        !hadEarlyAssistantUnread
-        && (Number(getActiveChatId()) !== Number(chatId) || earlyCloseHidden)
-      );
-      if (shouldTriggerHapticOnEarlyClose) {
-        triggerIncomingMessageHaptic(chatId, { fallbackToLatestHistory: true });
-      }
+      const earlyCloseAttention = describeEarlyCloseAttentionEffect({
+        chatId,
+        activeChatId: getActiveChatId(),
+        hidden: earlyCloseHidden,
+        earlyAssistantNotification,
+      });
+      executeAttentionEffect({
+        chatId,
+        effect: earlyCloseAttention,
+        triggerIncomingMessageHaptic,
+        incrementUnread,
+        renderTabs,
+      });
       markStreamUpdate(chatId);
       const patchedAssistant = patchVisiblePendingAssistant(chatId, fallbackReply, false);
       const patchedToolTrace = patchVisibleToolTrace(chatId);
@@ -884,9 +761,7 @@
         setStreamStatusForVisibleChat(chatId, 'Stream closed early');
         setStreamChipForVisibleChat(chatId, 'stream: closed early');
       }
-      if (!hadEarlyAssistantUnread && Number(getActiveChatId()) !== Number(chatId)) {
-        incrementUnread(chatId);
-      }
+      
     }
 
     return {
@@ -1598,7 +1473,11 @@
           const stillPending = Boolean(chats.get(chatId)?.pending) || pendingChats.has(chatId);
           if (!stillPending) {
             setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
-            triggerIncomingMessageHaptic(chatId, { fallbackToLatestHistory: true });
+            executeAttentionEffect({
+              chatId,
+              effect: describeResumeCompletionAttentionEffect({ chatId }),
+              triggerIncomingMessageHaptic,
+            });
             return { wasAborted, shouldResumeAfterFinally };
           }
           wasAborted = true;
@@ -1812,7 +1691,11 @@
             setStreamPhase(key, STREAM_PHASES.FINALIZED);
             clearPendingStreamSnapshot?.(key);
             await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });
-            triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
+            executeAttentionEffect({
+              chatId: key,
+              effect: describeResumeCompletionAttentionEffect({ chatId: key }),
+              triggerIncomingMessageHaptic,
+            });
             deps.markResumeAlreadyComplete?.(key);
             return { wasAborted, completed: true, shouldContinue: false };
           }
@@ -1860,7 +1743,11 @@
           if (!stillPending) {
             deps.resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
             setStreamPhase(key, STREAM_PHASES.FINALIZED);
-            triggerIncomingMessageHaptic(key, { fallbackToLatestHistory: true });
+            executeAttentionEffect({
+              chatId: key,
+              effect: describeResumeCompletionAttentionEffect({ chatId: key }),
+              triggerIncomingMessageHaptic,
+            });
             deps.markResumeAlreadyComplete?.(key);
             return { wasAborted, completed: true, shouldContinue: false };
           }

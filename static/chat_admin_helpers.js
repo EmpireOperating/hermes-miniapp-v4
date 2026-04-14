@@ -544,6 +544,12 @@
         moveChatToEnd?.(targetChatId);
         renderTabs();
         renderPinnedChats();
+        if (Array.isArray(reopenData.history) && reopenData.chat) {
+          histories.set(targetChatId, reopenData.history || []);
+          setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: true });
+          renderMessages(targetChatId);
+          return;
+        }
       }
       await openChat(targetChatId);
     }

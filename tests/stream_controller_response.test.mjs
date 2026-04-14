@@ -275,7 +275,7 @@ test('consumeStreamResponse still immediately reconciles active chat when docume
   }
 });
 
-test('consumeStreamResponse does not increment unread for the selected active chat even if document.visibilityState is hidden', async () => {
+test('consumeStreamResponse increments unread for the selected active chat when the document is hidden', async () => {
   const originalDocument = globalThis.document;
   globalThis.document = { visibilityState: 'hidden' };
   try {
@@ -295,7 +295,7 @@ test('consumeStreamResponse does not increment unread for the selected active ch
     });
 
     assert.equal(result.terminalReceived, true);
-    assert.deepEqual(harness.unreadIncrements, []);
+    assert.deepEqual(harness.unreadIncrements, [9]);
   } finally {
     if (typeof originalDocument === 'undefined') {
       delete globalThis.document;

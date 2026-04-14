@@ -63,6 +63,18 @@
     <link rel="preconnect" href="https://telegram.org" crossorigin>
     <link rel="dns-prefetch" href="//telegram.org">
     <link rel="preload" as="image" href="/static/hermes-banner.png">
+    <link rel="preload" as="script" href="/static/runtime_transcript_authority.js?v={{ runtime_transcript_authority_version }}">
+    <link rel="preload" as="script" href="/static/runtime_attention_effects.js?v={{ runtime_attention_effects_version }}">
+    <link rel="preload" as="script" href="/static/runtime_read_state.js?v={{ runtime_read_state_version }}">
+    <link rel="preload" as="script" href="/static/runtime_chat_history_sync.js?v={{ runtime_chat_history_sync_version }}">
+    <link rel="preload" as="script" href="/static/runtime_visible_history_sync.js?v={{ runtime_visible_history_sync_version }}">
+    <link rel="preload" as="script" href="/static/runtime_hydration_state.js?v={{ runtime_hydration_state_version }}">
+    <link rel="preload" as="script" href="/static/runtime_hydration_apply.js?v={{ runtime_hydration_apply_version }}">
+    <link rel="preload" as="script" href="/static/runtime_visible_hydration.js?v={{ runtime_visible_hydration_version }}">
+    <link rel="preload" as="script" href="/static/runtime_hydration_flow.js?v={{ runtime_hydration_flow_version }}">
+    <link rel="preload" as="script" href="/static/runtime_open_flow.js?v={{ runtime_open_flow_version }}">
+    <link rel="preload" as="script" href="/static/runtime_chat_meta.js?v={{ runtime_chat_meta_version }}">
+    <link rel="preload" as="script" href="/static/runtime_local_mutation.js?v={{ runtime_local_mutation_version }}">
     <link rel="preload" as="script" href="/static/stream_controller.js?v={{ stream_controller_version }}">
     <link rel="preload" as="script" href="/static/bootstrap_auth_helpers.js?v={{ bootstrap_auth_helpers_version }}">
     <link rel="preload" as="script" href="/static/chat_history_helpers.js?v={{ chat_history_helpers_version }}">
@@ -209,6 +221,10 @@
             <span>Telegram alerts for unread chats</span>
           </label>
         </div>
+        <div class="settings-modal__section">
+          <p class="modal__hint">Desktop</p>
+          <button type="button" class="action-button action-button--subtle" id="keyboard-shortcuts-button" aria-haspopup="dialog" aria-controls="keyboard-shortcuts-modal">Keyboard shortcuts</button>
+        </div>
         <div class="settings-modal__debug">
           <p class="modal__hint">Debug</p>
           <button type="button" class="status-pill status-pill--debug" id="render-trace-badge" aria-pressed="false">Render Trace OFF</button>
@@ -221,6 +237,25 @@
           <button type="button" id="settings-close" class="action-button">Close</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="keyboard-shortcuts-modal" class="modal" aria-labelledby="keyboard-shortcuts-modal-title">
+      <div class="modal__card">
+        <h2 id="keyboard-shortcuts-modal-title" class="modal__title">Keyboard shortcuts</h2>
+        <p class="modal__hint">Desktop-only shortcuts for moving fast without leaving the keyboard.</p>
+        <div class="settings-modal__section">
+          <div class="kv"><span>?</span><strong>Open this shortcuts panel</strong></div>
+          <div class="kv"><span>Tab / Shift+Tab</span><strong>Cycle between chat tabs</strong></div>
+          <div class="kv"><span>ArrowDown / ArrowUp</span><strong>Jump through the latest assistant reply</strong></div>
+          <div class="kv"><span>Cmd/Ctrl+Shift+K</span><strong>Focus the composer</strong></div>
+          <div class="kv"><span>Cmd/Ctrl+Shift+O</span><strong>Focus the transcript</strong></div>
+          <div class="kv"><span>`</span><strong>Create a new chat</strong></div>
+          <div class="kv"><span>Escape</span><strong>Close the current chat tab</strong></div>
+        </div>
+        <div class="modal__actions">
+          <button type="button" id="keyboard-shortcuts-close" class="action-button">Close</button>
+        </div>
+      </div>
     </dialog>
 
     <dialog id="file-preview-modal" class="modal file-preview-modal" aria-labelledby="file-preview-title">
@@ -305,6 +340,18 @@
     <script defer src="/static/chat_ui_helpers.js?v={{ chat_ui_helpers_version }}"></script>
     <script defer src="/static/chat_tabs_helpers.js?v={{ chat_tabs_helpers_version }}"></script>
     <script defer src="/static/stream_state_helpers.js?v={{ stream_state_helpers_version }}"></script>
+    <script defer src="/static/runtime_transcript_authority.js?v={{ runtime_transcript_authority_version }}"></script>
+    <script defer src="/static/runtime_attention_effects.js?v={{ runtime_attention_effects_version }}"></script>
+    <script defer src="/static/runtime_read_state.js?v={{ runtime_read_state_version }}"></script>
+    <script defer src="/static/runtime_chat_history_sync.js?v={{ runtime_chat_history_sync_version }}"></script>
+    <script defer src="/static/runtime_visible_history_sync.js?v={{ runtime_visible_history_sync_version }}"></script>
+    <script defer src="/static/runtime_hydration_state.js?v={{ runtime_hydration_state_version }}"></script>
+    <script defer src="/static/runtime_hydration_apply.js?v={{ runtime_hydration_apply_version }}"></script>
+    <script defer src="/static/runtime_visible_hydration.js?v={{ runtime_visible_hydration_version }}"></script>
+    <script defer src="/static/runtime_hydration_flow.js?v={{ runtime_hydration_flow_version }}"></script>
+    <script defer src="/static/runtime_open_flow.js?v={{ runtime_open_flow_version }}"></script>
+    <script defer src="/static/runtime_chat_meta.js?v={{ runtime_chat_meta_version }}"></script>
+    <script defer src="/static/runtime_local_mutation.js?v={{ runtime_local_mutation_version }}"></script>
     <script defer src="/static/stream_controller.js?v={{ stream_controller_version }}"></script>
     <script defer src="/static/composer_state_helpers.js?v={{ composer_state_helpers_version }}"></script>
     <script defer src="/static/bootstrap_auth_helpers.js?v={{ bootstrap_auth_helpers_version }}"></script>

@@ -28,6 +28,9 @@ test('app.js keyboard shortcut wrappers keep delegating to keyboardShortcutsCont
     ['handleGlobalArrowJump', 'keyboardShortcutsController.handleGlobalArrowJump(event)'],
     ['handleGlobalComposerFocusShortcut', 'keyboardShortcutsController.handleGlobalComposerFocusShortcut(event)'],
     ['handleGlobalChatActionShortcut', 'keyboardShortcutsController.handleGlobalChatActionShortcut(event)'],
+    ['handleGlobalShortcutsHelpShortcut', 'keyboardShortcutsController.handleGlobalShortcutsHelpShortcut(event)'],
+    ['openKeyboardShortcutsModal', 'chatAdminController.openKeyboardShortcutsModal()'],
+    ['closeKeyboardShortcutsModal', 'chatAdminController.closeKeyboardShortcutsModal()'],
     ['shouldReleaseControlFocusAfterClick', 'keyboardShortcutsController.shouldReleaseControlFocusAfterClick(target)'],
     ['releaseStickyControlFocus', 'keyboardShortcutsController.releaseStickyControlFocus()'],
     ['handleGlobalControlClickFocusCleanup', 'keyboardShortcutsController.handleGlobalControlClickFocusCleanup(event)'],
@@ -35,12 +38,29 @@ test('app.js keyboard shortcut wrappers keep delegating to keyboardShortcutsCont
     ['handleGlobalControlEnterDefuse', 'keyboardShortcutsController.handleGlobalControlEnterDefuse(event)'],
   ];
 
+  const elementExpectations = [
+    'const keyboardShortcutsButton = document.getElementById("keyboard-shortcuts-button");',
+    'const keyboardShortcutsModal = document.getElementById("keyboard-shortcuts-modal");',
+    'const keyboardShortcutsClose = document.getElementById("keyboard-shortcuts-close");',
+    'keyboardShortcutsButton,',
+    'keyboardShortcutsModal,',
+    'keyboardShortcutsClose,',
+  ];
+
   for (const [fnName, delegatedCall] of delegateExpectations) {
     const body = extractFunctionBody(source, fnName);
     assert.match(
       body,
       new RegExp(delegatedCall.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-      `${fnName} should delegate to keyboardShortcutsController`,
+      `${fnName} should delegate to the expected controller`,
+    );
+  }
+
+  for (const expectedSnippet of elementExpectations) {
+    assert.match(
+      source,
+      new RegExp(expectedSnippet.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      `app.js should include ${expectedSnippet}`,
     );
   }
 });

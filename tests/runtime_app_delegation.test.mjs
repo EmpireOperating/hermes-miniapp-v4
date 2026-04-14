@@ -92,20 +92,20 @@ test('app.js runtime latency wrappers delegate through runtime-owned controllers
   );
 });
 
-test('app.js haptic/unread wrappers delegate through hapticUnreadController', async () => {
+test('app.js haptic/unread wrappers delegate through attentionEffectsController', async () => {
   const source = await readFile(appJsUrl, 'utf8');
 
   assert.ok(
-    source.includes('function getHapticUnreadController() {')
-      && source.includes('hapticUnreadControllerInstance = runtimeHelpers.createHapticUnreadController({')
+    source.includes('function getAttentionEffectsController() {')
+      && source.includes('attentionEffectsControllerInstance = runtimeHelpers.createAttentionEffectsController({')
       && source.includes('renderTraceLog,'),
-    'app.js should build hapticUnreadController from runtimeHelpers.createHapticUnreadController with runtime trace logging injected',
+    'app.js should build attentionEffectsController from runtimeHelpers.createAttentionEffectsController with runtime trace logging injected',
   );
 
   const delegateExpectations = [
-    ['latestCompletedAssistantHapticKey', 'getHapticUnreadController().latestCompletedAssistantHapticKey(chatId)'],
-    ['triggerIncomingMessageHaptic', 'getHapticUnreadController().triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory })'],
-    ['incrementUnread', 'getHapticUnreadController().incrementUnread(chatId)'],
+    ['latestCompletedAssistantHapticKey', 'getAttentionEffectsController().latestCompletedAssistantHapticKey(chatId)'],
+    ['triggerIncomingMessageHaptic', 'getAttentionEffectsController().triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory })'],
+    ['incrementUnread', 'getAttentionEffectsController().incrementUnread(chatId)'],
   ];
 
   for (const [fnName, delegatedCall] of delegateExpectations) {

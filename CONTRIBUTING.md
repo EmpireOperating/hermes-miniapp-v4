@@ -48,7 +48,15 @@ On Windows, run the equivalent commands from WSL2.
 
 ## Running tests
 
-Python:
+Preferred entry point:
+
+```bash
+scripts/test.sh
+```
+
+That wrapper always uses the repo-local virtualenv, which avoids the recurring "pytest is not installed" confusion when the shell PATH is not pointing at `.venv/bin`.
+
+Python direct equivalent:
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -61,6 +69,12 @@ Windows: run tests from WSL2 using the same command:
 ```
 
 Node:
+
+```bash
+scripts/test.sh node
+```
+
+Direct equivalent:
 
 ```bash
 node --test tests/*.mjs

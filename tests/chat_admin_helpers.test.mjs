@@ -83,6 +83,7 @@ function buildHarness(overrides = {}) {
   const streamPhaseByChat = new Map([[7, 'streaming']]);
   const unseenStreamChats = new Set([7]);
   const settingsModal = overrides.settingsModal || createModal();
+  const keyboardShortcutsModal = overrides.keyboardShortcutsModal || createModal();
   const chatTitleModal = overrides.chatTitleModal || createModal();
   const chatTitleForm = overrides.chatTitleForm || createEventTarget();
   const chatTabContextMenu = overrides.chatTabContextMenu || {
@@ -153,6 +154,7 @@ function buildHarness(overrides = {}) {
     },
     tabActionsMenuEnabled: overrides.tabActionsMenuEnabled ?? true,
     settingsModal,
+    keyboardShortcutsModal,
     chatTitleModal,
     chatTitleForm,
     chatTitleHint: { textContent: '', hidden: false },
@@ -190,6 +192,7 @@ function buildHarness(overrides = {}) {
           chat: { id: 11, title: 'Pinned only', is_pinned: true },
           chats: [{ id: 11, title: 'Pinned only', is_pinned: true }],
           pinned_chats: [{ id: 11, title: 'Pinned only', is_pinned: true }],
+          history: [{ id: 501, body: 'reopened history' }],
         };
       }
       if (path === '/api/chats/branch') {
@@ -270,6 +273,7 @@ function buildHarness(overrides = {}) {
     streamPhaseByChat,
     unseenStreamChats,
     settingsModal,
+    keyboardShortcutsModal,
     chatTitleModal,
     chatTitleForm,
     chatTabContextMenu,
@@ -665,7 +669,7 @@ test('forkChatFrom rejects chats marked pending by server state before calling t
   assert.deepEqual(harness.setActiveCalls, []);
 });
 
-test('openPinnedChat reopens missing pinned chats on the right before delegating to openChat', async () => {
+test('openPinnedChat reuses reopen payload history for missing pinned chats instead of refetching immediately', async () => {
   const harness = buildHarness();
 
   await harness.controller.openPinnedChat(11);
@@ -677,7 +681,10 @@ test('openPinnedChat reopens missing pinned chats on the right before delegating
   assert.deepEqual(harness.movedChatIds, [11]);
   assert.deepEqual(harness.renderedTabs, ['tabs']);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
-  assert.deepEqual(harness.openChatCalls, [11]);
+  assert.deepEqual(harness.renderedMessages, [11]);
+  assert.deepEqual(harness.openChatCalls, []);
+  assert.deepEqual(harness.setActiveCalls, [11]);
+  assert.deepEqual(harness.histories.get(11), [{ id: 501, body: 'reopened history' }]);
 });
 
 test('removePinnedChatById unpins before removing so pinned cleanup disappears from the list', async () => {
@@ -726,11 +733,18 @@ test('toggleActiveChatPin switches endpoint based on current pin state and refre
   assert.deepEqual(harness.syncPinCalls, ['pin']);
 });
 
-test('settings modal helpers support dialog and attribute fallbacks', () => {
+test('settings and keyboard shortcuts modal helpers support dialog and attribute fallbacks', () => {
   const harness = buildHarness();
 
   harness.controller.openSettingsModal();
   assert.equal(harness.settingsModal.open, true);
+
+  harness.controller.openKeyboardShortcutsModal();
+  assert.equal(harness.settingsModal.open, false);
+  assert.equal(harness.keyboardShortcutsModal.open, true);
+
+  harness.controller.closeKeyboardShortcutsModal();
+  assert.equal(harness.keyboardShortcutsModal.open, false);
 
   harness.controller.closeSettingsModal();
   assert.equal(harness.settingsModal.open, false);
@@ -745,12 +759,26 @@ test('settings modal helpers support dialog and attribute fallbacks', () => {
         this.attributes.delete(name);
       },
     },
+    keyboardShortcutsModal: {
+      attributes: new Map(),
+      setAttribute(name, value) {
+        this.attributes.set(name, value);
+      },
+      removeAttribute(name) {
+        this.attributes.delete(name);
+      },
+    },
   });
 
   fallbackHarness.controller.openSettingsModal();
   assert.equal(fallbackHarness.settingsModal.attributes.get('open'), 'open');
   fallbackHarness.controller.closeSettingsModal();
   assert.equal(fallbackHarness.settingsModal.attributes.has('open'), false);
+
+  fallbackHarness.controller.openKeyboardShortcutsModal();
+  assert.equal(fallbackHarness.keyboardShortcutsModal.attributes.get('open'), 'open');
+  fallbackHarness.controller.closeKeyboardShortcutsModal();
+  assert.equal(fallbackHarness.keyboardShortcutsModal.attributes.has('open'), false);
 });
 
 test('chat tab context menu open/close clamps viewport coordinates', () => {

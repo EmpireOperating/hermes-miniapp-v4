@@ -167,7 +167,7 @@ test('syncVisibleActiveChat fires a hydration haptic when visible resume reveals
 
   assert.deepEqual(harness.incomingHapticCalls, [{
     chatId: 7,
-    options: { fallbackToLatestHistory: true },
+    options: { messageKey: '', fallbackToLatestHistory: true },
   }]);
 });
 

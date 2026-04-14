@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { buildHarness, chatHistory, runtimeHistory } from './chat_history_test_harness.mjs';
+
+const require = createRequire(import.meta.url);
+const runtimeHydrationApply = require('../static/runtime_hydration_apply.js');
+const runtimeHydrationState = require('../static/runtime_hydration_state.js');
+const runtimeVisibleHydration = require('../static/runtime_visible_hydration.js');
+const runtimeHydrationFlow = require('../static/runtime_hydration_flow.js');
+const runtimeOpenFlow = require('../static/runtime_open_flow.js');
 
 test('chat history exports hydration helper subcontrollers with stable ownership seams', () => {
   assert.equal(typeof chatHistory.createUnreadAnchorController, 'function');
@@ -12,6 +20,14 @@ test('chat history exports hydration helper subcontrollers with stable ownership
   assert.equal(typeof chatHistory.createVisibilityResumeController, 'function');
   assert.equal(typeof chatHistory.createUnreadHydrationRetryController, 'function');
   assert.equal(typeof chatHistory.createCachedOpenController, 'function');
+  assert.equal(typeof runtimeHydrationApply.createUnreadHydrationRetryController, 'function');
+  assert.equal(typeof runtimeHydrationApply.createHydrationApplyController, 'function');
+  assert.equal(typeof runtimeHydrationState.createHistoryPendingStateController, 'function');
+  assert.equal(typeof runtimeHydrationState.createHistoryRenderDecisionController, 'function');
+  assert.equal(typeof runtimeVisibleHydration.createVisibleHydrationEffectsController, 'function');
+  assert.equal(typeof runtimeHydrationFlow.createHydrationFlowController, 'function');
+  assert.equal(typeof runtimeOpenFlow.createCachedOpenController, 'function');
+  assert.equal(typeof runtimeOpenFlow.createHistoryOpenController, 'function');
 });
 
 test('visibility resume helper only forces resume for pending chats that still need recovery', async () => {

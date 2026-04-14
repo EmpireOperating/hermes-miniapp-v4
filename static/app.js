@@ -385,12 +385,15 @@ const pinnedChatsToggleButton = document.getElementById("pinned-chats-toggle");
 const fullscreenAppTopButton = document.getElementById("fullscreen-app-top");
 const closeAppTopButton = document.getElementById("close-app-top");
 const settingsButton = document.getElementById("settings-button");
+const keyboardShortcutsButton = document.getElementById("keyboard-shortcuts-button");
 const devAuthControls = document.getElementById("dev-auth-controls");
 const devModeBadge = document.getElementById("dev-mode-badge");
 const devSignInButton = document.getElementById("dev-signin-button");
 const renderTraceBadge = document.getElementById("render-trace-badge");
 const settingsModal = document.getElementById("settings-modal");
+const keyboardShortcutsModal = document.getElementById("keyboard-shortcuts-modal");
 const settingsClose = document.getElementById("settings-close");
+const keyboardShortcutsClose = document.getElementById("keyboard-shortcuts-close");
 const telegramUnreadNotificationsToggle = document.getElementById("telegram-unread-notifications-toggle");
 const devAuthModal = document.getElementById("dev-auth-modal");
 const devAuthForm = document.getElementById("dev-auth-form");
@@ -1682,11 +1685,11 @@ function startDevAutoRefresh() {
 }
 
 const incomingMessageHapticKeys = new Set();
-let hapticUnreadControllerInstance = null;
+let attentionEffectsControllerInstance = null;
 
-function getHapticUnreadController() {
-  if (!hapticUnreadControllerInstance) {
-    hapticUnreadControllerInstance = runtimeHelpers.createHapticUnreadController({
+function getAttentionEffectsController() {
+  if (!attentionEffectsControllerInstance) {
+    attentionEffectsControllerInstance = runtimeHelpers.createAttentionEffectsController({
       tg,
       histories,
       incomingMessageHapticKeys,
@@ -1696,19 +1699,19 @@ function getHapticUnreadController() {
       renderTraceLog,
     });
   }
-  return hapticUnreadControllerInstance;
+  return attentionEffectsControllerInstance;
 }
 
 function latestCompletedAssistantHapticKey(chatId) {
-  return getHapticUnreadController().latestCompletedAssistantHapticKey(chatId);
+  return getAttentionEffectsController().latestCompletedAssistantHapticKey(chatId);
 }
 
 function triggerIncomingMessageHaptic(chatId, { messageKey = "", fallbackToLatestHistory = true } = {}) {
-  return getHapticUnreadController().triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory });
+  return getAttentionEffectsController().triggerIncomingMessageHaptic(chatId, { messageKey, fallbackToLatestHistory });
 }
 
 function incrementUnread(chatId) {
-  return getHapticUnreadController().incrementUnread(chatId);
+  return getAttentionEffectsController().incrementUnread(chatId);
 }
 
 function loadDraftsFromStorage() {
@@ -2408,6 +2411,7 @@ const chatAdminController = chatAdminHelpers.createController({
   windowObject: window,
   tabActionsMenuEnabled: tabActionsMenuFeatureEnabled,
   settingsModal,
+  keyboardShortcutsModal,
   chatTitleModal,
   chatTitleForm,
   chatTitleHint,
@@ -2631,9 +2635,12 @@ function createStartupBindingsControllerElementDeps({
     closeAppTopButton,
     renderTraceBadge,
     settingsButton,
+    keyboardShortcutsButton,
     devSignInButton,
     settingsClose,
+    keyboardShortcutsClose,
     settingsModal,
+    keyboardShortcutsModal,
     telegramUnreadNotificationsToggle,
     authStatusEl: authStatus,
     operatorNameEl: operatorName,
@@ -2688,6 +2695,7 @@ function createStartupBindingsControllerInteractionDeps({
     handleGlobalArrowJump,
     handleGlobalComposerFocusShortcut,
     handleGlobalChatActionShortcut,
+    handleGlobalShortcutsHelpShortcut,
     handleGlobalControlEnterDefuse,
     handleGlobalControlMouseDownFocusGuard,
     handleGlobalControlClickFocusCleanup,
@@ -2696,6 +2704,8 @@ function createStartupBindingsControllerInteractionDeps({
     handleRenderTraceBadgeClick,
     openSettingsModal,
     closeSettingsModal,
+    openKeyboardShortcutsModal,
+    closeKeyboardShortcutsModal,
     signInWithDevAuth,
     getIsAuthenticated,
     setInitData,
@@ -3180,6 +3190,7 @@ const keyboardShortcutsController = keyboardShortcutsHelpers.createController({
   focusMessagesPaneIfActiveChat,
   createChat,
   removeActiveChat,
+  openKeyboardShortcutsModal,
 });
 
 function getOrderedChatIds() {
@@ -3220,6 +3231,18 @@ function handleGlobalComposerFocusShortcut(event) {
 
 function handleGlobalChatActionShortcut(event) {
   return keyboardShortcutsController.handleGlobalChatActionShortcut(event);
+}
+
+function handleGlobalShortcutsHelpShortcut(event) {
+  return keyboardShortcutsController.handleGlobalShortcutsHelpShortcut(event);
+}
+
+function openKeyboardShortcutsModal() {
+  return chatAdminController.openKeyboardShortcutsModal();
+}
+
+function closeKeyboardShortcutsModal() {
+  return chatAdminController.closeKeyboardShortcutsModal();
 }
 
 function shouldReleaseControlFocusAfterClick(target) {

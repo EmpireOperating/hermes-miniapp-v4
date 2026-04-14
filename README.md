@@ -172,7 +172,15 @@ If your Hermes Agent lives elsewhere, set the variables explicitly.
 
 ## Testing
 
-Run the Python suite:
+Preferred entry point:
+
+```bash
+scripts/test.sh
+```
+
+That wrapper always runs pytest through the repo-local virtualenv, so you do not need a globally installed `pytest` on `PATH`.
+
+Equivalent direct Python command:
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -181,10 +189,16 @@ Run the Python suite:
 On Windows, use:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q
+.venv\\Scripts\\python.exe -m pytest -q
 ```
 
 Run the Node suite:
+
+```bash
+scripts/test.sh node
+```
+
+Equivalent direct Node command:
 
 ```bash
 node --test tests/*.mjs
