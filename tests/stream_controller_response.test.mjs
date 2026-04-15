@@ -402,7 +402,7 @@ test('consumeStreamResponse notifies background chats on first assistant chunk w
   assert.equal(harness.renderTabsCalls.length, 1);
 });
 
-test('consumeStreamResponse does not refire haptic on done when first assistant chunk already fired one before operator switches away', async () => {
+test('consumeStreamResponse fires unread and haptic together on done when operator switches away after an active first chunk', async () => {
   let activeChatId = 42;
   const phases = new Map();
   const unreadIncrements = [];
@@ -476,10 +476,10 @@ test('consumeStreamResponse does not refire haptic on done when first assistant 
   assert.equal(result.terminalReceived, true);
   assert.deepEqual(unreadIncrements, [42]);
   assert.equal(incomingHaptics.length, 1);
-  assert.match(String(incomingHaptics[0].options?.messageKey || ''), /^chat:42:assistant-stream:/);
+  assert.equal(String(incomingHaptics[0].options?.messageKey || ''), 'chat:42:turn:2');
 });
 
-test('consumeStreamResponse does not increment unread for visible active chat replies when first chunk already fired haptic', async () => {
+test('consumeStreamResponse does not fire early unread or haptic for visible active chat replies', async () => {
   let activeChatId = 42;
   const phases = new Map();
   const unreadIncrements = [];
@@ -550,8 +550,7 @@ test('consumeStreamResponse does not increment unread for visible active chat re
 
   assert.equal(result.terminalReceived, true);
   assert.deepEqual(unreadIncrements, []);
-  assert.equal(incomingHaptics.length, 1);
-  assert.match(String(incomingHaptics[0].options?.messageKey || ''), /^chat:42:assistant-stream:/);
+  assert.equal(incomingHaptics.length, 0);
 });
 
 test('consumeStreamResponse routes early-close fallback through markStreamClosedEarly when available', async () => {
