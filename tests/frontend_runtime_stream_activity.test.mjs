@@ -153,6 +153,68 @@ test('createStreamActivityController syncActivePendingStatus and stream active m
 });
 
 
+test('createStreamActivityController restores live latency from persisted per-chat state when reopening into a pending active chat', () => {
+  const chats = new Map([[8, { pending: true, title: 'Reopened Chat' }]]);
+  const streamChip = { textContent: '', title: '' };
+  const latencyChip = { textContent: 'latency: 9s · live', title: '' };
+  const streamStatus = { textContent: '' };
+  const updates = [];
+  const setChatLatencyCalls = [];
+  const realNow = Date.now;
+  const realSetInterval = globalThis.setInterval;
+  const realClearInterval = globalThis.clearInterval;
+  const intervalCallbacks = [];
+  Date.now = () => 1_000_000;
+  globalThis.setInterval = (callback) => {
+    intervalCallbacks.push(callback);
+    return { id: intervalCallbacks.length, unref() {} };
+  };
+  globalThis.clearInterval = () => {};
+  try {
+    const controller = runtime.createStreamActivityController({
+      chats,
+      getActiveChatId: () => 8,
+      hasLiveStreamController: () => false,
+      getChatLatencyText: () => '9s · live',
+      getStreamPhase: () => 'pending_tool',
+      streamPhases: { PENDING_TOOL: 'pending_tool' },
+      chatLabel: () => 'Reopened Chat',
+      compactChatLabel: () => 'Reopened Chat',
+      setStreamStatus: (text) => {
+        streamStatus.textContent = text;
+      },
+      setActivityChip: (chip, text) => {
+        chip.textContent = text;
+        updates.push({ chip, text });
+      },
+      streamChip,
+      latencyChip,
+      setChatLatency: (chatId, text) => {
+        setChatLatencyCalls.push({ chatId, text });
+      },
+      syncActiveLatencyChip: () => {
+        latencyChip.textContent = 'latency: --';
+      },
+      formatLatency: sharedUtils.formatLatency,
+    });
+
+    Date.now = () => 1_002_000;
+    controller.syncActivePendingStatus();
+
+    assert.equal(streamStatus.textContent, 'Waiting for Hermes in Reopened Chat');
+    assert.equal(streamChip.textContent, 'stream: pending · Reopened Chat');
+    assert.equal(latencyChip.textContent, 'latency: 9s · live');
+    assert.equal(intervalCallbacks.length, 0);
+    assert.deepEqual(setChatLatencyCalls.at(-1), { chatId: 8, text: '9s · live' });
+    assert.ok(updates.some((entry) => entry.text === 'latency: 9s · live'));
+  } finally {
+    Date.now = realNow;
+    globalThis.setInterval = realSetInterval;
+    globalThis.clearInterval = realClearInterval;
+  }
+});
+
+
 test('createStreamActivityController clears stale live latency when switching to a pending tab without a live controller after handoff grace expires', () => {
   const chats = new Map([
     [7, { pending: false, title: 'Working Chat' }],
