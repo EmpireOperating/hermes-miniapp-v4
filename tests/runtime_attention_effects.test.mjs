@@ -62,10 +62,10 @@ test('first assistant notification increments unread once for inactive chat and 
 
   assert.equal(controller.notifyFirstAssistantChunk(7), true);
   assert.deepEqual(controller.consumeFirstAssistantNotification(7), {
-    messageKey: 'chat:7:assistant-stream:2',
+    messageKey: '',
     unreadIncremented: false,
   });
-  assert.equal(haptics.length, 2);
+  assert.equal(haptics.length, 1);
 });
 
 test('hidden active chat still increments unread on first assistant chunk', () => {

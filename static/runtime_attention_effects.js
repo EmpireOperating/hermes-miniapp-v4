@@ -314,19 +314,20 @@
       if (!key || firstAssistantNotificationStateByChat.has(key)) {
         return false;
       }
+      const shouldNotifyOnFirstChunk = shouldIncrementUnread({
+        targetChatId: key,
+        activeChatId: getActiveChatId?.(),
+        hidden: Boolean(isDocumentHidden?.()),
+      });
       nextAssistantNotificationId += 1;
-      const messageKey = `chat:${key}:assistant-stream:${nextAssistantNotificationId}`;
+      const messageKey = shouldNotifyOnFirstChunk ? `chat:${key}:assistant-stream:${nextAssistantNotificationId}` : '';
       const notificationState = {
         messageKey,
         unreadIncremented: false,
       };
       firstAssistantNotificationStateByChat.set(key, notificationState);
-      triggerIncomingMessageHaptic?.(chatId, { messageKey, fallbackToLatestHistory: false });
-      if (shouldIncrementUnread({
-        targetChatId: key,
-        activeChatId: getActiveChatId?.(),
-        hidden: Boolean(isDocumentHidden?.()),
-      })) {
+      if (shouldNotifyOnFirstChunk) {
+        triggerIncomingMessageHaptic?.(chatId, { messageKey, fallbackToLatestHistory: false });
         incrementUnread?.(chatId);
         renderTabs?.();
         notificationState.unreadIncremented = true;

@@ -383,16 +383,19 @@
     function shouldPreserveLiveLatencyDuringPendingHandoff(chatId) {
       const key = normalizeChatId(chatId);
       if (!key) return false;
-      const touchedAt = Number(liveLatencyTouchedAtByChat.get(key) || 0);
-      if (!Number.isFinite(touchedAt) || touchedAt <= 0) return false;
-      const now = Date.now();
-      if ((now - touchedAt) > PENDING_HANDOFF_LATENCY_GRACE_MS) {
-        return false;
-      }
       const phase = typeof getStreamPhase === 'function' ? String(getStreamPhase(key) || '').trim().toLowerCase() : '';
-      return phase === String(streamPhases.PENDING_TOOL || 'pending_tool')
+      const phaseAllowsPreservation = phase === String(streamPhases.PENDING_TOOL || 'pending_tool')
         || phase === String(streamPhases.STREAMING_TOOL || 'streaming_tool')
         || phase === String(streamPhases.STREAMING_ASSISTANT || 'streaming_assistant');
+      if (!phaseAllowsPreservation) {
+        return false;
+      }
+      const touchedAt = Number(liveLatencyTouchedAtByChat.get(key) || 0);
+      if (Number.isFinite(touchedAt) && touchedAt > 0) {
+        const now = Date.now();
+        return (now - touchedAt) <= PENDING_HANDOFF_LATENCY_GRACE_MS;
+      }
+      return isLiveLatencyText(getChatLatencyText?.(key));
     }
 
     function renderLiveLatencyFromStart(chatId) {
@@ -453,7 +456,13 @@
 
     function ensureResumedLiveLatency(chatId) {
       const key = normalizeChatId(chatId);
-      if (!key || liveLatencyStartedAtByChat.has(key)) return;
+      if (!key) return;
+      if (liveLatencyStartedAtByChat.has(key)) {
+        touchLiveLatency(key);
+        tickLiveLatency();
+        ensureLiveLatencyLoop();
+        return;
+      }
       const storedLatencyText = String(getChatLatencyText?.(key) || '').trim();
       const resumedSeconds = parseLatencyDisplayToSeconds(storedLatencyText);
       if (resumedSeconds != null) {
@@ -461,6 +470,19 @@
         return;
       }
       beginLiveLatency(key);
+    }
+
+    function seedPreservedLiveLatency(chatId) {
+      const key = normalizeChatId(chatId);
+      if (!key || liveLatencyStartedAtByChat.has(key)) return;
+      const storedLatencyText = String(getChatLatencyText?.(key) || '').trim();
+      const resumedSeconds = parseLatencyDisplayToSeconds(storedLatencyText);
+      if (resumedSeconds != null) {
+        liveLatencyStartedAtByChat.set(key, Date.now() - (resumedSeconds * 1000));
+      } else {
+        liveLatencyStartedAtByChat.set(key, Date.now());
+      }
+      touchLiveLatency(key);
     }
 
     function syncActivePendingStatus() {
@@ -478,6 +500,7 @@
         setStreamStatus?.(`Waiting for Hermes in ${chatLabel?.(activeKey) || "Chat"}`);
         setActivityChip?.(streamChip, `stream: pending · ${compactChatLabel?.(activeKey) || "Chat"}`);
         if (preserveLiveLatency) {
+          seedPreservedLiveLatency(activeKey);
           renderLiveLatencyFromStart(activeKey);
         }
         return;
