@@ -160,6 +160,7 @@ test('createStreamActivityController restores live latency from persisted per-ch
   const streamStatus = { textContent: '' };
   const updates = [];
   const setChatLatencyCalls = [];
+  let hasLiveController = false;
   const realNow = Date.now;
   const realSetInterval = globalThis.setInterval;
   const realClearInterval = globalThis.clearInterval;
@@ -174,7 +175,7 @@ test('createStreamActivityController restores live latency from persisted per-ch
     const controller = runtime.createStreamActivityController({
       chats,
       getActiveChatId: () => 8,
-      hasLiveStreamController: () => false,
+      hasLiveStreamController: () => hasLiveController,
       getChatLatencyText: () => '9s · live',
       getStreamPhase: () => 'pending_tool',
       streamPhases: { PENDING_TOOL: 'pending_tool' },
@@ -193,7 +194,8 @@ test('createStreamActivityController restores live latency from persisted per-ch
         setChatLatencyCalls.push({ chatId, text });
       },
       syncActiveLatencyChip: () => {
-        latencyChip.textContent = 'latency: --';
+        const latest = setChatLatencyCalls.at(-1)?.text || '--';
+        latencyChip.textContent = `latency: ${latest}`;
       },
       formatLatency: sharedUtils.formatLatency,
     });
@@ -207,6 +209,20 @@ test('createStreamActivityController restores live latency from persisted per-ch
     assert.equal(intervalCallbacks.length, 0);
     assert.deepEqual(setChatLatencyCalls.at(-1), { chatId: 8, text: '9s · live' });
     assert.ok(updates.some((entry) => entry.text === 'latency: 9s · live'));
+
+    hasLiveController = true;
+    chats.get(8).pending = false;
+    Date.now = () => 1_004_000;
+    controller.syncActivePendingStatus();
+
+    assert.equal(streamStatus.textContent, 'Hermes responding in Reopened Chat');
+    assert.equal(streamChip.textContent, 'stream: active · Reopened Chat');
+    assert.equal(latencyChip.textContent, 'latency: 11s · live');
+    assert.equal(intervalCallbacks.length, 1);
+
+    Date.now = () => 1_006_000;
+    intervalCallbacks[0]();
+    assert.equal(latencyChip.textContent, 'latency: 13s · live');
   } finally {
     Date.now = realNow;
     globalThis.setInterval = realSetInterval;

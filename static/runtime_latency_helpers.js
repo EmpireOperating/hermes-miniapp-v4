@@ -456,7 +456,13 @@
 
     function ensureResumedLiveLatency(chatId) {
       const key = normalizeChatId(chatId);
-      if (!key || liveLatencyStartedAtByChat.has(key)) return;
+      if (!key) return;
+      if (liveLatencyStartedAtByChat.has(key)) {
+        touchLiveLatency(key);
+        tickLiveLatency();
+        ensureLiveLatencyLoop();
+        return;
+      }
       const storedLatencyText = String(getChatLatencyText?.(key) || '').trim();
       const resumedSeconds = parseLatencyDisplayToSeconds(storedLatencyText);
       if (resumedSeconds != null) {
