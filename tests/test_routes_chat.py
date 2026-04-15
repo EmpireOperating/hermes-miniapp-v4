@@ -190,7 +190,7 @@ def test_branch_chat_creates_new_chat_with_source_history(monkeypatch, tmp_path)
     assert payload["branched_from_chat_id"] == source_chat.id
     assert payload["forked_from_chat_id"] == source_chat.id
     assert [turn["body"] for turn in payload["history"]] == ["check /tmp/source.py:7", "ack"]
-    assert len(payload["history"][0].get("file_refs") or []) == 1
+    assert payload["history"][0].get("file_refs") in (None, [])
     assert any(chat["id"] == source_chat.id for chat in payload["chats"])
     assert any(chat["id"] == payload["chat"]["id"] for chat in payload["chats"])
 
@@ -400,7 +400,7 @@ def test_file_preview_reads_by_ref_id(monkeypatch, tmp_path) -> None:
     assert payload["preview"]["is_truncated"] is False
 
 
-def test_file_preview_history_extracts_dotfiles_and_common_root_files(monkeypatch, tmp_path) -> None:
+def test_file_preview_history_only_includes_openable_root_files(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(tmp_path))
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -419,8 +419,8 @@ def test_file_preview_history_extracts_dotfiles_and_common_root_files(monkeypatc
     assert history_response.status_code == 200
     history_payload = history_response.get_json()
     refs = history_payload["history"][-1].get("file_refs") or []
-    assert [ref["path"] for ref in refs] == [".env", "Dockerfile"]
-    assert [ref["line_start"] for ref in refs] == [2, 1]
+    assert [ref["path"] for ref in refs] == ["Dockerfile"]
+    assert [ref["line_start"] for ref in refs] == [1]
 
 
 def test_file_preview_blocks_sensitive_dotenv_by_path(monkeypatch, tmp_path) -> None:
@@ -446,7 +446,7 @@ def test_file_preview_blocks_sensitive_dotenv_by_path(monkeypatch, tmp_path) -> 
     }
 
 
-def test_file_preview_blocks_sensitive_dotenv_by_ref_id(monkeypatch, tmp_path) -> None:
+def test_file_preview_history_hides_sensitive_dotenv_refs(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(tmp_path))
     server, client = _authed_client(monkeypatch, tmp_path)
 
@@ -461,21 +461,33 @@ def test_file_preview_blocks_sensitive_dotenv_by_ref_id(monkeypatch, tmp_path) -
     )
     assert history_response.status_code == 200
     refs = history_response.get_json()["history"][-1].get("file_refs") or []
-    assert refs
+    assert refs == []
 
-    response = client.post(
-        "/api/chats/file-preview",
-        json={"init_data": "ok", "chat_id": chat_id, "ref_id": refs[0]["ref_id"]},
+
+def test_file_preview_history_hides_missing_and_binary_refs(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(tmp_path))
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    binary_file = tmp_path / "artifact.bin"
+    binary_file.write_bytes(b"abc\x00def")
+    previewable = tmp_path / "notes.txt"
+    previewable.write_text("hello\n", encoding="utf-8")
+    server.store.add_message(
+        "123",
+        chat_id,
+        "hermes",
+        f"Inspect missing.txt:1, artifact.bin:1, and {previewable}:1",
     )
 
-    assert response.status_code == 403
-    payload = response.get_json()
-    assert "blocked for sensitive files" in payload["error"].lower()
-    assert payload["file_preview_status"] == {
-        "state": "blocked",
-        "reason": "sensitive_file",
-        "rule_type": "basename_glob",
-    }
+    history_response = client.post(
+        "/api/chats/history",
+        json={"init_data": "ok", "chat_id": chat_id},
+    )
+
+    assert history_response.status_code == 200
+    refs = history_response.get_json()["history"][-1].get("file_refs") or []
+    assert [ref["path"] for ref in refs] == [str(previewable)]
 
 
 def test_file_preview_blocks_checkpoint_restore_copies(monkeypatch, tmp_path) -> None:

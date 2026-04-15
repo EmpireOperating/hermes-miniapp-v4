@@ -5,7 +5,7 @@ from dataclasses import asdict
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from file_refs import extract_file_refs
+from file_preview_eligibility import previewable_file_refs
 
 
 _AUTH_PRUNE_INTERVAL_SECONDS = 300
@@ -28,9 +28,11 @@ class AuthBootstrapService:
 
     def serialize_turn(self, turn: Any) -> dict[str, object]:
         payload = asdict(turn)
-        refs = extract_file_refs(payload.get("body") or "", message_id=int(payload.get("id") or 0))
+        refs = previewable_file_refs(payload.get("body") or "", message_id=int(payload.get("id") or 0))
         if refs:
             payload["file_refs"] = refs
+        else:
+            payload.pop("file_refs", None)
         return payload
 
     @staticmethod

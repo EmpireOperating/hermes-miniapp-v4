@@ -635,6 +635,7 @@ def test_runtime_diagnostics_build_operator_summary_for_fallback_and_idle_jobs(m
 
 def test_run_chat_job_duplicate_runner_is_suppressed_not_nonretryable(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
 
     user_id = "123"
     chat_id = server.store.ensure_default_chat(user_id)

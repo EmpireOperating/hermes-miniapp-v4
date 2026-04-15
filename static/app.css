@@ -596,7 +596,7 @@ textarea:focus-visible {
   position: relative;
   min-width: 0;
   overflow-x: hidden;
-  padding: 12px 14px 0;
+  padding: 5px 14px 0;
   border-bottom: 1px solid var(--line);
 }
 .chat-tabs {
@@ -606,6 +606,36 @@ textarea:focus-visible {
   width: 100%;
   overflow-x: auto;
   padding-bottom: 12px;
+}
+@media (min-width: 861px) {
+  .chat-tabs {
+    transform: rotateX(180deg);
+    padding-top: 10px;
+    padding-bottom: 5px;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--line-strong) 34%, transparent) transparent;
+  }
+
+  .chat-tabs::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  .chat-tabs::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .chat-tabs::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--line-strong) 34%, transparent);
+    border-radius: 999px;
+  }
+
+  .chat-tabs > * {
+    transform: rotateX(180deg);
+  }
+
+  .chat-tabs > .chat-tab:active {
+    transform: translateY(1px) rotateX(180deg);
+  }
 }
 .chat-tabs__overview {
   display: none;
