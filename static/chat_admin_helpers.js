@@ -595,6 +595,7 @@
       renderTabs();
       renderPinnedChats();
       renderMessages(nextActiveChatId);
+      focusComposerForNewChat?.(nextActiveChatId);
     }
 
     function closeChatTabContextMenu() {

@@ -1,45 +1,20 @@
 from __future__ import annotations
 
-import fnmatch
-import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
+from file_preview_eligibility import (
+    FILE_PREVIEW_MAX_BYTES,
+    file_preview_allowed_roots,
+    file_preview_deny_status,
+    file_preview_enabled,
+    is_previewable_path,
+    path_under_allowed_roots,
+    previewable_file_refs,
+    resolve_preview_path,
+)
 from file_refs import extract_file_refs
-
-DEFAULT_FILE_PREVIEW_DENY_BASENAME_GLOBS: tuple[str, ...] = (
-    ".env",
-    ".env.*",
-    "auth.json",
-    "*.pem",
-    "*.key",
-    "*.p12",
-    "*.pfx",
-    "*.kdbx",
-    "id_rsa",
-    "id_dsa",
-    "id_ecdsa",
-    "id_ed25519",
-)
-DEFAULT_FILE_PREVIEW_DENY_PATH_GLOBS: tuple[str, ...] = (
-    "*/.env",
-    "*/.env.*",
-    ".env",
-    ".env.*",
-    "checkpoints/*",
-    "*/checkpoints/*",
-    "checkpoint/*",
-    "*/checkpoint/*",
-    "pre_restore*/*",
-    "*/pre_restore*/*",
-    ".git/*",
-    "*/.git/*",
-    ".ssh/*",
-    "*/.ssh/*",
-    ".gnupg/*",
-    "*/.gnupg/*",
-)
 
 
 class ChatManagementService:
@@ -62,9 +37,16 @@ class ChatManagementService:
 
     def serialize_turn(self, turn: Any) -> dict[str, object]:
         payload = asdict(turn)
-        refs = extract_file_refs(payload.get("body") or "", message_id=int(payload.get("id") or 0))
+        allowed_roots = self._file_preview_allowed_roots()
+        refs = previewable_file_refs(
+            payload.get("body") or "",
+            message_id=int(payload.get("id") or 0),
+            allowed_roots=allowed_roots,
+        )
         if refs:
             payload["file_refs"] = refs
+        else:
+            payload.pop("file_refs", None)
         return payload
 
     def _augment_history_with_runtime_pending(self, *, user_id: str, chat_id: int, history: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -345,121 +327,22 @@ class ChatManagementService:
         }, 200
 
     def _file_preview_allowed_roots(self) -> list[Path]:
-        raw = str(os.environ.get("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", "")).strip()
-        if not raw:
-            return []
-        roots: list[Path] = []
-        for candidate in raw.split(":"):
-            cleaned = candidate.strip()
-            if not cleaned:
-                continue
-            try:
-                root = Path(cleaned).expanduser().resolve(strict=False)
-            except OSError:
-                continue
-            roots.append(root)
-        return roots
+        return file_preview_allowed_roots()
 
     def _file_preview_enabled(self, allowed_roots: list[Path]) -> bool:
-        raw = os.environ.get("MINI_APP_FILE_PREVIEW_ENABLED")
-        if raw is None:
-            return bool(allowed_roots)
-        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+        return file_preview_enabled(allowed_roots)
 
     def resolve_preview_path(self, path_text: str, *, allowed_roots: list[Path]) -> Path:
-        cleaned = str(path_text or "").strip()
-        if not cleaned:
-            raise ValueError("Missing file path")
-
-        if cleaned.lower().startswith("file://"):
-            cleaned = cleaned[7:]
-
-        try:
-            candidate = Path(cleaned).expanduser()
-        except OSError as exc:
-            raise ValueError("Invalid file path") from exc
-
-        if candidate.is_absolute():
-            try:
-                return candidate.resolve(strict=False)
-            except OSError as exc:
-                raise ValueError("Invalid file path") from exc
-
-        for root in allowed_roots:
-            try:
-                resolved = (root / candidate).resolve(strict=False)
-            except OSError:
-                continue
-            try:
-                resolved.relative_to(root)
-                return resolved
-            except ValueError:
-                continue
-
-        raise ValueError("Path must be absolute or relative to an allowed root")
+        return resolve_preview_path(path_text, allowed_roots=allowed_roots)
 
     def path_under_allowed_roots(self, target: Path, roots: list[Path]) -> bool:
-        for root in roots:
-            try:
-                target.relative_to(root)
-                return True
-            except ValueError:
-                continue
-        return False
-
-    def _file_preview_deny_basename_globs(self) -> tuple[str, ...]:
-        raw = str(os.environ.get("MINI_APP_FILE_PREVIEW_DENY_BASENAME_GLOBS", "")).strip()
-        if not raw:
-            return DEFAULT_FILE_PREVIEW_DENY_BASENAME_GLOBS
-        values = tuple(str(chunk or "").strip().lower() for chunk in raw.split(os.pathsep) if str(chunk or "").strip())
-        return values or DEFAULT_FILE_PREVIEW_DENY_BASENAME_GLOBS
-
-    def _file_preview_deny_path_globs(self) -> tuple[str, ...]:
-        raw = str(os.environ.get("MINI_APP_FILE_PREVIEW_DENY_PATH_GLOBS", "")).strip()
-        if not raw:
-            return DEFAULT_FILE_PREVIEW_DENY_PATH_GLOBS
-        values = tuple(str(chunk or "").strip().lower() for chunk in raw.split(os.pathsep) if str(chunk or "").strip())
-        return values or DEFAULT_FILE_PREVIEW_DENY_PATH_GLOBS
-
-    def _path_within_allowed_root(self, target: Path, roots: list[Path]) -> tuple[Path, Path] | None:
-        for root in roots:
-            try:
-                relative = target.relative_to(root)
-            except ValueError:
-                continue
-            return root, relative
-        return None
+        return path_under_allowed_roots(target, roots)
 
     def _file_preview_deny_status(self, target: Path, roots: list[Path]) -> dict[str, str] | None:
-        match = self._path_within_allowed_root(target, roots)
-        if match is None:
-            return None
-        _, relative = match
-        basename = target.name.lower()
-        relative_path = relative.as_posix().lower()
-        anchored_relative_path = f"/{relative_path}" if relative_path else "/"
-
-        for pattern in self._file_preview_deny_basename_globs():
-            if fnmatch.fnmatch(basename, pattern):
-                return {
-                    "state": "blocked",
-                    "reason": "sensitive_file",
-                    "rule_type": "basename_glob",
-                }
-
-        for pattern in self._file_preview_deny_path_globs():
-            normalized = pattern if pattern.startswith("/") else f"/{pattern}"
-            if fnmatch.fnmatch(anchored_relative_path, normalized):
-                return {
-                    "state": "blocked",
-                    "reason": "sensitive_file",
-                    "rule_type": "path_glob",
-                }
-
-        return None
+        return file_preview_deny_status(target, roots)
 
     def _file_preview_is_denied(self, target: Path, roots: list[Path]) -> bool:
-        return self._file_preview_deny_status(target, roots) is not None
+        return file_preview_deny_status(target, roots) is not None
 
     def build_file_preview(
         self,
@@ -476,7 +359,7 @@ class ChatManagementService:
         if not path_value.is_file():
             raise ValueError("Path is not a regular file")
 
-        max_bytes = 1_000_000
+        max_bytes = FILE_PREVIEW_MAX_BYTES
         max_lines = 400
         context = 40
         full_file_max_bytes = 250_000

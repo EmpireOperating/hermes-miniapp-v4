@@ -203,23 +203,25 @@ def test_augment_history_with_runtime_pending_dedupes_existing_pending_entries()
     assert result == history
 
 
-def test_serialize_turn_adds_file_refs_when_present() -> None:
+def test_serialize_turn_only_adds_previewable_file_refs_when_present(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(tmp_path))
     service = _service()
+    previewable = tmp_path / "demo.txt"
+    previewable.write_text("ok\n", encoding="utf-8")
 
     result = service.serialize_turn(
         _Turn(
             id=11,
             chat_id=7,
             role="assistant",
-            body="Look at /tmp/demo.txt and /var/log/app.log",
+            body=f"Look at {previewable} and /var/log/app.log",
             created_at="2026-04-10T00:00:00Z",
         )
     )
 
     assert result["id"] == 11
-    assert result["body"] == "Look at /tmp/demo.txt and /var/log/app.log"
-    assert result["file_refs"][0]["path"] == "/tmp/demo.txt"
-    assert result["file_refs"][1]["path"] == "/var/log/app.log"
+    assert result["body"] == f"Look at {previewable} and /var/log/app.log"
+    assert [ref["path"] for ref in result["file_refs"]] == [str(previewable)]
 
 
 def test_auth_success_state_prefers_lightweight_pinned_chat_summaries() -> None:

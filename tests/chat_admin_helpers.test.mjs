@@ -689,6 +689,7 @@ test('forkChatFrom clones chat history into a new active branch', async () => {
   assert.deepEqual(harness.renderedTabs, ['tabs']);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
   assert.deepEqual(harness.renderedMessages, [19]);
+  assert.deepEqual(harness.focusComposerCalls, [19]);
 });
 
 test('forkChatFrom still calls the backend when the source chat has active local work', async () => {
