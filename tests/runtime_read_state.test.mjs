@@ -16,6 +16,29 @@ test('isIncomingChatLaggingLocalState detects lagging unread, anchor, and pendin
   ), false);
 });
 
+test('createUnreadPreservationController preserves lagging local unread state for inactive background chats', () => {
+  const chats = new Map([[11, { id: 11, unread_count: 1, newest_unread_message_id: 44, pending: true }]]);
+  const unreadStateController = {
+    upsertChatPreservingUnread: (chat) => chat,
+  };
+  const thresholdController = {
+    hasReachedNewestUnreadMessageBottom: () => true,
+    hasActivationReadThreshold: () => false,
+  };
+  const controller = readState.createUnreadPreservationController(
+    { chats, getActiveChatId: () => 7 },
+    unreadStateController,
+    thresholdController,
+  );
+
+  const nextChat = controller.buildChatPreservingUnread(
+    { id: 11, unread_count: 0, newest_unread_message_id: 0, pending: true },
+    { preserveLaggingLocalState: true },
+  );
+
+  assert.deepEqual(nextChat, { id: 11, unread_count: 1, newest_unread_message_id: 44, pending: true });
+});
+
 test('createUnreadAnchorController measures newest unread assistant boundary before generic near-bottom fallback', () => {
   const chats = new Map([[7, { id: 7, unread_count: 1, newest_unread_message_id: 22 }]]);
   const assistantNode = {

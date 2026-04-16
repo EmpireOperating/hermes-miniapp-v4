@@ -9,6 +9,7 @@
     getActiveChatId,
     hasReachedNewestUnreadMessageBottom,
     preserveActivationUnread = false,
+    preserveLaggingLocalState = false,
     hasActivationReadThreshold = null,
   } = {}) {
     if (!chat || typeof chat !== 'object') {
@@ -19,7 +20,7 @@
       return chat;
     }
     const nextChat = { ...chat };
-    if (!preserveActivationUnread) {
+    if (!preserveActivationUnread && !preserveLaggingLocalState) {
       return nextChat;
     }
     const localChat = chats.get(key) || null;
@@ -37,6 +38,13 @@
     if ((thresholdStillArmed || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
       nextChat.unread_count = localUnread;
       nextChat.newest_unread_message_id = localUnreadAnchor;
+    }
+    if (preserveLaggingLocalState && isIncomingChatLaggingLocalState(localChat, nextChat)) {
+      nextChat.unread_count = localUnread;
+      nextChat.newest_unread_message_id = localUnreadAnchor;
+      if (Boolean(localChat?.pending) && !Boolean(nextChat.pending)) {
+        nextChat.pending = true;
+      }
     }
     return nextChat;
   }
@@ -369,13 +377,14 @@
   }
 
   function createUnreadPreservationController({ chats, getActiveChatId }, unreadStateController, thresholdController) {
-    function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
+    function buildChatPreservingUnread(chat, { preserveActivationUnread = false, preserveLaggingLocalState = false } = {}) {
       return resolvePreservedUnreadState({
         chat,
         chats,
         getActiveChatId,
         hasReachedNewestUnreadMessageBottom: thresholdController.hasReachedNewestUnreadMessageBottom,
         preserveActivationUnread,
+        preserveLaggingLocalState,
         hasActivationReadThreshold: thresholdController.hasActivationReadThreshold,
       });
     }
@@ -575,8 +584,8 @@
       getActiveChatId,
     }, unreadStateController, thresholdController);
 
-    function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
-      return unreadPreservationController.buildChatPreservingUnread(chat, { preserveActivationUnread });
+    function buildChatPreservingUnread(chat, { preserveActivationUnread = false, preserveLaggingLocalState = false } = {}) {
+      return unreadPreservationController.buildChatPreservingUnread(chat, { preserveActivationUnread, preserveLaggingLocalState });
     }
 
     function upsertChatPreservingUnread(chat, options = {}) {

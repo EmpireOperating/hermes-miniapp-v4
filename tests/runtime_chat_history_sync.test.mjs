@@ -82,7 +82,7 @@ test('createHistoryStatusController refreshChats preserves unread-aware status a
         pinned_chats: [{ id: 9, unread_count: 0, pending: false }],
       };
     },
-    buildChatPreservingUnread: (chat, options = {}) => ({ ...chat, preserved: Boolean(options.preserveActivationUnread) }),
+    buildChatPreservingUnread: (chat, options = {}) => ({ ...chat, preserved: Boolean(options.preserveActivationUnread), preserveLaggingLocalState: Boolean(options.preserveLaggingLocalState) }),
     syncChats: (entries) => syncChatsCalls.push(entries),
     syncPinnedChats: (entries) => syncPinnedChatsCalls.push(entries),
     renderTabs: () => {},
@@ -96,8 +96,66 @@ test('createHistoryStatusController refreshChats preserves unread-aware status a
 
   await controller.refreshChats();
 
-  assert.deepEqual(syncChatsCalls, [[{ id: 7, unread_count: 1, pending: false, preserved: true }]]);
-  assert.deepEqual(syncPinnedChatsCalls, [[{ id: 9, unread_count: 0, pending: false, preserved: true }]]);
+  assert.deepEqual(syncChatsCalls, [[{ id: 7, unread_count: 1, pending: false, preserved: true, preserveLaggingLocalState: true }]]);
+  assert.deepEqual(syncPinnedChatsCalls, [[{ id: 9, unread_count: 0, pending: false, preserved: true, preserveLaggingLocalState: true }]]);
   assert.deepEqual(abortedChats, [7]);
   assert.deepEqual(finalizedChats, [7]);
+});
+
+test('createHistoryStatusController refreshChats asks preservation helper to keep lagging local unread state for background chats', async () => {
+  const buildCalls = [];
+  const syncChatsCalls = [];
+  const controller = historySync.createHistoryStatusController({
+    apiPost: async () => ({
+      chats: [{ id: 11, unread_count: 0, pending: true }],
+      pinned_chats: [],
+    }),
+    buildChatPreservingUnread: (chat, options = {}) => {
+      buildCalls.push({ chat, options });
+      return { ...chat, unread_count: options.preserveLaggingLocalState ? 1 : chat.unread_count };
+    },
+    syncChats: (entries) => syncChatsCalls.push(entries),
+    syncPinnedChats: () => {},
+    renderTabs: () => {},
+    renderPinnedChats: () => {},
+    syncActivePendingStatus: () => {},
+    updateComposerState: () => {},
+    hasLiveStreamController: () => false,
+    abortStreamController: () => {},
+    finalizeHydratedPendingState: () => {},
+  });
+
+  await controller.refreshChats();
+
+  assert.deepEqual(buildCalls, [{
+    chat: { id: 11, unread_count: 0, pending: true },
+    options: { preserveActivationUnread: true, preserveLaggingLocalState: true },
+  }]);
+  assert.deepEqual(syncChatsCalls, [[{ id: 11, unread_count: 1, pending: true }]]);
+});
+
+test('createHistoryStatusController refreshChats still finalizes completed chats from raw status even when preserved local state stays pending', async () => {
+  const abortedChats = [];
+  const finalizedChats = [];
+  const controller = historySync.createHistoryStatusController({
+    apiPost: async () => ({
+      chats: [{ id: 12, unread_count: 0, pending: false }],
+      pinned_chats: [],
+    }),
+    buildChatPreservingUnread: () => ({ id: 12, unread_count: 1, pending: true }),
+    syncChats: () => {},
+    syncPinnedChats: () => {},
+    renderTabs: () => {},
+    renderPinnedChats: () => {},
+    syncActivePendingStatus: () => {},
+    updateComposerState: () => {},
+    hasLiveStreamController: (chatId) => Number(chatId) === 12,
+    abortStreamController: (chatId) => abortedChats.push(Number(chatId)),
+    finalizeHydratedPendingState: (chatId) => finalizedChats.push(Number(chatId)),
+  });
+
+  await controller.refreshChats();
+
+  assert.deepEqual(abortedChats, [12]);
+  assert.deepEqual(finalizedChats, [12]);
 });

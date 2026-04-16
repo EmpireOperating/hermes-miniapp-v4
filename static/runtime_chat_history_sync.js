@@ -212,10 +212,18 @@
 
     async function refreshChats() {
       const data = await apiPost('/api/chats/status', {});
-      const statusChats = (data.chats || []).map((chat) => buildChatPreservingUnread(chat, { preserveActivationUnread: true }));
-      const pinnedStatusChats = (data.pinned_chats || []).map((chat) => buildChatPreservingUnread(chat, { preserveActivationUnread: true }));
+      const rawStatusChats = Array.isArray(data.chats) ? data.chats : [];
+      const rawPinnedStatusChats = Array.isArray(data.pinned_chats) ? data.pinned_chats : [];
+      const statusChats = rawStatusChats.map((chat) => buildChatPreservingUnread(chat, {
+        preserveActivationUnread: true,
+        preserveLaggingLocalState: true,
+      }));
+      const pinnedStatusChats = rawPinnedStatusChats.map((chat) => buildChatPreservingUnread(chat, {
+        preserveActivationUnread: true,
+        preserveLaggingLocalState: true,
+      }));
       syncChats(statusChats);
-      reconcilePendingStateFromStatus(statusChats);
+      reconcilePendingStateFromStatus(rawStatusChats);
       syncPinnedChats(pinnedStatusChats);
       renderTabs();
       renderPinnedChats();
