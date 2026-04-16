@@ -10,6 +10,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from miniapp_env import (
     SHARED_TELEGRAM_TOKEN_OPT_IN_KEY,
     default_hermes_env_path,
