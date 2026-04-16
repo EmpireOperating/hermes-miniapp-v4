@@ -403,7 +403,7 @@ test('consumeStreamResponse notifies background chats on first assistant chunk w
   assert.equal(harness.renderTabsCalls.length, 1);
 });
 
-test('consumeStreamResponse fires unread and haptic together on done when operator switches away after an active first chunk', async () => {
+test('consumeStreamResponse increments unread on done without duplicating an early active-chat haptic after switch-away', async () => {
   let activeChatId = 42;
   const phases = new Map();
   const unreadIncrements = [];
@@ -477,10 +477,10 @@ test('consumeStreamResponse fires unread and haptic together on done when operat
   assert.equal(result.terminalReceived, true);
   assert.deepEqual(unreadIncrements, [42]);
   assert.equal(incomingHaptics.length, 1);
-  assert.equal(String(incomingHaptics[0].options?.messageKey || ''), 'chat:42:turn:2');
+  assert.match(String(incomingHaptics[0].options?.messageKey || ''), /^chat:42:assistant-stream:/);
 });
 
-test('consumeStreamResponse does not fire early unread or haptic for visible active chat replies', async () => {
+test('consumeStreamResponse fires a single early haptic but no unread for visible active chat replies', async () => {
   let activeChatId = 42;
   const phases = new Map();
   const unreadIncrements = [];
@@ -551,7 +551,8 @@ test('consumeStreamResponse does not fire early unread or haptic for visible act
 
   assert.equal(result.terminalReceived, true);
   assert.deepEqual(unreadIncrements, []);
-  assert.equal(incomingHaptics.length, 0);
+  assert.equal(incomingHaptics.length, 1);
+  assert.match(String(incomingHaptics[0].options?.messageKey || ''), /^chat:42:assistant-stream:/);
 });
 
 test('consumeStreamResponse routes early-close fallback through markStreamClosedEarly when available', async () => {
@@ -583,6 +584,81 @@ test('consumeStreamResponse can suppress early-close fallback and report non-ter
   assert.equal(harness.pendingAssistantUpdates.length, 0);
   assert.equal(harness.streamStatuses.includes('Stream closed early'), false);
   assert.equal(harness.streamChipUpdates.includes('stream: closed early'), false);
+});
+
+test('consumeStreamResponse early-close fallback increments unread without duplicating an active-chat first-chunk haptic after switch-away', async () => {
+  let activeChatId = 42;
+  const phases = new Map();
+  const unreadIncrements = [];
+  const incomingHaptics = [];
+  const controller = streamController.createController({
+    parseSseEvent: sharedUtils.parseSseEvent,
+    formatLatency: sharedUtils.formatLatency,
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: (chatId) => phases.get(Number(chatId)) || streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: (chatId, phase) => phases.set(Number(chatId), phase),
+    isPatchPhaseAllowed: () => false,
+    chats: new Map(),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    sourceChip: 'source-chip',
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    finalizeInlineToolTrace: () => {},
+    updatePendingAssistant: () => {
+      activeChatId = 99;
+    },
+    markStreamUpdate: () => {},
+    patchVisiblePendingAssistant: () => false,
+    patchVisibleToolTrace: () => false,
+    renderTraceLog: () => {},
+    syncActiveMessageView: () => {},
+    scheduleActiveMessageView: () => {},
+    setChatLatency: () => {},
+    incrementUnread: (chatId) => unreadIncrements.push(Number(chatId)),
+    getActiveChatId: () => activeChatId,
+    triggerIncomingMessageHaptic: (chatId, options = {}) => incomingHaptics.push({ chatId: Number(chatId), options }),
+    messagesEl: null,
+    promptEl: { focus: () => {} },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    streamDebugLog: () => {},
+    finalizeStreamPendingState: () => {},
+    appendInlineToolTrace: () => {},
+    loadChatHistory: async () => ({ chat: { id: 42, pending: false }, history: [] }),
+    upsertChat: () => {},
+    histories: new Map(),
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    renderMessages: () => {},
+    persistStreamCursor: () => {},
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+  });
+
+  const payload = [
+    'event: chunk',
+    'data: {"text":"hello"}',
+    '',
+  ].join('\n');
+  const stream = makeSseResponse(payload);
+  const result = await controller.consumeStreamResponse(42, stream.response, { value: '' }, {
+    fallbackTraceEvent: 'stream-fallback-patch',
+  });
+
+  assert.equal(result.terminalReceived, false);
+  assert.equal(result.earlyClosed, true);
+  assert.deepEqual(unreadIncrements, [42]);
+  assert.equal(incomingHaptics.length, 1);
+  assert.match(String(incomingHaptics[0].options?.messageKey || ''), /^chat:42:assistant-stream:/);
 });
 
 test('consumeStreamResponse persists replay cursor only after non-terminal events and clears it on terminal done', async () => {

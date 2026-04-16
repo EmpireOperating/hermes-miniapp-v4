@@ -124,8 +124,21 @@ test('describeFirstAssistantAttentionEffect centralizes first-chunk unread and h
   assert.deepEqual(attentionEffects.describeFirstAssistantAttentionEffect({
     chatId: 7,
     activeChatId: 7,
-    hidden: true,
+    hidden: false,
     notificationId: 4,
+  }), {
+    shouldTriggerHaptic: true,
+    shouldIncrementUnread: false,
+    shouldRenderTabs: false,
+    messageKey: 'chat:7:assistant-stream:4',
+    fallbackToLatestHistory: false,
+  });
+
+  assert.deepEqual(attentionEffects.describeFirstAssistantAttentionEffect({
+    chatId: 7,
+    activeChatId: 7,
+    hidden: true,
+    notificationId: 5,
   }), {
     shouldTriggerHaptic: false,
     shouldIncrementUnread: false,
@@ -135,7 +148,7 @@ test('describeFirstAssistantAttentionEffect centralizes first-chunk unread and h
   });
 });
 
-test('first assistant notification increments unread once for inactive chat and not for visible active chat', () => {
+test('first assistant notification increments unread once for inactive chat and fires only haptic for visible active chat', () => {
   const unread = [];
   const haptics = [];
   const controller = attentionEffects.createFirstAssistantNotificationController({
@@ -157,10 +170,13 @@ test('first assistant notification increments unread once for inactive chat and 
 
   assert.equal(controller.notifyFirstAssistantChunk(7), true);
   assert.deepEqual(controller.consumeFirstAssistantNotification(7), {
-    messageKey: '',
+    messageKey: 'chat:7:assistant-stream:2',
     unreadIncremented: false,
   });
-  assert.equal(haptics.length, 1);
+  assert.deepEqual(haptics, [
+    { chatId: 9, messageKey: 'chat:9:assistant-stream:1' },
+    { chatId: 7, messageKey: 'chat:7:assistant-stream:2' },
+  ]);
 });
 
 test('hidden active chat does not increment unread on first assistant chunk', () => {
@@ -316,6 +332,7 @@ test('describeEarlyCloseAttentionEffect centralizes fallback haptic and unread r
     shouldIncrementUnread: false,
     shouldRenderTabs: false,
     fallbackToLatestHistory: true,
+    hadEarlyAssistantHaptic: false,
     hadEarlyAssistantUnread: false,
   });
 
@@ -329,6 +346,7 @@ test('describeEarlyCloseAttentionEffect centralizes fallback haptic and unread r
     shouldIncrementUnread: true,
     shouldRenderTabs: true,
     fallbackToLatestHistory: true,
+    hadEarlyAssistantHaptic: false,
     hadEarlyAssistantUnread: false,
   });
 
@@ -342,6 +360,24 @@ test('describeEarlyCloseAttentionEffect centralizes fallback haptic and unread r
     shouldIncrementUnread: false,
     shouldRenderTabs: false,
     fallbackToLatestHistory: true,
+    hadEarlyAssistantHaptic: false,
+    hadEarlyAssistantUnread: false,
+  });
+
+  assert.deepEqual(attentionEffects.describeEarlyCloseAttentionEffect({
+    chatId: 7,
+    activeChatId: 9,
+    hidden: true,
+    earlyAssistantNotification: {
+      unreadIncremented: false,
+      messageKey: 'chat:7:assistant-stream:3',
+    },
+  }), {
+    shouldTriggerHaptic: false,
+    shouldIncrementUnread: true,
+    shouldRenderTabs: true,
+    fallbackToLatestHistory: true,
+    hadEarlyAssistantHaptic: true,
     hadEarlyAssistantUnread: false,
   });
 });
