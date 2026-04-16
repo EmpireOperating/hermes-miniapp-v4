@@ -266,6 +266,54 @@ def test_execute_chat_job_scopes_ambiguous_followup_to_chat_title() -> None:
     assert "Operator message: Do it" in sent_message
 
 
+def test_execute_chat_job_scopes_typoed_ambiguous_followup_to_chat_title() -> None:
+    runtime = _FakeRuntime(events=[{"type": "done", "reply": "ok", "latency_ms": 5}])
+    runtime.store.operator_body = "Ndo it"
+    runtime.store.chat_title = "freedom mail"
+    job = {"id": 31, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    sent_message = runtime.client.stream_calls[0]["message"]
+    assert 'Current thread title: "freedom mail".' in sent_message
+    assert "Operator message: Ndo it" in sent_message
+
+
+@pytest.mark.parametrize(
+    ("operator_body",),
+    [
+        ("k",),
+        ("if",),
+        ("is",),
+        ("than",),
+        ("thus",),
+        ("fox it",),
+        ("do i",),
+    ],
+)
+def test_execute_chat_job_leaves_near_miss_short_messages_unwrapped(operator_body: str) -> None:
+    runtime = _FakeRuntime(events=[{"type": "done", "reply": "ok", "latency_ms": 5}])
+    runtime.store.operator_body = operator_body
+    runtime.store.chat_title = "freedom mail"
+    job = {"id": 31, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert runtime.client.stream_calls[0]["message"] == operator_body
+
+
 def test_execute_chat_job_leaves_specific_prompt_unwrapped() -> None:
     runtime = _FakeRuntime(events=[{"type": "done", "reply": "ok", "latency_ms": 5}])
     runtime.store.operator_body = "Please finish R42 next and then R43."

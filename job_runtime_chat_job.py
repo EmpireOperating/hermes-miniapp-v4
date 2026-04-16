@@ -17,12 +17,23 @@ _TOOL_EXECUTION_CLAIM_RE = re.compile(
     r"|\btool\s+activity\b",
     re.IGNORECASE,
 )
-_AMBIGUOUS_FOLLOWUP_RE = re.compile(
-    r"^\s*(?:"
-    r"do\s+it|continue|please\s+continue|go\s+ahead|proceed|keep\s+going|"
-    r"do\s+that|do\s+this|fix\s+it|that|this|it|yes|yep|ok|okay"
-    r")\s*[.!?]*\s*$",
-    re.IGNORECASE,
+_AMBIGUOUS_FOLLOWUP_PHRASES = (
+    "do it",
+    "continue",
+    "please continue",
+    "go ahead",
+    "proceed",
+    "keep going",
+    "do that",
+    "do this",
+    "fix it",
+    "that",
+    "this",
+    "it",
+    "yes",
+    "yep",
+    "ok",
+    "okay",
 )
 
 
@@ -34,12 +45,40 @@ def _reply_claims_tool_execution(reply_text: str) -> bool:
     return bool(_TOOL_EXECUTION_CLAIM_RE.search(str(reply_text or "")))
 
 
+def _normalize_followup_candidate(message: str) -> str:
+    cleaned = str(message or "").strip().lower()
+    cleaned = re.sub(r"[.!?]+$", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _looks_like_extra_edge_char_typo(candidate: str, phrase: str) -> bool:
+    if " " not in phrase:
+        return False
+    if len(candidate.split()) > 3:
+        return False
+    if len(candidate) != len(phrase) + 1:
+        return False
+    return candidate[1:] == phrase or candidate[:-1] == phrase
+
+
+def _looks_like_ambiguous_followup(message: str) -> bool:
+    candidate = _normalize_followup_candidate(message)
+    if not candidate:
+        return False
+    if candidate in _AMBIGUOUS_FOLLOWUP_PHRASES:
+        return True
+    if len(candidate.split()) > 3:
+        return False
+    return any(_looks_like_extra_edge_char_typo(candidate, phrase) for phrase in _AMBIGUOUS_FOLLOWUP_PHRASES)
+
+
 def _build_chat_scoped_message(*, message: str, chat_title: str | None) -> str:
     cleaned = str(message or "").strip()
     title = str(chat_title or "").strip()
     if not cleaned or not title:
         return cleaned
-    if not _AMBIGUOUS_FOLLOWUP_RE.match(cleaned):
+    if not _looks_like_ambiguous_followup(cleaned):
         return cleaned
     return (
         f'Current thread title: "{title}". '
