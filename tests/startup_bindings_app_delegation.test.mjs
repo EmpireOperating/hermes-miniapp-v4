@@ -29,8 +29,8 @@ test('app.js startup/bootstrap wrappers keep delegating to startupBindingsContro
   );
   assert.match(
     source,
-    /function\s+createStartupBindingsControllerBootstrapDeps\s*\(\)\s*\{[\s\S]*?return\s+\{[\s\S]*?fetchAuthBootstrapWithRetry,[\s\S]*?syncVisibleActiveChat,[\s\S]*?\};\s*\}/m,
-    'app.js should isolate startup bootstrap/auth wiring in createStartupBindingsControllerBootstrapDeps(...)',
+    /function\s+createStartupBindingsControllerBootstrapDeps\s*\(\)\s*\{[\s\S]*?return\s+\{[\s\S]*?fetchAuthBootstrapWithRetry,[\s\S]*?restoreActiveBootstrapPendingState:\s*\(chatId, options = \{\}\) => \([\s\S]*?typeof chatHistoryController\?\.restoreActiveBootstrapPendingState === 'function'[\s\S]*?chatHistoryController\.restoreActiveBootstrapPendingState\(chatId, options\)[\s\S]*?: null[\s\S]*?\),[\s\S]*?syncVisibleActiveChat,[\s\S]*?\};\s*\}/m,
+    'app.js should isolate startup bootstrap/auth wiring in createStartupBindingsControllerBootstrapDeps(...) and guard stale helper mismatches',
   );
   assert.match(
     source,

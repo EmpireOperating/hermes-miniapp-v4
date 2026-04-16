@@ -58,8 +58,8 @@ test('app.js bootstrap/auth request wrappers keep delegating to bootstrapAuthCon
   );
   assert.match(
     source,
-    /function\s+createBootstrapAuthControllerAppArgs\s*\(\)\s*\{[\s\S]*?setSkin,[\s\S]*?syncBootstrapActivationReadState:\s*\(chatId, options = \{\}\) => chatHistoryController\.syncBootstrapActivationReadState\(chatId, options\),[\s\S]*?windowObject:\s*window,[\s\S]*?\}/m,
-    'app.js should isolate bootstrap auth app arg building in createBootstrapAuthControllerAppArgs(...)',
+    /function\s+createBootstrapAuthControllerAppArgs\s*\(\)\s*\{[\s\S]*?setSkin,[\s\S]*?restoreActiveBootstrapPendingState:\s*\(chatId, options = \{\}\) => \([\s\S]*?typeof chatHistoryController\?\.restoreActiveBootstrapPendingState === 'function'[\s\S]*?chatHistoryController\.restoreActiveBootstrapPendingState\(chatId, options\)[\s\S]*?: null[\s\S]*?\),[\s\S]*?syncBootstrapActivationReadState:\s*\(chatId, options = \{\}\) => \([\s\S]*?typeof chatHistoryController\?\.syncBootstrapActivationReadState === 'function'[\s\S]*?chatHistoryController\.syncBootstrapActivationReadState\(chatId, options\)[\s\S]*?: false[\s\S]*?\),[\s\S]*?windowObject:\s*window,[\s\S]*?\}/m,
+    'app.js should isolate bootstrap auth app arg building in createBootstrapAuthControllerAppArgs(...) and guard stale helper mismatches',
   );
   assert.doesNotMatch(
     source,

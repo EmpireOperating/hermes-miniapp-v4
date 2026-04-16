@@ -1605,8 +1605,16 @@ function createBootstrapAuthControllerAppArgs() {
     resumePendingChatStream,
     hasFreshPendingStreamSnapshot,
     restorePendingStreamSnapshot,
-    restoreActiveBootstrapPendingState: (chatId, options = {}) => chatHistoryController.restoreActiveBootstrapPendingState(chatId, options),
-    syncBootstrapActivationReadState: (chatId, options = {}) => chatHistoryController.syncBootstrapActivationReadState(chatId, options),
+    restoreActiveBootstrapPendingState: (chatId, options = {}) => (
+      typeof chatHistoryController?.restoreActiveBootstrapPendingState === 'function'
+        ? chatHistoryController.restoreActiveBootstrapPendingState(chatId, options)
+        : null
+    ),
+    syncBootstrapActivationReadState: (chatId, options = {}) => (
+      typeof chatHistoryController?.syncBootstrapActivationReadState === 'function'
+        ? chatHistoryController.syncBootstrapActivationReadState(chatId, options)
+        : false
+    ),
     windowObject: window,
   };
 }
@@ -2752,7 +2760,11 @@ function createStartupBindingsControllerBootstrapDeps() {
     applyAuthBootstrap,
     hasFreshPendingStreamSnapshot,
     restorePendingStreamSnapshot,
-    restoreActiveBootstrapPendingState: (chatId, options = {}) => chatHistoryController.restoreActiveBootstrapPendingState(chatId, options),
+    restoreActiveBootstrapPendingState: (chatId, options = {}) => (
+      typeof chatHistoryController?.restoreActiveBootstrapPendingState === 'function'
+        ? chatHistoryController.restoreActiveBootstrapPendingState(chatId, options)
+        : null
+    ),
     renderMessages,
     updateComposerState,
     syncUnreadNotificationPresence,
