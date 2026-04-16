@@ -1454,7 +1454,7 @@ function createBootstrapAuthControllerAppDeps({
   resumePendingChatStream,
   hasFreshPendingStreamSnapshot,
   restorePendingStreamSnapshot,
-  ensureActivationReadThreshold,
+  syncBootstrapActivationReadState,
   windowObject,
 }) {
   return {
@@ -1472,7 +1472,7 @@ function createBootstrapAuthControllerAppDeps({
     resumePendingChatStream,
     hasFreshPendingStreamSnapshot,
     restorePendingStreamSnapshot,
-    ensureActivationReadThreshold,
+    syncBootstrapActivationReadState,
     windowObject,
   };
 }
@@ -1605,7 +1605,8 @@ function createBootstrapAuthControllerAppArgs() {
     resumePendingChatStream,
     hasFreshPendingStreamSnapshot,
     restorePendingStreamSnapshot,
-    ensureActivationReadThreshold: (chatId, unreadCount) => chatHistoryController.ensureActivationReadThreshold(chatId, unreadCount),
+    restoreActiveBootstrapPendingState: (chatId, options = {}) => chatHistoryController.restoreActiveBootstrapPendingState(chatId, options),
+    syncBootstrapActivationReadState: (chatId, options = {}) => chatHistoryController.syncBootstrapActivationReadState(chatId, options),
     windowObject: window,
   };
 }
@@ -2751,6 +2752,7 @@ function createStartupBindingsControllerBootstrapDeps() {
     applyAuthBootstrap,
     hasFreshPendingStreamSnapshot,
     restorePendingStreamSnapshot,
+    restoreActiveBootstrapPendingState: (chatId, options = {}) => chatHistoryController.restoreActiveBootstrapPendingState(chatId, options),
     renderMessages,
     updateComposerState,
     syncUnreadNotificationPresence,

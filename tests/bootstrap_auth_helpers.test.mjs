@@ -41,7 +41,8 @@ function buildHarness(overrides = {}) {
   let appendedSystemMessages = [];
   let roleLabelsRefreshed = 0;
   let warmCalls = 0;
-  const armedActivationUnreadThresholds = [];
+  const armedBootstrapActivationUnreadThresholds = [];
+  const restoreActiveBootstrapPendingStateCalls = [];
   const bootMetrics = [];
   const bootLatencyStages = [];
   const bootStages = [];
@@ -124,8 +125,17 @@ function buildHarness(overrides = {}) {
     addLocalMessage: (chatId, message) => localMessages.push({ chatId: Number(chatId), message }),
     hasFreshPendingStreamSnapshot: () => false,
     restorePendingStreamSnapshot: () => false,
-    ensureActivationReadThreshold: (chatId, unreadCount) => {
-      armedActivationUnreadThresholds.push({ chatId: Number(chatId), unreadCount: Number(unreadCount || 0) });
+    restoreActiveBootstrapPendingState: (chatId, { serverPending = false, onRestored = null } = {}) => {
+      restoreActiveBootstrapPendingStateCalls.push({ chatId: Number(chatId), serverPending: Boolean(serverPending) });
+      const localPendingSnapshot = false;
+      const restoredPendingSnapshot = false;
+      if (restoredPendingSnapshot && typeof onRestored === 'function') {
+        onRestored(Number(chatId));
+      }
+      return { localPendingSnapshot, restoredPendingSnapshot };
+    },
+    syncBootstrapActivationReadState: (chatId, { unreadCount = null } = {}) => {
+      armedBootstrapActivationUnreadThresholds.push({ chatId: Number(chatId), unreadCount: Number(unreadCount || 0) });
     },
     windowObject,
     authBootstrapMaxAttempts: 3,
@@ -164,7 +174,8 @@ function buildHarness(overrides = {}) {
     getRoleLabelsRefreshed: () => roleLabelsRefreshed,
     getRoleNodeLabels: () => roleNodes.map((node) => node.textContent),
     getWarmCalls: () => warmCalls,
-    getArmedActivationUnreadThresholds: () => armedActivationUnreadThresholds,
+    getArmedBootstrapActivationUnreadThresholds: () => armedBootstrapActivationUnreadThresholds,
+    getRestoreActiveBootstrapPendingStateCalls: () => restoreActiveBootstrapPendingStateCalls,
     getResumeCalls: () => resumeCalls,
     getBootMetrics: () => bootMetrics,
     getBootLatencyStages: () => bootLatencyStages,
@@ -267,6 +278,8 @@ test('applyAuthBootstrap updates auth-facing UI and history state', () => {
   assert.equal(harness.localMessages.length, 0);
   assert.equal(harness.getRoleLabelsRefreshed(), 1);
   assert.equal(harness.getWarmCalls(), 0);
+  assert.deepEqual(harness.getRestoreActiveBootstrapPendingStateCalls(), [{ chatId: 5, serverPending: false }]);
+  assert.deepEqual(harness.getArmedBootstrapActivationUnreadThresholds(), [{ chatId: 5, unreadCount: 0 }]);
   assert.deepEqual(harness.getResumeCalls(), []);
 });
 
@@ -299,7 +312,7 @@ test('applyAuthBootstrap scrubs stale signing-in system messages from local hist
   }]);
 });
 
-test('applyAuthBootstrap arms the active unread threshold for the bootstrap-selected chat', () => {
+test('applyAuthBootstrap delegates active bootstrap unread threshold sync through shared read-state authority', () => {
   const harness = buildHarness({
     chats: new Map([[5, { id: 5, pending: false, unread_count: 3 }]]),
   });
@@ -313,7 +326,7 @@ test('applyAuthBootstrap arms the active unread threshold for the bootstrap-sele
     history: [],
   }, { preferredUsername: 'Desktop' });
 
-  assert.deepEqual(harness.getArmedActivationUnreadThresholds(), [{ chatId: 5, unreadCount: 3 }]);
+  assert.deepEqual(harness.getArmedBootstrapActivationUnreadThresholds(), [{ chatId: 5, unreadCount: 3 }]);
 });
 
 test('applyAuthBootstrap avoids forced virtualization on mobile bootstrap opens so chats paint immediately', () => {
@@ -420,13 +433,13 @@ test('applyAuthBootstrap supports explicit no-active-chat state', () => {
 
 test('applyAuthBootstrap restores fresh local pending snapshot and force-resumes when server bootstrap briefly says not pending', async () => {
   const harness = buildHarness({
-    hasFreshPendingStreamSnapshot: (chatId) => Number(chatId) === 5,
-    restorePendingStreamSnapshot: (chatId) => {
+    restoreActiveBootstrapPendingState: (chatId, { onRestored = null } = {}) => {
       if (Number(chatId) === 5) {
         harness.histories.set(5, [{ role: 'tool', body: 'missed tool', pending: true }]);
-        return true;
+        onRestored?.(5);
+        return { localPendingSnapshot: true, restoredPendingSnapshot: true };
       }
-      return false;
+      return { localPendingSnapshot: false, restoredPendingSnapshot: false };
     },
   });
 

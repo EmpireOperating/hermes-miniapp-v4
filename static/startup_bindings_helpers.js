@@ -251,6 +251,7 @@
       signInWithDevAuth,
       hasFreshPendingStreamSnapshot,
       restorePendingStreamSnapshot,
+      restoreActiveBootstrapPendingState,
       renderMessages,
       updateComposerState,
       syncUnreadNotificationPresence,
@@ -388,19 +389,41 @@
           await syncUnreadNotificationPresence?.({ visible: true, chatId: activeChatId });
         }
         const serverPendingActiveChat = activeChatId > 0 && Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === activeChatId)?.pending);
-        const localPendingSnapshot = activeChatId > 0 && typeof hasFreshPendingStreamSnapshot === 'function'
-          ? Boolean(hasFreshPendingStreamSnapshot(activeChatId))
-          : false;
-        const restoredPendingSnapshot = activeChatId > 0 && typeof restorePendingStreamSnapshot === 'function' && (serverPendingActiveChat || localPendingSnapshot)
-          ? Boolean(restorePendingStreamSnapshot(activeChatId))
-          : false;
-        if (restoredPendingSnapshot && Number(data?.active_chat_id || 0) > 0) {
+        const pendingRestoreState = activeChatId > 0 && typeof restoreActiveBootstrapPendingState === 'function'
+          ? restoreActiveBootstrapPendingState(activeChatId, {
+            serverPending: serverPendingActiveChat,
+            onRestored: (chatId) => {
+              renderMessages(Number(chatId), { preserveViewport: true });
+            },
+          })
+          : (() => {
+            const localPendingSnapshot = activeChatId > 0 && typeof hasFreshPendingStreamSnapshot === 'function'
+              ? Boolean(hasFreshPendingStreamSnapshot(activeChatId))
+              : false;
+            const restoredPendingSnapshot = activeChatId > 0 && typeof restorePendingStreamSnapshot === 'function' && (serverPendingActiveChat || localPendingSnapshot)
+              ? Boolean(restorePendingStreamSnapshot(activeChatId))
+              : false;
+            return {
+              localPendingSnapshot,
+              restoredPendingSnapshot,
+            };
+          })();
+        const restoredPendingSnapshot = Boolean(pendingRestoreState?.restoredPendingSnapshot);
+        if (restoredPendingSnapshot && Number(data?.active_chat_id || 0) > 0 && typeof restoreActiveBootstrapPendingState !== 'function') {
           renderMessages(Number(data.active_chat_id), { preserveViewport: true });
         }
       } catch (error) {
         recordBootMetric?.('bootstrapErrorMs');
-        authStatusEl.textContent = 'Sign-in error';
-        appendSystemMessage(`Could not start the app: ${error.message}`);
+        const alreadyAuthenticated = Boolean(getIsAuthenticated?.());
+        if (alreadyAuthenticated) {
+          logBootStage?.('post-auth-bootstrap-sync-failed', {
+            message: String(error?.message || error || ''),
+          });
+          appendSystemMessage(`Signed in, but startup sync hit an error: ${error.message}`);
+        } else {
+          authStatusEl.textContent = 'Sign-in error';
+          appendSystemMessage(`Could not start the app: ${error.message}`);
+        }
       } finally {
         // Telegram mobile/webview sessions can linger for a long time while the backend rolls.
         // Auto-reloading after auth makes the mini app feel like it is "randomly refreshing"
@@ -528,11 +551,147 @@
   }
 
   function createController(deps) {
-    const transcriptBindingsController = createTranscriptBindingsController(deps);
-    const actionBindingsController = createActionBindingsController(deps);
-    const startupBootstrapController = createStartupBootstrapController(deps);
-    const shellModalController = createShellModalController(deps);
-    const pendingWatchdogController = createPendingWatchdogController(deps);
+    const transcriptBindingsController = createTranscriptBindingsController({
+      windowObject: deps.windowObject,
+      documentObject: deps.documentObject,
+      tabsEl: deps.tabsEl,
+      pinnedChatsEl: deps.pinnedChatsEl,
+      pinnedChatsToggleButton: deps.pinnedChatsToggleButton,
+      messagesEl: deps.messagesEl,
+      jumpLatestButton: deps.jumpLatestButton,
+      jumpLastStartButton: deps.jumpLastStartButton,
+      getActiveChatId: deps.getActiveChatId,
+      getRenderedChatId: deps.getRenderedChatId,
+      isNearBottomFn: deps.isNearBottomFn,
+      chatScrollTop: deps.chatScrollTop,
+      chatStickToBottom: deps.chatStickToBottom,
+      histories: deps.histories,
+      shouldVirtualizeHistoryFn: deps.shouldVirtualizeHistoryFn,
+      scheduleActiveMessageView: deps.scheduleActiveMessageView,
+      refreshTabNode: deps.refreshTabNode,
+      syncActiveViewportReadState: deps.syncActiveViewportReadState,
+      updateJumpLatestVisibility: deps.updateJumpLatestVisibility,
+      syncActiveMessageView: deps.syncActiveMessageView,
+      cancelSelectionQuoteSync: deps.cancelSelectionQuoteSync,
+      cancelSelectionQuoteSettle: deps.cancelSelectionQuoteSettle,
+      cancelSelectionQuoteClear: deps.cancelSelectionQuoteClear,
+      clearSelectionQuoteState: deps.clearSelectionQuoteState,
+      hasMessageSelectionFn: deps.hasMessageSelectionFn,
+      scheduleSelectionQuoteSync: deps.scheduleSelectionQuoteSync,
+      scheduleSelectionQuoteClear: deps.scheduleSelectionQuoteClear,
+      mobileQuoteMode: deps.mobileQuoteMode,
+      noteMobileCarouselInteraction: deps.noteMobileCarouselInteraction,
+      handleTabClick: deps.handleTabClick,
+      handlePinnedChatClick: deps.handlePinnedChatClick,
+      togglePinnedChatsCollapsed: deps.togglePinnedChatsCollapsed,
+      handleGlobalTabCycle: deps.handleGlobalTabCycle,
+      handleGlobalArrowJump: deps.handleGlobalArrowJump,
+      handleGlobalComposerFocusShortcut: deps.handleGlobalComposerFocusShortcut,
+      handleGlobalChatActionShortcut: deps.handleGlobalChatActionShortcut,
+      handleGlobalShortcutsHelpShortcut: deps.handleGlobalShortcutsHelpShortcut,
+      handleGlobalControlEnterDefuse: deps.handleGlobalControlEnterDefuse,
+      handleGlobalControlMouseDownFocusGuard: deps.handleGlobalControlMouseDownFocusGuard,
+      handleGlobalControlClickFocusCleanup: deps.handleGlobalControlClickFocusCleanup,
+    });
+    const actionBindingsController = createActionBindingsController({
+      skinButtons: deps.skinButtons,
+      telegramUnreadNotificationsToggle: deps.telegramUnreadNotificationsToggle,
+      newChatButton: deps.newChatButton,
+      renameChatButton: deps.renameChatButton,
+      pinChatButton: deps.pinChatButton,
+      removeChatButton: deps.removeChatButton,
+      getIsAuthenticated: deps.getIsAuthenticated,
+      getTelegramUnreadNotificationsEnabled: deps.getTelegramUnreadNotificationsEnabled,
+      appendSystemMessage: deps.appendSystemMessage,
+      saveSkinPreference: deps.saveSkinPreference,
+      saveTelegramUnreadNotificationsPreference: deps.saveTelegramUnreadNotificationsPreference,
+      closeSettingsModal: deps.closeSettingsModal,
+      createChat: deps.createChat,
+      renameActiveChat: deps.renameActiveChat,
+      toggleActiveChatPin: deps.toggleActiveChatPin,
+      removeActiveChat: deps.removeActiveChat,
+      reportUiError: deps.reportUiError,
+    });
+    const startupBootstrapController = createStartupBootstrapController({
+      windowObject: deps.windowObject,
+      documentObject: deps.documentObject,
+      messagesEl: deps.messagesEl,
+      authStatusEl: deps.authStatusEl,
+      operatorNameEl: deps.operatorNameEl,
+      tabsEl: deps.tabsEl,
+      formEl: deps.formEl,
+      promptEl: deps.promptEl,
+      sendButton: deps.sendButton,
+      templateEl: deps.templateEl,
+      tg: deps.tg,
+      appendSystemMessage: deps.appendSystemMessage,
+      syncDevAuthUi: deps.syncDevAuthUi,
+      getIsAuthenticated: deps.getIsAuthenticated,
+      syncRenderTraceBadge: deps.syncRenderTraceBadge,
+      loadDraftsFromStorage: deps.loadDraftsFromStorage,
+      syncClosingConfirmation: deps.syncClosingConfirmation,
+      syncFullscreenControlState: deps.syncFullscreenControlState,
+      setInitData: deps.setInitData,
+      getInitData: deps.getInitData,
+      getRenderTraceDebugEnabled: deps.getRenderTraceDebugEnabled,
+      renderTraceLog: deps.renderTraceLog,
+      maybeRefreshForBootstrapVersionMismatch: deps.maybeRefreshForBootstrapVersionMismatch,
+      isMobileBootstrapPath: deps.isMobileBootstrapPath,
+      logBootStage: deps.logBootStage,
+      syncBootLatencyChip: deps.syncBootLatencyChip,
+      fetchAuthBootstrapWithRetry: deps.fetchAuthBootstrapWithRetry,
+      desktopTestingEnabled: deps.desktopTestingEnabled,
+      desktopTestingRequested: deps.desktopTestingRequested,
+      devConfig: deps.devConfig,
+      applyAuthBootstrap: deps.applyAuthBootstrap,
+      signInWithDevAuth: deps.signInWithDevAuth,
+      hasFreshPendingStreamSnapshot: deps.hasFreshPendingStreamSnapshot,
+      restorePendingStreamSnapshot: deps.restorePendingStreamSnapshot,
+      restoreActiveBootstrapPendingState: deps.restoreActiveBootstrapPendingState,
+      renderMessages: deps.renderMessages,
+      updateComposerState: deps.updateComposerState,
+      syncUnreadNotificationPresence: deps.syncUnreadNotificationPresence,
+      revealShell: deps.revealShell,
+      recordBootMetric: deps.recordBootMetric,
+      summarizeBootMetrics: deps.summarizeBootMetrics,
+      getChatsSize: deps.getChatsSize,
+      isActiveChatPending: deps.isActiveChatPending,
+      getActiveChatId: deps.getActiveChatId,
+    });
+    const shellModalController = createShellModalController({
+      fullscreenAppTopButton: deps.fullscreenAppTopButton,
+      closeAppTopButton: deps.closeAppTopButton,
+      renderTraceBadge: deps.renderTraceBadge,
+      settingsButton: deps.settingsButton,
+      keyboardShortcutsTopButton: deps.keyboardShortcutsTopButton,
+      keyboardShortcutsButton: deps.keyboardShortcutsButton,
+      devSignInButton: deps.devSignInButton,
+      settingsClose: deps.settingsClose,
+      keyboardShortcutsClose: deps.keyboardShortcutsClose,
+      settingsModal: deps.settingsModal,
+      keyboardShortcutsModal: deps.keyboardShortcutsModal,
+      handleFullscreenToggle: deps.handleFullscreenToggle,
+      handleCloseApp: deps.handleCloseApp,
+      handleRenderTraceBadgeClick: deps.handleRenderTraceBadgeClick,
+      openSettingsModal: deps.openSettingsModal,
+      closeSettingsModal: deps.closeSettingsModal,
+      openKeyboardShortcutsModal: deps.openKeyboardShortcutsModal,
+      closeKeyboardShortcutsModal: deps.closeKeyboardShortcutsModal,
+      signInWithDevAuth: deps.signInWithDevAuth,
+      authStatusEl: deps.authStatusEl,
+      appendSystemMessage: deps.appendSystemMessage,
+      syncDevAuthUi: deps.syncDevAuthUi,
+    });
+    const pendingWatchdogController = createPendingWatchdogController({
+      windowObject: deps.windowObject,
+      documentObject: deps.documentObject,
+      pendingChats: deps.pendingChats,
+      getIsAuthenticated: deps.getIsAuthenticated,
+      getActiveChatId: deps.getActiveChatId,
+      refreshChats: deps.refreshChats,
+      syncVisibleActiveChat: deps.syncVisibleActiveChat,
+      getStreamAbortControllers: deps.getStreamAbortControllers,
+    });
 
     return {
       handleMessagesScroll: transcriptBindingsController.handleMessagesScroll,

@@ -240,10 +240,11 @@
     const target = event.target;
     if (isTextEntryElementFn(target)) return;
     if (Number(activeChatId) <= 0) return;
+    if (!promptEl || promptEl.disabled) return;
 
     const activeElement = documentObject.activeElement;
-    const focusedInMessages = activeElement === messagesEl || messagesEl?.contains?.(activeElement);
-    if (!focusedInMessages) return;
+    if (activeElement === promptEl) return;
+    if (isTextEntryElementFn(activeElement)) return;
 
     event.preventDefault();
     try {
@@ -400,6 +401,7 @@
     isTextEntryElementFn,
     settingsModal,
     documentObject,
+    activeChatId,
     promptEl,
     messagesEl,
     releaseStickyControlFocusFn,
@@ -430,6 +432,19 @@
 
     event.preventDefault();
     event.stopPropagation();
+
+    if (Number(activeChatId) > 0 && promptEl && !promptEl.disabled) {
+      if (typeof focusedControl.blur === "function") {
+        focusedControl.blur();
+      }
+      try {
+        promptEl.focus({ preventScroll: true });
+      } catch {
+        promptEl.focus();
+      }
+      return;
+    }
+
     releaseStickyControlFocusFn();
   }
 
@@ -601,6 +616,7 @@
         isTextEntryElementFn: isTextEntryElement,
         settingsModal,
         documentObject,
+        activeChatId: getActiveChatId(),
         promptEl,
         messagesEl,
         releaseStickyControlFocusFn: releaseStickyControlFocusFromState,

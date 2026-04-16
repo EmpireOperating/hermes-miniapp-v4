@@ -105,6 +105,70 @@ test('createUnreadPreservationController keeps local unread when activation thre
 });
 
 
+test('createReadSyncController syncOpenActivationReadState arms open unread preservation without exposing raw threshold helpers', () => {
+  const chats = new Map([[7, { id: 7, unread_count: 2, newest_unread_message_id: 22, pending: false }]]);
+  const controller = readState.createReadSyncController({
+    apiPost: async () => ({ chat: { id: 7, unread_count: 0, pending: false } }),
+    chats,
+    upsertChat: (chat) => chat,
+    getActiveChatId: () => 7,
+    getIsAuthenticated: () => true,
+    isNearBottomFn: () => false,
+    messagesContainer: { querySelectorAll: () => [] },
+    unseenStreamChats: new Set(),
+    markReadInFlight: new Set(),
+    renderTabs: () => {},
+    syncActivePendingStatus: () => {},
+    updateComposerState: () => {},
+    pendingChats: new Set(),
+    hasLiveStreamController: () => false,
+    hasLocalPendingTranscript: () => false,
+  });
+
+  assert.equal('ensureActivationReadThreshold' in controller, false);
+  assert.equal('armActivationReadThreshold' in controller, false);
+  assert.equal(controller.syncOpenActivationReadState(7, { unreadCount: 2 }), true);
+  assert.deepEqual(
+    controller.buildChatPreservingUnread(
+      { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false },
+      { preserveActivationUnread: true },
+    ),
+    { id: 7, unread_count: 2, newest_unread_message_id: 22, pending: false },
+  );
+});
+
+test('createReadSyncController syncBootstrapActivationReadState arms bootstrap unread preservation without exposing raw threshold helpers', () => {
+  const chats = new Map([[7, { id: 7, unread_count: 2, newest_unread_message_id: 22, pending: false }]]);
+  const controller = readState.createReadSyncController({
+    apiPost: async () => ({ chat: { id: 7, unread_count: 0, pending: false } }),
+    chats,
+    upsertChat: (chat) => chat,
+    getActiveChatId: () => 7,
+    getIsAuthenticated: () => true,
+    isNearBottomFn: () => true,
+    messagesContainer: { querySelectorAll: () => [] },
+    unseenStreamChats: new Set(),
+    markReadInFlight: new Set(),
+    renderTabs: () => {},
+    syncActivePendingStatus: () => {},
+    updateComposerState: () => {},
+    pendingChats: new Set(),
+    hasLiveStreamController: () => false,
+    hasLocalPendingTranscript: () => false,
+  });
+
+  assert.equal('ensureActivationReadThreshold' in controller, false);
+  assert.equal(controller.syncBootstrapActivationReadState(7, { unreadCount: 2 }), true);
+  assert.deepEqual(
+    controller.buildChatPreservingUnread(
+      { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false },
+      { preserveActivationUnread: true },
+    ),
+    { id: 7, unread_count: 2, newest_unread_message_id: 22, pending: false },
+  );
+});
+
+
 test('createReadSyncController preserves local pending when mark-read response lags a live stream', async () => {
   const chats = new Map([[7, { id: 7, unread_count: 2, pending: true }]]);
   const pendingChats = new Set([7]);

@@ -38,6 +38,42 @@ test('createHistoryPendingStateController derives pending preservation and force
   });
 });
 
+test('createHistoryPendingStateController restoreActiveBootstrapPendingState centralizes bootstrap snapshot restore gating', () => {
+  const restored = [];
+  const controller = hydrationState.createHistoryPendingStateController({
+    histories: new Map(),
+    hasLiveStreamController: () => false,
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    restorePendingStreamSnapshot: (chatId) => {
+      restored.push(Number(chatId));
+      return Number(chatId) === 7;
+    },
+    hasFreshPendingStreamSnapshot: (chatId) => Number(chatId) === 7,
+    finalizeHydratedPendingState: () => {},
+    hasLocalPendingWithoutLiveStream: () => false,
+    hydratedCompletionMatchesVisibleLocalPending: () => false,
+    historiesDiffer: () => true,
+  });
+
+  const restoredCalls = [];
+  assert.deepEqual(controller.restoreActiveBootstrapPendingState(7, {
+    serverPending: false,
+    onRestored: (chatId) => restoredCalls.push(Number(chatId)),
+  }), {
+    localPendingSnapshot: true,
+    restoredPendingSnapshot: true,
+  });
+  assert.deepEqual(controller.restoreActiveBootstrapPendingState(9, {
+    serverPending: true,
+    onRestored: (chatId) => restoredCalls.push(Number(chatId)),
+  }), {
+    localPendingSnapshot: false,
+    restoredPendingSnapshot: false,
+  });
+  assert.deepEqual(restored, [7, 9]);
+  assert.deepEqual(restoredCalls, [7]);
+});
+
 test('createHistoryPendingStateController applies hydrated history with separated server/local pending semantics and finalizes only when nothing survives', () => {
   const histories = new Map([[7, [{ id: 1, role: 'assistant', body: 'old' }]]]);
   const finalized = [];

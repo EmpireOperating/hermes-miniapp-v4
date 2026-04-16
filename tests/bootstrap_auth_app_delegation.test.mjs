@@ -58,8 +58,13 @@ test('app.js bootstrap/auth request wrappers keep delegating to bootstrapAuthCon
   );
   assert.match(
     source,
-    /function\s+createBootstrapAuthControllerAppArgs\s*\(\)\s*\{[\s\S]*?setSkin,[\s\S]*?resumePendingChatStream,[\s\S]*?windowObject:\s*window,[\s\S]*?\}/m,
+    /function\s+createBootstrapAuthControllerAppArgs\s*\(\)\s*\{[\s\S]*?setSkin,[\s\S]*?syncBootstrapActivationReadState:\s*\(chatId, options = \{\}\) => chatHistoryController\.syncBootstrapActivationReadState\(chatId, options\),[\s\S]*?windowObject:\s*window,[\s\S]*?\}/m,
     'app.js should isolate bootstrap auth app arg building in createBootstrapAuthControllerAppArgs(...)',
+  );
+  assert.doesNotMatch(
+    source,
+    /ensureActivationReadThreshold:\s*\(chatId, unreadCount\) => chatHistoryController\.ensureActivationReadThreshold\(chatId, unreadCount\)/,
+    'app.js should not thread the legacy raw bootstrap threshold helper through live bootstrap auth args once syncBootstrapActivationReadState exists',
   );
   assert.match(
     source,

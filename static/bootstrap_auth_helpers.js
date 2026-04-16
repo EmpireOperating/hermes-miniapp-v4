@@ -398,7 +398,8 @@
     resumePendingChatStream,
     hasFreshPendingStreamSnapshot = null,
     restorePendingStreamSnapshot = null,
-    ensureActivationReadThreshold = null,
+    restoreActiveBootstrapPendingState = null,
+    syncBootstrapActivationReadState = null,
     onBootstrapStage = null,
     delayMs,
     isMobileBootstrapPath,
@@ -457,9 +458,9 @@
       syncPinnedChats(bootstrapPinnedChats);
       const hasPinnedChats = bootstrapPinnedChats.length > 0 || bootstrapChats.some((chat) => Boolean(chat?.is_pinned));
       const activeId = Number(data.active_chat_id || 0);
-      if (activeId > 0 && typeof ensureActivationReadThreshold === "function") {
+      if (activeId > 0 && typeof syncBootstrapActivationReadState === "function") {
         const activeChat = chats?.get?.(activeId) || data?.chats?.find?.((chat) => Number(chat?.id) === activeId) || null;
-        ensureActivationReadThreshold(activeId, activeChat?.unread_count);
+        syncBootstrapActivationReadState(activeId, { unreadCount: activeChat?.unread_count });
       }
       if (!activeId) {
         setActiveChatMeta(null);
@@ -478,17 +479,39 @@
       const bootstrapHistory = pruneStaleSigningMessages(Array.isArray(data?.history) ? [...data.history] : []);
       const mobileBootstrapPath = isMobileBootstrapPath();
       const bootstrapForceVirtualize = !mobileBootstrapPath && bootstrapHistory.length >= 96;
-      const hasFreshPendingSnapshot = typeof hasFreshPendingStreamSnapshot === "function"
-        ? Boolean(hasFreshPendingStreamSnapshot(activeId))
-        : false;
-      const restoredPendingSnapshot = hasFreshPendingSnapshot && typeof restorePendingStreamSnapshot === "function"
-        ? Boolean(restorePendingStreamSnapshot(activeId))
-        : false;
-      if (restoredPendingSnapshot) {
-        const chat = chats.get(activeId);
-        if (chat && typeof chat === "object" && !chat.pending) {
-          chat.pending = true;
-        }
+      const activeChat = chats.get(activeId);
+      const serverPendingActiveChat = Boolean(activeChat?.pending || data?.chats?.find?.((chat) => Number(chat?.id) === activeId)?.pending);
+      const pendingRestoreState = typeof restoreActiveBootstrapPendingState === "function"
+        ? restoreActiveBootstrapPendingState(activeId, {
+          serverPending: serverPendingActiveChat,
+          onRestored: (chatId) => {
+            const restoredChat = chats.get(Number(chatId));
+            if (restoredChat && typeof restoredChat === "object" && !restoredChat.pending) {
+              restoredChat.pending = true;
+            }
+          },
+        })
+        : (() => {
+          const localPendingSnapshot = typeof hasFreshPendingStreamSnapshot === "function"
+            ? Boolean(hasFreshPendingStreamSnapshot(activeId))
+            : false;
+          const restoredPendingSnapshot = typeof restorePendingStreamSnapshot === "function" && (serverPendingActiveChat || localPendingSnapshot)
+            ? Boolean(restorePendingStreamSnapshot(activeId))
+            : false;
+          if (restoredPendingSnapshot) {
+            const restoredChat = chats.get(activeId);
+            if (restoredChat && typeof restoredChat === "object" && !restoredChat.pending) {
+              restoredChat.pending = true;
+            }
+          }
+          return {
+            localPendingSnapshot,
+            restoredPendingSnapshot,
+          };
+        })();
+      const restoredPendingSnapshot = Boolean(pendingRestoreState?.restoredPendingSnapshot);
+      if (restoredPendingSnapshot && activeChat && typeof activeChat === "object" && !activeChat.pending) {
+        activeChat.pending = true;
       }
       const restoredHistory = restoredPendingSnapshot ? histories.get(activeId) : null;
       if (restoredPendingSnapshot && Array.isArray(restoredHistory) && restoredHistory.length > bootstrapHistory.length) {
@@ -741,7 +764,8 @@
       resumePendingChatStream,
       hasFreshPendingStreamSnapshot = null,
       restorePendingStreamSnapshot = null,
-      ensureActivationReadThreshold = null,
+      restoreActiveBootstrapPendingState = null,
+      syncBootstrapActivationReadState = null,
       onBootstrapStage = null,
       windowObject = globalScope.window || null,
       authBootstrapMaxAttempts = 1,
@@ -796,7 +820,8 @@
       resumePendingChatStream,
       hasFreshPendingStreamSnapshot,
       restorePendingStreamSnapshot,
-      ensureActivationReadThreshold,
+      restoreActiveBootstrapPendingState,
+      syncBootstrapActivationReadState,
       onBootstrapStage,
       delayMs: delayController.delayMs,
       isMobileBootstrapPath: identityController.isMobileBootstrapPath,

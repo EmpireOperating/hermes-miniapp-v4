@@ -107,7 +107,7 @@ function buildHarness(overrides = {}) {
   const chatTabContextPin = createContextButton(overrides.chatTabContextPin);
   const chatTabContextClose = createContextButton(overrides.chatTabContextClose);
   const chatTabContextFork = createContextButton(overrides.chatTabContextFork);
-  const chatTitleInput = {
+  const chatTitleInput = createEventTarget({
     value: '',
     focusCalls: 0,
     selectCalls: 0,
@@ -117,7 +117,7 @@ function buildHarness(overrides = {}) {
     select() {
       this.selectCalls += 1;
     },
-  };
+  });
   const featButton = createButton('feat');
   const bugButton = createButton('bug');
   const noneButton = createButton('none');
@@ -406,6 +406,29 @@ test('touchstart tag toggle still applies selection when click is suppressed by 
 
   const result = await titlePromise;
   assert.equal(result, '[feat]Zero Tab');
+});
+
+test('rename modal ArrowRight and ArrowLeft rotate tag selection while title input stays focused', async () => {
+  const harness = buildHarness();
+
+  const titlePromise = harness.controller.askForChatTitle({
+    mode: 'rename',
+    currentTitle: 'Current',
+    defaultTitle: 'Current',
+  });
+
+  harness.chatTitleInput.dispatch('keydown', { key: 'ArrowRight', currentTarget: harness.chatTitleInput, target: harness.chatTitleInput });
+  harness.chatTitleInput.dispatch('keydown', { key: 'ArrowRight', currentTarget: harness.chatTitleInput, target: harness.chatTitleInput });
+  harness.chatTitleInput.dispatch('keydown', { key: 'ArrowLeft', currentTarget: harness.chatTitleInput, target: harness.chatTitleInput });
+  harness.chatTitleInput.value = 'Rotated title';
+  harness.chatTitleForm.dispatch('submit');
+
+  const result = await titlePromise;
+  assert.equal(result, '[feat]Rotated title');
+  assert.equal(harness.chatTitleInput.focusCalls > 0, true);
+  assert.equal(harness.chatTitleTagButtons[0].attributes.get('aria-pressed'), 'false');
+  assert.equal(harness.chatTitleTagButtons[1].attributes.get('aria-pressed'), 'true');
+  assert.equal(harness.chatTitleTagButtons[2].attributes.get('aria-pressed'), 'false');
 });
 
 test('createChat modal applies selected tag and hydrates the new active chat', async () => {
