@@ -229,16 +229,19 @@
     notificationId = 0,
   }) {
     const key = normalizeChatId(chatId);
+    const active = normalizeChatId(activeChatId);
     const shouldNotifyOnFirstChunk = shouldIncrementUnread({
       targetChatId: key,
       activeChatId,
       hidden: Boolean(hidden),
     });
+    const shouldTriggerVisibleActiveHaptic = Boolean(key && active === key && !Boolean(hidden));
+    const shouldTriggerHaptic = Boolean(shouldNotifyOnFirstChunk || shouldTriggerVisibleActiveHaptic);
     return {
-      shouldTriggerHaptic: shouldNotifyOnFirstChunk,
+      shouldTriggerHaptic,
       shouldIncrementUnread: shouldNotifyOnFirstChunk,
       shouldRenderTabs: shouldNotifyOnFirstChunk,
-      messageKey: shouldNotifyOnFirstChunk ? `chat:${key}:assistant-stream:${Math.max(0, Number(notificationId) || 0)}` : '',
+      messageKey: shouldTriggerHaptic ? `chat:${key}:assistant-stream:${Math.max(0, Number(notificationId) || 0)}` : '',
       fallbackToLatestHistory: false,
     };
   }
@@ -302,13 +305,19 @@
       };
     }
     const active = normalizeChatId(activeChatId);
+    const hadEarlyAssistantHaptic = Boolean(String(earlyAssistantNotification?.messageKey || '').trim());
     const hadEarlyAssistantUnread = Boolean(earlyAssistantNotification?.unreadIncremented);
     const shouldIncrementUnreadOnEarlyClose = Boolean(!hadEarlyAssistantUnread && active !== key);
     return {
-      shouldTriggerHaptic: Boolean(!hadEarlyAssistantUnread && (active !== key || Boolean(hidden))),
+      shouldTriggerHaptic: Boolean(
+        !hadEarlyAssistantHaptic
+        && !hadEarlyAssistantUnread
+        && (active !== key || Boolean(hidden))
+      ),
       shouldIncrementUnread: shouldIncrementUnreadOnEarlyClose,
       shouldRenderTabs: shouldIncrementUnreadOnEarlyClose,
       fallbackToLatestHistory: true,
+      hadEarlyAssistantHaptic,
       hadEarlyAssistantUnread,
     };
   }
