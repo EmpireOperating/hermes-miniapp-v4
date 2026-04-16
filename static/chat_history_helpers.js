@@ -239,6 +239,7 @@
   const hasLocalPendingTranscript = transcriptAuthority.hasLocalPendingTranscript;
   const hydratedCompletionMatchesVisibleLocalPending = transcriptAuthority.hydratedCompletionMatchesVisibleLocalPending;
   const historiesDiffer = transcriptAuthority.historiesDiffer;
+  const hasVisibleAssistantLikeTranscript = transcriptAuthority.hasVisibleAssistantLikeTranscript;
   const latestCompletedAssistantHydrationKey = transcriptAuthority.latestCompletedAssistantHydrationKey;
   const reconcilePendingAssistantUpdate = transcriptAuthority.reconcilePendingAssistantUpdate;
 
@@ -289,6 +290,7 @@
     return hydrationStateHelpers.createHistoryPendingStateController({
       ...deps,
       hydratedCompletionMatchesVisibleLocalPending,
+      hasVisibleAssistantLikeTranscript,
       historiesDiffer,
     });
   }
@@ -336,6 +338,8 @@
       shouldResumeOnVisibilityChange,
       restorePendingStreamSnapshot,
       hasFreshPendingStreamSnapshot,
+      readPendingStreamSnapshotMap,
+      mergePendingSnapshotIntoHistory,
       finalizeHydratedPendingState,
       traceChatHistory,
       nowMs,
@@ -345,6 +349,7 @@
       upsertChatPreservingUnread,
       ensureActivationReadThreshold,
       maybeMarkRead,
+      syncHydratedActiveReadState,
       isActiveChat,
       hasLocalPendingWithoutLiveStream,
       getRenderedTranscriptSignature = null,
@@ -356,6 +361,7 @@
     const retryController = createUnreadHydrationRetryController();
     const hydrationApplyController = createHydrationApplyController({
       loadChatHistory,
+      buildChatPreservingUnread,
       upsertChatPreservingUnread,
       traceChatHistory,
     }, pendingStateController, retryController);
@@ -406,8 +412,7 @@
       refreshTabNode,
       renderMessages,
       maybeTriggerVisibleHydrationHaptic: visibleHydrationEffectsController.maybeTriggerVisibleHydrationHaptic,
-      ensureActivationReadThreshold,
-      maybeMarkRead,
+      syncHydratedActiveReadState,
       pendingChats,
       visibleSyncGenerationRef,
       visibilityResumeController,
@@ -549,6 +554,8 @@
       shouldResumeOnVisibilityChange,
       restorePendingStreamSnapshot,
       hasFreshPendingStreamSnapshot,
+      readPendingStreamSnapshotMap,
+      mergePendingSnapshotIntoHistory,
       persistPendingStreamSnapshot,
       clearPendingStreamSnapshot,
       finalizeHydratedPendingState,
@@ -630,6 +637,8 @@
       shouldResumeOnVisibilityChange,
       restorePendingStreamSnapshot,
       hasFreshPendingStreamSnapshot,
+      readPendingStreamSnapshotMap,
+      mergePendingSnapshotIntoHistory,
       finalizeHydratedPendingState,
       shouldDeferNonCriticalCachedOpen,
       traceChatHistory,
@@ -640,6 +649,8 @@
       armActivationReadThreshold: readSyncController.armActivationReadThreshold,
       ensureActivationReadThreshold: readSyncController.ensureActivationReadThreshold,
       maybeMarkRead: readSyncController.maybeMarkRead,
+      syncHydratedActiveReadState: readSyncController.syncHydratedActiveReadState,
+      syncActiveStreamUnseenState: readSyncController.syncActiveStreamUnseenState,
       isActiveChat,
       hasLocalPendingWithoutLiveStream: readSyncController.hasLocalPendingWithoutLiveStream,
       getRenderedTranscriptSignature,
@@ -660,6 +671,8 @@
       scheduleActiveMessageView: mutationController.scheduleActiveMessageView,
       markRead: readSyncController.markRead,
       maybeMarkRead: readSyncController.maybeMarkRead,
+      syncActiveViewportReadState: readSyncController.syncActiveViewportReadState,
+      syncActiveStreamUnseenState: readSyncController.syncActiveStreamUnseenState,
       getCurrentUnreadCount: readSyncController.getCurrentUnreadCount,
       armActivationReadThreshold: readSyncController.armActivationReadThreshold,
       ensureActivationReadThreshold: readSyncController.ensureActivationReadThreshold,

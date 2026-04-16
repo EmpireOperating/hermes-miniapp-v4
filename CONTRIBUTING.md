@@ -17,6 +17,10 @@ Linux/macOS:
 ```bash
 scripts/setup.sh
 scripts/setup.sh doctor
+.venv/bin/python server.py
+curl http://127.0.0.1:8080/health
+# once DNS + HTTPS are live
+scripts/setup.sh telegram
 ```
 
 Windows:
@@ -25,13 +29,17 @@ Windows:
 # open a WSL2 shell first
 scripts/setup.sh
 scripts/setup.sh doctor
+.venv/bin/python server.py
+curl http://127.0.0.1:8080/health
+# once DNS + HTTPS are live
+scripts/setup.sh telegram
 ```
 
 Portable Python equivalents:
 
 ```bash
-python scripts/setup_bootstrap.py --write-env-if-missing
-python scripts/setup_doctor.py
+python3 scripts/setup_bootstrap.py --write-env-if-missing
+python3 scripts/setup_doctor.py
 ```
 
 On Windows, use WSL2 for Mini App development. Hermes Agent does not support a native Windows runtime path.
@@ -55,6 +63,14 @@ scripts/test.sh
 ```
 
 That wrapper always uses the repo-local virtualenv, which avoids the recurring "pytest is not installed" confusion when the shell PATH is not pointing at `.venv/bin`.
+
+Clean install smoke harness:
+
+```bash
+scripts/install_smoke.sh
+```
+
+Use that before or after setup-related changes when you want to verify the documented bootstrap path in a disposable container.
 
 Python direct equivalent:
 

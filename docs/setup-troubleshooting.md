@@ -7,14 +7,15 @@ Recommended order:
 2. run the setup doctor
 3. use the doctor key below to fix the specific issue
 4. rerun the doctor until blocking issues are gone
+5. once DNS + HTTPS are ready, run `scripts/setup.sh telegram`
 
 Human-friendly commands:
 - Linux/macOS: `scripts/setup.sh` then `scripts/setup.sh doctor`
 - Windows: open a WSL2 shell, then run `scripts/setup.sh` and `scripts/setup.sh doctor` there
 
 Portable Python fallback:
-- `python scripts/setup_bootstrap.py --write-env-if-missing`
-- `python scripts/setup_doctor.py`
+- `python3 scripts/setup_bootstrap.py --write-env-if-missing`
+- `python3 scripts/setup_doctor.py`
 
 ## Read the doctor output in this order
 
@@ -54,7 +55,7 @@ Meaning:
 Fix:
 - Linux/macOS: `scripts/setup.sh`
 - Windows: open a WSL2 shell, then run `scripts/setup.sh`
-- portable fallback: `python scripts/setup_bootstrap.py --write-env-if-missing`
+- portable fallback: `python3 scripts/setup_bootstrap.py --write-env-if-missing`
 
 ### dependencies
 
@@ -148,14 +149,35 @@ Use this minimal checklist:
 4. set `MINI_APP_URL` to a real HTTPS URL on a domain you control
 5. set one Hermes backend path
 6. rerun doctor
-7. start with `python server.py`
+7. start with `.venv/bin/python server.py`
+8. verify `curl http://127.0.0.1:8080/health`
+9. run `scripts/setup.sh telegram`
+10. open the Mini App from Telegram and send a message
+
+## Telegram finalize command failures
+
+Common failure patterns:
+- `Could not reach MINI_APP_URL over HTTPS`
+  - DNS is not live yet, TLS is broken, or the app is not actually serving at the final public URL
+- `Could not reach the Mini App health endpoint`
+  - the public app origin is up, but `/health` is not reachable on that same origin
+- `Telegram bot token verification failed`
+  - the token is wrong or was copied with extra characters
+- `Telegram menu button verification failed`
+  - Telegram accepted the request but did not report the expected web app button after the change
+
+When this happens:
+1. confirm `.env` has the exact final `MINI_APP_URL`
+2. open that URL in a browser and confirm it loads over HTTPS
+3. confirm `https://<your-domain>/health` works on the same origin
+4. rerun `scripts/setup.sh telegram`
 
 ## For automation
 
 Machine-readable output:
 
 ```bash
-python scripts/setup_doctor.py --json
+python3 scripts/setup_doctor.py --json
 ```
 
 The JSON includes:
@@ -164,3 +186,11 @@ The JSON includes:
 - `summary.warn_count`
 - `summary.pass_count`
 - `summary.next_steps`
+
+Clean install smoke harness:
+
+```bash
+scripts/install_smoke.sh
+```
+
+Use that when you want to verify the documented bootstrap path in a disposable container before changing setup docs or CI.

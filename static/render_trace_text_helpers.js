@@ -7,8 +7,17 @@
     for (const candidate of fileRefs) {
       const refId = String(candidate?.ref_id || "").trim();
       const rawText = String(candidate?.raw_text || "");
+      const resolvedPath = String(candidate?.resolved_path || candidate?.path || "").trim();
+      const lineStart = Number(candidate?.line_start || 0);
+      const lineEnd = Number(candidate?.line_end || 0);
       if (!refId || !rawText) continue;
-      normalized.push({ refId, rawText });
+      normalized.push({
+        refId,
+        rawText,
+        resolvedPath,
+        lineStart: Number.isFinite(lineStart) && lineStart > 0 ? Math.floor(lineStart) : 0,
+        lineEnd: Number.isFinite(lineEnd) && lineEnd > 0 ? Math.floor(lineEnd) : 0,
+      });
     }
     return normalized;
   }
@@ -239,6 +248,9 @@
         : match.rawText;
       html += buildFileRefButtonHtml(label, escapeHtmlFn, {
         "data-file-ref-id": match.refId,
+        "data-file-path": match.resolvedPath,
+        "data-file-line-start": match.lineStart > 0 ? String(match.lineStart) : "",
+        "data-file-line-end": match.lineEnd > 0 ? String(match.lineEnd) : "",
       });
       if (trailing) {
         html += escapeHtmlFn(trailing);

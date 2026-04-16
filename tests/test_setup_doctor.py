@@ -95,6 +95,20 @@ def test_recommended_next_steps_prioritize_bootstrap_and_config() -> None:
     assert any("WSL2" in step for step in steps)
 
 
+def test_recommended_next_steps_success_path_includes_local_health_check_and_telegram_followup() -> None:
+    steps = setup_doctor.recommended_next_steps([
+        setup_doctor.CheckResult("python", "PASS", "ok"),
+        setup_doctor.CheckResult("node", "PASS", "ok"),
+    ])
+
+    assert steps == [
+        "Setup looks good. Start the app with: .venv/bin/python server.py",
+        "Verify local startup with: curl http://127.0.0.1:8080/health",
+        "Once MINI_APP_URL DNS + HTTPS are live, run: scripts/setup.sh telegram",
+        "Then open the Mini App from Telegram and send a message.",
+    ]
+
+
 def test_main_json_output(monkeypatch, capsys) -> None:
     fake_results = [
         setup_doctor.CheckResult("python", "PASS", "ok"),

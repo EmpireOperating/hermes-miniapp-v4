@@ -154,10 +154,16 @@
     return incoming;
   }
 
-  function mergeHydratedHistory({ previousHistory, nextHistory, chatPending, preserveCompletedToolTrace = false }) {
+  function mergeHydratedHistory({
+    previousHistory,
+    nextHistory,
+    serverPending = false,
+    preserveLocalPending = false,
+    preserveCompletedToolTrace = false,
+  }) {
     const incoming = collapseDuplicatePendingToolRows(Array.isArray(nextHistory) ? nextHistory.slice() : []);
     const previous = collapseDuplicatePendingToolRows(Array.isArray(previousHistory) ? previousHistory : []);
-    if (!chatPending) {
+    if (!serverPending && !preserveLocalPending) {
       return preserveCompletedToolTrace
         ? preserveCompletedLocalToolMessages(previous, incoming)
         : incoming;
@@ -176,6 +182,21 @@
         existingIndexes.set(key, []);
       }
       existingIndexes.get(key).push(index);
+    }
+
+    function normalizedBody(value) {
+      return String(value || '').trim();
+    }
+
+    function bodiesSharePendingToolContinuation(localItem, candidate) {
+      const localBody = normalizedBody(localItem?.body);
+      const candidateBody = normalizedBody(candidate?.body);
+      if (!localBody || !candidateBody) {
+        return false;
+      }
+      return localBody === candidateBody
+        || localBody.startsWith(candidateBody)
+        || candidateBody.startsWith(localBody);
     }
 
     function findRelaxedPendingMatchIndex(localItem) {
@@ -203,12 +224,15 @@
         if (localCreatedAt && String(candidate?.created_at || '') === localCreatedAt) {
           return index;
         }
+        if (localRole === 'tool' && bodiesSharePendingToolContinuation(localItem, candidate)) {
+          return index;
+        }
       }
-      if (
-        candidateIndexes.length === 1
-        && (localRole === 'tool' || localRole === 'assistant' || localRole === 'hermes')
-      ) {
-        return candidateIndexes[0];
+      if (candidateIndexes.length === 1 && localRole === 'tool') {
+        const onlyCandidate = incoming[candidateIndexes[0]];
+        if (bodiesSharePendingToolContinuation(localItem, onlyCandidate)) {
+          return candidateIndexes[0];
+        }
       }
       return -1;
     }

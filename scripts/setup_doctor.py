@@ -50,7 +50,12 @@ def recommended_next_steps(results: list[CheckResult]) -> list[str]:
     if any(result.key == "platform_mode" for result in failures + warnings):
         steps.append("If you are on Windows, open a WSL2 shell and run scripts/setup.sh there.")
     if not steps and not failures:
-        steps.append("Setup looks good. Start the app with: python server.py")
+        steps.extend([
+            "Setup looks good. Start the app with: .venv/bin/python server.py",
+            "Verify local startup with: curl http://127.0.0.1:8080/health",
+            "Once MINI_APP_URL DNS + HTTPS are live, run: scripts/setup.sh telegram",
+            "Then open the Mini App from Telegram and send a message.",
+        ])
     return steps
 
 
@@ -142,7 +147,7 @@ def check_venv(root: Path) -> CheckResult:
             "FAIL",
             "Project virtual environment is missing.",
             detail=f"Expected interpreter at {venv_python}.",
-            fix="Run: python scripts/setup_bootstrap.py --write-env-if-missing",
+            fix="Run: scripts/setup.sh",
         )
     return CheckResult("venv", "PASS", f"Virtual environment detected at {venv_dir}.")
 
@@ -154,7 +159,7 @@ def check_dependencies(root: Path) -> CheckResult:
             "dependencies",
             "FAIL",
             "Cannot verify dependencies because the project virtual environment is missing.",
-            fix="Run: python scripts/setup_bootstrap.py --write-env-if-missing",
+            fix="Run: scripts/setup.sh",
         )
     try:
         subprocess.run(
@@ -170,7 +175,7 @@ def check_dependencies(root: Path) -> CheckResult:
             "FAIL",
             "One or more required Python packages are missing from .venv.",
             detail=detail,
-            fix="Run: python scripts/setup_bootstrap.py --write-env-if-missing",
+            fix="Run: scripts/setup.sh",
         )
     return CheckResult("dependencies", "PASS", "Runtime and dev dependencies import correctly from .venv.")
 
@@ -182,7 +187,7 @@ def check_env_file(root: Path) -> CheckResult:
             "env_file",
             "FAIL",
             ".env is missing.",
-            fix="Run: python scripts/setup_bootstrap.py --write-env-if-missing",
+            fix="Run: scripts/setup.sh",
         )
     return CheckResult("env_file", "PASS", f"Environment file detected at {env_path.name}.")
 

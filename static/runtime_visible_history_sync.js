@@ -15,6 +15,7 @@
       pendingChats,
       chatPending = false,
       localPendingWithoutLiveStream = false,
+      localAssistantPendingWithoutLiveStream = false,
       snapshotPendingWithoutLiveStream = false,
       matchedVisibleHydratedCompletion = false,
     }) {
@@ -26,8 +27,8 @@
       });
       const serverPendingWithoutLiveStream = chatPending && !hasLiveStreamController(activeChatId);
       const needsSnapshotResume = snapshotPendingWithoutLiveStream && !matchedVisibleHydratedCompletion;
-      if (!matchedVisibleHydratedCompletion && (needsVisibilityResume || serverPendingWithoutLiveStream || localPendingWithoutLiveStream || needsSnapshotResume)) {
-        const shouldForceResume = localPendingWithoutLiveStream || needsSnapshotResume;
+      if (!matchedVisibleHydratedCompletion && (needsVisibilityResume || serverPendingWithoutLiveStream || localAssistantPendingWithoutLiveStream || needsSnapshotResume)) {
+        const shouldForceResume = localAssistantPendingWithoutLiveStream || needsSnapshotResume;
         void resumePendingChatStream(activeChatId, shouldForceResume ? { force: true } : undefined);
       }
     }
@@ -46,8 +47,7 @@
     refreshTabNode,
     renderMessages,
     maybeTriggerVisibleHydrationHaptic,
-    ensureActivationReadThreshold,
-    maybeMarkRead,
+    syncHydratedActiveReadState,
     pendingChats,
     visibleSyncGenerationRef,
     visibilityResumeController,
@@ -72,6 +72,7 @@
       const previousHistory = histories.get(activeId) || [];
       let restoredPendingSnapshot;
       let finalHistory;
+      let historyChanged;
       let pendingState;
       const hydrationState = await hydrationApplyController.applyHydratedServerState({
         targetChatId: activeId,
@@ -85,11 +86,14 @@
         data,
         restoredPendingSnapshot,
         finalHistory,
+        historyChanged,
         pendingState,
       } = hydrationState);
       if (visibleRequestId !== Number(visibleSyncGenerationRef.get()) || normalizeChatId(getActiveChatId()) !== activeId) return;
+      hydrationState.commitHydratedState?.();
       const chatPending = pendingState.chatPending;
       const localPendingWithoutLiveStream = pendingState.localPendingWithoutLiveStream;
+      const localAssistantPendingWithoutLiveStream = pendingState.localAssistantPendingWithoutLiveStream;
       const snapshotPendingWithoutLiveStream = pendingState.snapshotPendingWithoutLiveStream;
       const matchedVisibleHydratedCompletion = pendingState.matchedVisibleHydratedCompletion;
       const renderState = renderDecisionController.buildHydrationRenderState({
@@ -97,7 +101,7 @@
         previousHistory,
         finalHistory,
         hadCachedHistory: true,
-        historyChanged: false,
+        historyChanged,
         restoredPendingSnapshot,
       });
       const {
@@ -107,6 +111,22 @@
       if (shouldRenderActiveHistory) {
         renderMessages(activeId, { preserveViewport: true });
       }
+      syncHydratedActiveReadState(activeId, {
+        unreadCount: data.chat?.unread_count,
+        beforeMarkRead: () => {
+          visibilityResumeController.maybeResumeVisibilitySync({
+            activeChatId: activeId,
+            hidden,
+            streamAbortControllers,
+            pendingChats,
+            chatPending,
+            localPendingWithoutLiveStream,
+            localAssistantPendingWithoutLiveStream,
+            snapshotPendingWithoutLiveStream,
+            matchedVisibleHydratedCompletion,
+          });
+        },
+      });
       maybeTriggerVisibleHydrationHaptic({
         targetChatId: activeId,
         hidden,
@@ -114,19 +134,6 @@
         finalHistory,
         chat: data.chat,
         shouldRenderActiveHistory,
-      });
-      ensureActivationReadThreshold(activeId, data.chat?.unread_count);
-      maybeMarkRead(activeId);
-
-      visibilityResumeController.maybeResumeVisibilitySync({
-        activeChatId: activeId,
-        hidden,
-        streamAbortControllers,
-        pendingChats,
-        chatPending,
-        localPendingWithoutLiveStream,
-        snapshotPendingWithoutLiveStream,
-        matchedVisibleHydratedCompletion,
       });
     }
 

@@ -263,6 +263,9 @@ def configure_env_interactively(
 
 
 def render_next_steps(root: Path, *, env_state: str, interactive_updates: dict[str, str] | None = None) -> str:
+    server_command = ".venv/bin/python server.py"
+    doctor_command = "scripts/setup.sh doctor"
+    health_command = "curl http://127.0.0.1:8080/health"
     lines = [
         "Setup complete.",
         "",
@@ -271,16 +274,25 @@ def render_next_steps(root: Path, *, env_state: str, interactive_updates: dict[s
     if env_state == "skipped":
         lines.append("1. .env was not created automatically. Re-run with --write-env-if-missing or copy .env.example to .env.")
         lines.append(f"2. Review {(root / '.env').name} and set TELEGRAM_BOT_TOKEN, MINI_APP_URL, and one Hermes backend path.")
-        lines.append("3. Run: python scripts/setup_doctor.py")
-        lines.append("4. Start the app: python server.py")
+        lines.append(f"3. Run: {doctor_command}")
+        lines.append(f"4. Start the app: {server_command}")
+        lines.append(f"5. Verify local startup: {health_command}")
+        lines.append("6. Once MINI_APP_URL DNS + HTTPS are live, run: scripts/setup.sh telegram")
+        lines.append("7. Open the Mini App from Telegram and send a message.")
     elif interactive_updates:
         lines.append(f"1. Review {(root / '.env').name}; the bootstrap already filled the prompted values.")
-        lines.append("2. Run: python scripts/setup_doctor.py")
-        lines.append("3. Start the app: python server.py")
+        lines.append(f"2. Run: {doctor_command}")
+        lines.append(f"3. Start the app: {server_command}")
+        lines.append(f"4. Verify local startup: {health_command}")
+        lines.append("5. Once MINI_APP_URL DNS + HTTPS are live, run: scripts/setup.sh telegram")
+        lines.append("6. Open the Mini App from Telegram and send a message.")
     else:
         lines.append(f"1. Review {(root / '.env').name} and set TELEGRAM_BOT_TOKEN, MINI_APP_URL, and one Hermes backend path.")
-        lines.append("2. Run: python scripts/setup_doctor.py")
-        lines.append("3. Start the app: python server.py")
+        lines.append(f"2. Run: {doctor_command}")
+        lines.append(f"3. Start the app: {server_command}")
+        lines.append(f"4. Verify local startup: {health_command}")
+        lines.append("5. Once MINI_APP_URL DNS + HTTPS are live, run: scripts/setup.sh telegram")
+        lines.append("6. Open the Mini App from Telegram and send a message.")
     lines.extend([
         "",
         "DNS note: MINI_APP_URL must be HTTPS on a domain or subdomain you control.",

@@ -79,6 +79,52 @@ test('createHistoryRenderController markStreamUpdate only marks active off-botto
   assert.deepEqual(refreshed, [7]);
 });
 
+test('createHistoryRenderController markStreamUpdate delegates active unseen stream state to read-state authority when available', () => {
+  const delegated = [];
+  const refreshed = [];
+  const messagesEl = {
+    scrollHeight: 1000,
+    clientHeight: 400,
+    scrollTop: 200,
+    querySelectorAll: () => [],
+    appendChild: () => {},
+  };
+  const controller = renderTraceHistoryHelpers.createHistoryRenderController({
+    messagesEl,
+    jumpLatestButton: { hidden: true },
+    jumpLastStartButton: { hidden: true },
+    histories: new Map(),
+    virtualizationRanges: new Map(),
+    virtualMetrics: new Map(),
+    renderedHistoryLength: new Map(),
+    renderedHistoryVirtualized: new Map(),
+    unseenStreamChats: new Set(),
+    chatScrollTop: new Map(),
+    chatStickToBottom: new Map(),
+    getActiveChatId: () => 7,
+    getRenderedChatId: () => 0,
+    setRenderedChatId: () => {},
+    refreshTabNode: (chatId) => refreshed.push(chatId),
+    syncActiveStreamUnseenState: (chatId, options = {}) => {
+      delegated.push([chatId, { atBottom: options.atBottom, hasCallback: typeof options.onBecameUnseen === 'function' }]);
+      if (Number(chatId) === 7 && options.atBottom === false) {
+        options.onBecameUnseen?.(Number(chatId));
+        return true;
+      }
+      return false;
+    },
+    appendMessagesFn: () => {},
+    shouldUseAppendOnlyRenderFn: () => false,
+    renderTraceLogFn: () => {},
+  });
+
+  controller.markStreamUpdate(5);
+  controller.markStreamUpdate(7);
+
+  assert.deepEqual(delegated, [[7, { atBottom: false, hasCallback: true }]]);
+  assert.deepEqual(refreshed, [7]);
+});
+
 test('createHistoryRenderController keeps jump-to-last-start visible whenever a final message target exists', () => {
   const jumpLatestButton = { hidden: true };
   const jumpLastStartButton = { hidden: true };
@@ -253,6 +299,62 @@ test('createHistoryRenderController append-only render preserves viewport when c
   assert.equal(messagesEl.scrollTop, 220);
   assert.equal(chatScrollTop.get(7), 220);
   assert.equal(chatStickToBottom.get(7), false);
+});
+
+test('createHistoryRenderController renderMessages delegates at-bottom unseen clearing to read-state authority when available', () => {
+  const histories = new Map([[7, [
+    { id: 1, role: 'assistant', body: 'done', created_at: '2026-04-08T08:00:02Z' },
+  ]]]);
+  const unseen = new Set([7]);
+  const delegated = [];
+  const refreshed = [];
+  const messagesEl = {
+    scrollHeight: 1000,
+    clientHeight: 400,
+    scrollTop: 600,
+    innerHTML: '',
+    appendChild(node) {
+      return node;
+    },
+    querySelectorAll() {
+      return [];
+    },
+  };
+  const controller = renderTraceHistoryHelpers.createHistoryRenderController({
+    messagesEl,
+    jumpLatestButton: { hidden: true },
+    jumpLastStartButton: { hidden: true },
+    histories,
+    virtualizationRanges: new Map(),
+    virtualMetrics: new Map(),
+    renderedHistoryLength: new Map(),
+    renderedHistoryVirtualized: new Map(),
+    unseenStreamChats: unseen,
+    chatScrollTop: new Map(),
+    chatStickToBottom: new Map(),
+    getActiveChatId: () => 7,
+    getRenderedChatId: () => 7,
+    setRenderedChatId: () => {},
+    refreshTabNode: (chatId) => refreshed.push(Number(chatId)),
+    syncActiveViewportReadState: (chatId, options = {}) => {
+      delegated.push([Number(chatId), { atBottom: options.atBottom, hasCallback: typeof options.onViewportBottom === 'function' }]);
+      unseen.delete(Number(chatId));
+      options.onViewportBottom?.(Number(chatId));
+      return true;
+    },
+    clearSelectionQuoteStateFn: () => {},
+    syncLiveToolStreamForChatFn: () => {},
+    appendMessagesFn: () => {},
+    shouldUseAppendOnlyRenderFn: () => false,
+    renderTraceLogFn: () => {},
+    createFragmentFn: () => ({ children: [] }),
+  });
+
+  controller.renderMessages(7, { forceBottom: true });
+
+  assert.deepEqual(delegated, [[7, { atBottom: true, hasCallback: true }]]);
+  assert.equal(unseen.has(7), false);
+  assert.deepEqual(refreshed, [7]);
 });
 
 function createAnchoredMessageNode(messageKey, offsetTop, offsetHeight = 100) {

@@ -560,6 +560,101 @@ def test_file_preview_reads_relative_path_within_allowed_root(monkeypatch, tmp_p
     assert any(line["line"] == 3 and line["text"] == "three" for line in payload["preview"]["lines"])
 
 
+def test_file_preview_history_and_ref_open_support_repo_context_shorthand(monkeypatch, tmp_path) -> None:
+    allowed_root = tmp_path / "workspace"
+    repo_root = allowed_root / "active" / "demo_repo"
+    target = repo_root / "static" / "runtime_history_helpers.js"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(allowed_root))
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_CONTEXT_ROOTS", str(repo_root))
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    server.store.add_message(
+        "123",
+        chat_id,
+        "hermes",
+        "See static/runtime_history_helpers.js:2 and runtime_history_helpers.js:3",
+    )
+
+    history_response = client.post(
+        "/api/chats/history",
+        json={"init_data": "ok", "chat_id": chat_id},
+    )
+
+    assert history_response.status_code == 200
+    history_payload = history_response.get_json()
+    refs = history_payload["history"][-1].get("file_refs") or []
+    assert [ref["path"] for ref in refs] == [
+        "static/runtime_history_helpers.js",
+        "runtime_history_helpers.js",
+    ]
+    assert [ref["line_start"] for ref in refs] == [2, 3]
+    assert [ref["resolved_path"] for ref in refs] == [
+        str(target),
+        str(target),
+    ]
+
+    response = client.post(
+        "/api/chats/file-preview",
+        json={"init_data": "ok", "chat_id": chat_id, "ref_id": refs[1]["ref_id"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["preview"]["path"] == str(target)
+    assert payload["preview"]["line_start"] == 3
+    assert any(line["line"] == 3 and line["text"] == "three" for line in payload["preview"]["lines"])
+
+
+def test_file_preview_ref_open_prefers_server_resolved_path_over_client_path_when_ref_resolves(monkeypatch, tmp_path) -> None:
+    allowed_root = tmp_path / "workspace"
+    repo_root = allowed_root / "active" / "demo_repo"
+    target = repo_root / "static" / "runtime_history_helpers.js"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(allowed_root))
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_CONTEXT_ROOTS", str(repo_root))
+    server, client = _authed_client(monkeypatch, tmp_path)
+
+    chat_id = server.store.ensure_default_chat("123")
+    server.store.add_message("123", chat_id, "hermes", "See runtime_history_helpers.js:3")
+
+    history_response = client.post(
+        "/api/chats/history",
+        json={"init_data": "ok", "chat_id": chat_id},
+    )
+
+    assert history_response.status_code == 200
+    refs = history_response.get_json()["history"][-1].get("file_refs") or []
+    assert len(refs) == 1
+    assert refs[0]["resolved_path"] == str(target)
+
+    wrong_target = repo_root / "other" / "different.js"
+    wrong_target.parent.mkdir(parents=True, exist_ok=True)
+    wrong_target.write_text("x\ny\nz\n", encoding="utf-8")
+
+    response_with_path = client.post(
+        "/api/chats/file-preview",
+        json={
+            "init_data": "ok",
+            "chat_id": chat_id,
+            "ref_id": refs[0]["ref_id"],
+            "path": str(wrong_target),
+            "line_start": refs[0]["line_start"],
+            "line_end": refs[0]["line_end"],
+        },
+    )
+
+    assert response_with_path.status_code == 200
+    payload_with_path = response_with_path.get_json()
+    assert payload_with_path["ok"] is True
+    assert payload_with_path["preview"]["path"] == str(target)
+    assert payload_with_path["preview"]["line_start"] == 3
+
+
 def test_file_preview_expands_context_window_on_request(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(tmp_path))
     server, client = _authed_client(monkeypatch, tmp_path)

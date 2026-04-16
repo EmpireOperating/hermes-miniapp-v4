@@ -24,24 +24,35 @@ test('createHistoryPendingStateController derives pending preservation and force
   });
 
   assert.deepEqual(pendingState, {
+    serverPending: false,
     chatPending: false,
     localPendingWithoutLiveStream: true,
+    localAssistantPendingWithoutLiveStream: true,
     snapshotPendingWithoutLiveStream: true,
     matchedVisibleHydratedCompletion: false,
+    preserveLocalPending: true,
+    allowSnapshotRestore: true,
     preservePendingState: true,
     shouldResumePending: true,
     shouldForceResumePending: true,
   });
 });
 
-test('createHistoryPendingStateController applies hydrated history and finalizes pending state only when preservation is not needed', () => {
+test('createHistoryPendingStateController applies hydrated history with separated server/local pending semantics and finalizes only when nothing survives', () => {
   const histories = new Map([[7, [{ id: 1, role: 'assistant', body: 'old' }]]]);
   const finalized = [];
   const restored = [];
+  const mergeCalls = [];
   const controller = hydrationState.createHistoryPendingStateController({
     histories,
     hasLiveStreamController: () => false,
-    mergeHydratedHistory: ({ previousHistory, nextHistory, chatPending }) => previousHistory.concat(nextHistory.map((entry) => ({ ...entry, pending: Boolean(chatPending) }))),
+    mergeHydratedHistory: ({ previousHistory, nextHistory, serverPending, preserveLocalPending }) => {
+      mergeCalls.push({ previousHistory, nextHistory, serverPending, preserveLocalPending });
+      return previousHistory.concat(nextHistory.map((entry) => ({
+        ...entry,
+        pending: Boolean(serverPending || preserveLocalPending),
+      })));
+    },
     restorePendingStreamSnapshot: (chatId) => {
       restored.push(Number(chatId));
       return true;
@@ -53,16 +64,60 @@ test('createHistoryPendingStateController applies hydrated history and finalizes
     historiesDiffer: (previousHistory, nextHistory) => JSON.stringify(previousHistory) !== JSON.stringify(nextHistory),
   });
 
-  const preserved = controller.applyHydratedHistory(7, [{ id: 1, role: 'assistant', body: 'old' }], [{ id: 2, role: 'assistant', body: 'fresh' }], true);
+  const preserved = controller.applyHydratedHistory(7, [{ id: 1, role: 'assistant', body: 'old' }], [{ id: 2, role: 'assistant', body: 'fresh' }], {
+    serverPending: false,
+    preserveLocalPending: true,
+    allowSnapshotRestore: true,
+  });
   assert.equal(preserved.restoredPendingSnapshot, true);
   assert.deepEqual(restored, [7]);
   assert.deepEqual(finalized, []);
   assert.equal(preserved.historyChanged, true);
+  assert.deepEqual(mergeCalls[0], {
+    previousHistory: [{ id: 1, role: 'assistant', body: 'old' }],
+    nextHistory: [{ id: 2, role: 'assistant', body: 'fresh' }],
+    serverPending: false,
+    preserveLocalPending: true,
+  });
 
   restored.length = 0;
-  const finalizedResult = controller.applyHydratedHistory(7, histories.get(7), [{ id: 3, role: 'assistant', body: 'done' }], false);
+  const finalizedResult = controller.applyHydratedHistory(7, histories.get(7), [{ id: 3, role: 'assistant', body: 'done' }], {
+    serverPending: false,
+    preserveLocalPending: false,
+    allowSnapshotRestore: false,
+  });
   assert.equal(finalizedResult.restoredPendingSnapshot, false);
   assert.deepEqual(restored, []);
+  assert.deepEqual(finalized, [7]);
+});
+
+test('createHistoryPendingStateController finalizes when snapshot restore was allowed but stale and no local/server pending remains', () => {
+  const histories = new Map([[7, [{ id: 1, role: 'assistant', body: 'old' }]]]);
+  const finalized = [];
+  const restored = [];
+  const controller = hydrationState.createHistoryPendingStateController({
+    histories,
+    hasLiveStreamController: () => false,
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    restorePendingStreamSnapshot: (chatId) => {
+      restored.push(Number(chatId));
+      return false;
+    },
+    hasFreshPendingStreamSnapshot: () => false,
+    finalizeHydratedPendingState: (chatId) => finalized.push(Number(chatId)),
+    hasLocalPendingWithoutLiveStream: () => false,
+    hydratedCompletionMatchesVisibleLocalPending: () => false,
+    historiesDiffer: () => true,
+  });
+
+  const result = controller.applyHydratedHistory(7, [{ id: 1, role: 'assistant', body: 'old' }], [{ id: 2, role: 'assistant', body: 'fresh' }], {
+    serverPending: false,
+    preserveLocalPending: false,
+    allowSnapshotRestore: true,
+  });
+
+  assert.equal(result.restoredPendingSnapshot, false);
+  assert.deepEqual(restored, [7]);
   assert.deepEqual(finalized, [7]);
 });
 

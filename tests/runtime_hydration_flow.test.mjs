@@ -89,3 +89,100 @@ test('createHydrationFlowController applies hydration and resumes pending inacti
   assert.equal(traces.at(-1).eventName, 'hydrate-applied');
   assert.equal(traces.at(-1).details.shouldResumePending, true);
 });
+
+test('createHydrationFlowController skips stale hydrate after apply returns before committing state', async () => {
+  const traces = [];
+  const commits = [];
+  let now = 1000;
+  let latestRequestId = 4;
+  const controller = hydrationFlow.createHydrationFlowController({
+    nowMs: () => (now += 7),
+    traceChatHistory: (eventName, details = {}) => traces.push({ eventName, details }),
+    loadChatHistory: async () => ({
+      chat: { id: 7, pending: false, unread_count: 1, newest_unread_message_id: 12 },
+      history: [{ id: 12, role: 'assistant', body: 'fresh' }],
+    }),
+    getLastOpenChatRequestId: () => latestRequestId,
+    getPreviousHistory: () => [{ id: 1, role: 'assistant', body: 'old' }],
+    applyHydratedServerState: async () => {
+      latestRequestId = 9;
+      return {
+        data: { chat: { id: 7, pending: false, unread_count: 1, newest_unread_message_id: 12 } },
+        restoredPendingSnapshot: false,
+        finalHistory: [{ id: 12, role: 'assistant', body: 'fresh' }],
+        historyChanged: true,
+        pendingState: {
+          shouldResumePending: false,
+          shouldForceResumePending: false,
+        },
+        commitHydratedState: () => commits.push('commit'),
+      };
+    },
+    buildHydrationRenderState: () => {
+      throw new Error('should not build render state for stale hydrate after apply');
+    },
+    refreshTabNode: () => {
+      throw new Error('should not refresh tab for stale hydrate after apply');
+    },
+    isActiveChat: () => true,
+    setActiveChatMeta: () => {
+      throw new Error('should not set meta for stale hydrate after apply');
+    },
+    renderMessages: () => {
+      throw new Error('should not render stale hydrate after apply');
+    },
+    resumePendingChatStream: () => {
+      throw new Error('should not resume stale hydrate after apply');
+    },
+  });
+
+  const result = await controller.hydrateChatFromServer(7, 4, true);
+
+  assert.equal(result, undefined);
+  assert.deepEqual(commits, []);
+  assert.equal(traces.at(-1).eventName, 'hydrate-skipped-stale-post-apply');
+  assert.equal(traces.at(-1).details.latestRequestId, 9);
+});
+
+test('createHydrationFlowController active path obeys canonical shouldRenderActiveHistory decision', async () => {
+  const renders = [];
+  const controller = hydrationFlow.createHydrationFlowController({
+    nowMs: () => 1000,
+    traceChatHistory: () => {},
+    loadChatHistory: async () => ({
+      chat: { id: 7, pending: false, unread_count: 0, newest_unread_message_id: 0 },
+      history: [{ id: 12, role: 'assistant', body: 'fresh' }],
+    }),
+    getLastOpenChatRequestId: () => 4,
+    getPreviousHistory: () => [{ id: 1, role: 'assistant', body: 'old' }],
+    applyHydratedServerState: async () => ({
+      data: { chat: { id: 7, pending: false, unread_count: 0, newest_unread_message_id: 0 } },
+      restoredPendingSnapshot: false,
+      finalHistory: [{ id: 12, role: 'assistant', body: 'fresh' }],
+      historyChanged: true,
+      pendingState: {
+        shouldResumePending: false,
+        shouldForceResumePending: false,
+      },
+      commitHydratedState: () => {},
+    }),
+    buildHydrationRenderState: () => ({
+      shouldForceUnreadTranscriptRender: false,
+      shouldForceStaleRenderedTranscriptRender: false,
+      shouldRenderActiveHistory: false,
+    }),
+    refreshTabNode: () => {},
+    isActiveChat: () => true,
+    setActiveChatMeta: () => {
+      throw new Error('should not set inactive meta for active hydrate');
+    },
+    renderMessages: (chatId, options = {}) => renders.push({ chatId: Number(chatId), options }),
+    resumePendingChatStream: () => {
+      throw new Error('should not resume pending when not requested');
+    },
+  });
+
+  await controller.hydrateChatFromServer(7, 4, false);
+
+  assert.deepEqual(renders, []);
+});

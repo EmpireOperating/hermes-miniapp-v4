@@ -524,7 +524,7 @@
           ? mergeHydratedHistory({
             previousHistory,
             nextHistory: hydrated.history || [],
-            chatPending: forceCompleted ? false : Boolean(hydratedChat?.pending),
+            serverPending: forceCompleted ? false : Boolean(hydratedChat?.pending),
             preserveCompletedToolTrace: Boolean(forceCompleted),
           })
           : (hydrated.history || []);
@@ -2015,6 +2015,7 @@
       getStreamPhase,
       getActiveChatId,
       maybeMarkRead,
+      syncActiveViewportReadState,
       refreshChats,
       renderTabs,
       updateComposerState,
@@ -2022,6 +2023,8 @@
       appendSystemMessage,
       finalizeStreamPendingState,
       renderTraceLog,
+      isNearBottom,
+      messagesEl,
     } = deps;
     const {
       streamAbortControllers,
@@ -2073,7 +2076,15 @@
 
       try {
         if (Number(getActiveChatId()) === key) {
-          maybeMarkRead(key);
+          if (typeof syncActiveViewportReadState === 'function') {
+            syncActiveViewportReadState(key, {
+              atBottom: typeof isNearBottom === 'function'
+                ? Boolean(isNearBottom(messagesEl, 40))
+                : false,
+            });
+          } else {
+            maybeMarkRead(key);
+          }
         } else {
           await refreshChats();
         }

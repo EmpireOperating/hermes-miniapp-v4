@@ -44,6 +44,7 @@
       getActiveChatId,
       openChat,
       onLatencyByChatMutated,
+      buildChatPreservingUnread,
       chatTabContextMenu,
       pinnedChatContextMenu,
       pinnedChatContextRemove,
@@ -231,19 +232,22 @@
       const nextTitle = await askForChatTitle({ mode: 'rename', currentTitle, defaultTitle: currentTitle });
       if (!nextTitle) return;
       const cleaned = nextTitle.trim() || currentTitle;
-      const localChat = getChatRecord(targetChatId);
       const data = await apiPost('/api/chats/rename', { chat_id: targetChatId, title: cleaned });
       const nextChat = data?.chat && typeof data.chat === 'object'
         ? { ...data.chat }
         : data?.chat;
-      if (nextChat && typeof nextChat === 'object') {
-        const localUnreadCount = Math.max(0, Number(localChat?.unread_count || 0));
-        const incomingUnreadCount = Math.max(0, Number(nextChat.unread_count || 0));
-        if (localUnreadCount > incomingUnreadCount) {
-          nextChat.unread_count = localUnreadCount;
-        }
-      }
-      upsertChat(nextChat);
+      const localChat = getChatRecord(targetChatId);
+      const localUnread = Math.max(0, Number(localChat?.unread_count || 0));
+      const preparedChat = nextChat && typeof nextChat === 'object'
+        ? (() => {
+          const mergedChat = { ...nextChat, unread_count: Math.max(localUnread, Number(nextChat?.unread_count || 0)) };
+          if (typeof buildChatPreservingUnread === 'function') {
+            return buildChatPreservingUnread(mergedChat, { preserveActivationUnread: true });
+          }
+          return mergedChat;
+        })()
+        : nextChat;
+      upsertChat(preparedChat);
       if (targetChatId === Number(getActiveChatId())) {
         setActiveChatMeta(targetChatId);
       } else {

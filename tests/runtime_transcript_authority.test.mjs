@@ -40,6 +40,34 @@ test('preserveLatestCompletedAssistantMessage keeps newer hydrated turns over ol
   assert.equal(resolved.at(-1).body, 'newer hydrated reply');
 });
 
+test('hydratedCompletionMatchesVisibleLocalPending does not treat tool-only pending transcripts as matching completed assistant hydrates', () => {
+  const matched = authority.hydratedCompletionMatchesVisibleLocalPending(
+    [
+      { role: 'tool', body: 'read_file', pending: true, created_at: '2026-04-12T10:00:00Z' },
+    ],
+    [
+      { id: 17, role: 'assistant', body: 'final reply', pending: false, created_at: '2026-04-12T10:00:01Z' },
+    ],
+  );
+
+  assert.equal(matched, false);
+});
+
+test('historiesDiffer detects meaningful non-tail transcript changes', () => {
+  const currentHistory = [
+    { id: 1, role: 'user', body: 'question' },
+    { id: 2, role: 'tool', body: 'old tool trace', pending: false },
+    { id: 3, role: 'assistant', body: 'same tail', pending: false },
+  ];
+  const incomingHistory = [
+    { id: 1, role: 'user', body: 'question' },
+    { id: 2, role: 'tool', body: 'new tool trace', pending: false },
+    { id: 3, role: 'assistant', body: 'same tail', pending: false },
+  ];
+
+  assert.equal(authority.historiesDiffer(currentHistory, incomingHistory), true);
+});
+
 test('describeSpeculativeHistoryCommit reports inactive terminal reconcile skips when transcript does not advance and local state is still pending', () => {
   const decision = authority.describeSpeculativeHistoryCommit({
     currentChat: { id: 7, pending: true },
@@ -62,6 +90,17 @@ test('describeSpeculativeHistoryCommit reports inactive terminal reconcile skips
     isActiveChat: false,
     localPending: true,
   }), false);
+});
+
+test('isLaggingChatMetadata delegates the lagging metadata rule through shared read-state authority', () => {
+  assert.equal(authority.isLaggingChatMetadata(
+    { id: 7, unread_count: 1, newest_unread_message_id: 22, pending: true },
+    { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false },
+  ), true);
+  assert.equal(authority.isLaggingChatMetadata(
+    { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false },
+    { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false },
+  ), false);
 });
 
 test('describeSpeculativeHistoryCommit reports prefetch skips for active or lagging speculative results', () => {

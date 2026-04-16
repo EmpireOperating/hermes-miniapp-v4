@@ -82,13 +82,14 @@ Portable defaults are derived from `HOME` and `HERMES_HOME`, but public deployme
 
 ## Validation checklist after deploy
 
-1. Open the Mini App inside Telegram.
-2. Verify auth/bootstrap succeeds.
-3. Send a prompt and confirm streaming updates appear progressively.
-4. Reload/reopen and confirm the active chat restores correctly.
-5. Confirm rate limiting, origin checks, and secure cookies behave as expected.
-6. If file preview is enabled, verify access is restricted to intended roots.
-7. Review backend logs to ensure no secrets are being logged.
+1. Run `scripts/setup.sh telegram` from the deployed repo or equivalent environment.
+2. Open the Mini App inside Telegram.
+3. Verify auth/bootstrap succeeds.
+4. Send a prompt and confirm streaming updates appear progressively.
+5. Reload/reopen and confirm the active chat restores correctly.
+6. Confirm rate limiting, origin checks, and secure cookies behave as expected.
+7. If file preview is enabled, verify access is restricted to intended roots.
+8. Review backend logs to ensure no secrets are being logged.
 
 ## What this guide does not assume
 

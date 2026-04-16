@@ -663,12 +663,7 @@ function createChatTabsController() {
   tabOverviewEl,
   mobileTabCarouselEnabled: mobileTabCarouselFeatureEnabled,
   getIsMobileCarouselViewport: () => isCoarsePointer(),
-  getCurrentUnreadCount: (chatId) => {
-    if (typeof chatHistoryController?.getCurrentUnreadCount === 'function') {
-      return chatHistoryController.getCurrentUnreadCount(chatId);
-    }
-    return Math.max(0, Number(chats.get(Number(chatId))?.unread_count || 0));
-  },
+  getCurrentUnreadCount,
   openChat: (chatId) => openChat(chatId),
   clearChatStreamState,
   chatUiHelpers,
@@ -970,6 +965,8 @@ function createHistoryRenderControllerDeps({
     getRenderedChatId,
     setRenderedChatId,
     refreshTabNode,
+    syncActiveStreamUnseenState: (chatId, options = {}) => chatHistoryController.syncActiveStreamUnseenState(chatId, options),
+    syncActiveViewportReadState: (chatId, options = {}) => chatHistoryController.syncActiveViewportReadState(chatId, options),
     clearSelectionQuoteStateFn: clearSelectionQuoteState,
     syncLiveToolStreamForChatFn: syncLiveToolStreamForChat,
     appendMessagesFn: appendMessages,
@@ -1210,6 +1207,10 @@ function writePendingStreamSnapshotMap(nextMap) {
   return streamPersistenceController.writePendingStreamSnapshotMap(nextMap);
 }
 
+function mergePendingSnapshotIntoHistory(history, snapshot) {
+  return streamPersistenceController.mergePendingSnapshotIntoHistory(history, snapshot);
+}
+
 function clearPendingStreamSnapshot(chatId) {
   return streamPersistenceController.clearPendingStreamSnapshot(chatId);
 }
@@ -1302,8 +1303,8 @@ async function openFilePreview(previewRequest = {}, options = {}) {
   return filePreviewController.openFilePreview(previewRequest, options);
 }
 
-function openFilePreviewByRef(refId) {
-  return filePreviewController.openFilePreviewByRef(refId);
+function openFilePreviewByRef(refId, options = {}) {
+  return filePreviewController.openFilePreviewByRef(refId, options);
 }
 
 function openFilePreviewByPath(pathText, options = {}) {
@@ -2387,6 +2388,8 @@ chatHistoryController = chatHistoryHelpers.createController({
   },
   restorePendingStreamSnapshot,
   hasFreshPendingStreamSnapshot,
+  readPendingStreamSnapshotMap,
+  mergePendingSnapshotIntoHistory,
   persistPendingStreamSnapshot,
   clearPendingStreamSnapshot,
   shouldResumeOnVisibilityChange: (args = {}) => {
@@ -2454,6 +2457,7 @@ const chatAdminController = chatAdminHelpers.createController({
   getActiveChatId: () => Number(activeChatId),
   openChat,
   onLatencyByChatMutated: persistLatencyByChatToStorage,
+  buildChatPreservingUnread: (chat, options = {}) => chatHistoryController.buildChatPreservingUnread(chat, options),
   focusComposerForNewChat,
 });
 
@@ -2680,7 +2684,7 @@ function createStartupBindingsControllerInteractionDeps({
     shouldVirtualizeHistoryFn: shouldVirtualizeHistory,
     scheduleActiveMessageView,
     refreshTabNode,
-    maybeMarkRead,
+    syncActiveViewportReadState: (chatId, options = {}) => chatHistoryController.syncActiveViewportReadState(chatId, options),
     updateJumpLatestVisibility,
     syncActiveMessageView,
     cancelSelectionQuoteSync,
@@ -2815,6 +2819,13 @@ async function openChat(chatId) {
 
 async function markRead(chatId) {
   return chatHistoryController.markRead(chatId);
+}
+
+function getCurrentUnreadCount(chatId) {
+  if (typeof chatHistoryController?.getCurrentUnreadCount === 'function') {
+    return chatHistoryController.getCurrentUnreadCount(chatId);
+  }
+  return Math.max(0, Number(chats.get(Number(chatId))?.unread_count || 0));
 }
 
 function getStreamPhase(chatId) {
@@ -2982,6 +2993,7 @@ const streamController = streamControllerHelpers.createController({
   isMobileQuoteMode: () => mobileQuoteMode,
   isDesktopViewport,
   maybeMarkRead,
+  syncActiveViewportReadState: (chatId, options = {}) => chatHistoryController.syncActiveViewportReadState(chatId, options),
   refreshChats,
   renderTabs,
   updateComposerState,

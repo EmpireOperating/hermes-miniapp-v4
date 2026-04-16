@@ -372,6 +372,92 @@ test('createPersistenceController restores the full tool journal over a partial 
   assert.equal(histories.get(13)[0].body, 'line 1\nline 2');
 });
 
+test('createPersistenceController does not restore stale pending assistant snapshots beside completed assistants', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const histories = new Map([[14, [
+    { role: 'hermes', body: 'partial answer', pending: true, created_at: '2026-04-02T00:00:01Z' },
+  ]]]);
+  const chats = new Map([[14, { id: 14, pending: true }]]);
+
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
+    histories,
+    chats,
+    nowFn: () => 1_000,
+    dateNowFn: () => 1_000,
+  });
+
+  controller.persistPendingStreamSnapshot(14);
+  histories.set(14, [
+    { id: 41, role: 'assistant', body: 'final answer', pending: false, created_at: '2026-04-02T00:00:02Z' },
+  ]);
+  chats.set(14, { id: 14, pending: true });
+
+  const restored = controller.restorePendingStreamSnapshot(14);
+  assert.equal(restored, false);
+  assert.deepEqual(histories.get(14), [
+    { id: 41, role: 'assistant', body: 'final answer', pending: false, created_at: '2026-04-02T00:00:02Z' },
+  ]);
+});
+
+test('createPersistenceController mergePendingSnapshotIntoHistory keeps snapshot restore pure and completion-aware', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const histories = new Map();
+  const chats = new Map();
+
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
+    histories,
+    chats,
+    nowFn: () => 1_000,
+    dateNowFn: () => 1_000,
+  });
+
+  const originalHistory = [
+    { id: 11, role: 'assistant', body: 'final answer', pending: false, created_at: '2026-04-02T00:00:02Z' },
+  ];
+  const snapshot = {
+    ts: 1_000,
+    tool_journal_lines: [],
+    tool: null,
+    assistant: {
+      role: 'hermes',
+      body: 'final',
+      created_at: '2026-04-02T00:00:01Z',
+      pending: true,
+    },
+  };
+
+  const merged = controller.mergePendingSnapshotIntoHistory(originalHistory, snapshot);
+  assert.equal(merged.changed, false);
+  assert.deepEqual(merged.history, originalHistory);
+  assert.deepEqual(originalHistory, [
+    { id: 11, role: 'assistant', body: 'final answer', pending: false, created_at: '2026-04-02T00:00:02Z' },
+  ]);
+});
+
 test('createPersistenceController keeps newer remote pending snapshots for other chats when persisting local updates', () => {
   const storage = new Map();
   storage.set('snapshot-key', JSON.stringify({

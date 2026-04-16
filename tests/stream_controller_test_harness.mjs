@@ -22,6 +22,7 @@ function buildControllerHarness(overrides = {}) {
   const clearedCursors = [];
   const incomingHaptics = [];
   const unreadIncrements = [];
+  const syncActiveViewportReadStateCalls = [];
   const renderTabsCalls = [];
   const markStreamCompleteCalls = [];
   const markToolActivityCalls = [];
@@ -99,6 +100,9 @@ function buildControllerHarness(overrides = {}) {
     isDesktopViewport: () => true,
     isNearBottom: () => true,
     maybeMarkRead: () => {},
+    syncActiveViewportReadState: (chatId, options = {}) => {
+      syncActiveViewportReadStateCalls.push([Number(chatId), { ...options }]);
+    },
     refreshChats: async () => {},
     renderTabs: () => { renderTabsCalls.push(true); },
     updateComposerState: () => {},
@@ -185,6 +189,7 @@ function buildControllerHarness(overrides = {}) {
     clearedCursors,
     incomingHaptics,
     unreadIncrements,
+    syncActiveViewportReadStateCalls,
     renderTabsCalls,
     markStreamCompleteCalls,
     markToolActivityCalls,

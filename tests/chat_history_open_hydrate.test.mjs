@@ -49,6 +49,7 @@ test('visibility resume helper only forces resume for pending chats that still n
     streamAbortControllers: new Map(),
     chatPending: false,
     localPendingWithoutLiveStream: true,
+    localAssistantPendingWithoutLiveStream: true,
     snapshotPendingWithoutLiveStream: false,
     matchedVisibleHydratedCompletion: false,
   });
@@ -62,12 +63,62 @@ test('visibility resume helper only forces resume for pending chats that still n
   assert.deepEqual(resumed, [{ chatId: 7, options: { force: true } }]);
 });
 
-test('historiesDiffer only flags meaningful tail changes', () => {
+test('historiesDiffer detects meaningful transcript changes beyond the tail record', () => {
   const harness = buildHarness();
 
   assert.equal(harness.controller.historiesDiffer([], []), false);
   assert.equal(harness.controller.historiesDiffer([{ id: 1, body: 'a', role: 'assistant' }], [{ id: 1, body: 'a', role: 'assistant' }]), false);
-  assert.equal(harness.controller.historiesDiffer([{ id: 1, body: 'a', role: 'assistant' }], [{ id: 2, body: 'a', role: 'assistant' }]), true);
+  assert.equal(harness.controller.historiesDiffer([{ id: 1, body: 'a', role: 'assistant' }], [{ id: 2, body: 'a', role: 'assistant' }]), false);
+  assert.equal(
+    harness.controller.historiesDiffer(
+      [
+        { id: 1, body: 'question', role: 'user' },
+        { id: 2, body: 'old tool trace', role: 'tool' },
+        { id: 3, body: 'same tail', role: 'assistant' },
+      ],
+      [
+        { id: 1, body: 'question', role: 'user' },
+        { id: 2, body: 'new tool trace', role: 'tool' },
+        { id: 3, body: 'same tail', role: 'assistant' },
+      ],
+    ),
+    true,
+  );
+});
+
+test('mergeHydratedHistory does not weakly match a lone pending assistant by role alone', () => {
+  const merged = runtimeHistory.mergeHydratedHistory({
+    previousHistory: [
+      { role: 'assistant', body: 'local partial reply', pending: true, created_at: '2026-04-12T06:00:00Z' },
+    ],
+    nextHistory: [
+      { role: 'assistant', body: 'different server partial', pending: true, created_at: '2026-04-12T06:00:02Z' },
+    ],
+    serverPending: true,
+    preserveLocalPending: true,
+  });
+
+  assert.deepEqual(merged, [
+    { role: 'assistant', body: 'different server partial', pending: true, created_at: '2026-04-12T06:00:02Z' },
+    { role: 'assistant', body: 'local partial reply', pending: true, created_at: '2026-04-12T06:00:00Z' },
+  ]);
+});
+
+test('mergeHydratedHistory still merges a single pending tool row when the server extends the same tool journal', () => {
+  const merged = runtimeHistory.mergeHydratedHistory({
+    previousHistory: [
+      { role: 'tool', body: 'read_file', pending: true, created_at: '2026-04-12T06:00:00Z', collapsed: true },
+    ],
+    nextHistory: [
+      { role: 'tool', body: 'read_file\nsearch_files', pending: true, created_at: '2026-04-12T06:00:01Z', collapsed: false },
+    ],
+    serverPending: true,
+    preserveLocalPending: true,
+  });
+
+  assert.deepEqual(merged, [
+    { role: 'tool', body: 'read_file', pending: true, created_at: '2026-04-12T06:00:01Z', collapsed: true },
+  ]);
 });
 
 test('loadChatHistory falls back to /api/chats/open on 404 history path', async () => {
@@ -205,6 +256,20 @@ test('hydrateChatFromServer restores pending snapshot for pending chats before r
         history: [{ id: 1, role: 'assistant', body: 'hello' }],
       };
     },
+    hasFreshPendingStreamSnapshot: (chatId) => Number(chatId) === 7,
+    readPendingStreamSnapshotMap: () => ({
+      7: {
+        tool: { role: 'tool', body: 'missed tool', pending: true },
+        tool_journal_lines: ['missed tool'],
+      },
+    }),
+    mergePendingSnapshotIntoHistory: (history) => {
+      harness.restoredSnapshots.push(7);
+      return {
+        history: [...history, { role: 'tool', body: 'missed tool', pending: true }],
+        changed: true,
+      };
+    },
   });
 
   await harness.controller.hydrateChatFromServer(7, 0, false);
@@ -253,13 +318,21 @@ test('hydrateChatFromServer restores fresh pending snapshot even when server hyd
       };
     },
     hasFreshPendingStreamSnapshot: (chatId) => Number(chatId) === 7,
-    restorePendingStreamSnapshot: (chatId) => {
-      harness.restoredSnapshots.push(Number(chatId));
-      harness.histories.set(Number(chatId), [
-        { id: 1, role: 'assistant', body: 'hello' },
-        { role: 'tool', body: 'missed tool', pending: true },
-      ]);
-      return true;
+    readPendingStreamSnapshotMap: () => ({
+      7: {
+        tool: { role: 'tool', body: 'missed tool', pending: true },
+        tool_journal_lines: ['missed tool'],
+      },
+    }),
+    mergePendingSnapshotIntoHistory: (history) => {
+      harness.restoredSnapshots.push(7);
+      return {
+        history: [
+          ...history,
+          { role: 'tool', body: 'missed tool', pending: true },
+        ],
+        changed: true,
+      };
     },
   });
 
@@ -282,13 +355,22 @@ test('hydrateChatFromServer rerenders active chat when restoring a pending snaps
         history: [{ id: 1, role: 'operator', body: 'working' }],
       };
     },
-    restorePendingStreamSnapshot: (chatId) => {
-      harness.restoredSnapshots.push(Number(chatId));
-      harness.histories.set(Number(chatId), [
-        { id: 1, role: 'operator', body: 'working' },
-        { role: 'tool', body: 'missed tool', pending: true },
-      ]);
-      return true;
+    hasFreshPendingStreamSnapshot: (chatId) => Number(chatId) === 7,
+    readPendingStreamSnapshotMap: () => ({
+      7: {
+        tool: { role: 'tool', body: 'missed tool', pending: true },
+        tool_journal_lines: ['missed tool'],
+      },
+    }),
+    mergePendingSnapshotIntoHistory: (history) => {
+      harness.restoredSnapshots.push(7);
+      return {
+        history: [
+          ...history,
+          { role: 'tool', body: 'missed tool', pending: true },
+        ],
+        changed: true,
+      };
     },
   });
 

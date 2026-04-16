@@ -69,6 +69,22 @@
       }
     }
 
+    function canonicalizeFilePreviewRequest(previewRequest = {}, preview = null) {
+      const payload = cloneFilePreviewRequest(previewRequest);
+      const previewPath = String(preview?.path || '').trim();
+      const previewLineStart = Number(preview?.line_start || 0);
+      const previewLineEnd = Number(preview?.line_end || 0);
+      const previewWindowStart = Number(preview?.window_start || 0);
+      const previewWindowEnd = Number(preview?.window_end || 0);
+      if (previewPath) payload.path = previewPath;
+      if (Number.isFinite(previewLineStart) && previewLineStart > 0) payload.line_start = Math.floor(previewLineStart);
+      if (Number.isFinite(previewLineEnd) && previewLineEnd > 0) payload.line_end = Math.floor(previewLineEnd);
+      if (Number.isFinite(previewWindowStart) && previewWindowStart > 0) payload.window_start = Math.floor(previewWindowStart);
+      if (Number.isFinite(previewWindowEnd) && previewWindowEnd > 0) payload.window_end = Math.floor(previewWindowEnd);
+      if (preview?.full_file_loaded === true) payload.full_file = true;
+      return payload;
+    }
+
     function resetFilePreviewState() {
       setCurrentFilePreview(null);
       if (filePreviewPath) filePreviewPath.textContent = '';
@@ -303,7 +319,7 @@
         if (!preview) {
           throw new Error('Preview unavailable');
         }
-        setCurrentFilePreviewRequest(nextPreviewRequest);
+        setCurrentFilePreviewRequest(canonicalizeFilePreviewRequest(nextPreviewRequest, preview));
         renderFilePreview(preview, {
           viewportAnchor,
           centerFocus: !preserveViewport,
@@ -318,10 +334,17 @@
       }
     }
 
-    function openFilePreviewByRef(refId) {
+    function openFilePreviewByRef(refId, { path = '', lineStart = 0, lineEnd = 0 } = {}) {
       const cleanedRefId = String(refId || '').trim();
       if (!cleanedRefId || !getActiveChatId()) return;
-      void openFilePreview({ ref_id: cleanedRefId });
+      const payload = { ref_id: cleanedRefId };
+      const cleanedPath = String(path || '').trim();
+      const normalizedLineStart = Number(lineStart || 0);
+      const normalizedLineEnd = Number(lineEnd || 0);
+      if (cleanedPath) payload.path = cleanedPath;
+      if (Number.isFinite(normalizedLineStart) && normalizedLineStart > 0) payload.line_start = Math.floor(normalizedLineStart);
+      if (Number.isFinite(normalizedLineEnd) && normalizedLineEnd > 0) payload.line_end = Math.floor(normalizedLineEnd);
+      void openFilePreview(payload);
     }
 
     function openFilePreviewByPath(pathText, { lineStart = 0, lineEnd = 0 } = {}) {
@@ -442,6 +465,9 @@
       }
 
       const refId = String(trigger.dataset.fileRefId || '').trim();
+      const path = String(trigger.dataset.filePath || '').trim();
+      const lineStart = Number(trigger.dataset.fileLineStart || 0);
+      const lineEnd = Number(trigger.dataset.fileLineEnd || 0);
       if (!refId) {
         if (event?.type === 'touchend') {
           cancelPendingMessageFileRefTouch();
@@ -463,7 +489,7 @@
         event.preventDefault();
       }
 
-      openFilePreviewByRef(refId);
+      openFilePreviewByRef(refId, { path, lineStart, lineEnd });
     }
 
     function bindFilePreviewBindings() {

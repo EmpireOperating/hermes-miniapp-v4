@@ -1,4 +1,20 @@
 (function (globalScope) {
+  function resolveReadStateHelpers() {
+    if (globalScope.HermesMiniappRuntimeReadState) {
+      return globalScope.HermesMiniappRuntimeReadState;
+    }
+    if (typeof module !== 'undefined' && module.exports && typeof require === 'function') {
+      try {
+        return require('./runtime_read_state.js');
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  const readStateHelpers = resolveReadStateHelpers();
+
   function normalizeChatId(chatId) {
     const parsed = Number(chatId);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -107,14 +123,7 @@
   }
 
   function historiesDiffer(currentHistory, incomingHistory) {
-    const a = currentHistory || [];
-    const b = incomingHistory || [];
-    if (a.length !== b.length) return true;
-    if (!a.length) return false;
-
-    const aLast = a[a.length - 1] || {};
-    const bLast = b[b.length - 1] || {};
-    return aLast.id !== bLast.id || aLast.body !== bLast.body || aLast.role !== bLast.role;
+    return historyRenderSignature(currentHistory) !== historyRenderSignature(incomingHistory);
   }
 
   function hasLocalPendingTranscript(history) {
@@ -169,7 +178,7 @@
     if (hydratedPendingTranscript) {
       return false;
     }
-    return hasLocalPendingTranscript(previousHistory);
+    return Boolean(latestAssistantLikeBody(previousHistory, { pending: true }));
   }
 
   function latestCompletedAssistantHydrationKey(chatId, history) {
@@ -406,6 +415,9 @@
   }
 
   function isLaggingChatMetadata(currentChat, incomingChat) {
+    if (typeof readStateHelpers?.isIncomingChatLaggingLocalState === 'function') {
+      return Boolean(readStateHelpers.isIncomingChatLaggingLocalState(currentChat, incomingChat));
+    }
     if (!currentChat || typeof currentChat !== 'object' || !incomingChat || typeof incomingChat !== 'object') {
       return false;
     }

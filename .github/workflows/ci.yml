@@ -28,3 +28,10 @@ jobs:
           node-version: '20'
       - name: Run Node tests
         run: node --test tests/*.mjs
+
+  install-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run clean install smoke harness
+        run: scripts/install_smoke.sh
