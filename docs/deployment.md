@@ -16,7 +16,7 @@ This document describes a minimal production-oriented deployment shape for Herme
 ## Required inputs
 
 At minimum, configure:
-- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_BOT_TOKEN`, or set `MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN=1` to reuse the Telegram bot token already stored in `~/.hermes/.env`
 - `MINI_APP_URL`
 - one Hermes execution path:
   - `HERMES_STREAM_URL`, or
@@ -83,13 +83,36 @@ Portable defaults are derived from `HOME` and `HERMES_HOME`, but public deployme
 ## Validation checklist after deploy
 
 1. Run `scripts/setup.sh telegram` from the deployed repo or equivalent environment.
-2. Open the Mini App inside Telegram.
-3. Verify auth/bootstrap succeeds.
-4. Send a prompt and confirm streaming updates appear progressively.
-5. Reload/reopen and confirm the active chat restores correctly.
-6. Confirm rate limiting, origin checks, and secure cookies behave as expected.
-7. If file preview is enabled, verify access is restricted to intended roots.
-8. Review backend logs to ensure no secrets are being logged.
+2. Confirm the finalize step reports the expected menu button label (`Open Hermes` by default).
+3. Open the Mini App inside Telegram.
+4. Verify auth/bootstrap succeeds.
+5. Send a prompt and confirm streaming updates appear progressively.
+6. Reload/reopen and confirm the active chat restores correctly.
+7. Confirm rate limiting, origin checks, and secure cookies behave as expected.
+8. If file preview is enabled, verify access is restricted to intended roots.
+9. Review backend logs to ensure no secrets are being logged.
+
+## Minimal operator path
+
+For the simplest real-user rollout, aim for this exact sequence:
+
+1. Set DNS / HTTPS for the final Mini App URL.
+2. Paste `TELEGRAM_BOT_TOKEN` into `.env`, or set `MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN=1` if Hermes Agent on that machine already has the right Telegram bot token.
+3. Optionally set `MINI_APP_MENU_BUTTON_TEXT` if you want something other than `Open Hermes`.
+4. Run `scripts/setup.sh telegram`.
+5. Open the bot in Telegram and confirm `Open Hermes` launches the Mini App.
+
+## Safe rollout sequence
+
+For the lowest-risk real-world rollout:
+
+1. Stand up a separate test bot and test HTTPS subdomain first.
+2. Confirm local startup with `.venv/bin/python server.py` and `curl http://127.0.0.1:8080/health`.
+3. Point the public test subdomain at your service or tunnel.
+4. Paste the test bot token into `.env` or opt into reusing the Hermes-stored token, then run `scripts/setup.sh telegram`.
+5. Open the test bot in Telegram, tap `Open Hermes`, and send a real prompt.
+6. Rotate any bot token that was pasted into chat or other shared logs during testing.
+7. Repeat the same flow for the production bot/domain once the test pass is clean.
 
 ## What this guide does not assume
 

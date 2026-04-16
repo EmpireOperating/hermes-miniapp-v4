@@ -104,12 +104,15 @@ def test_explain_backend_modes_mentions_recommendation() -> None:
     assert joined == "Recommended: HERMES_API_URL"
 
 
-def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> None:
+def test_configure_env_interactively_updates_stream_backend(monkeypatch, tmp_path: Path) -> None:
     env_path = tmp_path / ".env"
     env_path.write_text(
-        "TELEGRAM_BOT_TOKEN=***\nMINI_APP_URL=https://your-domain.com/app\nHERMES_STREAM_URL=\nHERMES_API_URL=\nHERMES_CLI_COMMAND=hermes\n",
+        "TELEGRAM_BOT_TOKEN=***\nMINI_APP_URL=https://current.example.com/app\nHERMES_API_URL=\nHERMES_STREAM_URL=\n",
         encoding="utf-8",
     )
+    hermes_home = tmp_path / "empty-hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     answers = iter([
         "123456:real-token",
@@ -152,3 +155,40 @@ def test_render_next_steps_mentions_health_check_dns_doctor_and_repo_venv_start(
     assert "Open the Mini App from Telegram" in output
     assert "MINI_APP_URL must be HTTPS" in output
     assert "domain or subdomain you control" in output
+
+
+def test_configure_env_interactively_can_opt_into_reusing_existing_hermes_token(monkeypatch, tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=***\nMINI_APP_URL=https://existing.example/app\nHERMES_API_URL=https://existing.example/api\n",
+        encoding="utf-8",
+    )
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("TELEGRAM_BOT_TOKEN=123456:shared-token\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    answers = iter([
+        "",
+        "https://mini.example.com/app",
+        "2",
+        "https://hermes.example.com/api",
+    ])
+    printed: list[str] = []
+
+    updates = setup_bootstrap.configure_env_interactively(
+        tmp_path,
+        input_fn=lambda _prompt: next(answers),
+        output=printed.append,
+    )
+
+    assert updates["MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN"] == "1"
+    assert updates["TELEGRAM_BOT_TOKEN"] == ""
+    assert updates["MINI_APP_URL"] == "https://mini.example.com/app"
+    assert updates["HERMES_API_URL"] == "https://hermes.example.com/api"
+    text = env_path.read_text(encoding="utf-8")
+    assert "MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN=1" in text
+    assert "TELEGRAM_BOT_TOKEN=" in text
+    joined = "\n".join(printed)
+    assert "Reuse Telegram bot token from existing Hermes setup on this machine? [Y/n]" in joined
+    assert str(hermes_home / ".env") in joined

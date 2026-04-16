@@ -29,10 +29,24 @@ def test_check_mini_app_url_passes_for_https() -> None:
     assert "control" in (result.detail or "")
 
 
-def test_check_telegram_bot_token_rejects_placeholder() -> None:
-    result = setup_doctor.check_telegram_bot_token({"TELEGRAM_BOT_TOKEN": "123456...e_me"})
+def test_check_telegram_bot_token_rejects_placeholder(monkeypatch) -> None:
+    monkeypatch.delenv("MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN", raising=False)
+    result = setup_doctor.check_telegram_bot_token({"TELEGRAM_BOT_TOKEN": "123456:replace_me"})
 
     assert result.status == "FAIL"
+
+
+def test_check_telegram_bot_token_accepts_opted_in_shared_hermes_token(monkeypatch, tmp_path: Path) -> None:
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("TELEGRAM_BOT_TOKEN=123456:shared-token\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    result = setup_doctor.check_telegram_bot_token({"MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN": "1"})
+
+    assert result.status == "PASS"
+    assert "reused" in result.summary.lower()
+    assert str(hermes_home / ".env") in (result.detail or "")
 
 
 def test_detect_local_backend_accepts_http_and_cli(monkeypatch) -> None:
@@ -88,11 +102,26 @@ def test_recommended_next_steps_prioritize_bootstrap_and_config() -> None:
 
     assert any("scripts/setup.sh" in step for step in steps)
     assert any("TELEGRAM_BOT_TOKEN" in step for step in steps)
+    assert any("MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN" in step for step in steps)
     assert any("MINI_APP_URL" in step for step in steps)
     assert any("HERMES_STREAM_URL" in step for step in steps)
     assert any("DNS" in step or "hostname" in step for step in steps)
     assert any("Windows" in step for step in steps)
     assert any("WSL2" in step for step in steps)
+
+
+def test_recommended_next_steps_mentions_existing_hermes_token_shortcut(monkeypatch, tmp_path: Path) -> None:
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("TELEGRAM_BOT_TOKEN=123456:shared-token\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    steps = setup_doctor.recommended_next_steps([
+        setup_doctor.CheckResult("telegram_bot_token", "FAIL", "missing"),
+    ])
+
+    assert any("scripts/setup.sh" in step and "interactive" in step.lower() for step in steps)
+    assert any(str(hermes_home / ".env") in step for step in steps)
 
 
 def test_recommended_next_steps_success_path_includes_local_health_check_and_telegram_followup() -> None:
@@ -126,3 +155,27 @@ def test_main_json_output(monkeypatch, capsys) -> None:
     assert payload["summary"]["warn_count"] == 1
     assert payload["summary"]["pass_count"] == 1
     assert payload["summary"]["next_steps"]
+
+
+def test_check_telegram_bot_token_rejects_example_placeholder_with_shared_opt_in_disabled() -> None:
+    result = setup_doctor.check_telegram_bot_token({
+        "TELEGRAM_BOT_TOKEN": "123456:replace_me",
+        "MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN": "0",
+    })
+
+    assert result.status == "FAIL"
+
+
+def test_check_telegram_bot_token_prefers_shared_token_over_placeholder_when_opted_in(monkeypatch, tmp_path: Path) -> None:
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("TELEGRAM_BOT_TOKEN=123456:shared-token\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    result = setup_doctor.check_telegram_bot_token({
+        "TELEGRAM_BOT_TOKEN": "123456:replace_me",
+        "MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN": "1",
+    })
+
+    assert result.status == "PASS"
+    assert "reused" in result.summary.lower()

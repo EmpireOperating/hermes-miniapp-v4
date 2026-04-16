@@ -59,7 +59,7 @@ On an interactive terminal, bootstrap fills the main first-run values in `.env` 
 If you are automating setup, use `--non-interactive` and fill `.env` another way.
 
 2. Confirm `.env` has the minimum required values:
-- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_BOT_TOKEN`, or set `MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN=1` to reuse the Telegram bot token already stored in `~/.hermes/.env` (interactive bootstrap will offer this automatically when it finds one)
 - `MINI_APP_URL`
 - one Hermes execution path:
   - `HERMES_STREAM_URL`, or
@@ -98,9 +98,9 @@ python3 scripts/setup_doctor.py
 curl http://127.0.0.1:8080/health
 ```
 
-6. Open the Mini App from Telegram and send a message.
+6. At this point you have validated the code, dependencies, basic configuration, and local HTTP serving path.
 
-At this point you have validated the code, dependencies, basic configuration, and local HTTP serving path.
+You have not finished the Telegram-facing setup yet. That happens in Phase B after your HTTPS URL is live.
 
 ### Phase B: Telegram-facing URL, DNS, and HTTPS
 
@@ -118,7 +118,7 @@ Once DNS and HTTPS are ready, run:
 scripts/setup.sh telegram
 ```
 
-That command validates the public `MINI_APP_URL`, checks your bot token with Telegram, configures the bot menu button to open the Mini App, and verifies the result so the final operator step is just opening Telegram and tapping the button.
+That command validates the public `MINI_APP_URL`, checks your bot token with Telegram, configures the bot menu button to open the Mini App, and verifies the result so the final operator step is just opening Telegram and tapping `Open Hermes`. If `MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN=1`, it will reuse the Telegram bot token already stored by Hermes Agent on that machine.
 
 ## Bootstrap command
 
@@ -167,7 +167,7 @@ Use:
 - portable Python: `python3 scripts/setup_telegram.py`
 
 This command expects:
-- `TELEGRAM_BOT_TOKEN` set to a real token
+- `TELEGRAM_BOT_TOKEN` set to a real token, or `MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN=1` with a real token already stored in `~/.hermes/.env`
 - `MINI_APP_URL` set to the final HTTPS URL
 - DNS already pointing at the Mini App
 - the Mini App already serving traffic at that URL
@@ -180,8 +180,26 @@ What it does:
 - verifies the menu button now points at your URL
 
 Optional:
-- set `MINI_APP_MENU_BUTTON_TEXT` in `.env`
+- default menu button label is `Open Hermes`
+- set `MINI_APP_MENU_BUTTON_TEXT` in `.env` to override it
 - or pass `--menu-button-text "Launch"`
+
+Minimal operator path:
+1. Set DNS / HTTPS for the final Mini App URL.
+2. Paste `TELEGRAM_BOT_TOKEN` into `.env`, or run interactive bootstrap and let it reuse the token already stored by Hermes Agent on that machine.
+3. Run `scripts/setup.sh telegram`.
+4. Open the bot in Telegram and tap `Open Hermes`.
+
+Recommended production rollout checklist:
+1. Bring up a separate test bot and test subdomain first.
+2. Confirm local startup with `.venv/bin/python server.py` and `curl http://127.0.0.1:8080/health`.
+3. Point the final HTTPS subdomain at the Mini App service or tunnel.
+4. Paste the real bot token into `.env`.
+5. Run `scripts/setup.sh telegram`.
+6. Open the bot in Telegram and tap `Open Hermes`.
+7. Send a prompt and confirm you receive a response end to end.
+8. Rotate any bot token that was pasted into chat or other shared logs during testing.
+9. Only then switch broader user traffic to that bot/domain.
 
 ## Backend mode notes
 
