@@ -11,11 +11,15 @@ from urllib.parse import urlparse, urlunparse
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from miniapp_env import default_hermes_env_path, resolve_telegram_bot_token
+
+if __package__ in {None, ""}:
     from scripts import setup_doctor
 else:  # pragma: no cover
     from scripts import setup_doctor
 
-DEFAULT_MENU_BUTTON_TEXT = "Open App"
+DEFAULT_MENU_BUTTON_TEXT = "Open Hermes"
 
 
 @dataclass
@@ -175,7 +179,8 @@ def main(argv: list[str] | None = None) -> int:
         print(format_preflight_failures(failures))
         return 1
 
-    token = env_values["TELEGRAM_BOT_TOKEN"].strip()
+    token, token_source = resolve_telegram_bot_token(env_values)
+    token = token.strip()
     mini_app_url = env_values["MINI_APP_URL"].strip()
     menu_button_text = resolve_menu_button_text(env_values, args.menu_button_text)
 
@@ -190,9 +195,12 @@ def main(argv: list[str] | None = None) -> int:
 
     username = bot.get("username") or "unknown"
     print("Telegram finalize setup complete.")
+    if token_source == "hermes_shared_env":
+        print(f"Reused TELEGRAM_BOT_TOKEN from {default_hermes_env_path()}")
     print(f"Telegram bot verified: @{username}")
     print(f"Configured Telegram menu button to open {mini_app_url}")
-    print("Open the bot in Telegram and tap the menu button to launch the Mini App.")
+    print(f"Telegram menu button label: {menu_button_text}")
+    print(f"Next step: open @{username} in Telegram and tap {menu_button_text!r}.")
     return 0
 
 

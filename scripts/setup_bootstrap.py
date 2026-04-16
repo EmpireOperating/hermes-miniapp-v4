@@ -8,8 +8,18 @@ import venv
 from collections import OrderedDict
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from miniapp_env import (
+    SHARED_TELEGRAM_TOKEN_OPT_IN_KEY,
+    default_hermes_env_path,
+    resolve_telegram_bot_token,
+)
+
 MIN_PYTHON = (3, 11)
 MIN_NODE_MAJOR = 20
+PLACEHOLDER_TOKEN_VALUES = {"***", '"***"', "replace-me", "your-token-here"}
 
 
 def project_root() -> Path:
@@ -156,6 +166,22 @@ def prompt_choice(prompt: str, choices: list[tuple[str, str]], *, default: str, 
         output("Please choose one of: " + ", ".join(key for key, _label in choices))
 
 
+def prompt_yes_no(prompt: str, *, default: bool = True, input_fn: callable | None = None, output: callable | None = None) -> bool:
+    input_fn = input_fn or input
+    output = output or print
+    suffix = "[Y/n]" if default else "[y/N]"
+    while True:
+        output(f"{prompt} {suffix}")
+        response = input_fn("").strip().lower()
+        if not response:
+            return default
+        if response in {"y", "yes"}:
+            return True
+        if response in {"n", "no"}:
+            return False
+        output("Please answer y or n.")
+
+
 def recommended_backend_choice(values: dict[str, str], *, platform_name: str | None = None) -> str:
     if values.get("HERMES_STREAM_URL", "").strip():
         return "1"
@@ -203,9 +229,35 @@ def configure_env_interactively(
     output("")
 
     token_default = values.get("TELEGRAM_BOT_TOKEN", "")
-    if token_default in {"***", '"***"', "replace-me", "your-token-here"}:
+    if token_default in PLACEHOLDER_TOKEN_VALUES:
         token_default = ""
-    token = prompt_text("Telegram bot token", default=token_default, input_fn=input_fn, output=output)
+    shared_token, _shared_source = resolve_telegram_bot_token({SHARED_TELEGRAM_TOKEN_OPT_IN_KEY: "1"})
+    shared_token_available = bool(shared_token)
+    shared_token_path = default_hermes_env_path()
+    shared_opt_in_enabled = values.get(SHARED_TELEGRAM_TOKEN_OPT_IN_KEY, "").strip().lower() in {"1", "true", "yes", "on"}
+
+    token = ""
+    reuse_shared_token = False
+    if token_default:
+        token = prompt_text("Telegram bot token", default=token_default, input_fn=input_fn, output=output)
+    elif shared_opt_in_enabled and shared_token_available:
+        reuse_shared_token = True
+        output(f"Telegram bot token will be reused from your existing Hermes setup at {shared_token_path}.")
+    elif shared_token_available:
+        output(f"Found an existing Hermes Telegram bot token at {shared_token_path}.")
+        reuse_shared_token = prompt_yes_no(
+            "Reuse Telegram bot token from existing Hermes setup on this machine?",
+            default=True,
+            input_fn=input_fn,
+            output=output,
+        )
+        if not reuse_shared_token:
+            token = prompt_text("Telegram bot token", default=token_default, input_fn=input_fn, output=output)
+    else:
+        token = prompt_text("Telegram bot token", default=token_default, input_fn=input_fn, output=output)
+
+    if reuse_shared_token:
+        output(f"Using TELEGRAM_BOT_TOKEN from {shared_token_path}.")
 
     url_default = values.get("MINI_APP_URL", "")
     if url_default == "https://your-domain.com/app":
@@ -235,8 +287,13 @@ def configure_env_interactively(
     )
 
     updates: dict[str, str] = {}
-    if token:
-        updates["TELEGRAM_BOT_TOKEN"] = token
+    if reuse_shared_token:
+        updates["TELEGRAM_BOT_TOKEN"] = ""
+        updates[SHARED_TELEGRAM_TOKEN_OPT_IN_KEY] = "1"
+    else:
+        updates[SHARED_TELEGRAM_TOKEN_OPT_IN_KEY] = ""
+        if token:
+            updates["TELEGRAM_BOT_TOKEN"] = token
     if url:
         updates["MINI_APP_URL"] = url
 
