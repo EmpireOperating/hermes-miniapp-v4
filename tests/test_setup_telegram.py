@@ -39,7 +39,7 @@ def test_main_success_validates_url_and_configures_menu_button(monkeypatch, tmp_
                 "ok": True,
                 "result": {
                     "type": "web_app",
-                    "text": "Open App",
+                    "text": "Open Hermes",
                     "web_app": {"url": "https://mini.example.com/app"},
                 },
             }
@@ -62,7 +62,7 @@ def test_main_success_validates_url_and_configures_menu_button(monkeypatch, tmp_
             {
                 "menu_button": {
                     "type": "web_app",
-                    "text": "Open App",
+                    "text": "Open Hermes",
                     "web_app": {"url": "https://mini.example.com/app"},
                 }
             },
@@ -72,7 +72,8 @@ def test_main_success_validates_url_and_configures_menu_button(monkeypatch, tmp_
     output = capsys.readouterr().out
     assert "Telegram bot verified: @miniapp_demo_bot" in output
     assert "Configured Telegram menu button to open https://mini.example.com/app" in output
-    assert "Open the bot in Telegram and tap the menu button" in output
+    assert "Telegram menu button label: Open Hermes" in output
+    assert "Next step: open @miniapp_demo_bot in Telegram and tap 'Open Hermes'." in output
 
 
 def test_main_fails_when_public_url_is_not_reachable(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -132,3 +133,47 @@ def test_main_fails_when_menu_button_verification_does_not_match(monkeypatch, tm
     assert exit_code == 1
     output = capsys.readouterr().out
     assert "Telegram menu button verification failed" in output
+
+
+def test_main_can_reuse_shared_hermes_token_with_opt_in(monkeypatch, tmp_path: Path, capsys) -> None:
+    (tmp_path / ".env").write_text(
+        "MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN=1\n"
+        "MINI_APP_URL=https://mini.example.com/app\n"
+        "HERMES_API_URL=https://hermes.example.com/api\n",
+        encoding="utf-8",
+    )
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("TELEGRAM_BOT_TOKEN=123456:shared-token\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(setup_telegram, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        setup_telegram,
+        "http_get",
+        lambda url, *, timeout=10.0: setup_telegram.HttpCheck(url=url, status=200, ok=True),
+    )
+
+    def fake_telegram_call(token: str, method: str, payload: dict | None = None, *, timeout: float = 10.0) -> dict:
+        assert token == "123456:shared-token"
+        if method == "getMe":
+            return {"ok": True, "result": {"id": 1, "username": "miniapp_demo_bot"}}
+        if method == "setChatMenuButton":
+            return {"ok": True, "result": True}
+        if method == "getChatMenuButton":
+            return {
+                "ok": True,
+                "result": {
+                    "type": "web_app",
+                    "text": "Open Hermes",
+                    "web_app": {"url": "https://mini.example.com/app"},
+                },
+            }
+        raise AssertionError(f"unexpected Telegram method: {method}")
+
+    monkeypatch.setattr(setup_telegram, "telegram_api_call", fake_telegram_call)
+
+    exit_code = setup_telegram.main([])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert f"Reused TELEGRAM_BOT_TOKEN from {hermes_home / '.env'}" in output

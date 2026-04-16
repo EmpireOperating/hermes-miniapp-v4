@@ -10,6 +10,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from miniapp_env import (
+    SHARED_TELEGRAM_TOKEN_OPT_IN_KEY,
+    default_hermes_env_path,
+    parse_env_file,
+    resolve_telegram_bot_token,
+)
+
 MIN_PYTHON = (3, 11)
 MIN_NODE_MAJOR = 20
 PLACEHOLDER_TOKEN_VALUES = {"", "123456...e_me", "replace-me", "your-token-here"}
@@ -40,7 +47,17 @@ def recommended_next_steps(results: list[CheckResult]) -> list[str]:
     if any(result.key in {"venv", "dependencies", "env_file"} for result in failures):
         steps.append("Run scripts/setup.sh (or ./scripts/setup.ps1 on Windows) to create .venv, install dependencies, and write .env if missing.")
     if any(result.key == "telegram_bot_token" for result in failures):
-        steps.append("Edit .env and set TELEGRAM_BOT_TOKEN to your real bot token.")
+        hermes_env_path = default_hermes_env_path()
+        steps.append(
+            "Edit .env and either set TELEGRAM_BOT_TOKEN to your real bot token, "
+            f"or set {SHARED_TELEGRAM_TOKEN_OPT_IN_KEY}=1 to reuse the token already stored in {hermes_env_path}."
+        )
+        shared_hermes_values = parse_env_file(hermes_env_path)
+        if (shared_hermes_values.get("TELEGRAM_BOT_TOKEN") or "").strip():
+            steps.append(
+                f"This machine already has a Hermes Telegram bot token in {hermes_env_path}. "
+                "If you prefer prompts, run scripts/setup.sh bootstrap --interactive and answer yes when asked to reuse it."
+            )
     if any(result.key == "mini_app_url" for result in failures):
         steps.append("Edit .env and set MINI_APP_URL to the exact HTTPS URL your Telegram bot will open.")
     if any(result.key == "hermes_backend" for result in failures):
@@ -75,16 +92,7 @@ def venv_python_path(venv_dir: Path, *, platform_name: str | None = None) -> Pat
 
 
 def load_env_file(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
+    return parse_env_file(path)
 
 
 def detect_node_major(which: callable | None = None, run: callable | None = None) -> int | None:
@@ -193,14 +201,24 @@ def check_env_file(root: Path) -> CheckResult:
 
 
 def check_telegram_bot_token(env_values: dict[str, str]) -> CheckResult:
-    token = (env_values.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    token, source = resolve_telegram_bot_token(env_values)
     if token and token not in PLACEHOLDER_TOKEN_VALUES and "..." not in token:
+        if source == "hermes_shared_env":
+            return CheckResult(
+                "telegram_bot_token",
+                "PASS",
+                "TELEGRAM_BOT_TOKEN will be reused from your Hermes Agent env store.",
+                detail=f"Resolved from {default_hermes_env_path()} because {SHARED_TELEGRAM_TOKEN_OPT_IN_KEY}=1.",
+            )
         return CheckResult("telegram_bot_token", "PASS", "TELEGRAM_BOT_TOKEN is set.")
     return CheckResult(
         "telegram_bot_token",
         "FAIL",
         "TELEGRAM_BOT_TOKEN is missing or still set to a placeholder value.",
-        fix="Edit .env and set TELEGRAM_BOT_TOKEN to your real bot token.",
+        fix=(
+            "Edit .env and set TELEGRAM_BOT_TOKEN to your real bot token, "
+            f"or set {SHARED_TELEGRAM_TOKEN_OPT_IN_KEY}=1 to reuse the token already stored in {default_hermes_env_path()}."
+        ),
     )
 
 
