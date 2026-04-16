@@ -38,7 +38,7 @@ test('app.js bootstrap/auth request wrappers keep delegating to bootstrapAuthCon
   );
   assert.match(
     source,
-    /function\s+createBootstrapAuthControllerAppDeps\s*\([\s\S]*?return\s+\{[\s\S]*?resumePendingChatStream,[\s\S]*?windowObject,[\s\S]*?\};\s*\}/m,
+    /function\s+createBootstrapAuthControllerAppDeps\s*\([\s\S]*?return\s+\{[\s\S]*?resumePendingChatStream,[\s\S]*?restoreActiveBootstrapPendingState,[\s\S]*?windowObject,[\s\S]*?\};\s*\}/m,
     'app.js should isolate bootstrap auth app-state wiring in createBootstrapAuthControllerAppDeps(...)',
   );
   assert.match(

@@ -628,6 +628,9 @@ test('bootstrap preserves signed-in status when post-auth unread sync fails', as
   assert.equal(harness.authStatusEl.textContent, 'Signed in as agentuser');
   assert.deepEqual(harness.appendMessages, ['Signed in, but startup sync hit an error: presence sync boom']);
   assert.ok(harness.logBootStages.some(([name, details]) => name === 'post-auth-bootstrap-sync-failed' && details?.message === 'presence sync boom'));
+  assert.deepEqual(harness.restoreActiveBootstrapPendingStateCalls, [{ chatId: 7, serverPending: true }]);
+  assert.deepEqual(harness.restoreSnapshotCalls, [7]);
+  assert.deepEqual(harness.renderMessagesCalls, [[7, { preserveViewport: true }]]);
 });
 
 test('bootstrap restores pending snapshot when local snapshot exists even if bootstrap chat metadata briefly says not pending', async () => {

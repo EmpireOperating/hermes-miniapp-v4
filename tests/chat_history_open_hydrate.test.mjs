@@ -141,6 +141,22 @@ test('loadChatHistory falls back to /api/chats/open on 404 history path', async 
   assert.deepEqual(harness.apiCalls.map((call) => call.path), ['/api/chats/history', '/api/chats/open']);
 });
 
+test('loadChatHistory syncs unread notification presence for activated visible fetches only', async () => {
+  const unreadPresenceCalls = [];
+  const harness = buildHarness({
+    syncUnreadNotificationPresence: (options = {}) => {
+      unreadPresenceCalls.push({ ...options });
+      return { ok: true };
+    },
+    getDocumentVisibilityState: () => 'visible',
+  });
+
+  await harness.controller.loadChatHistory(7, { activate: true });
+  await harness.controller.loadChatHistory(7, { activate: false });
+
+  assert.deepEqual(unreadPresenceCalls, [{ visible: true, chatId: 7 }]);
+});
+
 test('hydrateChatFromServer updates history and rerenders active chat', async () => {
   const harness = buildHarness();
 

@@ -385,9 +385,6 @@
           chatCount: Array.isArray(data?.chats) ? data.chats.length : 0,
         });
         const activeChatId = Number(data?.active_chat_id || 0);
-        if (activeChatId > 0 && documentObject.visibilityState === 'visible') {
-          await syncUnreadNotificationPresence?.({ visible: true, chatId: activeChatId });
-        }
         const serverPendingActiveChat = activeChatId > 0 && Boolean(data?.chats?.find?.((chat) => Number(chat?.id) === activeChatId)?.pending);
         const pendingRestoreState = activeChatId > 0 && typeof restoreActiveBootstrapPendingState === 'function'
           ? restoreActiveBootstrapPendingState(activeChatId, {
@@ -411,6 +408,9 @@
         const restoredPendingSnapshot = Boolean(pendingRestoreState?.restoredPendingSnapshot);
         if (restoredPendingSnapshot && Number(data?.active_chat_id || 0) > 0 && typeof restoreActiveBootstrapPendingState !== 'function') {
           renderMessages(Number(data.active_chat_id), { preserveViewport: true });
+        }
+        if (activeChatId > 0 && documentObject.visibilityState === 'visible') {
+          await syncUnreadNotificationPresence?.({ visible: true, chatId: activeChatId });
         }
       } catch (error) {
         recordBootMetric?.('bootstrapErrorMs');

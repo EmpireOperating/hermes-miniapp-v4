@@ -1454,6 +1454,7 @@ function createBootstrapAuthControllerAppDeps({
   resumePendingChatStream,
   hasFreshPendingStreamSnapshot,
   restorePendingStreamSnapshot,
+  restoreActiveBootstrapPendingState,
   syncBootstrapActivationReadState,
   windowObject,
 }) {
@@ -1472,6 +1473,7 @@ function createBootstrapAuthControllerAppDeps({
     resumePendingChatStream,
     hasFreshPendingStreamSnapshot,
     restorePendingStreamSnapshot,
+    restoreActiveBootstrapPendingState,
     syncBootstrapActivationReadState,
     windowObject,
   };
