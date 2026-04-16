@@ -177,6 +177,19 @@ function createHarness({
     },
     clearChatStreamState: (payload) => clearCalls.push(payload),
     chatUiHelpers: {
+      getTabUnreadState({ chat, unseenStreamChats, getCurrentUnreadCount }) {
+        const chatId = Number(chat?.id || 0);
+        const unreadCount = typeof getCurrentUnreadCount === 'function'
+          ? Math.max(0, Number(getCurrentUnreadCount(chatId) || 0))
+          : Math.max(0, Number(chat?.unread_count || 0));
+        const hasUnseenInViewport = unseenStreamChats.has(chatId);
+        return {
+          chatId: chatId || null,
+          unreadCount,
+          hasUnseenInViewport,
+          hasUnreadBadge: unreadCount > 0 || hasUnseenInViewport,
+        };
+      },
       renderTabs(payload) {
         renderTabsCalls.push(payload);
       },
@@ -550,6 +563,23 @@ test('manual carousel browsing clears after active tab changes so next active ta
     ['chat-2', { block: 'nearest', inline: 'center' }],
     ['chat-4', { block: 'nearest', inline: 'center' }],
   ]);
+});
+
+test('mobile carousel overview markers use shared effective unread state for unread direction and marker labels', () => {
+  const h = createHarness({
+    activeChatId: 2,
+    mobileTabCarouselEnabled: true,
+    mobileViewport: true,
+    getCurrentUnreadCount: (chatId) => (Number(chatId) === 1 ? 5 : 0),
+  });
+  h.chats.set(1, { id: 1, title: 'Unread Left', unread_count: 0, pending: false });
+  h.chats.set(2, { id: 2, title: 'Active', unread_count: 0, pending: false });
+
+  h.controller.renderTabs();
+
+  const marker = h.tabOverviewEl.children.find((node) => node?.dataset?.chatId === '1');
+  assert.equal(marker?.dataset?.state, 'unread');
+  assert.equal(marker?.getAttribute?.('aria-label'), 'Chat: Unread Left, 5 unread messages');
 });
 
 test('mobile carousel overview strip updates marker state without relying on hidden unread summary text', () => {

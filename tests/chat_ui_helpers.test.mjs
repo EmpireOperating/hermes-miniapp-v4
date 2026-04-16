@@ -29,6 +29,41 @@ test('getTabBadgeState keeps pending badge when chat is pending and has no unrea
   assert.equal(badge.ariaLabel, 'Pending response');
 });
 
+test('getTabUnreadState derives unread-count and unseen badge state from one shared helper', () => {
+  assert.deepEqual(chatUi.getTabUnreadState({
+    chat: { id: 6, unread_count: 3 },
+    unseenStreamChats: new Set(),
+  }), {
+    chatId: 6,
+    unreadCount: 3,
+    hasUnseenInViewport: false,
+    hasUnreadBadge: true,
+  });
+
+  assert.deepEqual(chatUi.getTabUnreadState({
+    chat: { id: 6, unread_count: 0 },
+    unseenStreamChats: new Set([6]),
+  }), {
+    chatId: 6,
+    unreadCount: 0,
+    hasUnseenInViewport: true,
+    hasUnreadBadge: true,
+  });
+});
+
+test('getTabBadgeState respects shared effective unread count overrides', () => {
+  const badge = chatUi.getTabBadgeState({
+    chat: { id: 6, pending: false, unread_count: 0 },
+    pendingChats: new Set(),
+    unseenStreamChats: new Set(),
+    getCurrentUnreadCount: () => 4,
+  });
+
+  assert.equal(badge.text, '•');
+  assert.deepEqual(badge.classes, ['is-visible', 'is-unread-dot']);
+  assert.equal(badge.ariaLabel, '4 unread messages');
+});
+
 test('getTabBadgeState emits unread dot when chat has unread', () => {
   const badge = chatUi.getTabBadgeState({
     chat: { id: 6, pending: false, unread_count: 3 },

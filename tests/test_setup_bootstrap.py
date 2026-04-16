@@ -141,10 +141,14 @@ def test_configure_env_interactively_updates_stream_backend(tmp_path: Path) -> N
     assert "Local Hermes CLI/runtime" in joined
 
 
-def test_render_next_steps_mentions_dns_doctor_and_interactive_fill(tmp_path: Path) -> None:
+def test_render_next_steps_mentions_health_check_dns_doctor_and_repo_venv_start(tmp_path: Path) -> None:
     output = setup_bootstrap.render_next_steps(tmp_path, env_state="created", interactive_updates={"MINI_APP_URL": "https://mini.example.com/app"})
 
     assert "bootstrap already filled the prompted values" in output
-    assert "python scripts/setup_doctor.py" in output
+    assert "scripts/setup.sh doctor" in output
+    assert ".venv/bin/python server.py" in output
+    assert "curl http://127.0.0.1:8080/health" in output
+    assert "scripts/setup.sh telegram" in output
+    assert "Open the Mini App from Telegram" in output
     assert "MINI_APP_URL must be HTTPS" in output
     assert "domain or subdomain you control" in output

@@ -295,7 +295,8 @@ test('consumeStreamResponse increments unread for the selected active chat when 
     });
 
     assert.equal(result.terminalReceived, true);
-    assert.deepEqual(harness.unreadIncrements, [9]);
+    assert.deepEqual(harness.unreadIncrements, []);
+    assert.deepEqual(harness.syncActiveViewportReadStateCalls, []);
   } finally {
     if (typeof originalDocument === 'undefined') {
       delete globalThis.document;

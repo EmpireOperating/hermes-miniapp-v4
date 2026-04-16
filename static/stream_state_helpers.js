@@ -377,30 +377,54 @@
       return snapshot;
     }
 
-    function restorePendingStreamSnapshot(chatId) {
-      const key = toPositiveInt(chatId);
-      if (!key) return false;
-      if (!hasFreshPendingStreamSnapshot(key)) return false;
-      const nextMap = readPendingStreamSnapshotMap();
-      const snapshot = nextMap[String(key)];
-      if (!snapshot || typeof snapshot !== "object") return false;
+    function hasCompletedToolThatSupersedesSnapshot(history, journalBody) {
+      const normalizedJournal = String(journalBody || '').trim();
+      if (!normalizedJournal) return false;
+      return history.some((item) => {
+        if (!item || item.pending) return false;
+        if (String(item?.role || '').toLowerCase() !== 'tool') return false;
+        const completedBody = String(item?.body || '').trim();
+        return completedBody === normalizedJournal || completedBody.includes(normalizedJournal);
+      });
+    }
 
-      const history = Array.isArray(histories?.get?.(key)) ? [...histories.get(key)] : [];
+    function hasCompletedAssistantThatSupersedesSnapshot(history, assistantSnapshot) {
+      const snapshotBody = String(assistantSnapshot?.body || '').trim();
+      return history.some((item) => {
+        if (!item || item.pending) return false;
+        const role = String(item?.role || '').toLowerCase();
+        if (role !== 'assistant' && role !== 'hermes') return false;
+        const completedBody = String(item?.body || '').trim();
+        if (!completedBody) return false;
+        if (!snapshotBody) return true;
+        return true;
+      });
+    }
+
+    function mergePendingSnapshotIntoHistory(history, snapshot) {
+      const nextHistory = Array.isArray(history) ? [...history] : [];
+      if (!snapshot || typeof snapshot !== 'object') {
+        return { history: nextHistory, changed: false };
+      }
+
       const journalLines = normalizeSnapshotLines(snapshot.tool_journal_lines);
-      const journalBody = journalLines.join("\n");
-      const pendingToolIndex = history.findIndex((item) => item?.pending && String(item?.role || "").toLowerCase() === "tool");
-      const pendingAssistantIndex = history.findIndex((item) => item?.pending && ["hermes", "assistant"].includes(String(item?.role || "").toLowerCase()));
-      const restoredToolCollapsed = typeof snapshot?.tool?.collapsed === "boolean" ? snapshot.tool.collapsed : false;
+      const journalBody = journalLines.join('\n');
+      const pendingToolIndex = nextHistory.findIndex((item) => item?.pending && String(item?.role || '').toLowerCase() === 'tool');
+      const pendingAssistantIndex = nextHistory.findIndex((item) => item?.pending && ['hermes', 'assistant'].includes(String(item?.role || '').toLowerCase()));
+      const restoredToolCollapsed = typeof snapshot?.tool?.collapsed === 'boolean' ? snapshot.tool.collapsed : false;
       let changed = false;
+
       if (journalBody) {
-        if (pendingToolIndex >= 0) {
-          const currentTool = history[pendingToolIndex] || {};
-          const currentBody = String(currentTool?.body || "");
+        if (hasCompletedToolThatSupersedesSnapshot(nextHistory, journalBody) && pendingToolIndex < 0) {
+          // completed hydrate beats stale local snapshot journal
+        } else if (pendingToolIndex >= 0) {
+          const currentTool = nextHistory[pendingToolIndex] || {};
+          const currentBody = String(currentTool?.body || '');
           const nextTool = {
             ...currentTool,
             body: journalBody,
             pending: true,
-            collapsed: typeof currentTool?.collapsed === "boolean" ? currentTool.collapsed : restoredToolCollapsed,
+            collapsed: typeof currentTool?.collapsed === 'boolean' ? currentTool.collapsed : restoredToolCollapsed,
           };
           if (
             currentBody !== journalBody
@@ -408,11 +432,11 @@
             || currentTool.pending !== true
             || currentTool.collapsed !== nextTool.collapsed
           ) {
-            history[pendingToolIndex] = nextTool;
+            nextHistory[pendingToolIndex] = nextTool;
             changed = true;
           }
         } else if (snapshot.tool) {
-          history.push({
+          nextHistory.push({
             ...snapshot.tool,
             body: journalBody,
             pending: true,
@@ -421,30 +445,48 @@
           changed = true;
         }
       }
-      if (snapshot.assistant && (String(snapshot.assistant.body || "").trim() || snapshot.assistant.pending)) {
+
+      if (snapshot.assistant && (String(snapshot.assistant.body || '').trim() || snapshot.assistant.pending)) {
+        if (hasCompletedAssistantThatSupersedesSnapshot(nextHistory, snapshot.assistant) && pendingAssistantIndex < 0) {
+          return { history: nextHistory, changed };
+        }
         if (pendingAssistantIndex >= 0) {
-          const currentAssistant = history[pendingAssistantIndex] || {};
-          const currentBody = String(currentAssistant?.body || "");
+          const currentAssistant = nextHistory[pendingAssistantIndex] || {};
+          const currentBody = String(currentAssistant?.body || '');
           const nextAssistant = {
             ...currentAssistant,
             ...snapshot.assistant,
             pending: true,
           };
           if (
-            currentBody !== String(nextAssistant.body || "")
+            currentBody !== String(nextAssistant.body || '')
             || currentAssistant.pending !== true
-            || String(currentAssistant.created_at || "") !== String(nextAssistant.created_at || "")
+            || String(currentAssistant.created_at || '') !== String(nextAssistant.created_at || '')
           ) {
-            history[pendingAssistantIndex] = nextAssistant;
+            nextHistory[pendingAssistantIndex] = nextAssistant;
             changed = true;
           }
         } else {
-          history.push({ ...snapshot.assistant });
+          nextHistory.push({ ...snapshot.assistant });
           changed = true;
         }
       }
-      if (!changed) return false;
-      histories?.set?.(key, history);
+
+      return { history: nextHistory, changed };
+    }
+
+    function restorePendingStreamSnapshot(chatId) {
+      const key = toPositiveInt(chatId);
+      if (!key) return false;
+      if (!hasFreshPendingStreamSnapshot(key)) return false;
+      const nextMap = readPendingStreamSnapshotMap();
+      const snapshot = nextMap[String(key)];
+      if (!snapshot || typeof snapshot !== "object") return false;
+
+      const history = Array.isArray(histories?.get?.(key)) ? histories.get(key) : [];
+      const mergedSnapshot = mergePendingSnapshotIntoHistory(history, snapshot);
+      if (!mergedSnapshot.changed) return false;
+      histories?.set?.(key, mergedSnapshot.history);
       return true;
     }
 
@@ -461,6 +503,7 @@
       mergeSnapshotToolJournalLines,
       hasFreshPendingStreamSnapshot,
       persistPendingStreamSnapshot,
+      mergePendingSnapshotIntoHistory,
       restorePendingStreamSnapshot,
     };
   }

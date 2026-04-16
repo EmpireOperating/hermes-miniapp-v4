@@ -20,12 +20,11 @@
       isNearBottomFn,
       chatScrollTop,
       chatStickToBottom,
-      unseenStreamChats,
       histories,
       shouldVirtualizeHistoryFn,
       scheduleActiveMessageView,
       refreshTabNode,
-      maybeMarkRead,
+      syncActiveViewportReadState,
       updateJumpLatestVisibility,
       syncActiveMessageView,
       cancelSelectionQuoteSync,
@@ -74,11 +73,10 @@
       const atBottom = isNearBottomFn(messagesEl, 40);
       chatScrollTop.set(key, messagesEl.scrollTop);
       chatStickToBottom.set(key, atBottom);
-      if (atBottom) {
-        unseenStreamChats.delete(key);
-        refreshTabNode(key);
-      }
-      maybeMarkRead(key);
+      syncActiveViewportReadState(key, {
+        atBottom,
+        onViewportBottom: refreshTabNode,
+      });
       updateJumpLatestVisibility();
 
       const historyLength = (histories.get(key) || []).length;
@@ -91,10 +89,12 @@
       const key = Number(getActiveChatId());
       if (!key) return;
 
-      unseenStreamChats.delete(key);
-      refreshTabNode(key);
+      syncActiveViewportReadState(key, {
+        atBottom: true,
+        forceMarkRead: true,
+        onViewportBottom: refreshTabNode,
+      });
       syncActiveMessageView(key, { forceBottom: true });
-      maybeMarkRead(key, { force: true });
       updateJumpLatestVisibility();
     }
 

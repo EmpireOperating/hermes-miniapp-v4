@@ -100,7 +100,7 @@ scripts/setup.sh
 Portable Python equivalent:
 
 ```bash
-python scripts/setup_bootstrap.py --write-env-if-missing
+python3 scripts/setup_bootstrap.py --write-env-if-missing
 ```
 
 The bootstrap command sets up `.venv`, installs dependencies, creates `.env` when needed, and prompts for the key first-run values on an interactive terminal.
@@ -132,16 +132,30 @@ scripts/setup.sh doctor
 Portable Python equivalent:
 
 ```bash
-python scripts/setup_doctor.py
+python3 scripts/setup_doctor.py
 ```
 
 4. Start the server.
 
 ```bash
-python server.py
+.venv/bin/python server.py
 ```
 
-5. Open the Mini App from your Telegram bot and verify you can authenticate and send a message.
+5. Verify the local server responds.
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+6. Once your DNS + HTTPS are live, finalize Telegram setup in one command.
+
+```bash
+scripts/setup.sh telegram
+```
+
+That command validates the public `MINI_APP_URL`, checks the bot token with Telegram, configures the bot menu button to open your Mini App, and verifies the result.
+
+7. Open the Mini App from your Telegram bot and verify you can authenticate and send a message.
 
 Important: `MINI_APP_URL` must be a real HTTPS URL on a domain or subdomain you control. The name itself does not matter much; if you do not already have one, the cheapest domain you can buy and control is usually fine.
 
@@ -179,6 +193,14 @@ scripts/test.sh
 ```
 
 That wrapper always runs pytest through the repo-local virtualenv, so you do not need a globally installed `pytest` on `PATH`.
+
+Clean install smoke harness:
+
+```bash
+scripts/install_smoke.sh
+```
+
+That command builds a disposable Docker image, follows the documented setup flow inside it, runs the setup doctor, starts the app, and verifies `http://127.0.0.1:8080/health` before exiting.
 
 Equivalent direct Python command:
 

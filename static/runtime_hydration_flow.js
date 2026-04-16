@@ -54,6 +54,17 @@
         historyChanged,
         pendingState,
       } = hydrationState);
+      if (requestId !== getLastOpenChatRequestId()) {
+        traceChatHistory('hydrate-skipped-stale-post-apply', {
+          chatId: targetChatId,
+          requestId: Number(requestId) || 0,
+          latestRequestId: Number(getLastOpenChatRequestId()) || 0,
+          hadCachedHistory: Boolean(hadCachedHistory),
+          durationMs: Math.max(0, Math.round(nowMs() - hydrateStartedAtMs)),
+        });
+        return;
+      }
+      hydrationState.commitHydratedState?.();
       const shouldResumePending = pendingState.shouldResumePending;
       const shouldForceResumePending = pendingState.shouldForceResumePending;
 
@@ -69,6 +80,7 @@
       const {
         shouldForceUnreadTranscriptRender,
         shouldForceStaleRenderedTranscriptRender,
+        shouldRenderActiveHistory,
       } = renderState;
 
       traceChatHistory('hydrate-applied', {
@@ -98,7 +110,7 @@
         return;
       }
 
-      if (!hadCachedHistory || historyChanged || restoredPendingSnapshot || shouldForceUnreadTranscriptRender || shouldForceStaleRenderedTranscriptRender) {
+      if (shouldRenderActiveHistory) {
         renderMessages(targetChatId, { preserveViewport: hadCachedHistory });
       }
       if (shouldResumePending) {

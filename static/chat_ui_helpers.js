@@ -18,23 +18,40 @@
     return node;
   }
 
-  function getTabBadgeState({ chat, pendingChats, unseenStreamChats }) {
+  function getTabUnreadState({ chat, unseenStreamChats, getCurrentUnreadCount = null }) {
     const chatKey = toPositiveInt(chat?.id);
     if (!chatKey) {
+      return { chatId: null, unreadCount: 0, hasUnseenInViewport: false, hasUnreadBadge: false };
+    }
+
+    const resolvedUnread = typeof getCurrentUnreadCount === 'function'
+      ? Number(getCurrentUnreadCount(chatKey))
+      : Number(chat?.unread_count || 0);
+    const unreadCount = Number.isFinite(resolvedUnread) ? Math.max(0, resolvedUnread) : 0;
+    const hasUnseenInViewport = unseenStreamChats.has(chatKey);
+    return {
+      chatId: chatKey,
+      unreadCount,
+      hasUnseenInViewport,
+      hasUnreadBadge: unreadCount > 0 || hasUnseenInViewport,
+    };
+  }
+
+  function getTabBadgeState({ chat, pendingChats, unseenStreamChats, getCurrentUnreadCount = null }) {
+    const unreadState = getTabUnreadState({ chat, unseenStreamChats, getCurrentUnreadCount });
+    if (!unreadState.chatId) {
       return { text: "", classes: [], ariaLabel: "" };
     }
 
-    const pending = pendingChats.has(chatKey) || Boolean(chat.pending);
-    const unread = Math.max(0, Number(chat.unread_count || 0));
-    const hasUnseenInViewport = unseenStreamChats.has(chatKey);
+    const pending = pendingChats.has(unreadState.chatId) || Boolean(chat.pending);
 
-    if (unread > 0 || hasUnseenInViewport) {
+    if (unreadState.hasUnreadBadge) {
       return {
         text: "•",
         classes: ["is-visible", "is-unread-dot"],
         ariaLabel:
-          unread > 0
-            ? `${unread} unread ${unread === 1 ? "message" : "messages"}`
+          unreadState.unreadCount > 0
+            ? `${unreadState.unreadCount} unread ${unreadState.unreadCount === 1 ? "message" : "messages"}`
             : "New messages below current scroll position",
       };
     }
@@ -311,6 +328,7 @@
   const api = {
     createController,
     getOrCreateTabNode,
+    getTabUnreadState,
     getTabBadgeState,
     applyTabBadgeState,
     applyTabNodeState,

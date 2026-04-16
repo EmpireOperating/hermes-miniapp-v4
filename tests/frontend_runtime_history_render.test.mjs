@@ -13,7 +13,8 @@ test('mergeHydratedHistory preserves local pending tool traces while chat is pen
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: true,
+    serverPending: true,
+    preserveLocalPending: true,
   });
 
   assert.equal(merged.length, 3);
@@ -37,7 +38,7 @@ test('mergeHydratedHistory does not preserve local pending traces after chat is 
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: false,
+    serverPending: false,
   });
 
   assert.deepEqual(merged, hydrated);
@@ -58,7 +59,7 @@ test('mergeHydratedHistory preserves completed local tool trace on force-complet
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: false,
+    serverPending: false,
     preserveCompletedToolTrace: true,
   });
 
@@ -85,7 +86,7 @@ test('mergeHydratedHistory does not duplicate completed local tool trace when se
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: false,
+    serverPending: false,
     preserveCompletedToolTrace: true,
   });
 
@@ -109,7 +110,7 @@ test('mergeHydratedHistory does not duplicate completed local tool trace when se
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: false,
+    serverPending: false,
     preserveCompletedToolTrace: true,
   });
 
@@ -133,7 +134,7 @@ test('mergeHydratedHistory anchors preserved completed tool trace before final a
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: false,
+    serverPending: false,
     preserveCompletedToolTrace: true,
   });
 
@@ -157,7 +158,8 @@ test('mergeHydratedHistory avoids duplicating pending entries already present in
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: true,
+    serverPending: true,
+    preserveLocalPending: true,
   });
 
   const toolRows = merged.filter((item) => item.role === 'tool');
@@ -185,7 +187,8 @@ test('mergeHydratedHistory preserves local collapsed state for matching pending 
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: true,
+    serverPending: true,
+    preserveLocalPending: true,
   });
 
   assert.equal(merged[1].collapsed, true);
@@ -212,7 +215,8 @@ test('mergeHydratedHistory prefers fuller local pending tool trace body over par
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: true,
+    serverPending: true,
+    preserveLocalPending: true,
   });
 
   const toolRows = merged.filter((item) => item.role === 'tool');
@@ -234,7 +238,8 @@ test('mergeHydratedHistory does not duplicate singleton pending tool trace when 
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: true,
+    serverPending: true,
+    preserveLocalPending: true,
   });
 
   const toolRows = merged.filter((item) => item.role === 'tool');
@@ -258,7 +263,8 @@ test('mergeHydratedHistory collapses duplicate local pending tool rows created b
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: true,
+    serverPending: true,
+    preserveLocalPending: true,
   });
 
   const toolRows = merged.filter((item) => item.role === 'tool');
@@ -282,7 +288,8 @@ test('mergeHydratedHistory collapses duplicate hydrated pending tool rows before
   const merged = runtime.mergeHydratedHistory({
     previousHistory,
     nextHistory: hydrated,
-    chatPending: true,
+    serverPending: true,
+    preserveLocalPending: true,
   });
 
   const toolRows = merged.filter((item) => item.role === 'tool');

@@ -231,3 +231,21 @@ def test_chat_history_payload_with_activate_true_sets_active_chat_without_consum
     assert payload["chat"]["newest_unread_message_id"] > 0
     assert after.unread_count == 1
     assert server.store.get_active_chat("123") == alt_chat.id
+
+
+def test_reopen_chat_response_returns_chat_metadata_consistent_with_chats_list(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    chat_id = server.store.ensure_default_chat("123")
+    server.store.add_message("123", chat_id, "hermes", "Unread reply")
+
+    payload, status = service.reopen_chat_response(user_id="123", chat_id=chat_id)
+
+    assert status == 200
+    payload_chat = payload["chat"]
+    listed_chat = next(chat for chat in payload["chats"] if chat["id"] == chat_id)
+    assert payload_chat["unread_count"] == listed_chat["unread_count"]
+    assert payload_chat["newest_unread_message_id"] == listed_chat["newest_unread_message_id"]
+    assert payload_chat["unread_count"] == 0
+    assert payload_chat["newest_unread_message_id"] == 0

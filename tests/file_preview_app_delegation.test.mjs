@@ -45,7 +45,7 @@ test('app.js file-preview wrappers keep delegating to filePreviewController', as
     ['renderFilePreview', 'filePreviewController.renderFilePreview(preview, options)'],
     ['showFilePreviewStatus', 'filePreviewController.showFilePreviewStatus(message)'],
     ['openFilePreview', 'filePreviewController.openFilePreview(previewRequest, options)'],
-    ['openFilePreviewByRef', 'filePreviewController.openFilePreviewByRef(refId)'],
+    ['openFilePreviewByRef', 'filePreviewController.openFilePreviewByRef(refId, options)'],
     ['openFilePreviewByPath', 'filePreviewController.openFilePreviewByPath(pathText, options)'],
     ['requestFilePreviewExpansion', 'filePreviewController.requestFilePreviewExpansion(direction)'],
     ['requestFullFilePreview', 'filePreviewController.requestFullFilePreview()'],

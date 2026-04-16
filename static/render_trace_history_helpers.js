@@ -23,6 +23,8 @@
       getRenderedChatId,
       setRenderedChatId,
       refreshTabNode,
+      syncActiveStreamUnseenState = null,
+      syncActiveViewportReadState = null,
       clearSelectionQuoteStateFn,
       syncLiveToolStreamForChatFn,
       appendMessagesFn,
@@ -100,7 +102,18 @@
     function markStreamUpdate(chatId) {
       const key = Number(chatId);
       if (!key || key !== Number(getActiveChatId?.())) return;
-      if (isNearBottom(messagesEl, 40)) return;
+      const atBottom = isNearBottom(messagesEl, 40);
+      if (typeof syncActiveStreamUnseenState === 'function') {
+        const synced = syncActiveStreamUnseenState(key, {
+          atBottom,
+          onBecameUnseen: refreshTabNode,
+        });
+        if (synced) {
+          updateJumpLatestVisibility();
+        }
+        return;
+      }
+      if (atBottom) return;
       unseenStreamChats.add(key);
       refreshTabNode?.(key);
       updateJumpLatestVisibility();
@@ -318,8 +331,15 @@
 
       const atBottom = isNearBottom(messagesEl, 40);
       if (forceBottom || atBottom) {
-        unseenStreamChats.delete(targetChatId);
-        refreshTabNode?.(targetChatId);
+        if (typeof syncActiveViewportReadState === 'function') {
+          syncActiveViewportReadState(targetChatId, {
+            atBottom: true,
+            onViewportBottom: refreshTabNode,
+          });
+        } else {
+          unseenStreamChats.delete(targetChatId);
+          refreshTabNode?.(targetChatId);
+        }
       }
       chatScrollTop.set(targetChatId, messagesEl.scrollTop);
       chatStickToBottom.set(targetChatId, atBottom);

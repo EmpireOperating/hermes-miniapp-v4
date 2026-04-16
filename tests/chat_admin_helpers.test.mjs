@@ -137,8 +137,10 @@ function buildHarness(overrides = {}) {
   const promptCalls = [];
   const latencyMutationCalls = [];
   const focusComposerCalls = [];
+  const buildChatPreservingUnreadCalls = [];
   let activeChatId = 7;
 
+  const buildChatPreservingUnreadOverride = overrides.buildChatPreservingUnread;
   const controller = chatAdmin.createController({
     windowObject: {
       innerWidth: 480,
@@ -262,6 +264,14 @@ function buildHarness(overrides = {}) {
       focusComposerCalls.push(Number(chatId));
     },
     ...overrides,
+    buildChatPreservingUnread: (chat, options = {}) => {
+      const cloned = chat && typeof chat === 'object' ? { ...chat } : chat;
+      buildChatPreservingUnreadCalls.push({ chat: cloned, options: { ...options } });
+      if (typeof buildChatPreservingUnreadOverride === 'function') {
+        return buildChatPreservingUnreadOverride(chat, options);
+      }
+      return cloned;
+    },
   });
 
   return {
@@ -293,6 +303,7 @@ function buildHarness(overrides = {}) {
     renderedPinnedChats,
     clearedStreamState,
     openChatCalls,
+    buildChatPreservingUnreadCalls,
     movedChatIds,
     setActiveCalls,
     setNoActiveCalls,
@@ -443,6 +454,43 @@ test('createChat fallback prompt applies selected tag and hydrates the new activ
   assert.deepEqual(harness.setActiveCalls, [13]);
   assert.deepEqual(harness.renderedMessages, [13]);
   assert.deepEqual(harness.focusComposerCalls, [13]);
+});
+
+test('renameActiveChat preserves activation unread through shared unread authority', async () => {
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true, unread_count: 5, newest_unread_message_id: 41 }],
+    ],
+    initialPinnedChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true, unread_count: 5, newest_unread_message_id: 41 }],
+    ],
+    buildChatPreservingUnread: (chat, options = {}) => ({
+      ...chat,
+      unread_count: options?.preserveActivationUnread ? 5 : Number(chat?.unread_count || 0),
+      newest_unread_message_id: options?.preserveActivationUnread ? 41 : Number(chat?.newest_unread_message_id || 0),
+    }),
+  });
+
+  const renamePromise = harness.controller.renameActiveChat();
+  harness.chatTitleInput.value = 'Current renamed';
+  harness.chatTitleForm.dispatch('submit');
+  await renamePromise;
+
+  assert.deepEqual(harness.apiCalls[0], {
+    path: '/api/chats/rename',
+    payload: { chat_id: 7, title: '[bug]Current renamed' },
+  });
+  assert.deepEqual(harness.buildChatPreservingUnreadCalls, [{
+    chat: { id: 7, title: '[bug]Current renamed', is_pinned: true, unread_count: 5 },
+    options: { preserveActivationUnread: true },
+  }]);
+  assert.deepEqual(harness.upsertedChats, [{
+    id: 7,
+    title: '[bug]Current renamed',
+    is_pinned: true,
+    unread_count: 5,
+    newest_unread_message_id: 41,
+  }]);
 });
 
 test('removeActiveChat keeps silent-close semantics and preserves removed pinned chats for reopen', async () => {

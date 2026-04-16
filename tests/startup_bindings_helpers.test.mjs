@@ -71,6 +71,7 @@ function buildHarness({
   const pendingChats = new Set([7]);
   const refreshTabCalls = [];
   const maybeMarkReadCalls = [];
+  const syncActiveViewportReadStateCalls = [];
   const syncActiveMessageViewCalls = [];
   const scheduleActiveViewCalls = [];
   const appendMessages = [];
@@ -215,7 +216,15 @@ function buildHarness({
     shouldVirtualizeHistoryFn: () => true,
     scheduleActiveMessageView: (chatId) => scheduleActiveViewCalls.push(chatId),
     refreshTabNode: (chatId) => refreshTabCalls.push(chatId),
-    maybeMarkRead: (chatId, options = undefined) => maybeMarkReadCalls.push([chatId, options]),
+    syncActiveViewportReadState: (chatId, options = {}) => {
+      syncActiveViewportReadStateCalls.push([chatId, options]);
+      if (options?.atBottom) {
+        unseenStreamChats.delete(Number(chatId));
+        options.onViewportBottom?.(Number(chatId));
+      }
+      maybeMarkReadCalls.push([chatId, options?.forceMarkRead ? { force: true } : undefined]);
+      return true;
+    },
     updateJumpLatestVisibility: () => {},
     syncActiveMessageView: (chatId, options) => syncActiveMessageViewCalls.push([chatId, options]),
     cancelSelectionQuoteSync: () => {},
@@ -334,6 +343,7 @@ function buildHarness({
     unseenStreamChats,
     refreshTabCalls,
     maybeMarkReadCalls,
+    syncActiveViewportReadStateCalls,
     syncActiveMessageViewCalls,
     scheduleActiveViewCalls,
     appendMessages,
@@ -377,6 +387,7 @@ test('handleMessagesScroll reconciles active chat scroll state and read markers'
   assert.equal(harness.chatScrollTop.get(7), 120);
   assert.equal(harness.chatStickToBottom.get(7), true);
   assert.deepEqual(harness.refreshTabCalls, [7]);
+  assert.deepEqual(harness.syncActiveViewportReadStateCalls.map(([chatId, options]) => [chatId, { atBottom: options.atBottom, forceMarkRead: options.forceMarkRead ?? false }]), [[7, { atBottom: true, forceMarkRead: false }]]);
   assert.deepEqual(harness.maybeMarkReadCalls, [[7, undefined]]);
   assert.deepEqual(harness.scheduleActiveViewCalls, [7]);
   assert.equal(harness.unseenStreamChats.has(7), false);
@@ -425,6 +436,7 @@ test('handleMessagesScroll still checks exact unread-message threshold when not 
 
   assert.equal(harness.chatStickToBottom.get(7), false);
   assert.deepEqual(harness.refreshTabCalls, []);
+  assert.deepEqual(harness.syncActiveViewportReadStateCalls.map(([chatId, options]) => [chatId, { atBottom: options.atBottom, forceMarkRead: options.forceMarkRead ?? false }]), [[7, { atBottom: false, forceMarkRead: false }]]);
   assert.deepEqual(harness.maybeMarkReadCalls, [[7, undefined]]);
   assert.equal(harness.unseenStreamChats.has(7), true);
 });
@@ -435,6 +447,7 @@ test('handleJumpLatest forces bottom sync and mark-read', () => {
   harness.controller.handleJumpLatest();
 
   assert.deepEqual(harness.refreshTabCalls, [7]);
+  assert.deepEqual(harness.syncActiveViewportReadStateCalls.map(([chatId, options]) => [chatId, { atBottom: options.atBottom, forceMarkRead: options.forceMarkRead ?? false }]), [[7, { atBottom: true, forceMarkRead: true }]]);
   assert.deepEqual(harness.syncActiveMessageViewCalls, [[7, { forceBottom: true }]]);
   assert.deepEqual(harness.maybeMarkReadCalls, [[7, { force: true }]]);
 });

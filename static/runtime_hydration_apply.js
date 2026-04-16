@@ -29,6 +29,7 @@
   function createHydrationApplyController(deps, pendingStateController, retryController) {
     const {
       loadChatHistory,
+      buildChatPreservingUnread,
       upsertChatPreservingUnread,
       traceChatHistory,
     } = deps;
@@ -42,15 +43,21 @@
       retryActivate = false,
     }) {
       let nextData = data;
-      upsertChatPreservingUnread(nextData.chat, { preserveActivationUnread: true });
       let pendingState = pendingStateController.derivePendingState(targetChatId, previousHistory, nextData);
       let preservePendingState = pendingState.preservePendingState;
-      let hydrationResult = pendingStateController.applyHydratedHistory(
-        targetChatId,
-        previousHistory,
-        nextData.history || [],
-        preservePendingState,
-      );
+      let hydrationResult = typeof pendingStateController.prepareHydratedHistory === 'function'
+        ? pendingStateController.prepareHydratedHistory(
+          targetChatId,
+          previousHistory,
+          nextData.history || [],
+          pendingState,
+        )
+        : pendingStateController.applyHydratedHistory(
+          targetChatId,
+          previousHistory,
+          nextData.history || [],
+          pendingState,
+        );
       const incomingUnreadAnchorMessageId = Math.max(0, Number(nextData.chat?.newest_unread_message_id || 0));
       if (retryController.shouldRetryUnreadHydrate({
         incomingUnreadAnchorMessageId,
@@ -64,21 +71,44 @@
           incomingUnreadAnchorMessageId,
         });
         nextData = await loadChatHistory(targetChatId, { activate: Boolean(retryActivate) });
-        upsertChatPreservingUnread(nextData.chat, { preserveActivationUnread: true });
         pendingState = pendingStateController.derivePendingState(targetChatId, previousHistory, nextData);
         preservePendingState = pendingState.preservePendingState;
-        hydrationResult = pendingStateController.applyHydratedHistory(
-          targetChatId,
-          previousHistory,
-          nextData.history || [],
-          preservePendingState,
-        );
+        hydrationResult = typeof pendingStateController.prepareHydratedHistory === 'function'
+          ? pendingStateController.prepareHydratedHistory(
+            targetChatId,
+            previousHistory,
+            nextData.history || [],
+            pendingState,
+          )
+          : pendingStateController.applyHydratedHistory(
+            targetChatId,
+            previousHistory,
+            nextData.history || [],
+            pendingState,
+          );
       }
+      const preparedChat = typeof buildChatPreservingUnread === 'function'
+        ? buildChatPreservingUnread(nextData.chat, { preserveActivationUnread: true })
+        : nextData.chat;
+      let committed = false;
       return {
-        data: nextData,
+        data: {
+          ...nextData,
+          chat: preparedChat,
+        },
         pendingState,
         preservePendingState,
         ...hydrationResult,
+        commitHydratedState() {
+          if (committed) {
+            return;
+          }
+          committed = true;
+          hydrationResult.commitHydratedHistory?.();
+          if (typeof upsertChatPreservingUnread === 'function') {
+            upsertChatPreservingUnread(preparedChat, { preserveActivationUnread: true });
+          }
+        },
       };
     }
 

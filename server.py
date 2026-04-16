@@ -8,6 +8,25 @@ import time
 from collections import deque
 from pathlib import Path
 
+BASE_DIR = Path(__file__).resolve().parent
+
+from miniapp_env import load_env_file_into_environ
+
+load_env_file_into_environ(
+    BASE_DIR / ".env",
+    preserve_alias_groups=(
+        (
+            "MINIAPP_DEV_BYPASS",
+            "MINI_APP_DEV_BYPASS",
+            "MINIAPP_DEV_BYPASS_EXPIRES_AT",
+            "MINI_APP_DEV_BYPASS_EXPIRES_AT",
+            "MINIAPP_DEV_SECRET",
+            "MINI_APP_DEV_SECRET",
+            "MINI_APP_DEV_AUTH_SECRET",
+        ),
+    ),
+)
+
 from flask import Flask, Response, g, request
 
 from app_factory import create_flask_app, create_runtime_dependencies
@@ -39,7 +58,6 @@ from server_startup import log_startup_diagnostics, startup_diagnostics_payload
 from store import ChatThread, SessionStore
 from validators import parse_chat_id, validate_message, validate_title
 
-BASE_DIR = Path(__file__).resolve().parent
 SESSION_STORE_PATH = Path(os.environ.get("MINI_APP_SESSION_STORE_PATH") or (BASE_DIR / "sessions.db"))
 CLIENT_BOOT_SUMMARY_LOG_PATH = Path(
     os.environ.get("MINI_APP_BOOT_SUMMARY_LOG_PATH") or (BASE_DIR / "var" / "client_boot_summaries.ndjson")

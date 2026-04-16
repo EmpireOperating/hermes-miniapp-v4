@@ -416,9 +416,99 @@ test('openFilePreview shows modal, loads preview, and stores request state', asy
   assert.deepEqual(harness.getCurrentFilePreviewRequest(), {
     path: '/tmp/example.txt',
     line_start: 2,
+    line_end: 3,
+    window_start: 1,
+    window_end: 4,
   });
   assert.equal(harness.filePreviewStatus.textContent, 'Showing lines 1–4 of 10');
   assert.equal(harness.filePreviewLines.children.length, 4);
+});
+
+test('openFilePreview canonicalizes stored request state to the resolved preview path and focus lines', async () => {
+  const harness = buildHarness();
+
+  const apiCalls = harness.apiCalls;
+  const controller = filePreviewHelpers.createController({
+    documentObject: harness.documentObject,
+    requestAnimationFrameFn: (callback) => callback(),
+    filePreviewModal: harness.filePreviewModal,
+    filePreviewPath: harness.filePreviewPath,
+    filePreviewStatus: harness.filePreviewStatus,
+    filePreviewLines: harness.filePreviewLines,
+    filePreviewExpandUp: harness.filePreviewExpandUp,
+    filePreviewLoadFull: harness.filePreviewLoadFull,
+    filePreviewExpandDown: harness.filePreviewExpandDown,
+    filePreviewClose: harness.filePreviewClose,
+    messagesEl: harness.messagesEl,
+    apiPost: async (path, payload) => {
+      apiCalls.push({ path, payload });
+      return {
+        preview: {
+          path: '/tmp/resolved.txt',
+          line_start: 11,
+          line_end: 13,
+          window_start: 1,
+          window_end: 40,
+          total_lines: 200,
+          can_expand_up: false,
+          can_expand_down: true,
+          can_load_full_file: true,
+          lines: [
+            { line: 11, text: 'alpha' },
+            { line: 12, text: 'bravo' },
+            { line: 13, text: 'charlie' },
+          ],
+        },
+      };
+    },
+    getActiveChatId: () => 7,
+    getCurrentFilePreviewRequest: harness.getCurrentFilePreviewRequest,
+    setCurrentFilePreviewRequest: harness.setCurrentFilePreviewRequest,
+    getCurrentFilePreview: harness.getCurrentFilePreview,
+    setCurrentFilePreview: harness.setCurrentFilePreview,
+  });
+
+  await controller.openFilePreview({ ref_id: ' ref-200 ' });
+
+  assert.deepEqual(harness.getCurrentFilePreviewRequest(), {
+    ref_id: 'ref-200',
+    path: '/tmp/resolved.txt',
+    line_start: 11,
+    line_end: 13,
+    window_start: 1,
+    window_end: 40,
+  });
+
+  harness.setCurrentFilePreview({
+    path: '/tmp/resolved.txt',
+    line_start: 11,
+    line_end: 13,
+    window_start: 1,
+    window_end: 40,
+    total_lines: 200,
+    can_expand_up: false,
+    can_expand_down: true,
+    can_load_full_file: true,
+    lines: [],
+  });
+
+  await controller.requestFilePreviewExpansion('down');
+
+  assert.deepEqual(apiCalls.map((entry) => entry.payload), [
+    {
+      chat_id: 7,
+      ref_id: 'ref-200',
+    },
+    {
+      chat_id: 7,
+      ref_id: 'ref-200',
+      path: '/tmp/resolved.txt',
+      line_start: 11,
+      line_end: 13,
+      window_start: 1,
+      window_end: 80,
+    },
+  ]);
 });
 
 test('openFilePreview ignores stale overlapping responses and keeps the latest preview visible', async () => {
@@ -482,6 +572,9 @@ test('openFilePreview ignores stale overlapping responses and keeps the latest p
   assert.deepEqual(harness.getCurrentFilePreviewRequest(), {
     path: '/tmp/second.txt',
     line_start: 9,
+    line_end: 10,
+    window_start: 8,
+    window_end: 11,
   });
   assert.equal(harness.filePreviewPath.textContent, '/tmp/second.txt');
   assert.equal(harness.filePreviewStatus.textContent, 'Showing lines 8–11 of 20');
@@ -570,7 +663,7 @@ test('requestFilePreviewExpansion and requestFullFilePreview reuse current reque
       line_start: 2,
       line_end: 3,
       window_start: 1,
-      window_end: 44,
+      window_end: 4,
       full_file: true,
     },
   ]);
@@ -691,7 +784,14 @@ test('handleMessageFileRefClick still prevents default and opens ref previews fo
     target: {
       closest(selector) {
         assert.equal(selector, '.message-file-ref');
-        return { dataset: { fileRefId: '  ref-77  ' } };
+        return {
+          dataset: {
+            fileRefId: '  ref-77  ',
+            filePath: ' /tmp/example.txt ',
+            fileLineStart: '12',
+            fileLineEnd: '14',
+          },
+        };
       },
     },
     preventDefault() {
@@ -703,4 +803,7 @@ test('handleMessageFileRefClick still prevents default and opens ref previews fo
 
   assert.equal(prevented, 1);
   assert.equal(harness.apiCalls[0].payload.ref_id, 'ref-77');
+  assert.equal(harness.apiCalls[0].payload.path, '/tmp/example.txt');
+  assert.equal(harness.apiCalls[0].payload.line_start, 12);
+  assert.equal(harness.apiCalls[0].payload.line_end, 14);
 });

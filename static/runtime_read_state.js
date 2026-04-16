@@ -3,6 +3,103 @@
     return Number(chatId);
   }
 
+  function resolvePreservedUnreadState({
+    chat,
+    chats,
+    getActiveChatId,
+    hasReachedNewestUnreadMessageBottom,
+    preserveActivationUnread = false,
+    hasActivationReadThreshold = null,
+  } = {}) {
+    if (!chat || typeof chat !== 'object') {
+      return chat;
+    }
+    const key = normalizeChatId(chat.id);
+    if (!key) {
+      return chat;
+    }
+    const nextChat = { ...chat };
+    if (!preserveActivationUnread) {
+      return nextChat;
+    }
+    const localChat = chats.get(key) || null;
+    const localUnread = Math.max(0, Number(localChat?.unread_count || 0));
+    const localUnreadAnchor = Math.max(0, Number(localChat?.newest_unread_message_id || 0));
+    const incomingUnread = Math.max(0, Number(nextChat.unread_count || 0));
+    const activeUnreadAboveNewestMessage = Boolean(
+      key === normalizeChatId(getActiveChatId?.())
+      && localUnread > incomingUnread
+      && !hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
+    );
+    const thresholdStillArmed = typeof hasActivationReadThreshold === 'function'
+      ? Boolean(hasActivationReadThreshold(key))
+      : false;
+    if ((thresholdStillArmed || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
+      nextChat.unread_count = localUnread;
+      nextChat.newest_unread_message_id = localUnreadAnchor;
+    }
+    return nextChat;
+  }
+
+  function isIncomingChatLaggingLocalState(currentChat, incomingChat) {
+    if (!currentChat || typeof currentChat !== 'object' || !incomingChat || typeof incomingChat !== 'object') {
+      return false;
+    }
+    const localUnread = Math.max(0, Number(currentChat.unread_count || 0));
+    const incomingUnread = Math.max(0, Number(incomingChat.unread_count || 0));
+    if (localUnread > incomingUnread) {
+      return true;
+    }
+    const localUnreadAnchor = Math.max(0, Number(currentChat.newest_unread_message_id || 0));
+    const incomingUnreadAnchor = Math.max(0, Number(incomingChat.newest_unread_message_id || 0));
+    if (localUnreadAnchor > incomingUnreadAnchor) {
+      return true;
+    }
+    return Boolean(currentChat.pending) && !Boolean(incomingChat.pending);
+  }
+
+  function applyIncomingUnreadIncrement({
+    chats,
+    chatId,
+    nextUnreadCountFn,
+    activeChatId = null,
+    hidden = false,
+    renderTraceLog = null,
+  } = {}) {
+    const key = normalizeChatId(chatId);
+    if (!key || !chats?.has?.(key)) {
+      return {
+        chatId: key || 0,
+        beforeUnread: 0,
+        afterUnread: 0,
+        incremented: false,
+      };
+    }
+    const chat = chats.get(key);
+    const beforeUnread = Math.max(0, Number(chat?.unread_count || 0));
+    if (typeof nextUnreadCountFn === 'function') {
+      chat.unread_count = nextUnreadCountFn({
+        currentUnreadCount: chat.unread_count,
+        targetChatId: key,
+        activeChatId,
+        hidden: Boolean(hidden),
+      });
+    }
+    const afterUnread = Math.max(0, Number(chat?.unread_count || 0));
+    const result = {
+      chatId: key,
+      beforeUnread,
+      afterUnread,
+      incremented: afterUnread > beforeUnread,
+    };
+    renderTraceLog?.('unread-increment', {
+      ...result,
+      activeChatId: normalizeChatId(activeChatId) || 0,
+      hidden: Boolean(hidden),
+    });
+    return result;
+  }
+
   function createUnreadStateController(deps) {
     const {
       chats,
@@ -48,30 +145,13 @@
     }
 
     function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
-      if (!chat || typeof chat !== 'object') {
-        return chat;
-      }
-      const key = normalizeChatId(chat.id);
-      if (!key) {
-        return chat;
-      }
-      const nextChat = { ...chat };
-      if (preserveActivationUnread) {
-        const localChat = chats.get(key) || null;
-        const localUnread = Math.max(0, Number(localChat?.unread_count || 0));
-        const localUnreadAnchor = Math.max(0, Number(localChat?.newest_unread_message_id || 0));
-        const incomingUnread = Math.max(0, Number(nextChat.unread_count || 0));
-        const activeUnreadAboveNewestMessage = Boolean(
-          key === normalizeChatId(getActiveChatId())
-          && localUnread > incomingUnread
-          && !hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
-        );
-        if (activeUnreadAboveNewestMessage && localUnread > incomingUnread) {
-          nextChat.unread_count = localUnread;
-          nextChat.newest_unread_message_id = localUnreadAnchor;
-        }
-      }
-      return nextChat;
+      return resolvePreservedUnreadState({
+        chat,
+        chats,
+        getActiveChatId,
+        hasReachedNewestUnreadMessageBottom,
+        preserveActivationUnread,
+      });
     }
 
     function upsertChatPreservingUnread(chat, options = {}) {
@@ -290,28 +370,14 @@
 
   function createUnreadPreservationController({ chats, getActiveChatId }, unreadStateController, thresholdController) {
     function buildChatPreservingUnread(chat, { preserveActivationUnread = false } = {}) {
-      if (!preserveActivationUnread) {
-        return unreadStateController.buildChatPreservingUnread(chat, { preserveActivationUnread: false });
-      }
-      const nextChat = unreadStateController.buildChatPreservingUnread(chat, { preserveActivationUnread });
-      const key = normalizeChatId(nextChat?.id);
-      if (!key) {
-        return nextChat;
-      }
-      const localChat = chats.get(key) || null;
-      const localUnread = Math.max(0, Number(localChat?.unread_count || 0));
-      const localUnreadAnchor = Math.max(0, Number(localChat?.newest_unread_message_id || 0));
-      const incomingUnread = Math.max(0, Number(nextChat?.unread_count || 0));
-      const activeUnreadAboveNewestMessage = Boolean(
-        key === normalizeChatId(getActiveChatId())
-        && localUnread > incomingUnread
-        && !thresholdController.hasReachedNewestUnreadMessageBottom(key, { tolerance: 40 })
-      );
-      if ((thresholdController.hasActivationReadThreshold(key) || activeUnreadAboveNewestMessage) && localUnread > incomingUnread) {
-        nextChat.unread_count = localUnread;
-        nextChat.newest_unread_message_id = localUnreadAnchor;
-      }
-      return nextChat;
+      return resolvePreservedUnreadState({
+        chat,
+        chats,
+        getActiveChatId,
+        hasReachedNewestUnreadMessageBottom: thresholdController.hasReachedNewestUnreadMessageBottom,
+        preserveActivationUnread,
+        hasActivationReadThreshold: thresholdController.hasActivationReadThreshold,
+      });
     }
 
     function upsertChatPreservingUnread(chat, options = {}) {
@@ -514,12 +580,61 @@
       return upsertChat(buildChatPreservingUnread(chat, options));
     }
 
+    function syncHydratedActiveReadState(chatId, {
+      unreadCount = null,
+      beforeMarkRead = null,
+      forceMarkRead = false,
+    } = {}) {
+      thresholdController.ensureActivationReadThreshold(chatId, unreadCount);
+      if (typeof beforeMarkRead === 'function') {
+        beforeMarkRead();
+      }
+      requestController.maybeMarkRead(chatId, { force: forceMarkRead });
+    }
+
+    function syncActiveViewportReadState(chatId, {
+      atBottom = false,
+      forceMarkRead = false,
+      onViewportBottom = null,
+    } = {}) {
+      const key = normalizeChatId(chatId);
+      if (!key || !requestController.isActiveChat(key)) {
+        return false;
+      }
+      if (atBottom) {
+        unseenStreamChats.delete(key);
+        if (typeof onViewportBottom === 'function') {
+          onViewportBottom(key);
+        }
+      }
+      requestController.maybeMarkRead(key, { force: forceMarkRead });
+      return true;
+    }
+
+    function syncActiveStreamUnseenState(chatId, {
+      atBottom = false,
+      onBecameUnseen = null,
+    } = {}) {
+      const key = normalizeChatId(chatId);
+      if (!key || !requestController.isActiveChat(key) || atBottom) {
+        return false;
+      }
+      unseenStreamChats.add(key);
+      if (typeof onBecameUnseen === 'function') {
+        onBecameUnseen(key);
+      }
+      return true;
+    }
+
     return {
       buildChatPreservingUnread,
       upsertChatPreservingUnread,
       getCurrentUnreadCount: unreadStateController.getCurrentUnreadCount,
       armActivationReadThreshold: thresholdController.armActivationReadThreshold,
       ensureActivationReadThreshold: thresholdController.ensureActivationReadThreshold,
+      syncHydratedActiveReadState,
+      syncActiveViewportReadState,
+      syncActiveStreamUnseenState,
       markRead: requestController.markRead,
       maybeMarkRead: requestController.maybeMarkRead,
       hasLocalPendingWithoutLiveStream(chatId, history) {
@@ -538,6 +653,9 @@
 
   const api = {
     normalizeChatId,
+    resolvePreservedUnreadState,
+    isIncomingChatLaggingLocalState,
+    applyIncomingUnreadIncrement,
     createUnreadStateController,
     createUnreadAnchorController,
     createActivationReadThresholdController,

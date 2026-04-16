@@ -649,7 +649,20 @@ test('finalizeStreamLifecycle finalizes pending state for owning non-aborted str
   await harness.controller.finalizeStreamLifecycle(9, owningController, { wasAborted: false });
 
   assert.deepEqual(harness.finalizeCalls, [{ chatId: 9, wasAborted: false }]);
+  assert.deepEqual(harness.syncActiveViewportReadStateCalls, [[9, { atBottom: true }]]);
   assert.equal(harness.controller.hasLiveStreamController(9), false);
+});
+
+test('finalizeStreamLifecycle uses the shared viewport-read helper for active off-bottom completion', async () => {
+  const harness = buildControllerHarness({
+    isNearBottom: () => false,
+  });
+  const owningController = new AbortController();
+
+  harness.controller.setStreamAbortController(9, owningController);
+  await harness.controller.finalizeStreamLifecycle(9, owningController, { wasAborted: false });
+
+  assert.deepEqual(harness.syncActiveViewportReadStateCalls, [[9, { atBottom: false }]]);
 });
 
 test('finalizeStreamLifecycle does not refocus the composer on completion', async () => {

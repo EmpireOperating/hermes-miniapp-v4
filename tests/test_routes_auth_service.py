@@ -129,6 +129,66 @@ class _UnreadBootstrapStoreStub(_StoreStub):
         self.mark_chat_read_through_calls += 1
 
 
+class _PendingRefreshStoreStub(_StoreStub):
+    def __init__(self):
+        super().__init__(checkpoint_state=None)
+        self.list_chats_calls = 0
+
+    def prune_expired_auth_sessions(self, _now_ts: int) -> None:
+        return None
+
+    def list_chats(self, *, user_id: str):
+        assert user_id == "123"
+        self.list_chats_calls += 1
+        if self.list_chats_calls == 1:
+            return [{
+                "id": 7,
+                "title": "Ideas",
+                "pending": True,
+                "unread_count": 1,
+                "newest_unread_message_id": 11,
+                "is_pinned": False,
+            }]
+        return [{
+            "id": 7,
+            "title": "Ideas",
+            "pending": False,
+            "unread_count": 0,
+            "newest_unread_message_id": 0,
+            "is_pinned": False,
+        }]
+
+    def list_pinned_chat_summaries(self, *, user_id: str):
+        assert user_id == "123"
+        return []
+
+    def get_active_chat(self, user_id: str):
+        assert user_id == "123"
+        return 7
+
+    def has_explicit_empty_chat_state(self, user_id: str) -> bool:
+        assert user_id == "123"
+        return False
+
+    def ensure_default_chat(self, user_id: str) -> int:
+        assert user_id == "123"
+        return 7
+
+    def get_skin(self, user_id: str) -> str:
+        assert user_id == "123"
+        return "terminal"
+
+    def get_telegram_unread_notifications_enabled(self, user_id: str) -> bool:
+        assert user_id == "123"
+        return False
+
+    def get_history(self, *, user_id: str, chat_id: int, limit: int = 120):
+        assert user_id == "123"
+        assert chat_id == 7
+        assert limit == 120
+        return [_Turn(id=11, chat_id=7, role="hermes", body="Recovered reply", created_at="2026-04-10T00:00:00Z")]
+
+
 def _service(*, checkpoint_state=None, store=None) -> AuthBootstrapService:
     active_store = store or _StoreStub(checkpoint_state=checkpoint_state)
     return AuthBootstrapService(
@@ -260,6 +320,32 @@ def test_auth_success_state_does_not_consume_active_chat_unread_on_bootstrap() -
     assert active_chat["newest_unread_message_id"] == 11
     assert store.mark_chat_read_calls == 0
     assert store.mark_chat_read_through_calls == 0
+
+
+def test_auth_success_state_refreshes_chats_after_pending_recovery() -> None:
+    store = _PendingRefreshStoreStub()
+    ensure_pending_jobs_calls = []
+    service = AuthBootstrapService(
+        store_getter=lambda: store,
+        runtime_getter=lambda: SimpleNamespace(ensure_pending_jobs=lambda user_id: ensure_pending_jobs_calls.append(user_id)),
+        serialize_chat_fn=lambda chat: chat,
+        session_id_builder_fn=lambda user_id, chat_id: f"miniapp-{user_id}-{chat_id}",
+    )
+
+    result = service.auth_success_state(
+        SimpleNamespace(id=123, first_name="Operator", username="operator"),
+        auth_mode="telegram",
+        allow_empty=False,
+    )
+
+    payload = result["payload"]
+    assert ensure_pending_jobs_calls == ["123"]
+    assert store.list_chats_calls == 2
+    active_chat = next(chat for chat in payload["chats"] if chat["id"] == 7)
+    assert active_chat["pending"] is False
+    assert active_chat["unread_count"] == 0
+    assert active_chat["newest_unread_message_id"] == 0
+    assert payload["history"][-1]["body"] == "Recovered reply"
 
 
 def test_auth_success_state_prefers_preferred_chat_without_overwriting_shared_active_chat() -> None:

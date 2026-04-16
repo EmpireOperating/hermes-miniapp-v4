@@ -5,6 +5,17 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const readState = require('../static/runtime_read_state.js');
 
+test('isIncomingChatLaggingLocalState detects lagging unread, anchor, and pending metadata', () => {
+  assert.equal(readState.isIncomingChatLaggingLocalState(
+    { id: 7, unread_count: 2, newest_unread_message_id: 33, pending: true },
+    { id: 7, unread_count: 1, newest_unread_message_id: 12, pending: false },
+  ), true);
+  assert.equal(readState.isIncomingChatLaggingLocalState(
+    { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false },
+    { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false },
+  ), false);
+});
+
 test('createUnreadAnchorController measures newest unread assistant boundary before generic near-bottom fallback', () => {
   const chats = new Map([[7, { id: 7, unread_count: 1, newest_unread_message_id: 22 }]]);
   const assistantNode = {
@@ -160,4 +171,117 @@ test('createReadSyncController exposes pending-without-live-stream detection thr
 
   assert.equal(controller.hasLocalPendingWithoutLiveStream(7, [{ role: 'assistant', pending: true }]), true);
   assert.equal(controller.hasLocalPendingWithoutLiveStream(7, [{ role: 'assistant', pending: false }]), false);
+});
+
+test('createReadSyncController syncHydratedActiveReadState runs the optional pre-mark-read hook before a forced mark-read request', async () => {
+  const chats = new Map([[7, { id: 7, unread_count: 1, newest_unread_message_id: 22, pending: false }]]);
+  const order = [];
+  const controller = readState.createReadSyncController({
+    apiPost: async (path, payload) => {
+      order.push('request');
+      assert.equal(path, '/api/chats/mark-read');
+      return { chat: { id: Number(payload.chat_id), unread_count: 0, pending: false } };
+    },
+    chats,
+    upsertChat: (chat) => {
+      chats.set(Number(chat.id), { ...chat });
+      return chat;
+    },
+    getActiveChatId: () => 7,
+    getIsAuthenticated: () => true,
+    isNearBottomFn: () => false,
+    messagesContainer: { querySelectorAll: () => [] },
+    unseenStreamChats: new Set(),
+    markReadInFlight: new Set(),
+    renderTabs: () => {},
+    syncActivePendingStatus: () => {},
+    updateComposerState: () => {},
+    pendingChats: new Set(),
+    hasLiveStreamController: () => false,
+    hasLocalPendingTranscript: () => false,
+  });
+
+  controller.syncHydratedActiveReadState(7, {
+    unreadCount: 1,
+    forceMarkRead: true,
+    beforeMarkRead: () => order.push('before-mark-read'),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(order, ['before-mark-read', 'request']);
+});
+
+test('createReadSyncController syncActiveViewportReadState clears unseen active chats before forcing mark-read', async () => {
+  const chats = new Map([[7, { id: 7, unread_count: 2, newest_unread_message_id: 22, pending: false }]]);
+  const unseenStreamChats = new Set([7]);
+  const order = [];
+  const controller = readState.createReadSyncController({
+    apiPost: async (path, payload) => {
+      order.push('request');
+      assert.equal(path, '/api/chats/mark-read');
+      return { chat: { id: Number(payload.chat_id), unread_count: 0, pending: false } };
+    },
+    chats,
+    upsertChat: (chat) => {
+      chats.set(Number(chat.id), { ...chat });
+      return chat;
+    },
+    getActiveChatId: () => 7,
+    getIsAuthenticated: () => true,
+    isNearBottomFn: () => true,
+    messagesContainer: { querySelectorAll: () => [] },
+    unseenStreamChats,
+    markReadInFlight: new Set(),
+    renderTabs: () => {},
+    syncActivePendingStatus: () => {},
+    updateComposerState: () => {},
+    pendingChats: new Set(),
+    hasLiveStreamController: () => false,
+    hasLocalPendingTranscript: () => false,
+  });
+
+  const synced = controller.syncActiveViewportReadState(7, {
+    atBottom: true,
+    forceMarkRead: true,
+    onViewportBottom: () => order.push('viewport-bottom'),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(synced, true);
+  assert.equal(unseenStreamChats.has(7), false);
+  assert.deepEqual(order, ['viewport-bottom', 'request']);
+});
+
+test('createReadSyncController syncActiveStreamUnseenState marks active off-bottom stream updates through read-state authority', () => {
+  const unseenStreamChats = new Set();
+  const order = [];
+  const controller = readState.createReadSyncController({
+    apiPost: async () => ({ chat: { id: 7, unread_count: 0, pending: false } }),
+    chats: new Map([[7, { id: 7, unread_count: 1, newest_unread_message_id: 22, pending: false }]]),
+    upsertChat: (chat) => chat,
+    getActiveChatId: () => 7,
+    getIsAuthenticated: () => true,
+    isNearBottomFn: () => true,
+    messagesContainer: { querySelectorAll: () => [] },
+    unseenStreamChats,
+    markReadInFlight: new Set(),
+    renderTabs: () => {},
+    syncActivePendingStatus: () => {},
+    updateComposerState: () => {},
+    pendingChats: new Set(),
+    hasLiveStreamController: () => false,
+    hasLocalPendingTranscript: () => false,
+  });
+
+  assert.equal(controller.syncActiveStreamUnseenState(5, { atBottom: false, onBecameUnseen: () => order.push('wrong-chat') }), false);
+  assert.equal(controller.syncActiveStreamUnseenState(7, { atBottom: true, onBecameUnseen: () => order.push('bottom') }), false);
+
+  const synced = controller.syncActiveStreamUnseenState(7, {
+    atBottom: false,
+    onBecameUnseen: () => order.push('became-unseen'),
+  });
+
+  assert.equal(synced, true);
+  assert.equal(unseenStreamChats.has(7), true);
+  assert.deepEqual(order, ['became-unseen']);
 });

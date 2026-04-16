@@ -7,6 +7,7 @@ from typing import Any, Callable
 from file_preview_eligibility import (
     FILE_PREVIEW_MAX_BYTES,
     file_preview_allowed_roots,
+    file_preview_context_roots,
     file_preview_deny_status,
     file_preview_enabled,
     is_previewable_path,
@@ -14,7 +15,6 @@ from file_preview_eligibility import (
     previewable_file_refs,
     resolve_preview_path,
 )
-from file_refs import extract_file_refs
 
 
 class ChatManagementService:
@@ -38,10 +38,12 @@ class ChatManagementService:
     def serialize_turn(self, turn: Any) -> dict[str, object]:
         payload = asdict(turn)
         allowed_roots = self._file_preview_allowed_roots()
+        preferred_roots = self._file_preview_context_roots(allowed_roots)
         refs = previewable_file_refs(
             payload.get("body") or "",
             message_id=int(payload.get("id") or 0),
             allowed_roots=allowed_roots,
+            preferred_roots=preferred_roots,
         )
         if refs:
             payload["file_refs"] = refs
@@ -134,9 +136,10 @@ class ChatManagementService:
 
     def reopen_chat_response(self, *, user_id: str, chat_id: int) -> tuple[dict[str, object], int]:
         store = self._store_getter()
-        chat_record = store.reopen_chat(user_id=user_id, chat_id=chat_id)
+        store.reopen_chat(user_id=user_id, chat_id=chat_id)
         store.mark_chat_read(user_id=user_id, chat_id=chat_id)
         store.set_active_chat(user_id=user_id, chat_id=chat_id)
+        chat_record = store.get_chat(user_id=user_id, chat_id=chat_id)
         history = self.chat_history(user_id=user_id, chat_id=chat_id, limit=120)
         chats = self.serialize_chats(user_id=user_id)
         pinned_chats = self.serialize_pinned_chats(user_id=user_id)
@@ -269,6 +272,7 @@ class ChatManagementService:
         self._store_getter().get_chat(user_id=user_id, chat_id=chat_id)
 
         allowed_roots = self._file_preview_allowed_roots()
+        preferred_roots = self._file_preview_context_roots(allowed_roots)
         if not self._file_preview_enabled(allowed_roots):
             return self._json_error_fn("File preview feature is disabled", 403)
         if not allowed_roots:
@@ -282,15 +286,24 @@ class ChatManagementService:
                     ref_id=ref_id,
                 )
             except KeyError as exc:
-                return self._json_error_fn(str(exc), 404)
-            path_text = ref_path
-            if line_start <= 0:
-                line_start = ref_line_start
-            if line_end <= 0:
-                line_end = ref_line_end
+                if not str(path_text or "").strip():
+                    return self._json_error_fn(str(exc), 404)
+            else:
+                # Treat the server-resolved ref target as the authority when ref_id is present.
+                # Client-supplied path is only a fallback for older/cached payloads that may not
+                # be able to resolve the ref server-side anymore.
+                path_text = ref_path
+                if line_start <= 0:
+                    line_start = ref_line_start
+                if line_end <= 0:
+                    line_end = ref_line_end
 
         try:
-            target_path = self.resolve_preview_path(path_text, allowed_roots=allowed_roots)
+            target_path = self.resolve_preview_path(
+                path_text,
+                allowed_roots=allowed_roots,
+                preferred_roots=preferred_roots,
+            )
         except ValueError as exc:
             return self._json_error_fn(str(exc), 400)
 
@@ -332,8 +345,21 @@ class ChatManagementService:
     def _file_preview_enabled(self, allowed_roots: list[Path]) -> bool:
         return file_preview_enabled(allowed_roots)
 
-    def resolve_preview_path(self, path_text: str, *, allowed_roots: list[Path]) -> Path:
-        return resolve_preview_path(path_text, allowed_roots=allowed_roots)
+    def _file_preview_context_roots(self, allowed_roots: list[Path]) -> list[Path]:
+        return file_preview_context_roots(allowed_roots)
+
+    def resolve_preview_path(
+        self,
+        path_text: str,
+        *,
+        allowed_roots: list[Path],
+        preferred_roots: list[Path] | None = None,
+    ) -> Path:
+        return resolve_preview_path(
+            path_text,
+            allowed_roots=allowed_roots,
+            preferred_roots=preferred_roots,
+        )
 
     def path_under_allowed_roots(self, target: Path, roots: list[Path]) -> bool:
         return path_under_allowed_roots(target, roots)
@@ -422,13 +448,21 @@ class ChatManagementService:
         }
 
     def resolve_ref_preview_request(self, *, user_id: str, chat_id: int, ref_id: str) -> tuple[str, int, int]:
+        allowed_roots = self._file_preview_allowed_roots()
+        preferred_roots = self._file_preview_context_roots(allowed_roots)
         history = self._store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=400)
         for turn in history:
-            refs = extract_file_refs(turn.body, message_id=int(turn.id))
+            refs = previewable_file_refs(
+                turn.body,
+                message_id=int(turn.id),
+                allowed_roots=allowed_roots,
+                preferred_roots=preferred_roots,
+            )
             for ref in refs:
                 if str(ref.get("ref_id") or "") != ref_id:
                     continue
-                path = str(ref.get("path") or "").strip()
+                resolved_path = str(ref.get("resolved_path") or "").strip()
+                path = resolved_path or str(ref.get("path") or "").strip()
                 if not path:
                     break
                 line_start = int(ref.get("line_start") or 0)

@@ -20,6 +20,7 @@ test('createVisibilityResumeController resumes pending chat with force when loca
     pendingChats: new Set([7]),
     chatPending: false,
     localPendingWithoutLiveStream: true,
+    localAssistantPendingWithoutLiveStream: true,
     snapshotPendingWithoutLiveStream: false,
     matchedVisibleHydratedCompletion: false,
   });
@@ -69,10 +70,9 @@ test('createVisibleSyncController skips stale response when active chat changes 
     maybeTriggerVisibleHydrationHaptic: () => {
       throw new Error('should not haptic on stale response');
     },
-    ensureActivationReadThreshold: () => {
-      throw new Error('should not update read threshold on stale response');
+    syncHydratedActiveReadState: (chatId, options = {}) => {
+      markReadCalls.push({ chatId: Number(chatId), options });
     },
-    maybeMarkRead: (chatId) => markReadCalls.push(Number(chatId)),
     pendingChats: new Set(),
     visibleSyncGenerationRef,
     visibilityResumeController: {
@@ -85,4 +85,161 @@ test('createVisibleSyncController skips stale response when active chat changes 
   assert.deepEqual(renderCalls, []);
   assert.deepEqual(markReadCalls, []);
   assert.deepEqual(visibilityResumeCalls, []);
+});
+
+test('createVisibleSyncController resumes pending visibility state before clearing unread and triggers haptic afterward', async () => {
+  const order = [];
+  const visibleSyncGenerationRef = { value: 0, get() { return this.value; }, set(next) { this.value = Number(next) || 0; } };
+
+  const controller = visibleHistorySync.createVisibleSyncController({
+    histories: new Map([[7, [{ id: 1, role: 'assistant', body: 'old' }]]]),
+    getActiveChatId: () => 7,
+    loadChatHistory: async () => ({
+      chat: { id: 7, unread_count: 1, pending: true },
+      history: [{ id: 2, role: 'assistant', body: 'fresh pending state', pending: true }],
+    }),
+    hydrationApplyController: {
+      applyHydratedServerState: async () => ({
+        data: { chat: { id: 7, unread_count: 1, pending: true } },
+        restoredPendingSnapshot: false,
+        historyChanged: true,
+        finalHistory: [{ id: 2, role: 'assistant', body: 'fresh pending state', pending: true }],
+        pendingState: {
+          chatPending: true,
+          localPendingWithoutLiveStream: false,
+          snapshotPendingWithoutLiveStream: true,
+          matchedVisibleHydratedCompletion: false,
+        },
+      }),
+    },
+    renderDecisionController: {
+      buildHydrationRenderState: () => ({ shouldRenderActiveHistory: false }),
+    },
+    refreshTabNode: () => {},
+    renderMessages: () => {},
+    maybeTriggerVisibleHydrationHaptic: () => order.push('haptic'),
+    syncHydratedActiveReadState: (_chatId, options = {}) => {
+      order.push('threshold');
+      options.beforeMarkRead?.();
+      order.push('mark-read');
+    },
+    pendingChats: new Set([7]),
+    visibleSyncGenerationRef,
+    visibilityResumeController: {
+      maybeResumeVisibilitySync: () => order.push('resume'),
+    },
+  });
+
+  await controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+
+  assert.deepEqual(order, ['threshold', 'resume', 'mark-read', 'haptic']);
+});
+
+test('createVisibleSyncController skips stale post-hydration commit when active chat changes during apply', async () => {
+  const histories = new Map([[7, [{ id: 1, role: 'assistant', body: 'old' }]]]);
+  let activeChatId = 7;
+  const commits = [];
+  const renderCalls = [];
+  const markReadCalls = [];
+  const visibleSyncGenerationRef = { value: 0, get() { return this.value; }, set(next) { this.value = Number(next) || 0; } };
+
+  const controller = visibleHistorySync.createVisibleSyncController({
+    histories,
+    getActiveChatId: () => activeChatId,
+    loadChatHistory: async () => ({
+      chat: { id: 7, unread_count: 1 },
+      history: [{ id: 2, role: 'assistant', body: 'fresh' }],
+    }),
+    hydrationApplyController: {
+      applyHydratedServerState: async () => {
+        activeChatId = 9;
+        return {
+          data: { chat: { id: 7, unread_count: 1 } },
+          restoredPendingSnapshot: false,
+          finalHistory: [{ id: 2, role: 'assistant', body: 'fresh' }],
+          pendingState: {
+            chatPending: false,
+            localPendingWithoutLiveStream: false,
+            snapshotPendingWithoutLiveStream: false,
+            matchedVisibleHydratedCompletion: false,
+          },
+          commitHydratedState: () => commits.push('commit'),
+        };
+      },
+    },
+    renderDecisionController: {
+      buildHydrationRenderState: () => ({ shouldRenderActiveHistory: true }),
+    },
+    refreshTabNode: () => {
+      throw new Error('should not refresh stale post-hydration visible sync');
+    },
+    renderMessages: (chatId, options = {}) => renderCalls.push({ chatId: Number(chatId), options }),
+    maybeTriggerVisibleHydrationHaptic: () => {
+      throw new Error('should not haptic on stale post-hydration visible sync');
+    },
+    syncHydratedActiveReadState: (chatId, options = {}) => {
+      markReadCalls.push({ chatId: Number(chatId), options });
+    },
+    pendingChats: new Set(),
+    visibleSyncGenerationRef,
+    visibilityResumeController: {
+      maybeResumeVisibilitySync: () => {
+        throw new Error('should not resume stale post-hydration visible sync');
+      },
+    },
+  });
+
+  await controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+
+  assert.deepEqual(commits, []);
+  assert.deepEqual(renderCalls, []);
+  assert.deepEqual(markReadCalls, []);
+});
+
+test('createVisibleSyncController passes the actual hydration historyChanged result into render decisions', async () => {
+  const renderDecisionCalls = [];
+  const visibleSyncGenerationRef = { value: 0, get() { return this.value; }, set(next) { this.value = Number(next) || 0; } };
+
+  const controller = visibleHistorySync.createVisibleSyncController({
+    histories: new Map([[7, [{ id: 1, role: 'assistant', body: 'old' }]]]),
+    getActiveChatId: () => 7,
+    loadChatHistory: async () => ({
+      chat: { id: 7, unread_count: 1 },
+      history: [{ id: 2, role: 'assistant', body: 'fresh' }],
+    }),
+    hydrationApplyController: {
+      applyHydratedServerState: async () => ({
+        data: { chat: { id: 7, unread_count: 1 } },
+        restoredPendingSnapshot: false,
+        historyChanged: true,
+        finalHistory: [{ id: 2, role: 'assistant', body: 'fresh' }],
+        pendingState: {
+          chatPending: false,
+          localPendingWithoutLiveStream: false,
+          snapshotPendingWithoutLiveStream: false,
+          matchedVisibleHydratedCompletion: false,
+        },
+      }),
+    },
+    renderDecisionController: {
+      buildHydrationRenderState: (args) => {
+        renderDecisionCalls.push(args);
+        return { shouldRenderActiveHistory: false };
+      },
+    },
+    refreshTabNode: () => {},
+    renderMessages: () => {},
+    maybeTriggerVisibleHydrationHaptic: () => {},
+    syncHydratedActiveReadState: () => {},
+    pendingChats: new Set(),
+    visibleSyncGenerationRef,
+    visibilityResumeController: {
+      maybeResumeVisibilitySync: () => {},
+    },
+  });
+
+  await controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+
+  assert.equal(renderDecisionCalls.length, 1);
+  assert.equal(renderDecisionCalls[0].historyChanged, true);
 });

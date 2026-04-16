@@ -6,7 +6,7 @@ from typing import Any, Callable, TypeVar
 
 from flask import jsonify
 
-from file_preview_eligibility import previewable_file_refs
+from file_preview_eligibility import file_preview_allowed_roots, file_preview_context_roots, previewable_file_refs
 from hermes_client import HermesClientError
 from routes_chat_context import ChatRouteContext
 from routes_chat_error_mapping import map_chat_id_payload_error_to_json
@@ -31,7 +31,14 @@ def register_sync_chat_routes(
 
     def _serialize_turn(turn) -> dict[str, object]:
         payload = asdict(turn)
-        refs = previewable_file_refs(payload.get("body") or "", message_id=int(payload.get("id") or 0))
+        allowed_roots = file_preview_allowed_roots()
+        preferred_roots = file_preview_context_roots(allowed_roots)
+        refs = previewable_file_refs(
+            payload.get("body") or "",
+            message_id=int(payload.get("id") or 0),
+            allowed_roots=allowed_roots,
+            preferred_roots=preferred_roots,
+        )
         if refs:
             payload["file_refs"] = refs
         else:

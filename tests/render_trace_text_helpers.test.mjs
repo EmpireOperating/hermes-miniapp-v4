@@ -28,13 +28,39 @@ test('renderBody linkifies known file refs in plain text', () => {
     {
       cleanDisplayTextFn,
       escapeHtmlFn,
-      fileRefs: [{ ref_id: 'fr_1', raw_text: '/tmp/demo.py:12' }],
+      fileRefs: [{ ref_id: 'fr_1', raw_text: '/tmp/demo.py:12', resolved_path: '/tmp/demo.py', line_start: 12 }],
     },
   );
 
   assert.match(container.innerHTML, /data-file-ref-id="fr_1"/);
+  assert.match(container.innerHTML, /data-file-path="\/tmp\/demo.py"/);
+  assert.match(container.innerHTML, /data-file-line-start="12"/);
   assert.match(container.innerHTML, /message-file-ref/);
-  assert.doesNotMatch(container.innerHTML, /data-file-path=/);
+});
+
+test('renderBody uses file_ref.path as a fallback when resolved_path is absent', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceTextHelpers.renderBody(
+    container,
+    'See static/runtime_history_helpers.js:12',
+    {
+      cleanDisplayTextFn,
+      escapeHtmlFn,
+      fileRefs: [{
+        ref_id: 'fr_path_only',
+        raw_text: 'static/runtime_history_helpers.js:12',
+        path: '/home/hermes-agent/workspace/active/hermes_miniapp_v4/static/runtime_history_helpers.js',
+        line_start: 12,
+      }],
+    },
+  );
+
+  assert.match(container.innerHTML, /data-file-ref-id="fr_path_only"/);
+  assert.match(container.innerHTML, /data-file-path="\/home\/hermes-agent\/workspace\/active\/hermes_miniapp_v4\/static\/runtime_history_helpers\.js"/);
+  assert.match(container.innerHTML, /data-file-line-start="12"/);
 });
 
 test('renderBody preserves file-ref clickability across fenced blocks', () => {

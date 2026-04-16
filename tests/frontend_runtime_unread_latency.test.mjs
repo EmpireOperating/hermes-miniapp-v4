@@ -43,7 +43,7 @@ test('visibility resume only when pending chat has no active stream controller',
 });
 
 
-test('unread increments for backgrounded app even on active chat', () => {
+test('unread never increments for the selected active chat, even when hidden', () => {
   assert.equal(
     runtime.nextUnreadCount({
       currentUnreadCount: 0,
@@ -51,7 +51,7 @@ test('unread increments for backgrounded app even on active chat', () => {
       activeChatId: 11,
       hidden: true,
     }),
-    1,
+    0,
   );
 
   assert.equal(
@@ -136,12 +136,12 @@ test('createAttentionEffectsController dedupes haptics and applies unread policy
 
   hidden = true;
   controller.incrementUnread(7);
-  assert.equal(chats.get(7).unread_count, 1);
+  assert.equal(chats.get(7).unread_count, 0);
 
   hidden = false;
   activeChatId = 99;
   controller.incrementUnread(7);
-  assert.equal(chats.get(7).unread_count, 2);
+  assert.equal(chats.get(7).unread_count, 1);
   assert.deepEqual(traceLogs, [
     {
       eventName: 'unread-increment',
@@ -161,8 +161,8 @@ test('createAttentionEffectsController dedupes haptics and applies unread policy
         activeChatId: 7,
         hidden: true,
         beforeUnread: 0,
-        afterUnread: 1,
-        incremented: true,
+        afterUnread: 0,
+        incremented: false,
       },
     },
     {
@@ -171,8 +171,8 @@ test('createAttentionEffectsController dedupes haptics and applies unread policy
         chatId: 7,
         activeChatId: 99,
         hidden: false,
-        beforeUnread: 1,
-        afterUnread: 2,
+        beforeUnread: 0,
+        afterUnread: 1,
         incremented: true,
       },
     },

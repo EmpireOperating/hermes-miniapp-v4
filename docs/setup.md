@@ -13,7 +13,7 @@ Use this path unless you already know you want something else:
 - Node.js 20+
 - Linux/macOS: `scripts/setup.sh` then `scripts/setup.sh doctor`
 - Windows: open a WSL2 shell, then run `scripts/setup.sh` and `scripts/setup.sh doctor` there
-- Portable Python fallback: `python scripts/setup_bootstrap.py --write-env-if-missing` then `python scripts/setup_doctor.py`
+- Portable Python fallback: `python3 scripts/setup_bootstrap.py --write-env-if-missing` then `python3 scripts/setup_doctor.py`
 - HTTP-backed Hermes mode unless you already have local Hermes running on Linux/macOS or under WSL2
 
 ## Platform support
@@ -51,7 +51,7 @@ scripts/setup.sh
 Portable Python fallback:
 
 ```bash
-python scripts/setup_bootstrap.py --write-env-if-missing
+python3 scripts/setup_bootstrap.py --write-env-if-missing
 ```
 
 On an interactive terminal, bootstrap fills the main first-run values in `.env` for you.
@@ -83,16 +83,24 @@ scripts/setup.sh doctor
 Portable Python fallback:
 
 ```bash
-python scripts/setup_doctor.py
+python3 scripts/setup_doctor.py
 ```
 
 4. Start the app:
 
 ```bash
-python server.py
+.venv/bin/python server.py
 ```
 
-At this point you have validated the code, dependencies, and basic configuration.
+5. Verify local startup:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+6. Open the Mini App from Telegram and send a message.
+
+At this point you have validated the code, dependencies, basic configuration, and local HTTP serving path.
 
 ### Phase B: Telegram-facing URL, DNS, and HTTPS
 
@@ -104,12 +112,20 @@ This is usually the biggest setup friction. The short version:
 - if you do not already have one, the cheapest domain you can buy and control is usually good enough
 - it must serve valid HTTPS and match the URL your Telegram bot opens
 
+Once DNS and HTTPS are ready, run:
+
+```bash
+scripts/setup.sh telegram
+```
+
+That command validates the public `MINI_APP_URL`, checks your bot token with Telegram, configures the bot menu button to open the Mini App, and verifies the result so the final operator step is just opening Telegram and tapping the button.
+
 ## Bootstrap command
 
 Use:
 - Linux/macOS: `scripts/setup.sh`
 - Windows: open a WSL2 shell, then run `scripts/setup.sh`
-- portable Python: `python scripts/setup_bootstrap.py --write-env-if-missing`
+- portable Python: `python3 scripts/setup_bootstrap.py --write-env-if-missing`
 
 Bootstrap creates `.venv`, installs dependencies, creates `.env` when needed, and prompts for key values on an interactive terminal.
 
@@ -128,20 +144,44 @@ Flags:
 Use:
 - Linux/macOS: `scripts/setup.sh doctor`
 - Windows: open a WSL2 shell, then run `scripts/setup.sh doctor`
-- portable Python: `python scripts/setup_doctor.py`
+- portable Python: `python3 scripts/setup_doctor.py`
 
 Doctor checks Python, Node, `.venv`, dependencies, `.env`, key config values, DNS, backend configuration, and platform mode.
 
 Use JSON output for automation:
 
 ```bash
-python scripts/setup_doctor.py --json
+python3 scripts/setup_doctor.py --json
 ```
 
 The JSON output includes:
 - per-check results
 - fail/warn/pass counts
 - a `summary.next_steps` list that an agent or script can surface directly
+
+## Telegram finalize command
+
+Use:
+- Linux/macOS: `scripts/setup.sh telegram`
+- Windows: open a WSL2 shell, then run `scripts/setup.sh telegram`
+- portable Python: `python3 scripts/setup_telegram.py`
+
+This command expects:
+- `TELEGRAM_BOT_TOKEN` set to a real token
+- `MINI_APP_URL` set to the final HTTPS URL
+- DNS already pointing at the Mini App
+- the Mini App already serving traffic at that URL
+
+What it does:
+- checks the public `MINI_APP_URL`
+- checks `/health` on the same origin
+- validates the bot token with Telegram `getMe`
+- configures the Telegram menu button to open the Mini App
+- verifies the menu button now points at your URL
+
+Optional:
+- set `MINI_APP_MENU_BUTTON_TEXT` in `.env`
+- or pass `--menu-button-text "Launch"`
 
 ## Backend mode notes
 
@@ -179,6 +219,14 @@ Node:
 ```bash
 node --test tests/*.mjs
 ```
+
+Clean install smoke harness:
+
+```bash
+scripts/install_smoke.sh
+```
+
+This builds a disposable Docker image, follows the documented setup flow in a clean container, runs the setup doctor, starts the app, and verifies `curl http://127.0.0.1:8080/health`.
 
 ## Troubleshooting
 

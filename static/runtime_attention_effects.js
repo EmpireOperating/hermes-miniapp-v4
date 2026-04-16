@@ -1,4 +1,6 @@
 (function (globalScope) {
+  const readStateHelpers = globalScope.HermesMiniappRuntimeReadState || null;
+
   function normalizeChatId(value) {
     const parsed = Number(value);
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
@@ -18,10 +20,9 @@
     return hasPending && !hasActiveController;
   }
 
-  function shouldIncrementUnread({ targetChatId, activeChatId, hidden }) {
+  function shouldIncrementUnread({ targetChatId, activeChatId }) {
     const target = normalizeChatId(targetChatId);
     if (!target) return false;
-    if (hidden) return true;
     const active = normalizeChatId(activeChatId);
     return active !== target;
   }
@@ -181,7 +182,18 @@
 
     function incrementUnread(chatId) {
       const key = normalizeChatId(chatId);
-      if (!key || !chats?.has?.(key)) return;
+      if (!key) return;
+      if (typeof readStateHelpers?.applyIncomingUnreadIncrement === 'function') {
+        readStateHelpers.applyIncomingUnreadIncrement({
+          chats,
+          chatId: key,
+          nextUnreadCountFn,
+          activeChatId: getActiveChatId?.(),
+          hidden: Boolean(isDocumentHidden?.()),
+          renderTraceLog,
+        });
+        return;
+      }
       const chat = chats.get(key);
       const beforeUnread = Math.max(0, Number(chat?.unread_count || 0));
       chat.unread_count = nextUnreadCountFn({
@@ -207,6 +219,27 @@
       triggerIncomingMessageHaptic,
       incrementUnread,
       consumedCompletedReplyKeys,
+    };
+  }
+
+  function describeFirstAssistantAttentionEffect({
+    chatId,
+    activeChatId,
+    hidden = false,
+    notificationId = 0,
+  }) {
+    const key = normalizeChatId(chatId);
+    const shouldNotifyOnFirstChunk = shouldIncrementUnread({
+      targetChatId: key,
+      activeChatId,
+      hidden: Boolean(hidden),
+    });
+    return {
+      shouldTriggerHaptic: shouldNotifyOnFirstChunk,
+      shouldIncrementUnread: shouldNotifyOnFirstChunk,
+      shouldRenderTabs: shouldNotifyOnFirstChunk,
+      messageKey: shouldNotifyOnFirstChunk ? `chat:${key}:assistant-stream:${Math.max(0, Number(notificationId) || 0)}` : '',
+      fallbackToLatestHistory: false,
     };
   }
 
@@ -314,24 +347,26 @@
       if (!key || firstAssistantNotificationStateByChat.has(key)) {
         return false;
       }
-      const shouldNotifyOnFirstChunk = shouldIncrementUnread({
-        targetChatId: key,
+      nextAssistantNotificationId += 1;
+      const effect = describeFirstAssistantAttentionEffect({
+        chatId: key,
         activeChatId: getActiveChatId?.(),
         hidden: Boolean(isDocumentHidden?.()),
+        notificationId: nextAssistantNotificationId,
       });
-      nextAssistantNotificationId += 1;
-      const messageKey = shouldNotifyOnFirstChunk ? `chat:${key}:assistant-stream:${nextAssistantNotificationId}` : '';
       const notificationState = {
-        messageKey,
+        messageKey: String(effect.messageKey || ''),
         unreadIncremented: false,
       };
       firstAssistantNotificationStateByChat.set(key, notificationState);
-      if (shouldNotifyOnFirstChunk) {
-        triggerIncomingMessageHaptic?.(chatId, { messageKey, fallbackToLatestHistory: false });
-        incrementUnread?.(chatId);
-        renderTabs?.();
-        notificationState.unreadIncremented = true;
-      }
+      const execution = executeAttentionEffect({
+        chatId: key,
+        effect,
+        triggerIncomingMessageHaptic,
+        incrementUnread,
+        renderTabs,
+      });
+      notificationState.unreadIncremented = Boolean(execution.incrementedUnread);
       return true;
     }
 
@@ -352,6 +387,7 @@
     createFirstAssistantNotificationController,
     describeHydrationAttentionEffect,
     shouldTriggerHydrationAttentionEffect,
+    describeFirstAssistantAttentionEffect,
     describeDoneAttentionEffect,
     describeEarlyCloseAttentionEffect,
     describeResumeCompletionAttentionEffect,

@@ -250,6 +250,7 @@
   }
 
   function createTabPresentationController({
+    chatUiHelpers,
     mobileTabCarouselEnabled,
     getIsMobileCarouselViewport,
     tabOverviewEl,
@@ -278,23 +279,24 @@
       return `${count} hidden unread ${count === 1 ? 'chat' : 'chats'}`;
     }
 
-    function getEffectiveUnreadCount(chatId) {
+    function getUnreadState(chatId) {
       const key = Number(chatId || 0);
-      if (!key) return 0;
-      if (typeof getCurrentUnreadCount === 'function') {
-        const unread = Number(getCurrentUnreadCount(key));
-        if (Number.isFinite(unread)) {
-          return Math.max(0, unread);
-        }
+      if (!key) {
+        return { chatId: null, unreadCount: 0, hasUnseenInViewport: false, hasUnreadBadge: false };
       }
-      const chat = chats.get(key);
-      return Math.max(0, Number(chat?.unread_count || 0));
+      return chatUiHelpers.getTabUnreadState({
+        chat: chats.get(key),
+        unseenStreamChats,
+        getCurrentUnreadCount,
+      });
+    }
+
+    function getEffectiveUnreadCount(chatId) {
+      return getUnreadState(chatId).unreadCount;
     }
 
     function hasUnreadBadge(chatId) {
-      const key = Number(chatId || 0);
-      if (!key) return false;
-      return getEffectiveUnreadCount(key) > 0 || unseenStreamChats.has(key);
+      return getUnreadState(chatId).hasUnreadBadge;
     }
 
     function countHiddenUnreadChats(orderedChats, activeChatId) {
@@ -693,12 +695,18 @@
         chat,
         pendingChats,
         unseenStreamChats,
+        getCurrentUnreadCount,
       });
       const chatId = Number(chat?.id || 0);
       if (chatId > 0) {
-        const unread = Math.max(0, Number(chat?.unread_count || 0));
+        const unreadState = chatUiHelpers.getTabUnreadState({
+          chat,
+          unseenStreamChats,
+          getCurrentUnreadCount,
+        });
+        const unread = unreadState.unreadCount;
         const pending = pendingChats.has(chatId) || Boolean(chat?.pending);
-        const unseen = unseenStreamChats.has(chatId);
+        const unseen = unreadState.hasUnseenInViewport;
         if (pending || unread > 0 || unseen || chatId === Number(getActiveChatId())) {
           renderTraceLog?.('tab-badge-state', {
             chatId,
@@ -936,6 +944,7 @@
     } = tabNodeController;
 
     const tabPresentationController = createTabPresentationController({
+      chatUiHelpers,
       mobileTabCarouselEnabled,
       getIsMobileCarouselViewport,
       tabOverviewEl,

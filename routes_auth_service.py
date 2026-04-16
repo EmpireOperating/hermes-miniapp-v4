@@ -5,7 +5,7 @@ from dataclasses import asdict
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from file_preview_eligibility import previewable_file_refs
+from file_preview_eligibility import file_preview_allowed_roots, file_preview_context_roots, previewable_file_refs
 
 
 _AUTH_PRUNE_INTERVAL_SECONDS = 300
@@ -28,7 +28,14 @@ class AuthBootstrapService:
 
     def serialize_turn(self, turn: Any) -> dict[str, object]:
         payload = asdict(turn)
-        refs = previewable_file_refs(payload.get("body") or "", message_id=int(payload.get("id") or 0))
+        allowed_roots = file_preview_allowed_roots()
+        preferred_roots = file_preview_context_roots(allowed_roots)
+        refs = previewable_file_refs(
+            payload.get("body") or "",
+            message_id=int(payload.get("id") or 0),
+            allowed_roots=allowed_roots,
+            preferred_roots=preferred_roots,
+        )
         if refs:
             payload["file_refs"] = refs
         else:
@@ -188,6 +195,9 @@ class AuthBootstrapService:
         visible_chat_ids = {int(chat["id"]) for chat in chats}
         if any(bool(chat.get("pending")) for chat in chats):
             runtime.ensure_pending_jobs(user_id)
+            chats = self._visible_chats(user_id=user_id)
+            pinned_chats = self._pinned_chats(user_id=user_id)
+            visible_chat_ids = {int(chat["id"]) for chat in chats}
 
         stored_active_chat_id = store.get_active_chat(user_id)
         active_chat_id = stored_active_chat_id
