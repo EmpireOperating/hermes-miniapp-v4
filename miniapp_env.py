@@ -5,6 +5,13 @@ from pathlib import Path
 from typing import Mapping
 
 SHARED_TELEGRAM_TOKEN_OPT_IN_KEY = "MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN"
+PLACEHOLDER_TELEGRAM_TOKEN_FRAGMENTS = (
+    "replace",
+    "your-token",
+    "your_token",
+    "example",
+    "paste",
+)
 
 
 def _parse_env_lines(text: str) -> dict[str, str]:
@@ -50,6 +57,18 @@ def default_hermes_env_path(*, environ: Mapping[str, str] | None = None) -> Path
     return default_hermes_home(environ=environ) / ".env"
 
 
+def is_placeholder_telegram_token(token: str | None) -> bool:
+    value = str(token or "").strip()
+    if not value:
+        return True
+    lowered = value.lower()
+    if '...' in value:
+        return True
+    if all(ch == '*' for ch in value):
+        return True
+    return any(fragment in lowered for fragment in PLACEHOLDER_TELEGRAM_TOKEN_FRAGMENTS)
+
+
 def resolve_telegram_bot_token(
     env_values: Mapping[str, str] | None = None,
     *,
@@ -59,12 +78,12 @@ def resolve_telegram_bot_token(
     environ = environ or os.environ
 
     explicit_token = str(values.get("TELEGRAM_BOT_TOKEN") or "").strip()
-    if explicit_token:
+    if explicit_token and not is_placeholder_telegram_token(explicit_token):
         return explicit_token, ".env"
 
     if env_values is None:
         ambient_token = str(environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
-        if ambient_token:
+        if ambient_token and not is_placeholder_telegram_token(ambient_token):
             return ambient_token, "environment"
 
     if not shared_telegram_token_opt_in_enabled(values, environ=environ):
@@ -72,7 +91,7 @@ def resolve_telegram_bot_token(
 
     hermes_env = parse_env_file(default_hermes_env_path(environ=environ))
     shared_token = str(hermes_env.get("TELEGRAM_BOT_TOKEN") or "").strip()
-    if not shared_token:
+    if not shared_token or is_placeholder_telegram_token(shared_token):
         return "", None
     return shared_token, "hermes_shared_env"
 
@@ -101,7 +120,8 @@ def load_env_file_into_environ(
         os.environ[key] = value
         applied[key] = value
     token, source = resolve_telegram_bot_token(parsed)
-    if source == "hermes_shared_env" and (overwrite or "TELEGRAM_BOT_TOKEN" not in os.environ):
+    current_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if source == "hermes_shared_env" and (overwrite or is_placeholder_telegram_token(current_token)):
         os.environ["TELEGRAM_BOT_TOKEN"] = token
-        applied.setdefault("TELEGRAM_BOT_TOKEN", token)
+        applied["TELEGRAM_BOT_TOKEN"] = token
     return applied

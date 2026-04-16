@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from miniapp_env import (
     SHARED_TELEGRAM_TOKEN_OPT_IN_KEY,
     default_hermes_env_path,
+    is_placeholder_telegram_token,
     parse_env_file,
     resolve_telegram_bot_token,
 )
@@ -202,7 +203,7 @@ def check_env_file(root: Path) -> CheckResult:
 
 def check_telegram_bot_token(env_values: dict[str, str]) -> CheckResult:
     token, source = resolve_telegram_bot_token(env_values)
-    if token and token not in PLACEHOLDER_TOKEN_VALUES and "..." not in token:
+    if token and not is_placeholder_telegram_token(token):
         if source == "hermes_shared_env":
             return CheckResult(
                 "telegram_bot_token",

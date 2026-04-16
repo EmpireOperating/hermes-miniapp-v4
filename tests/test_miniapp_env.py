@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from miniapp_env import load_env_file_into_environ, resolve_telegram_bot_token
+from miniapp_env import load_env_file_into_environ, parse_env_file, resolve_telegram_bot_token
 
 
 def test_load_env_file_into_environ_sets_missing_values_without_overwriting(monkeypatch, tmp_path: Path) -> None:
@@ -103,3 +103,39 @@ def test_resolve_telegram_bot_token_uses_shared_hermes_env_only_with_opt_in(monk
     token, source = resolve_telegram_bot_token({"MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN": "1"})
     assert token == "123456:shared-token"
     assert source == "hermes_shared_env"
+
+
+def test_resolve_telegram_bot_token_prefers_shared_token_over_placeholder_when_opted_in(monkeypatch, tmp_path: Path) -> None:
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("TELEGRAM_BOT_TOKEN=123456:shared-token\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    token, source = resolve_telegram_bot_token({
+        "TELEGRAM_BOT_TOKEN": "123456:replace_me",
+        "MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN": "1",
+    })
+
+    assert token == "123456:shared-token"
+    assert source == "hermes_shared_env"
+
+
+def test_load_env_file_into_environ_replaces_example_placeholder_with_shared_token_when_opted_in(monkeypatch, tmp_path: Path) -> None:
+    miniapp_env_path = tmp_path / ".env"
+    miniapp_env_path.write_text(
+        "TELEGRAM_BOT_TOKEN=123456:replace_me\n"
+        "MINI_APP_USE_HERMES_TELEGRAM_BOT_TOKEN=1\n"
+        "MINI_APP_URL=https://mini.example.com/app\n",
+        encoding="utf-8",
+    )
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("TELEGRAM_BOT_TOKEN=123456:shared-token\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    updates = load_env_file_into_environ(miniapp_env_path)
+
+    assert updates["TELEGRAM_BOT_TOKEN"] == "123456:shared-token"
+    assert os.environ["TELEGRAM_BOT_TOKEN"] == "123456:shared-token"
+
