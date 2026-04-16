@@ -125,7 +125,7 @@
       setLastOpenChatRequestId,
       nowMs,
       traceChatHistory,
-      armActivationReadThreshold,
+      syncOpenActivationReadState,
       setActiveChatMeta,
       renderMessages,
       appendSystemMessage,
@@ -146,7 +146,7 @@
         requestId,
         hadCachedHistory,
       });
-      armActivationReadThreshold(targetChatId);
+      syncOpenActivationReadState(targetChatId);
 
       if (hadCachedHistory) {
         cachedOpenController.openCachedChat(targetChatId, requestId, openStartedAtMs);

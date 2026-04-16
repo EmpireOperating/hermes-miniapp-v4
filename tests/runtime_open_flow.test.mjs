@@ -44,6 +44,50 @@ test('createCachedOpenController prioritizes hydration immediately for unread ca
   assert.equal(traces.find((entry) => entry.eventName === 'cached-hydrate-scheduled')?.details?.prioritizeHydration, true);
 });
 
+test('createHistoryOpenController delegates open threshold arming to read-state authority when available', async () => {
+  const traces = [];
+  const activeMeta = [];
+  const rendered = [];
+  const syncedOpenReadState = [];
+  let lastOpenRequestId = 0;
+  const controller = openFlow.createHistoryOpenController({
+    normalizeChatId: (chatId) => Number(chatId),
+    histories: new Map([[8, [{ id: 1, role: 'assistant', body: 'cached' }]]]),
+    getLastOpenChatRequestId: () => lastOpenRequestId,
+    setLastOpenChatRequestId: (value) => { lastOpenRequestId = Number(value); },
+    nowMs: () => 1000,
+    traceChatHistory: (eventName, details = {}) => traces.push({ eventName, details }),
+    syncOpenActivationReadState: (chatId, options = {}) => {
+      syncedOpenReadState.push({ chatId: Number(chatId), options: { ...options } });
+    },
+    setActiveChatMeta: (chatId, options = {}) => activeMeta.push({ chatId: Number(chatId), options }),
+    renderMessages: (chatId, options = {}) => rendered.push({ chatId: Number(chatId), options }),
+    appendSystemMessage: () => {},
+    fetchController: {
+      loadChatHistory: async () => ({ chat: { id: 8 }, history: [] }),
+      prefetchChatHistory: () => {},
+      warmChatHistoryCache: () => {},
+    },
+    hydrationController: {
+      hydrateChatFromServer: async () => {},
+      syncVisibleActiveChat: () => {},
+    },
+    cachedOpenController: {
+      openCachedChat: () => {},
+    },
+    statusController: {
+      refreshChats: () => {},
+    },
+  });
+
+  await controller.openChat(8);
+
+  assert.deepEqual(syncedOpenReadState, [{ chatId: 8, options: {} }]);
+  assert.equal(traces[0].eventName, 'open-start');
+  assert.deepEqual(activeMeta, []);
+  assert.deepEqual(rendered, []);
+});
+
 test('createHistoryOpenController reports open failures only for the latest request', async () => {
   const traces = [];
   const systemMessages = [];
@@ -57,7 +101,7 @@ test('createHistoryOpenController reports open failures only for the latest requ
     setLastOpenChatRequestId: (value) => { lastOpenRequestId = Number(value); },
     nowMs: () => 1000,
     traceChatHistory: (eventName, details = {}) => traces.push({ eventName, details }),
-    armActivationReadThreshold: () => {},
+    syncOpenActivationReadState: () => {},
     setActiveChatMeta: (chatId, options = {}) => activeMeta.push({ chatId: Number(chatId), options }),
     renderMessages: (chatId, options = {}) => rendered.push({ chatId: Number(chatId), options }),
     appendSystemMessage: (message, chatId) => systemMessages.push({ message, chatId: Number(chatId) }),

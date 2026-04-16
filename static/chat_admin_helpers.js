@@ -84,6 +84,18 @@
       });
     }
 
+    function rotateChatTitleSelectedTag(step) {
+      if (!Array.isArray(chatTitleTagButtons) || !chatTitleTagButtons.length) return;
+      const orderedTags = chatTitleTagButtons
+        .map((button) => String(button?.dataset?.chatTitleTag || 'none').toLowerCase())
+        .filter((tag, index, tags) => CHAT_TITLE_ALLOWED_TAGS.has(tag) && tags.indexOf(tag) === index);
+      if (!orderedTags.length) return;
+      const currentIndex = orderedTags.indexOf(chatTitleSelectedTag);
+      const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+      const nextIndex = (safeIndex + step + orderedTags.length) % orderedTags.length;
+      setChatTitleSelectedTag(orderedTags[nextIndex]);
+    }
+
     async function askForChatTitle({ mode, currentTitle = '', defaultTitle = 'New chat' }) {
       const parsedCurrent = parseTaggedChatTitle(currentTitle);
       const fallbackDefault = mode === 'rename' ? parsedCurrent.title || defaultTitle : defaultTitle;
@@ -124,6 +136,7 @@
           chatTitleCancel.removeEventListener('click', onCancel);
           chatTitleModal.removeEventListener('cancel', onCancel);
           chatTitleModal.removeEventListener('close', onClose);
+          chatTitleInput.removeEventListener?.('keydown', onTagRotationKeyDown);
           chatTitleTagButtons.forEach((button) => {
             button.removeEventListener('click', onTagSelect);
             button.removeEventListener('mousedown', onTagMouseDown);
@@ -185,10 +198,27 @@
           applyTagSelection(event);
         };
 
+        const onTagRotationKeyDown = (event) => {
+          if (!showTagToggles) return;
+          if (event?.altKey || event?.ctrlKey || event?.metaKey) return;
+          if (event?.key === 'ArrowRight') {
+            event.preventDefault?.();
+            rotateChatTitleSelectedTag(1);
+            chatTitleInput.focus?.();
+            return;
+          }
+          if (event?.key === 'ArrowLeft') {
+            event.preventDefault?.();
+            rotateChatTitleSelectedTag(-1);
+            chatTitleInput.focus?.();
+          }
+        };
+
         chatTitleForm.addEventListener('submit', onSubmit);
         chatTitleCancel.addEventListener('click', onCancel);
         chatTitleModal.addEventListener('cancel', onCancel);
         chatTitleModal.addEventListener('close', onClose);
+        chatTitleInput.addEventListener?.('keydown', onTagRotationKeyDown);
         chatTitleTagButtons.forEach((button) => button.addEventListener('click', onTagSelect));
         chatTitleTagButtons.forEach((button) => button.addEventListener('mousedown', onTagMouseDown));
         chatTitleTagButtons.forEach((button) => button.addEventListener('touchstart', onTagTouchStart, { passive: false }));

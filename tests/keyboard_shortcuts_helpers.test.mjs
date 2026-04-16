@@ -371,6 +371,93 @@ test('handleTabClick opens selected chat when clicking a non-active tab', () => 
   assert.deepEqual(opened, [8]);
 });
 
+test('handleGlobalComposerFocusShortcut focuses the composer from transcript focus on desktop Enter', () => {
+  let prevented = false;
+  let focusCalls = 0;
+  const messagesEl = {
+    contains(node) {
+      return node === transcriptFocus;
+    },
+  };
+  const transcriptFocus = { id: 'message-row' };
+  const promptEl = {
+    focus(options) {
+      focusCalls += 1;
+      assert.deepEqual(options, { preventScroll: true });
+    },
+  };
+
+  keyboard.handleGlobalComposerFocusShortcut({
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    key: 'Enter',
+    target: transcriptFocus,
+    preventDefault() {
+      prevented = true;
+    },
+  }, {
+    mobileQuoteMode: false,
+    isDesktopViewportFn: () => true,
+    settingsModal: null,
+    isTextEntryElementFn: () => false,
+    activeChatId: 7,
+    messagesEl,
+    promptEl,
+    documentObject: { activeElement: transcriptFocus, querySelector: () => null },
+  });
+
+  assert.equal(prevented, true);
+  assert.equal(focusCalls, 1);
+});
+
+test('handleGlobalComposerFocusShortcut focuses the composer even when focus is outside transcript controls', () => {
+  let prevented = false;
+  let focusCalls = 0;
+  const outsideControl = {
+    id: 'skin-toggle',
+    blurCalls: 0,
+    blur() {
+      this.blurCalls += 1;
+    },
+  };
+  const promptEl = {
+    focus(options) {
+      focusCalls += 1;
+      assert.deepEqual(options, { preventScroll: true });
+    },
+  };
+
+  keyboard.handleGlobalComposerFocusShortcut({
+    defaultPrevented: false,
+    isComposing: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    key: 'Enter',
+    target: outsideControl,
+    preventDefault() {
+      prevented = true;
+    },
+  }, {
+    mobileQuoteMode: false,
+    isDesktopViewportFn: () => true,
+    settingsModal: null,
+    isTextEntryElementFn: () => false,
+    activeChatId: 7,
+    messagesEl: { contains: () => false },
+    promptEl,
+    documentObject: { activeElement: outsideControl, querySelector: () => null },
+  });
+
+  assert.equal(prevented, true);
+  assert.equal(focusCalls, 1);
+});
+
 test('handleGlobalChatActionShortcut closes active chat on desktop Escape', () => {
   const calls = [];
   let prevented = false;
@@ -549,6 +636,57 @@ test('handleGlobalControlClickFocusCleanup skips sticky-focus release for quote-
       },
     });
 
+    assert.equal(releaseCalls, 0);
+  });
+});
+
+test('handleGlobalControlEnterDefuse focuses the composer instead of requiring a second Enter after control focus', () => {
+  withFakeDomClasses(({ FakeElement }) => {
+    let prevented = false;
+    let stopped = false;
+    let focusCalls = 0;
+    let releaseCalls = 0;
+    const controlTarget = new FakeElement();
+    controlTarget.closest = (selector) => selector === keyboard.CONTROL_FOCUS_SELECTOR ? controlTarget : null;
+    const promptEl = {
+      focus(options) {
+        focusCalls += 1;
+        assert.deepEqual(options, { preventScroll: true });
+      },
+    };
+
+    keyboard.handleGlobalControlEnterDefuse({
+      defaultPrevented: false,
+      isComposing: false,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      key: 'Enter',
+      target: controlTarget,
+      preventDefault() {
+        prevented = true;
+      },
+      stopPropagation() {
+        stopped = true;
+      },
+    }, {
+      mobileQuoteMode: false,
+      isDesktopViewportFn: () => true,
+      isTextEntryElementFn: () => false,
+      settingsModal: null,
+      documentObject: { activeElement: controlTarget, querySelector: () => null },
+      activeChatId: 7,
+      promptEl,
+      messagesEl: {},
+      releaseStickyControlFocusFn: () => {
+        releaseCalls += 1;
+      },
+    });
+
+    assert.equal(prevented, true);
+    assert.equal(stopped, true);
+    assert.equal(focusCalls, 1);
     assert.equal(releaseCalls, 0);
   });
 });

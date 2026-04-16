@@ -557,7 +557,9 @@
     }, unreadStateController);
     thresholdControllerRef.current = thresholdController;
     const requestController = createReadRequestController({
-      ...deps,
+      apiPost: deps.apiPost,
+      chats,
+      getActiveChatId,
       getIsAuthenticated,
       unseenStreamChats,
       markReadInFlight,
@@ -566,6 +568,7 @@
       updateComposerState,
       pendingChats,
       hasLiveStreamController,
+      upsertChat,
     }, unreadStateController, thresholdController);
     const unreadPreservationController = createUnreadPreservationController({
       chats,
@@ -578,6 +581,20 @@
 
     function upsertChatPreservingUnread(chat, options = {}) {
       return upsertChat(buildChatPreservingUnread(chat, options));
+    }
+
+    function syncOpenActivationReadState(chatId, {
+      unreadCount = null,
+    } = {}) {
+      thresholdController.armActivationReadThreshold(chatId, unreadCount);
+      return true;
+    }
+
+    function syncBootstrapActivationReadState(chatId, {
+      unreadCount = null,
+    } = {}) {
+      thresholdController.ensureActivationReadThreshold(chatId, unreadCount);
+      return true;
     }
 
     function syncHydratedActiveReadState(chatId, {
@@ -630,8 +647,8 @@
       buildChatPreservingUnread,
       upsertChatPreservingUnread,
       getCurrentUnreadCount: unreadStateController.getCurrentUnreadCount,
-      armActivationReadThreshold: thresholdController.armActivationReadThreshold,
-      ensureActivationReadThreshold: thresholdController.ensureActivationReadThreshold,
+      syncOpenActivationReadState,
+      syncBootstrapActivationReadState,
       syncHydratedActiveReadState,
       syncActiveViewportReadState,
       syncActiveStreamUnseenState,

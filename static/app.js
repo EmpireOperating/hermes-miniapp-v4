@@ -1454,7 +1454,8 @@ function createBootstrapAuthControllerAppDeps({
   resumePendingChatStream,
   hasFreshPendingStreamSnapshot,
   restorePendingStreamSnapshot,
-  ensureActivationReadThreshold,
+  restoreActiveBootstrapPendingState,
+  syncBootstrapActivationReadState,
   windowObject,
 }) {
   return {
@@ -1472,7 +1473,8 @@ function createBootstrapAuthControllerAppDeps({
     resumePendingChatStream,
     hasFreshPendingStreamSnapshot,
     restorePendingStreamSnapshot,
-    ensureActivationReadThreshold,
+    restoreActiveBootstrapPendingState,
+    syncBootstrapActivationReadState,
     windowObject,
   };
 }
@@ -1605,7 +1607,16 @@ function createBootstrapAuthControllerAppArgs() {
     resumePendingChatStream,
     hasFreshPendingStreamSnapshot,
     restorePendingStreamSnapshot,
-    ensureActivationReadThreshold: (chatId, unreadCount) => chatHistoryController.ensureActivationReadThreshold(chatId, unreadCount),
+    restoreActiveBootstrapPendingState: (chatId, options = {}) => (
+      typeof chatHistoryController?.restoreActiveBootstrapPendingState === 'function'
+        ? chatHistoryController.restoreActiveBootstrapPendingState(chatId, options)
+        : null
+    ),
+    syncBootstrapActivationReadState: (chatId, options = {}) => (
+      typeof chatHistoryController?.syncBootstrapActivationReadState === 'function'
+        ? chatHistoryController.syncBootstrapActivationReadState(chatId, options)
+        : false
+    ),
     windowObject: window,
   };
 }
@@ -2751,6 +2762,11 @@ function createStartupBindingsControllerBootstrapDeps() {
     applyAuthBootstrap,
     hasFreshPendingStreamSnapshot,
     restorePendingStreamSnapshot,
+    restoreActiveBootstrapPendingState: (chatId, options = {}) => (
+      typeof chatHistoryController?.restoreActiveBootstrapPendingState === 'function'
+        ? chatHistoryController.restoreActiveBootstrapPendingState(chatId, options)
+        : null
+    ),
     renderMessages,
     updateComposerState,
     syncUnreadNotificationPresence,

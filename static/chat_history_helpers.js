@@ -315,9 +315,35 @@
   }
 
   function createCachedOpenController(deps, hydrationController) {
+    const {
+      chats,
+      setActiveChatMeta,
+      renderMessages,
+      getActiveChatId,
+      getLastOpenChatRequestId,
+      scheduleTimeout,
+      requestIdle,
+      enqueueUiMutation,
+      shouldDeferNonCriticalCachedOpen,
+      traceChatHistory,
+      nowMs,
+      isActiveChat,
+    } = deps;
+
     return openFlowHelpers.createCachedOpenController({
-      ...deps,
       normalizeChatId,
+      chats,
+      setActiveChatMeta,
+      renderMessages,
+      getActiveChatId,
+      getLastOpenChatRequestId,
+      scheduleTimeout,
+      requestIdle,
+      enqueueUiMutation,
+      shouldDeferNonCriticalCachedOpen,
+      traceChatHistory,
+      nowMs,
+      isActiveChat,
     }, hydrationController);
   }
 
@@ -347,7 +373,6 @@
       getDocumentVisibilityState = () => 'visible',
       buildChatPreservingUnread,
       upsertChatPreservingUnread,
-      ensureActivationReadThreshold,
       maybeMarkRead,
       syncHydratedActiveReadState,
       isActiveChat,
@@ -356,8 +381,21 @@
       triggerIncomingMessageHaptic = null,
     } = deps;
 
-    const pendingStateController = createHistoryPendingStateController(deps);
-    const renderDecisionController = createHistoryRenderDecisionController(deps);
+    const pendingStateController = createHistoryPendingStateController({
+      histories,
+      hasLiveStreamController,
+      mergeHydratedHistory,
+      restorePendingStreamSnapshot,
+      hasFreshPendingStreamSnapshot,
+      readPendingStreamSnapshotMap,
+      mergePendingSnapshotIntoHistory,
+      finalizeHydratedPendingState,
+      hasLocalPendingWithoutLiveStream,
+    });
+    const renderDecisionController = createHistoryRenderDecisionController({
+      chats,
+      getRenderedTranscriptSignature,
+    });
     const retryController = createUnreadHydrationRetryController();
     const hydrationApplyController = createHydrationApplyController({
       loadChatHistory,
@@ -422,6 +460,7 @@
       loadChatHistory,
       hydrateChatFromServer,
       syncVisibleActiveChat: visibleSyncController.syncVisibleActiveChat,
+      restoreActiveBootstrapPendingState: pendingStateController.restoreActiveBootstrapPendingState,
     };
   }
 
@@ -446,37 +485,57 @@
       appendSystemMessage,
       buildChatPreservingUnread,
       upsertChatPreservingUnread,
-      armActivationReadThreshold,
-      ensureActivationReadThreshold,
+      syncOpenActivationReadState,
       maybeMarkRead,
       isActiveChat,
       hasLocalPendingWithoutLiveStream,
     } = deps;
 
     const fetchController = createHistoryFetchController({
-      ...deps,
+      apiPost: deps.apiPost,
+      histories,
+      chats: deps.chats,
+      prefetchingHistories: deps.prefetchingHistories,
       upsertChatPreservingUnread,
-      shouldDeferNonCriticalCachedOpen,
       traceChatHistory,
       nowMs,
+      syncUnreadNotificationPresence: deps.syncUnreadNotificationPresence,
+      getDocumentVisibilityState: deps.getDocumentVisibilityState,
       isActiveChat,
       requestIdle,
       scheduleTimeout,
     });
     const hydrationController = createHistoryHydrationController({
-      ...deps,
       loadChatHistory: fetchController.loadChatHistory,
+      histories,
+      chats: deps.chats,
+      hasLiveStreamController: deps.hasLiveStreamController,
+      mergeHydratedHistory: deps.mergeHydratedHistory,
+      refreshTabNode: deps.refreshTabNode,
+      getActiveChatId,
+      resumePendingChatStream: deps.resumePendingChatStream,
+      getLastOpenChatRequestId,
       setActiveChatMeta,
       renderMessages,
-      getActiveChatId,
+      pendingChats: deps.pendingChats,
+      shouldResumeOnVisibilityChange: deps.shouldResumeOnVisibilityChange,
+      restorePendingStreamSnapshot: deps.restorePendingStreamSnapshot,
+      hasFreshPendingStreamSnapshot: deps.hasFreshPendingStreamSnapshot,
+      readPendingStreamSnapshotMap: deps.readPendingStreamSnapshotMap,
+      mergePendingSnapshotIntoHistory: deps.mergePendingSnapshotIntoHistory,
+      finalizeHydratedPendingState: deps.finalizeHydratedPendingState,
       traceChatHistory,
       nowMs,
+      syncUnreadNotificationPresence: deps.syncUnreadNotificationPresence,
+      getDocumentVisibilityState: deps.getDocumentVisibilityState,
       buildChatPreservingUnread,
       upsertChatPreservingUnread,
-      ensureActivationReadThreshold,
       maybeMarkRead,
+      syncHydratedActiveReadState: deps.syncHydratedActiveReadState,
       isActiveChat,
       hasLocalPendingWithoutLiveStream,
+      getRenderedTranscriptSignature: deps.getRenderedTranscriptSignature,
+      triggerIncomingMessageHaptic: deps.triggerIncomingMessageHaptic,
     });
     const cachedOpenController = createCachedOpenController({
       ...deps,
@@ -493,8 +552,17 @@
       isActiveChat,
     }, hydrationController);
     const statusController = createHistoryStatusController({
-      ...deps,
+      apiPost: deps.apiPost,
       buildChatPreservingUnread,
+      syncChats: deps.syncChats,
+      syncPinnedChats: deps.syncPinnedChats,
+      renderTabs: deps.renderTabs,
+      renderPinnedChats: deps.renderPinnedChats,
+      syncActivePendingStatus: deps.syncActivePendingStatus,
+      updateComposerState: deps.updateComposerState,
+      hasLiveStreamController: deps.hasLiveStreamController,
+      abortStreamController: deps.abortStreamController,
+      finalizeHydratedPendingState: deps.finalizeHydratedPendingState,
     });
 
     return openFlowHelpers.createHistoryOpenController({
@@ -504,7 +572,7 @@
       setLastOpenChatRequestId,
       nowMs,
       traceChatHistory,
-      armActivationReadThreshold,
+      syncOpenActivationReadState,
       setActiveChatMeta,
       renderMessages,
       appendSystemMessage,
@@ -562,6 +630,8 @@
       shouldDeferNonCriticalCachedOpen = () => false,
       getRenderedTranscriptSignature = null,
       triggerIncomingMessageHaptic = null,
+      syncUnreadNotificationPresence = null,
+      getDocumentVisibilityState = () => 'visible',
       renderTraceLog = () => {},
       nowMs = () => Date.now(),
     } = deps;
@@ -643,14 +713,14 @@
       shouldDeferNonCriticalCachedOpen,
       traceChatHistory,
       nowMs,
+      syncUnreadNotificationPresence,
+      getDocumentVisibilityState,
       appendSystemMessage: mutationController.appendSystemMessage,
       buildChatPreservingUnread: readSyncController.buildChatPreservingUnread,
       upsertChatPreservingUnread: readSyncController.upsertChatPreservingUnread,
-      armActivationReadThreshold: readSyncController.armActivationReadThreshold,
-      ensureActivationReadThreshold: readSyncController.ensureActivationReadThreshold,
+      syncOpenActivationReadState: readSyncController.syncOpenActivationReadState,
       maybeMarkRead: readSyncController.maybeMarkRead,
       syncHydratedActiveReadState: readSyncController.syncHydratedActiveReadState,
-      syncActiveStreamUnseenState: readSyncController.syncActiveStreamUnseenState,
       isActiveChat,
       hasLocalPendingWithoutLiveStream: readSyncController.hasLocalPendingWithoutLiveStream,
       getRenderedTranscriptSignature,
@@ -674,10 +744,11 @@
       syncActiveViewportReadState: readSyncController.syncActiveViewportReadState,
       syncActiveStreamUnseenState: readSyncController.syncActiveStreamUnseenState,
       getCurrentUnreadCount: readSyncController.getCurrentUnreadCount,
-      armActivationReadThreshold: readSyncController.armActivationReadThreshold,
-      ensureActivationReadThreshold: readSyncController.ensureActivationReadThreshold,
+      syncOpenActivationReadState: readSyncController.syncOpenActivationReadState,
+      syncBootstrapActivationReadState: readSyncController.syncBootstrapActivationReadState,
       refreshChats: historyController.refreshChats,
       syncVisibleActiveChat: historyController.syncVisibleActiveChat,
+      restoreActiveBootstrapPendingState: historyController.restoreActiveBootstrapPendingState,
     };
   }
 

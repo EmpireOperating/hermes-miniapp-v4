@@ -141,6 +141,22 @@ test('loadChatHistory falls back to /api/chats/open on 404 history path', async 
   assert.deepEqual(harness.apiCalls.map((call) => call.path), ['/api/chats/history', '/api/chats/open']);
 });
 
+test('loadChatHistory syncs unread notification presence for activated visible fetches only', async () => {
+  const unreadPresenceCalls = [];
+  const harness = buildHarness({
+    syncUnreadNotificationPresence: (options = {}) => {
+      unreadPresenceCalls.push({ ...options });
+      return { ok: true };
+    },
+    getDocumentVisibilityState: () => 'visible',
+  });
+
+  await harness.controller.loadChatHistory(7, { activate: true });
+  await harness.controller.loadChatHistory(7, { activate: false });
+
+  assert.deepEqual(unreadPresenceCalls, [{ visible: true, chatId: 7 }]);
+});
+
 test('hydrateChatFromServer updates history and rerenders active chat', async () => {
   const harness = buildHarness();
 
@@ -719,13 +735,13 @@ test('openChat does not clear unread just by switching into an unread chat that 
   assert.deepEqual(harness.markReadCalls, [7]);
 });
 
-test('ensureActivationReadThreshold prevents bootstrap-resume mark-read from clearing unread before the operator re-hits bottom', async () => {
+test('syncBootstrapActivationReadState prevents bootstrap-resume mark-read from clearing unread before the operator re-hits bottom', async () => {
   const harness = buildHarness();
   harness.chats.get(7).unread_count = 1;
   harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
   harness.setMessageViewport({ scrollTop: 320, clientHeight: 260 });
 
-  harness.controller.ensureActivationReadThreshold(7, 1);
+  harness.controller.syncBootstrapActivationReadState(7, { unreadCount: 1 });
   harness.controller.maybeMarkRead(7);
   await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -744,13 +760,13 @@ test('ensureActivationReadThreshold prevents bootstrap-resume mark-read from cle
   assert.deepEqual(harness.markReadCalls, [7]);
 });
 
-test('ensureActivationReadThreshold allows first bottom-hit to clear unread when activation started above the newest unread message bottom', async () => {
+test('syncBootstrapActivationReadState allows first bottom-hit to clear unread when activation started above the newest unread message bottom', async () => {
   const harness = buildHarness();
   harness.chats.get(7).unread_count = 1;
   harness.setRenderedAssistantNodes([{ offsetTop: 420, offsetHeight: 140 }]);
   harness.setMessageViewport({ scrollTop: 40, clientHeight: 260 });
 
-  harness.controller.ensureActivationReadThreshold(7, 1);
+  harness.controller.syncBootstrapActivationReadState(7, { unreadCount: 1 });
   harness.controller.maybeMarkRead(7);
   await new Promise((resolve) => setTimeout(resolve, 0));
 

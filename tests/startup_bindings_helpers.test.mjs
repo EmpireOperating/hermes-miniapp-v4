@@ -62,6 +62,8 @@ function buildHarness({
   mobileQuoteMode = false,
   windowSelection = null,
   documentSelection = null,
+  applyAuthBootstrapImpl = null,
+  syncUnreadNotificationPresenceImpl = null,
 } = {}) {
   const chatScrollTop = new Map();
   const chatStickToBottom = new Map();
@@ -88,6 +90,7 @@ function buildHarness({
   const bootLatency = [];
   const authBootstrapCalls = [];
   const restoreSnapshotCalls = [];
+  const restoreActiveBootstrapPendingStateCalls = [];
   const renderMessagesCalls = [];
   const unreadPresenceCalls = [];
   const recordBootMetricCalls = [];
@@ -297,16 +300,36 @@ function buildHarness({
     desktopTestingEnabled,
     desktopTestingRequested,
     devConfig: { devAuthEnabled: false },
-    applyAuthBootstrap: (...args) => authBootstrapCalls.push(args),
+    applyAuthBootstrap: (...args) => {
+      authBootstrapCalls.push(args);
+      return applyAuthBootstrapImpl?.(...args);
+    },
     hasFreshPendingStreamSnapshot: () => true,
     restorePendingStreamSnapshot: (chatId) => {
       restoreSnapshotCalls.push(chatId);
       return true;
     },
-    renderMessages: (chatId, options) => renderMessagesCalls.push([chatId, options]),
+    restoreActiveBootstrapPendingState: (chatId, { serverPending = false, onRestored = null } = {}) => {
+      restoreActiveBootstrapPendingStateCalls.push({ chatId: Number(chatId), serverPending: Boolean(serverPending) });
+      const localPendingSnapshot = Boolean(chatId);
+      const restoredPendingSnapshot = Boolean(chatId) && (Boolean(serverPending) || localPendingSnapshot)
+        ? Boolean((() => {
+          restoreSnapshotCalls.push(chatId);
+          return true;
+        })())
+        : false;
+      if (restoredPendingSnapshot) {
+        onRestored?.(Number(chatId));
+      }
+      return { localPendingSnapshot, restoredPendingSnapshot };
+    },
+    renderMessages: (chatId, options = {}) => renderMessagesCalls.push([Number(chatId), { ...options }]),
     updateComposerState: () => {},
     syncUnreadNotificationPresence: async (options = {}) => {
       unreadPresenceCalls.push(options);
+      if (typeof syncUnreadNotificationPresenceImpl === 'function') {
+        return syncUnreadNotificationPresenceImpl(options);
+      }
       return { ok: true };
     },
     revealShell: () => logBootStages.push(['revealShell', null]),
@@ -360,6 +383,7 @@ function buildHarness({
     bootLatency,
     authBootstrapCalls,
     restoreSnapshotCalls,
+    restoreActiveBootstrapPendingStateCalls,
     renderMessagesCalls,
     unreadPresenceCalls,
     recordBootMetricCalls,
@@ -581,10 +605,32 @@ test('bootstrap runs happy-path startup orchestration and restores pending snaps
   assert.equal(harness.authBootstrapCalls.length, 2);
   assert.ok(harness.logBootStages.some(([name]) => name === 'version-check-start'));
   assert.ok(harness.logBootStages.some(([name]) => name === 'version-check-finished'));
+  assert.deepEqual(harness.restoreActiveBootstrapPendingStateCalls, [{ chatId: 7, serverPending: true }]);
   assert.equal(harness.restoreSnapshotCalls[0], 7);
   assert.deepEqual(harness.renderMessagesCalls, [[7, { preserveViewport: true }]]);
   assert.equal(harness.syncDevAuthUiCalls.length >= 2, true);
   assert.equal(harness.summarizeBootMetricsCalls.length, 1);
+});
+
+test('bootstrap preserves signed-in status when post-auth unread sync fails', async () => {
+  const harness = buildHarness({
+    isAuthenticated: true,
+    applyAuthBootstrapImpl: () => {
+      harness.authStatusEl.textContent = 'Signed in as agentuser';
+    },
+    syncUnreadNotificationPresenceImpl: async () => {
+      throw new Error('presence sync boom');
+    },
+  });
+
+  await harness.controller.bootstrap();
+
+  assert.equal(harness.authStatusEl.textContent, 'Signed in as agentuser');
+  assert.deepEqual(harness.appendMessages, ['Signed in, but startup sync hit an error: presence sync boom']);
+  assert.ok(harness.logBootStages.some(([name, details]) => name === 'post-auth-bootstrap-sync-failed' && details?.message === 'presence sync boom'));
+  assert.deepEqual(harness.restoreActiveBootstrapPendingStateCalls, [{ chatId: 7, serverPending: true }]);
+  assert.deepEqual(harness.restoreSnapshotCalls, [7]);
+  assert.deepEqual(harness.renderMessagesCalls, [[7, { preserveViewport: true }]]);
 });
 
 test('bootstrap restores pending snapshot when local snapshot exists even if bootstrap chat metadata briefly says not pending', async () => {
@@ -594,6 +640,7 @@ test('bootstrap restores pending snapshot when local snapshot exists even if boo
 
   await harness.controller.bootstrap();
 
+  assert.deepEqual(harness.restoreActiveBootstrapPendingStateCalls, [{ chatId: 7, serverPending: false }]);
   assert.deepEqual(harness.restoreSnapshotCalls, [7]);
   assert.deepEqual(harness.renderMessagesCalls, [[7, { preserveViewport: true }]]);
 });

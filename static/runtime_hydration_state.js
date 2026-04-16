@@ -86,6 +86,34 @@
       return snapshot && typeof snapshot === 'object' ? snapshot : null;
     }
 
+    function restoreActiveBootstrapPendingState(targetChatId, {
+      serverPending = false,
+      onRestored = null,
+    } = {}) {
+      const key = Number(targetChatId) || 0;
+      if (key <= 0) {
+        return {
+          localPendingSnapshot: false,
+          restoredPendingSnapshot: false,
+        };
+      }
+      const localPendingSnapshot = typeof hasFreshPendingStreamSnapshot === 'function'
+        ? Boolean(hasFreshPendingStreamSnapshot(key))
+        : false;
+      const shouldAttemptRestore = (Boolean(serverPending) || localPendingSnapshot)
+        && typeof restorePendingStreamSnapshot === 'function';
+      const restoredPendingSnapshot = shouldAttemptRestore
+        ? Boolean(restorePendingStreamSnapshot(key))
+        : false;
+      if (restoredPendingSnapshot && typeof onRestored === 'function') {
+        onRestored(key);
+      }
+      return {
+        localPendingSnapshot,
+        restoredPendingSnapshot,
+      };
+    }
+
     function prepareHydratedHistory(targetChatId, previousHistory, nextHistory, pendingState) {
       const {
         serverPending,
@@ -147,6 +175,7 @@
 
     return {
       derivePendingState,
+      restoreActiveBootstrapPendingState,
       prepareHydratedHistory,
       applyHydratedHistory,
     };

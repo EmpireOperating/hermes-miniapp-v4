@@ -976,14 +976,71 @@
     const {
       STREAM_PHASES,
       setStreamPhase,
+      formatLatency,
+      getStreamPhase,
+      chatLabel,
+      compactChatLabel,
+      patchVisibleToolTrace,
+      renderTraceLog,
+      appendInlineToolTrace,
+      updatePendingAssistant,
+      markStreamUpdate,
+      patchVisiblePendingAssistant,
+      finalizeInlineToolTrace,
+      syncActiveMessageView,
+      setChatLatency,
+      clearStreamCursor,
+      markToolActivity,
+      markStreamActive,
+      markStreamQueued,
+      markStreamError,
     } = deps;
     const {
       applyDonePayload,
     } = terminalController;
-    const metaController = createStreamMetaEventController(deps, sessionController);
-    const toolController = createToolTraceEventController(deps, sessionController, fallbackController);
-    const chunkController = createAssistantChunkEventController(deps, sessionController, fallbackController);
-    const errorController = createStreamErrorEventController(deps, sessionController);
+    const metaController = createStreamMetaEventController({
+      formatLatency,
+      STREAM_PHASES,
+      getStreamPhase,
+      setStreamPhase,
+      chatLabel,
+      compactChatLabel,
+      renderTraceLog,
+      setChatLatency,
+      markStreamActive,
+      markStreamQueued,
+    }, sessionController);
+    const toolController = createToolTraceEventController({
+      STREAM_PHASES,
+      setStreamPhase,
+      chatLabel,
+      compactChatLabel,
+      patchVisibleToolTrace,
+      renderTraceLog,
+      appendInlineToolTrace,
+      getStreamPhase,
+      markToolActivity,
+    }, sessionController, fallbackController);
+    const chunkController = createAssistantChunkEventController({
+      STREAM_PHASES,
+      setStreamPhase,
+      updatePendingAssistant,
+      markStreamUpdate,
+      patchVisiblePendingAssistant,
+      renderTraceLog,
+      getStreamPhase,
+    }, sessionController, fallbackController);
+    const errorController = createStreamErrorEventController({
+      STREAM_PHASES,
+      setStreamPhase,
+      finalizeInlineToolTrace,
+      updatePendingAssistant,
+      markStreamUpdate,
+      syncActiveMessageView,
+      setChatLatency,
+      clearStreamCursor,
+      markStreamError,
+    }, sessionController);
 
     function handleStreamEvent(chatId, eventName, payload, builtReplyRef) {
       if (!payload) {
@@ -1015,8 +1072,33 @@
   }
 
   function createTranscriptEventController(deps, sessionController, hydrationController) {
-    const fallbackController = createVisibleTranscriptFallbackController(deps);
-    const terminalController = createStreamTerminalEventController(deps, sessionController, hydrationController, fallbackController);
+    const fallbackController = createVisibleTranscriptFallbackController({
+      getActiveChatId: deps.getActiveChatId,
+      syncActiveMessageView: deps.syncActiveMessageView,
+      scheduleActiveMessageView: deps.scheduleActiveMessageView,
+    });
+    const terminalController = createStreamTerminalEventController({
+      formatLatency: deps.formatLatency,
+      getActiveChatId: deps.getActiveChatId,
+      chatLabel: deps.chatLabel,
+      compactChatLabel: deps.compactChatLabel,
+      finalizeInlineToolTrace: deps.finalizeInlineToolTrace,
+      updatePendingAssistant: deps.updatePendingAssistant,
+      markStreamUpdate: deps.markStreamUpdate,
+      patchVisiblePendingAssistant: deps.patchVisiblePendingAssistant,
+      patchVisibleToolTrace: deps.patchVisibleToolTrace,
+      renderTraceLog: deps.renderTraceLog,
+      syncActiveMessageView: deps.syncActiveMessageView,
+      setChatLatency: deps.setChatLatency,
+      incrementUnread: deps.incrementUnread,
+      triggerIncomingMessageHaptic: deps.triggerIncomingMessageHaptic,
+      renderTabs: deps.renderTabs,
+      finalizeStreamPendingState: deps.finalizeStreamPendingState,
+      clearStreamCursor: deps.clearStreamCursor,
+      clearPendingStreamSnapshot: deps.clearPendingStreamSnapshot,
+      markStreamComplete: deps.markStreamComplete,
+      markStreamClosedEarly: deps.markStreamClosedEarly,
+    }, sessionController, hydrationController, fallbackController);
     const nonTerminalController = createStreamNonTerminalEventController(deps, sessionController, fallbackController, terminalController);
 
     return {
@@ -1359,9 +1441,58 @@
 
   function createStreamTranscriptController(deps, sessionController) {
     const signatureHelpers = createTranscriptSignatureHelpers();
-    const hydrationController = createTranscriptHydrationController(deps, signatureHelpers);
-    const eventController = createTranscriptEventController(deps, sessionController, hydrationController);
-    const consumeController = createTranscriptConsumeController(deps, sessionController, eventController);
+    const hydrationController = createTranscriptHydrationController({
+      loadChatHistory: deps.loadChatHistory,
+      getActiveChatId: deps.getActiveChatId,
+      clearStreamCursor: deps.clearStreamCursor,
+      clearPendingStreamSnapshot: deps.clearPendingStreamSnapshot,
+      clearReconnectResumeBlock: deps.clearReconnectResumeBlock,
+      resetReconnectResumeBudget: deps.resetReconnectResumeBudget,
+      upsertChat: deps.upsertChat,
+      histories: deps.histories,
+      chats: deps.chats,
+      pendingChats: deps.pendingChats,
+      mergeHydratedHistory: deps.mergeHydratedHistory,
+      renderMessages: deps.renderMessages,
+      renderTraceLog: deps.renderTraceLog,
+      getRenderedTranscriptSignature: deps.getRenderedTranscriptSignature,
+    }, signatureHelpers);
+    const eventController = createTranscriptEventController({
+      STREAM_PHASES: deps.STREAM_PHASES,
+      setStreamPhase: deps.setStreamPhase,
+      getStreamPhase: deps.getStreamPhase,
+      getActiveChatId: deps.getActiveChatId,
+      syncActiveMessageView: deps.syncActiveMessageView,
+      scheduleActiveMessageView: deps.scheduleActiveMessageView,
+      formatLatency: deps.formatLatency,
+      chatLabel: deps.chatLabel,
+      compactChatLabel: deps.compactChatLabel,
+      appendInlineToolTrace: deps.appendInlineToolTrace,
+      finalizeInlineToolTrace: deps.finalizeInlineToolTrace,
+      updatePendingAssistant: deps.updatePendingAssistant,
+      markStreamUpdate: deps.markStreamUpdate,
+      patchVisiblePendingAssistant: deps.patchVisiblePendingAssistant,
+      patchVisibleToolTrace: deps.patchVisibleToolTrace,
+      renderTraceLog: deps.renderTraceLog,
+      setChatLatency: deps.setChatLatency,
+      incrementUnread: deps.incrementUnread,
+      triggerIncomingMessageHaptic: deps.triggerIncomingMessageHaptic,
+      renderTabs: deps.renderTabs,
+      finalizeStreamPendingState: deps.finalizeStreamPendingState,
+      clearStreamCursor: deps.clearStreamCursor,
+      clearPendingStreamSnapshot: deps.clearPendingStreamSnapshot,
+      markStreamComplete: deps.markStreamComplete,
+      markStreamClosedEarly: deps.markStreamClosedEarly,
+      markToolActivity: deps.markToolActivity,
+      markStreamActive: deps.markStreamActive,
+      markStreamQueued: deps.markStreamQueued,
+      markStreamError: deps.markStreamError,
+    }, sessionController, hydrationController);
+    const consumeController = createTranscriptConsumeController({
+      parseSseEvent: deps.parseSseEvent,
+      renderTraceLog: deps.renderTraceLog,
+      streamDebugLog: deps.streamDebugLog,
+    }, sessionController, eventController);
 
     return {
       ...signatureHelpers,

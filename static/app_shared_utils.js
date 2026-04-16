@@ -174,6 +174,35 @@
     return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
   }
 
+  function runExecCopyCommand(text, beforeExec) {
+    if (typeof document?.execCommand !== "function") {
+      return false;
+    }
+
+    let copied = false;
+    const onCopy = (event) => {
+      try {
+        event?.clipboardData?.setData?.("text/plain", text);
+        event?.preventDefault?.();
+        copied = true;
+      } catch {
+        copied = false;
+      }
+    };
+
+    try {
+      document.addEventListener?.("copy", onCopy, true);
+      beforeExec?.();
+      copied = document.execCommand("copy") || copied;
+    } catch {
+      copied = false;
+    } finally {
+      document.removeEventListener?.("copy", onCopy, true);
+    }
+
+    return copied;
+  }
+
   function legacyCopyTextToClipboard(text) {
     const selection = global.getSelection?.();
     const previousRanges = [];
@@ -209,18 +238,17 @@
     let copied = false;
     try {
       document.body.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      textarea.setSelectionRange(0, textarea.value.length);
-      copied = document.execCommand("copy");
-    } catch {
-      copied = false;
+      copied = runExecCopyCommand(text, () => {
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+      });
     } finally {
       textarea.remove();
     }
 
     if (!copied) {
-      // Some iOS/WebView variants are unreliable with textarea selection but
+      // Some WebKit/iOS variants are unreliable with textarea selection but
       // work with a contenteditable element and explicit range selection.
       const probe = document.createElement("div");
       probe.textContent = text;
@@ -234,13 +262,12 @@
 
       try {
         document.body.appendChild(probe);
-        const range = document.createRange();
-        range.selectNodeContents(probe);
-        selection?.removeAllRanges?.();
-        selection?.addRange?.(range);
-        copied = document.execCommand("copy");
-      } catch {
-        copied = false;
+        copied = runExecCopyCommand(text, () => {
+          const range = document.createRange();
+          range.selectNodeContents(probe);
+          selection?.removeAllRanges?.();
+          selection?.addRange?.(range);
+        });
       } finally {
         probe.remove();
       }
