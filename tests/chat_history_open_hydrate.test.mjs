@@ -829,7 +829,7 @@ test('refreshChats syncs chat and pinned status with render/composer updates', a
     path: '/api/chats/status',
     payload: {},
   });
-  assert.deepEqual(harness.statusSyncCalls, [[{ id: 7, unread_count: 1 }]]);
+  assert.deepEqual(harness.statusSyncCalls, [[{ id: 7, unread_count: 2, newest_unread_message_id: 0 }]]);
   assert.deepEqual(harness.pinnedStatusSyncCalls, [[{ id: 9, unread_count: 0 }]]);
   assert.equal(harness.getRenderTabsCalls(), 1);
   assert.equal(harness.getRenderPinnedChatsCalls(), 1);
