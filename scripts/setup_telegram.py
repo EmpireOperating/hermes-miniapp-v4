@@ -9,10 +9,12 @@ from typing import Any
 from urllib import error, request
 from urllib.parse import urlparse, urlunparse
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from miniapp_env import default_hermes_env_path, resolve_telegram_bot_token
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from scripts import setup_doctor
 else:  # pragma: no cover
     from scripts import setup_doctor
