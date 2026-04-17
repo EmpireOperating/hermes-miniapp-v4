@@ -220,7 +220,7 @@ test('saveSkinPreference persists through apiPost and applies returned skin', as
   assert.deepEqual(data, { skin: 'obsidian' });
 });
 
-test('installLifecycleListeners wires storage/focus/channel handlers', async () => {
+test('installLifecycleListeners syncs skin on fresh focus without forcing a full visibility resume', async () => {
   const harness = buildHarness();
 
   harness.controller.installLifecycleListeners();
@@ -235,6 +235,22 @@ test('installLifecycleListeners wires storage/focus/channel handlers', async () 
   harness.windowObject.dispatch('focus');
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(harness.getCurrentSkin(), 'obsidian');
+  assert.deepEqual(harness.syncActiveMessageViewCalls, []);
+  assert.deepEqual(harness.refreshChatsCalls, []);
+  assert.deepEqual(harness.syncVisibleActiveChatCalls, []);
+  assert.equal(harness.visibilityResumes.length, 0);
+});
+
+test('focus resumes visibility sync only after the app backgrounded without a visible resume event', async () => {
+  const harness = buildHarness();
+
+  harness.controller.installLifecycleListeners();
+  harness.windowObject.dispatch('pagehide');
+  harness.windowObject.dispatch('focus');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(harness.visibilityResumes.length, 1);
+  assert.equal(harness.visibilityResumes[0].trigger, 'focus');
   assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
   assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
   assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
@@ -246,9 +262,26 @@ test('installLifecycleListeners wires storage/focus/channel handlers', async () 
     'syncActiveMessageView',
     'syncVisibleActiveChat',
   ]);
-  assert.equal(harness.callOrder.indexOf('syncVisibleActiveChat') < harness.callOrder.indexOf('refreshChats'), true);
+});
+
+test('focus does not duplicate a visibility-driven resume after returning to the app', async () => {
+  const harness = buildHarness({ visibilityState: 'visible', authenticated: true });
+
+  harness.controller.installLifecycleListeners();
+  harness.documentObject.visibilityState = 'hidden';
+  await harness.controller.handleVisibilityChange();
+  harness.documentObject.visibilityState = 'visible';
+  await harness.controller.handleVisibilityChange();
+  harness.windowObject.dispatch('focus');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
   assert.equal(harness.visibilityResumes.length, 1);
-  assert.equal(harness.visibilityResumes[0].trigger, 'focus');
+  assert.equal(harness.visibilityResumes[0].trigger, 'visibilitychange');
+  assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
+  assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
+    hidden: false,
+    streamAbortControllers: harness.streamAbortControllers,
+  }]);
 });
 
 test('handleVisibilityChange refreshes lifecycle and delegates active-chat reconciliation when visible and authenticated', async () => {

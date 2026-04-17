@@ -181,6 +181,8 @@
       windowObject.setInterval(poll, Math.max(Number(devConfig.intervalMs) || 1200, 500));
     }
 
+    let focusResumeArmed = false;
+
     async function syncVisibleActiveChatDelegate(options = {}) {
       return syncVisibleActiveChat(options);
     }
@@ -225,10 +227,12 @@
 
     async function handleVisibilityChange() {
       if (documentObject.visibilityState !== 'visible') {
+        focusResumeArmed = true;
         await syncUnreadNotificationPresence({ visible: false });
         markBackgrounded?.({ trigger: 'visibilitychange' });
         return;
       }
+      focusResumeArmed = false;
       await resumeVisibleApp('visibilitychange');
     }
 
@@ -257,9 +261,15 @@
           syncSkinFromStorage();
           return;
         }
+        if (!focusResumeArmed) {
+          syncSkinFromStorage();
+          return;
+        }
+        focusResumeArmed = false;
         void resumeVisibleApp('focus');
       });
       windowObject.addEventListener?.('pagehide', () => {
+        focusResumeArmed = true;
         void syncUnreadNotificationPresence({ visible: false });
         markBackgrounded?.({ trigger: 'pagehide' });
       });
