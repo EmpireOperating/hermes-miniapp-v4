@@ -9,12 +9,21 @@ const devConfig = window.__HERMES_DEV__ || {
   devAuthRevealHash: "#dev-auth",
 };
 const streamDebugEnabled = Boolean(devConfig.requestDebug);
+
+function safeDecodeUriComponent(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return "";
+  }
+}
+
 const devAuthRevealHash = String(devConfig.devAuthRevealHash || "#dev-auth").trim() || "#dev-auth";
 const currentLocationHash = typeof window?.location?.hash === "string" ? window.location.hash : "";
 const desktopTestingRequested = currentLocationHash === devAuthRevealHash || currentLocationHash.startsWith(`${devAuthRevealHash}:`);
 const desktopTestingEnabled = Boolean(devConfig.devAuthEnabled) && desktopTestingRequested;
 const devAuthHashSecret = desktopTestingRequested && currentLocationHash.startsWith(`${devAuthRevealHash}:`)
-  ? decodeURIComponent(currentLocationHash.slice(devAuthRevealHash.length + 1))
+  ? safeDecodeUriComponent(currentLocationHash.slice(devAuthRevealHash.length + 1))
   : "";
 const filePreviewConfig = window.__HERMES_FILE_PREVIEW__ || { enabled: false, allowedRoots: [] };
 const filePreviewFeatureEnabled = Boolean(filePreviewConfig.enabled);

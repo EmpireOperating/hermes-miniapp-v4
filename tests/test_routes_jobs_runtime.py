@@ -21,6 +21,12 @@ def _authed_client(monkeypatch, tmp_path, **load_kwargs):
     return server, client
 
 
+
+def _operator_status_headers(token: str = "operator-secret") -> dict[str, str]:
+    return {"X-Hermes-Operator-Token": token}
+
+
+
 def _claim_or_get_open_job(server, user_id: str, chat_id: int):
     claimed = server.store.claim_next_job()
     if claimed is not None:
@@ -96,7 +102,19 @@ def test_jobs_cleanup_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) 
     assert response.status_code == 400
     assert "limit" in response.get_json()["error"].lower()
 
+def test_runtime_status_endpoint_requires_operator_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-secret")
+    _server, client = _authed_client(monkeypatch, tmp_path)
+
+    response = client.post("/api/runtime/status", json={"init_data": "ok"})
+
+    assert response.status_code == 404
+    assert response.get_json()["error"] == "Not found."
+
+
+
 def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-secret")
     server, client = _authed_client(monkeypatch, tmp_path)
     monkeypatch.setattr(
         server.client,
@@ -161,7 +179,7 @@ def test_runtime_status_endpoint_returns_persistent_stats(monkeypatch, tmp_path)
         },
     )
 
-    response = client.post("/api/runtime/status", json={"init_data": "ok"})
+    response = client.post("/api/runtime/status", json={"init_data": "ok"}, headers=_operator_status_headers())
 
     assert response.status_code == 200
     data = response.get_json()
@@ -390,6 +408,7 @@ def test_runtime_can_be_configured_with_subprocess_worker_launcher(monkeypatch, 
 
 def test_subprocess_two_chat_session_mismatch_isolation_smoke(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MINI_APP_JOB_WORKER_LAUNCHER", "subprocess")
+    monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-secret")
     server, client = _authed_client(monkeypatch, tmp_path)
     runtime = server._RUNTIME_DEPS.bind_runtime()
     runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
@@ -445,7 +464,7 @@ def test_subprocess_two_chat_session_mismatch_isolation_smoke(monkeypatch, tmp_p
     assert set(roles_a).issubset({"operator", "system"})
     assert any(turn.role == "hermes" and turn.body == "safe-reply-b" for turn in history_b)
 
-    status_response = client.post("/api/runtime/status", json={"init_data": "ok"})
+    status_response = client.post("/api/runtime/status", json={"init_data": "ok"}, headers=_operator_status_headers())
     assert status_response.status_code == 200
     status_data = status_response.get_json()
     assert status_data["ok"] is True
@@ -1159,6 +1178,7 @@ def test_worker_retry_exhaustion_suppresses_terminal_error_for_intentional_inter
 
 
 def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-secret")
     server, client = _authed_client(monkeypatch, tmp_path)
     runtime = server._RUNTIME_DEPS.bind_runtime()
     runtime.shutdown(reason="test-manual-run", join_timeout=0.2)
@@ -1177,7 +1197,7 @@ def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_pa
 
     runtime._process_available_jobs_once()
 
-    response = client.post("/api/runtime/status", json={"init_data": "ok"})
+    response = client.post("/api/runtime/status", json={"init_data": "ok"}, headers=_operator_status_headers())
 
     assert response.status_code == 200
     data = response.get_json()

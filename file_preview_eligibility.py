@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -56,12 +57,21 @@ FILE_PREVIEW_BASENAME_SEARCH_SKIP_DIRS: tuple[str, ...] = (
 
 def _parse_root_list(raw: str) -> list[Path]:
     roots: list[Path] = []
-    for candidate in str(raw or "").split(":"):
+    raw_text = str(raw or "").strip()
+    if not raw_text:
+        return roots
+
+    separator = ";" if ";" in raw_text else ":"
+    windows_drive_pattern = re.compile(r"^[A-Za-z]:[\\/]")
+    for candidate in raw_text.split(separator):
         cleaned = candidate.strip()
         if not cleaned:
             continue
         try:
-            root = Path(cleaned).expanduser().resolve(strict=False)
+            if windows_drive_pattern.match(cleaned):
+                root = Path(cleaned)
+            else:
+                root = Path(cleaned).expanduser().resolve(strict=False)
         except OSError:
             continue
         roots.append(root)

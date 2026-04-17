@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import queue
+import threading
+
 import pytest
 
 from store import SessionStore
@@ -472,6 +475,71 @@ def test_chat_job_queue_lifecycle(tmp_path) -> None:
     store.complete_job(job_id)
     assert store.has_open_job(user_id, chat_id) is False
     assert store.get_open_job(user_id, chat_id) is None
+
+
+def test_start_chat_job_prevents_cross_instance_duplicate_open_jobs(tmp_path) -> None:
+    first_store = _store(tmp_path)
+    second_store = SessionStore(first_store.db_path)
+    user_id = "u8-race"
+    chat_id = first_store.ensure_default_chat(user_id)
+
+    start_barrier = threading.Barrier(3)
+    results: queue.Queue[dict[str, object]] = queue.Queue()
+
+    def worker(store: SessionStore) -> None:
+        start_barrier.wait(timeout=5)
+        results.put(
+            store.start_chat_job(
+                user_id=user_id,
+                chat_id=chat_id,
+                message="run once",
+            )
+        )
+
+    first_thread = threading.Thread(target=worker, args=(first_store,))
+    second_thread = threading.Thread(target=worker, args=(second_store,))
+    first_thread.start()
+    second_thread.start()
+    start_barrier.wait(timeout=5)
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+
+    attempts = [results.get(timeout=1), results.get(timeout=1)]
+    created_count = sum(1 for attempt in attempts if attempt["created"])
+    open_jobs = first_store.list_jobs(user_id=user_id, limit=10)
+    history = first_store.get_history(user_id, chat_id)
+
+    assert created_count == 1
+    assert len([job for job in open_jobs if job["status"] in {"queued", "running"}]) == 1
+    assert [turn.role for turn in history] == ["operator"]
+
+
+
+def test_get_job_state_scopes_queue_metrics_to_same_user(tmp_path) -> None:
+    store = _store(tmp_path)
+
+    other_user = "u8-other"
+    other_chat_id = store.ensure_default_chat(other_user)
+    other_running_message_id = store.add_message(other_user, other_chat_id, "operator", "other running")
+    other_running_job_id = store.enqueue_chat_job(other_user, other_chat_id, other_running_message_id)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == other_running_job_id
+
+    primary_user = "u8-metrics"
+    primary_chat_id = store.ensure_default_chat(primary_user)
+    primary_operator_message_id = store.add_message(primary_user, primary_chat_id, "operator", "primary")
+    primary_job_id = store.enqueue_chat_job(primary_user, primary_chat_id, primary_operator_message_id)
+
+    state = store.get_job_state(primary_job_id)
+
+    assert state is not None
+    assert state["queued_ahead"] == 0
+    assert state["running_total"] == 0
+
 
 
 def test_claim_next_job_retries_transient_database_locked_error(monkeypatch, tmp_path) -> None:

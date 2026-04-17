@@ -613,6 +613,7 @@ register_jobs_runtime_routes(
     request_payload_fn=_request_payload,
     json_user_id_or_error_fn=_json_user_id_or_error,
     verify_for_json_fn=_verify_for_json,
+    operator_token=str(os.environ.get("MINI_APP_OPERATOR_API_TOKEN") or "").strip(),
 )
 
 

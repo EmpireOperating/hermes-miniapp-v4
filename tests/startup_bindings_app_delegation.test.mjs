@@ -14,6 +14,15 @@ function extractFunctionBody(source, functionName) {
   return match[1] || '';
 }
 
+test('safeDecodeUriComponent returns an empty secret for malformed dev auth hashes', async () => {
+  const source = await readFile(appJsUrl, 'utf8');
+  const body = extractFunctionBody(source, 'safeDecodeUriComponent');
+  const safeDecodeUriComponent = new Function('value', `${body}`);
+
+  assert.equal(safeDecodeUriComponent('desktop%20tester'), 'desktop tester');
+  assert.equal(safeDecodeUriComponent('%E0'), '');
+});
+
 test('app.js startup/bootstrap wrappers keep delegating to startupBindingsController', async () => {
   const source = await readFile(appJsUrl, 'utf8');
 

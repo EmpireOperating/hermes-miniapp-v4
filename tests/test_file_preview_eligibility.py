@@ -1,6 +1,13 @@
 from pathlib import Path
 
-from file_preview_eligibility import is_previewable_path, previewable_file_refs, resolve_preview_path
+from file_preview_eligibility import _parse_root_list, is_previewable_path, previewable_file_refs, resolve_preview_path
+
+
+def test_parse_root_list_preserves_windows_drive_letter_paths() -> None:
+    roots = _parse_root_list(r"C:\repo;D:\work")
+
+    assert roots == [Path(r"C:\repo"), Path(r"D:\work")]
+
 
 
 def test_resolve_preview_path_prefers_repo_context_for_repo_relative_and_basename_shorthand(tmp_path) -> None:
