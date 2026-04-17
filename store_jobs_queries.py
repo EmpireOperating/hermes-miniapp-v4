@@ -68,7 +68,7 @@ def get_open_job(conn: Connection, *, user_id: str, chat_id: int) -> dict[str, A
 def get_job_state(conn: Connection, *, job_id: int) -> dict[str, Any] | None:
     row = conn.execute(
         """
-        SELECT id, chat_id, status, error, attempts, max_attempts, created_at, started_at, next_attempt_at
+        SELECT id, user_id, chat_id, status, error, attempts, max_attempts, created_at, started_at, next_attempt_at
         FROM chat_jobs
         WHERE id = ?
         LIMIT 1
@@ -82,14 +82,18 @@ def get_job_state(conn: Connection, *, job_id: int) -> dict[str, Any] | None:
         """
         SELECT COUNT(*) AS c
         FROM chat_jobs
-        WHERE status = ?
+        WHERE user_id = ?
+          AND status = ?
           AND id < ?
           AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
         """,
-        (JOB_STATUS_QUEUED, int(job_id)),
+        (str(row["user_id"]), JOB_STATUS_QUEUED, int(job_id)),
     ).fetchone()
 
-    running_total = conn.execute("SELECT COUNT(*) AS c FROM chat_jobs WHERE status = ?", (JOB_STATUS_RUNNING,)).fetchone()
+    running_total = conn.execute(
+        "SELECT COUNT(*) AS c FROM chat_jobs WHERE user_id = ? AND status = ?",
+        (str(row["user_id"]), JOB_STATUS_RUNNING),
+    ).fetchone()
 
     return {
         "id": int(row["id"]),

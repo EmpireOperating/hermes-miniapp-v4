@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from flask import request
+
 from job_status import JOB_STATUS_DEAD, JOB_STATUS_DONE, JOB_STATUS_ERROR, JOB_STATUS_QUEUED, JOB_STATUS_RUNNING
 from validators import parse_bounded_int
 
@@ -15,6 +17,7 @@ def register_jobs_runtime_routes(
     request_payload_fn: Callable[[], dict[str, object]],
     json_user_id_or_error_fn: Callable[[dict[str, object]], tuple[str | None, tuple[dict[str, object], int] | None]],
     verify_for_json_fn: Callable[[dict[str, object]], tuple[Any | None, tuple[dict[str, object], int] | None]],
+    operator_token: str = "",
 ) -> None:
     @api_bp.post("/jobs/status")
     def jobs_status() -> tuple[dict[str, object], int]:
@@ -60,6 +63,11 @@ def register_jobs_runtime_routes(
 
     @api_bp.post("/runtime/status")
     def runtime_status() -> tuple[dict[str, object], int]:
+        token = str(operator_token or "").strip()
+        presented = str(request.headers.get("X-Hermes-Operator-Token") or "").strip()
+        if not token or presented != token:
+            return {"ok": False, "error": "Not found."}, 404
+
         payload = request_payload_fn()
         _, auth_error = verify_for_json_fn(payload)
         if auth_error:

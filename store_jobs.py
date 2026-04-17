@@ -16,6 +16,7 @@ from store_chat_mutations import cancel_open_jobs_for_chat
 from store_jobs_claim import claim_next_job, dead_letter_exhausted_queued_jobs
 from store_jobs_queries import cleanup_stale_jobs, get_job_state, get_open_job, has_open_job, list_dead_letters, list_jobs
 from store_jobs_retry import dead_letter_stale_open_job_for_chat, dead_letter_stale_running_jobs, retry_or_dead_letter_job
+from store_models import MAX_OPERATOR_MESSAGE_LEN
 
 
 class StoreJobsMixin:
@@ -79,28 +80,66 @@ class StoreJobsMixin:
         return new_lock
 
     def start_chat_job(self, *, user_id: str, chat_id: int, message: str, max_attempts: int = 4) -> dict[str, Any]:
-        with self._enqueue_lock():
-            open_job = self.get_open_job(user_id=user_id, chat_id=chat_id)
-            if open_job:
-                return {
-                    "created": False,
-                    "job_id": int(open_job["id"]),
-                    "operator_message_id": int(open_job["operator_message_id"]),
-                    "open_job": dict(open_job),
-                }
-            operator_message_id = self.add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
-            job_id = self.enqueue_chat_job(
-                user_id=user_id,
-                chat_id=chat_id,
-                operator_message_id=operator_message_id,
-                max_attempts=max_attempts,
-            )
-            return {
-                "created": True,
-                "job_id": int(job_id),
-                "operator_message_id": int(operator_message_id),
-                "open_job": None,
-            }
+        cleaned_message = str(message or "").strip()
+        if not cleaned_message:
+            raise ValueError("Message body cannot be empty")
+        if len(cleaned_message) > MAX_OPERATOR_MESSAGE_LEN:
+            raise ValueError(f"Message body exceeds {MAX_OPERATOR_MESSAGE_LEN} characters")
+
+        lock_error_text = "database is locked"
+        retry_attempts = 3
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                with self._connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    open_job = get_open_job(conn, user_id=user_id, chat_id=chat_id)
+                    if open_job:
+                        return {
+                            "created": False,
+                            "job_id": int(open_job["id"]),
+                            "operator_message_id": int(open_job["operator_message_id"]),
+                            "open_job": dict(open_job),
+                        }
+
+                    self._ensure_chat_exists(conn, user_id, chat_id)
+                    message_cursor = conn.execute(
+                        "INSERT INTO chat_messages (user_id, chat_id, role, body) VALUES (?, ?, ?, ?)",
+                        (user_id, chat_id, "operator", cleaned_message),
+                    )
+                    conn.execute(
+                        "UPDATE chat_threads SET updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND id = ?",
+                        (user_id, chat_id),
+                    )
+                    operator_message_id = int(message_cursor.lastrowid)
+                    job_cursor = conn.execute(
+                        """
+                        INSERT INTO chat_jobs (
+                            user_id,
+                            chat_id,
+                            operator_message_id,
+                            status,
+                            attempts,
+                            max_attempts,
+                            next_attempt_at,
+                            updated_at
+                        )
+                        VALUES (?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """,
+                        (user_id, chat_id, operator_message_id, JOB_STATUS_QUEUED, max(1, int(max_attempts))),
+                    )
+                    return {
+                        "created": True,
+                        "job_id": int(job_cursor.lastrowid),
+                        "operator_message_id": operator_message_id,
+                        "open_job": None,
+                    }
+            except sqlite3.OperationalError as exc:
+                if lock_error_text not in str(exc).lower():
+                    raise
+                if attempt >= retry_attempts:
+                    raise
+                time.sleep(0.05 * attempt)
+        raise RuntimeError("start_chat_job failed after retries")
 
     def _record_preclaim_dead_letter_total(self, delta: int) -> None:
         increment = max(0, int(delta or 0))
