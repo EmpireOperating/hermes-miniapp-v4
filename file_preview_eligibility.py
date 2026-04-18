@@ -190,19 +190,19 @@ def resolve_preview_path(
 
     context_roots = preferred_roots if preferred_roots is not None else file_preview_context_roots(allowed_roots)
 
-    requires_existing_exact_match = len(candidate.parts) == 1
+    if len(candidate.parts) == 1:
+        basename_match = _resolve_unique_basename_under_roots(candidate.name, allowed_roots)
+        if basename_match is not None:
+            return basename_match
+        raise ValueError("Path must be absolute or relative to an allowed root")
 
     resolved = _resolve_relative_path_against_roots(candidate, context_roots)
-    if resolved is not None and (not requires_existing_exact_match or resolved.exists()):
+    if resolved is not None and resolved.exists():
         return resolved
 
     resolved = _resolve_relative_path_against_roots(candidate, allowed_roots)
-    if resolved is not None and (not requires_existing_exact_match or resolved.exists()):
+    if resolved is not None and resolved.exists():
         return resolved
-
-    basename_match = _resolve_unique_basename_under_roots(candidate.name, context_roots)
-    if basename_match is not None:
-        return basename_match
 
     raise ValueError("Path must be absolute or relative to an allowed root")
 

@@ -57,6 +57,28 @@ def test_previewable_file_refs_include_repo_context_shorthand_refs(tmp_path, mon
     ]
 
 
+def test_previewable_file_refs_skip_ambiguous_common_basename_shorthand_outside_context_root(tmp_path, monkeypatch) -> None:
+    allowed_root = tmp_path / "workspace"
+    miniapp_root = allowed_root / "active" / "hermes_miniapp_v4"
+    freedom_mail_root = allowed_root / "active" / "freedom-mail"
+    miniapp_readme = miniapp_root / "README.md"
+    freedom_mail_readme = freedom_mail_root / "README.md"
+    miniapp_readme.parent.mkdir(parents=True, exist_ok=True)
+    freedom_mail_readme.parent.mkdir(parents=True, exist_ok=True)
+    miniapp_readme.write_text("miniapp\n", encoding="utf-8")
+    freedom_mail_readme.write_text("freedom mail\n", encoding="utf-8")
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_ALLOWED_ROOTS", str(allowed_root))
+    monkeypatch.setenv("MINI_APP_FILE_PREVIEW_CONTEXT_ROOTS", str(miniapp_root))
+
+    refs = previewable_file_refs(
+        "Updated docs in README.md and active/freedom-mail/README.md",
+        message_id=17,
+    )
+
+    assert [ref["path"] for ref in refs] == ["active/freedom-mail/README.md"]
+    assert [ref["resolved_path"] for ref in refs] == [str(freedom_mail_readme)]
+
+
 def test_is_previewable_path_rejects_ambiguous_basename_shorthand(tmp_path) -> None:
     allowed_root = tmp_path / "workspace"
     repo_root = allowed_root / "active" / "demo_repo"
@@ -71,4 +93,22 @@ def test_is_previewable_path_rejects_ambiguous_basename_shorthand(tmp_path) -> N
         "runtime_history_helpers.js",
         allowed_roots=[allowed_root],
         preferred_roots=[repo_root],
+    )
+
+
+def test_is_previewable_path_rejects_basename_shorthand_ambiguous_outside_context_root(tmp_path) -> None:
+    allowed_root = tmp_path / "workspace"
+    miniapp_root = allowed_root / "active" / "hermes_miniapp_v4"
+    freedom_mail_root = allowed_root / "active" / "freedom-mail"
+    miniapp_readme = miniapp_root / "README.md"
+    freedom_mail_readme = freedom_mail_root / "README.md"
+    miniapp_readme.parent.mkdir(parents=True, exist_ok=True)
+    freedom_mail_readme.parent.mkdir(parents=True, exist_ok=True)
+    miniapp_readme.write_text("miniapp\n", encoding="utf-8")
+    freedom_mail_readme.write_text("freedom mail\n", encoding="utf-8")
+
+    assert not is_previewable_path(
+        "README.md",
+        allowed_roots=[allowed_root],
+        preferred_roots=[miniapp_root],
     )
