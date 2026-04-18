@@ -137,6 +137,7 @@ function buildHarness(overrides = {}) {
     syncBootstrapActivationReadState: (chatId, { unreadCount = null } = {}) => {
       armedBootstrapActivationUnreadThresholds.push({ chatId: Number(chatId), unreadCount: Number(unreadCount || 0) });
     },
+    getActiveChatId: () => activeChatId,
     windowObject,
     authBootstrapMaxAttempts: 3,
     authBootstrapBaseDelayMs: 0,
@@ -183,6 +184,7 @@ function buildHarness(overrides = {}) {
     getLocationReplacements: () => locationReplacements,
     getReloadIntentMarkers: () => reloadIntentMarkers,
     setAuthenticated: (value) => { isAuthenticated = Boolean(value); },
+    setActiveChatId: (value) => { activeChatId = value == null ? null : Number(value); },
   };
 }
 
@@ -311,22 +313,143 @@ test('applyAuthBootstrap scrubs stale signing-in system messages from local hist
     created_at: harness.histories.get(5)[0].created_at,
   }]);
 });
-
 test('applyAuthBootstrap delegates active bootstrap unread threshold sync through shared read-state authority', () => {
   const harness = buildHarness({
     chats: new Map([[5, { id: 5, pending: false, unread_count: 3 }]]),
   });
 
   harness.controller.applyAuthBootstrap({
-    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    ok: true,
+    user: { username: 'desk', display_name: 'Desk' },
     skin: 'terminal',
     active_chat_id: 5,
     chats: [{ id: 5, pending: false, unread_count: 3 }],
     pinned_chats: [],
     history: [],
-  }, { preferredUsername: 'Desktop' });
+  }, { preferredUsername: '@Desk' });
 
   assert.deepEqual(harness.getArmedBootstrapActivationUnreadThresholds(), [{ chatId: 5, unreadCount: 3 }]);
+});
+
+test('applyAuthBootstrap rehydrates the active chat when a background host recreation boot reports unread metadata but the bootstrap history still lacks that unread anchor', async () => {
+  const harness = buildHarness({
+    isMobileQuoteMode: () => true,
+    fetchImpl: async (url, options) => {
+      harness.fetchCalls.push([url, options]);
+      if (url === '/api/chats/history') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            chat: { id: 5, pending: false, unread_count: 1, newest_unread_message_id: 22 },
+            history: [
+              { id: 21, role: 'operator', body: 'question', created_at: '2026-04-18T14:48:28Z' },
+              { id: 22, role: 'hermes', body: 'fresh reply', created_at: '2026-04-18T14:48:53Z' },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          user: { username: 'desktop', display_name: 'Desktop Tester' },
+          skin: 'terminal',
+          active_chat_id: 5,
+          chats: [{ id: 5, pending: false }],
+          pinned_chats: [],
+          history: [],
+        }),
+      };
+    },
+    chats: new Map([[5, { id: 5, pending: false, unread_count: 1, newest_unread_message_id: 22 }]]),
+  });
+
+  harness.controller.applyAuthBootstrap({
+    ok: true,
+    user: { username: 'desk', display_name: 'Desk' },
+    skin: 'terminal',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: false, unread_count: 1, newest_unread_message_id: 22 }],
+    pinned_chats: [],
+    history: [
+      { id: 21, role: 'operator', body: 'question', created_at: '2026-04-18T14:48:28Z' },
+    ],
+  }, { preferredUsername: '@Desk' });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.fetchCalls.some(([url]) => url === '/api/chats/history'), true);
+  assert.deepEqual(
+    (harness.histories.get(5) || []).map((item) => Number(item.id || 0)),
+    [21, 22],
+  );
+});
+
+test('applyAuthBootstrap skips stale rehydrate repaint when the active chat changes before unread-anchor refresh settles', async () => {
+  const harness = buildHarness({
+    isMobileQuoteMode: () => true,
+    fetchImpl: async (url, options) => {
+      harness.fetchCalls.push([url, options]);
+      if (url === '/api/chats/history') {
+        harness.setActiveChatId(9);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            chat: { id: 5, pending: false, unread_count: 1, newest_unread_message_id: 22 },
+            history: [
+              { id: 21, role: 'operator', body: 'question', created_at: '2026-04-18T14:48:28Z' },
+              { id: 22, role: 'hermes', body: 'fresh reply', created_at: '2026-04-18T14:48:53Z' },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ok: true,
+          user: { username: 'desktop', display_name: 'Desktop Tester' },
+          skin: 'terminal',
+          active_chat_id: 5,
+          chats: [{ id: 5, pending: false }],
+          pinned_chats: [],
+          history: [],
+        }),
+      };
+    },
+    chats: new Map([[5, { id: 5, pending: false, unread_count: 1, newest_unread_message_id: 22 }]]),
+  });
+
+  harness.controller.applyAuthBootstrap({
+    ok: true,
+    user: { username: 'desk', display_name: 'Desk' },
+    skin: 'terminal',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: false, unread_count: 1, newest_unread_message_id: 22 }],
+    pinned_chats: [],
+    history: [
+      { id: 21, role: 'operator', body: 'question', created_at: '2026-04-18T14:48:28Z' },
+    ],
+  }, { preferredUsername: '@Desk' });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(harness.renderedMessages, [5]);
+  assert.deepEqual(
+    (harness.histories.get(5) || []).map((item) => Number(item.id || 0)),
+    [21, 22],
+  );
+  assert.equal(
+    harness.getBootStages().some((entry) => entry.stage === 'bootstrap-unread-anchor-rehydrate-skipped-stale-active-chat' && Number(entry.details.currentActiveChatId) === 9),
+    true,
+  );
 });
 
 test('applyAuthBootstrap avoids forced virtualization on mobile bootstrap opens so chats paint immediately', () => {

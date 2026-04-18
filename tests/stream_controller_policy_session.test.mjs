@@ -311,8 +311,11 @@ test('stream event helper bands expose direct meta/chunk/error ownership', () =>
   chunkController.handleChunkEvent(7, { text: 'hello' }, builtReplyRef);
   assert.equal(builtReplyRef.value, 'hello');
   assert.deepEqual(fallbacks, [7]);
-  assert.ok(updates.some((entry) => entry.type === 'notify'));
-  assert.ok(updates.some((entry) => entry.type === 'assistant' && entry.text === 'hello' && entry.pending === true));
+  const notifyIndex = updates.findIndex((entry) => entry.type === 'notify');
+  const assistantIndex = updates.findIndex((entry) => entry.type === 'assistant' && entry.text === 'hello' && entry.pending === true);
+  assert.notEqual(notifyIndex, -1);
+  assert.notEqual(assistantIndex, -1);
+  assert.equal(assistantIndex < notifyIndex, true);
 
   const errorController = streamController.createStreamErrorEventController({
     STREAM_PHASES: streamState.STREAM_PHASES,

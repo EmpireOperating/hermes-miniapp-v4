@@ -908,9 +908,6 @@
       const chunkText = String(payload.text || '');
       const hadAssistantText = builtReplyRef.value.length > 0;
       builtReplyRef.value += chunkText;
-      if (!hadAssistantText && chunkText) {
-        notifyFirstAssistantChunk(chatId);
-      }
       updatePendingAssistant(chatId, builtReplyRef.value, true);
       markStreamUpdate(chatId);
       const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, true);
@@ -924,6 +921,9 @@
       });
       if (!patchedAssistant) {
         reconcileVisibleTranscriptFallback(chatId);
+      }
+      if (!hadAssistantText && chunkText) {
+        notifyFirstAssistantChunk(chatId);
       }
       return false;
     }
