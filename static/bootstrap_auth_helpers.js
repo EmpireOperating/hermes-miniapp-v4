@@ -401,12 +401,22 @@
     restoreActiveBootstrapPendingState = null,
     syncBootstrapActivationReadState = null,
     onBootstrapStage = null,
+    getActiveChatId = null,
+    apiPost = null,
     delayMs,
     isMobileBootstrapPath,
     syncDevAuthUi,
     mobileBootstrapWarmDelayMs = 320,
   }) {
     const staleSigningInMessage = "Still signing you in. Try again in a moment.";
+
+    function historyContainsMessageId(history, messageId) {
+      const targetId = Math.max(0, Number(messageId || 0));
+      if (targetId <= 0 || !Array.isArray(history)) {
+        return false;
+      }
+      return history.some((item) => Number(item?.id || 0) === targetId);
+    }
 
     function pruneStaleSigningMessages(history) {
       if (!Array.isArray(history) || history.length === 0) {
@@ -529,6 +539,44 @@
       setActiveChatMeta(activeId, { deferNonCritical: true });
       if (hasPinnedChats) {
         void delayMs(0).then(() => renderPinnedChats());
+      }
+      const unreadAnchorMessageId = Math.max(0, Number(activeChat?.newest_unread_message_id || 0));
+      if (typeof apiPost === 'function' && unreadAnchorMessageId > 0 && !historyContainsMessageId(bootstrapHistory, unreadAnchorMessageId)) {
+        onBootstrapStage?.('bootstrap-unread-anchor-missing', {
+          activeChatId: activeId,
+          unreadAnchorMessageId,
+        });
+        void delayMs(0).then(async () => {
+          try {
+            const refreshed = await apiPost('/api/chats/history', { chat_id: activeId, activate: true });
+            const refreshedHistory = pruneStaleSigningMessages(Array.isArray(refreshed?.history) ? [...refreshed.history] : []);
+            if (refreshed?.chat) {
+              syncChats([refreshed.chat]);
+            }
+            histories.set(activeId, refreshedHistory);
+            const currentActiveChatId = Number(getActiveChatId?.() || 0);
+            if (currentActiveChatId === activeId) {
+              renderMessages(activeId, { preserveViewport: true });
+            } else {
+              onBootstrapStage?.('bootstrap-unread-anchor-rehydrate-skipped-stale-active-chat', {
+                activeChatId: activeId,
+                currentActiveChatId,
+                unreadAnchorMessageId,
+                historyCount: refreshedHistory.length,
+              });
+            }
+            onBootstrapStage?.('bootstrap-unread-anchor-rehydrated', {
+              activeChatId: activeId,
+              unreadAnchorMessageId,
+              historyCount: refreshedHistory.length,
+            });
+          } catch {
+            onBootstrapStage?.('bootstrap-unread-anchor-rehydrate-failed', {
+              activeChatId: activeId,
+              unreadAnchorMessageId,
+            });
+          }
+        });
       }
       onBootstrapStage?.("initial-render-start", {
         activeChatId: activeId,
@@ -798,6 +846,28 @@
       sessionStorageRef,
       devAuthSessionStorageKey,
     });
+    const requestController = createRequestController({
+      initData,
+      parseSseEvent,
+      safeReadJsonOverride,
+      fetchImpl,
+      setIsAuthenticated,
+      authStatus,
+      updateComposerState,
+      authBootstrapMaxAttempts,
+      authBootstrapBaseDelayMs,
+      authBootstrapRetryableStatus,
+      bootBootstrapVersion,
+      bootstrapVersionReloadStorageKey,
+      sessionStorageRef,
+      preferredActiveChatSessionStorageKey,
+      recordBootMetric,
+      syncBootLatencyChip,
+      onBootstrapStage,
+      markVersionSyncReloadIntent,
+      windowObject,
+      delayMs: delayController.delayMs,
+    });
     const bootstrapApplyController = createBootstrapApplyController({
       setIsAuthenticated,
       normalizeHandle: identityController.normalizeHandle,
@@ -823,32 +893,12 @@
       restoreActiveBootstrapPendingState,
       syncBootstrapActivationReadState,
       onBootstrapStage,
+      getActiveChatId: deps.getActiveChatId,
+      apiPost: requestController.apiPost,
       delayMs: delayController.delayMs,
       isMobileBootstrapPath: identityController.isMobileBootstrapPath,
       syncDevAuthUi: devAuthUiController.syncDevAuthUi,
       mobileBootstrapWarmDelayMs: deps.mobileBootstrapWarmDelayMs,
-    });
-    const requestController = createRequestController({
-      initData,
-      parseSseEvent,
-      safeReadJsonOverride,
-      fetchImpl,
-      setIsAuthenticated,
-      authStatus,
-      updateComposerState,
-      authBootstrapMaxAttempts,
-      authBootstrapBaseDelayMs,
-      authBootstrapRetryableStatus,
-      bootBootstrapVersion,
-      bootstrapVersionReloadStorageKey,
-      sessionStorageRef,
-      preferredActiveChatSessionStorageKey,
-      recordBootMetric,
-      syncBootLatencyChip,
-      onBootstrapStage,
-      markVersionSyncReloadIntent,
-      windowObject,
-      delayMs: delayController.delayMs,
     });
     const devAuthSignInController = createDevAuthSignInController({
       desktopTestingEnabled,

@@ -1626,6 +1626,7 @@ function createBootstrapAuthControllerAppArgs() {
         ? chatHistoryController.syncBootstrapActivationReadState(chatId, options)
         : false
     ),
+    getActiveChatId: () => Number(activeChatId),
     windowObject: window,
   };
 }
