@@ -517,6 +517,101 @@ test('rename modal confirm click survives mobile dialog-close semantics and stil
   assert.equal(harness.chats.get(7)?.title, '[bug]Current renamed');
 });
 
+test('rename modal native dialog confirm close still submits when mobile webview skips submit and click handlers', async () => {
+  const harness = buildHarness({
+    chatTitleConfirm: createEventTarget({ textContent: '' }),
+    upsertChat: (chat) => {
+      const cloned = { ...chat };
+      harness.upsertedChats.push(cloned);
+      harness.chats.set(Number(chat.id), cloned);
+      if (chat.is_pinned) {
+        harness.pinnedChats.set(Number(chat.id), { ...cloned });
+      } else {
+        harness.pinnedChats.delete(Number(chat.id));
+      }
+    },
+  });
+
+  const renamePromise = harness.controller.renameActiveChat();
+  harness.chatTitleInput.value = 'Native close renamed';
+  harness.chatTitleModal.returnValue = 'confirm';
+  harness.chatTitleModal.close();
+  await renamePromise;
+
+  assert.deepEqual(harness.apiCalls[0], {
+    path: '/api/chats/rename',
+    payload: { chat_id: 7, title: '[bug]Native close renamed' },
+  });
+  assert.equal(harness.chats.get(7)?.title, '[bug]Native close renamed');
+});
+
+test('rename modal touch confirm intent survives mobile native close even when returnValue stays empty', async () => {
+  const harness = buildHarness({
+    chatTitleConfirm: createEventTarget({ textContent: '' }),
+    upsertChat: (chat) => {
+      const cloned = { ...chat };
+      harness.upsertedChats.push(cloned);
+      harness.chats.set(Number(chat.id), cloned);
+      if (chat.is_pinned) {
+        harness.pinnedChats.set(Number(chat.id), { ...cloned });
+      } else {
+        harness.pinnedChats.delete(Number(chat.id));
+      }
+    },
+  });
+
+  const renamePromise = harness.controller.renameActiveChat();
+  harness.chatTitleInput.value = 'Touch close renamed';
+  harness.chatTitleConfirm.dispatch('touchend');
+  harness.chatTitleModal.close();
+  await renamePromise;
+
+  assert.deepEqual(harness.apiCalls[0], {
+    path: '/api/chats/rename',
+    payload: { chat_id: 7, title: '[bug]Touch close renamed' },
+  });
+  assert.equal(harness.chats.get(7)?.title, '[bug]Touch close renamed');
+});
+
+test('renameActiveChat still sends the rename request when the optimistic local update fails first', async () => {
+  let buildCallCount = 0;
+  const harness = buildHarness({
+    upsertChat: (chat) => {
+      const cloned = { ...chat };
+      harness.upsertedChats.push(cloned);
+      harness.chats.set(Number(chat.id), cloned);
+      if (chat.is_pinned) {
+        harness.pinnedChats.set(Number(chat.id), { ...cloned });
+      } else {
+        harness.pinnedChats.delete(Number(chat.id));
+      }
+    },
+    buildChatPreservingUnread: (chat, options = {}) => {
+      buildCallCount += 1;
+      if (buildCallCount === 1) {
+        throw new Error('optimistic preflight exploded');
+      }
+      return {
+        ...chat,
+        unread_count: options?.preserveActivationUnread ? 5 : Number(chat?.unread_count || 0),
+        newest_unread_message_id: options?.preserveActivationUnread ? 41 : Number(chat?.newest_unread_message_id || 0),
+      };
+    },
+  });
+
+  const renamePromise = harness.controller.renameActiveChat();
+  harness.chatTitleInput.value = 'Recovered rename';
+  harness.chatTitleForm.dispatch('submit');
+  await renamePromise;
+
+  assert.deepEqual(harness.apiCalls[0], {
+    path: '/api/chats/rename',
+    payload: { chat_id: 7, title: '[bug]Recovered rename' },
+  });
+  assert.equal(buildCallCount, 2);
+  assert.equal(harness.chats.get(7)?.title, '[bug]Recovered rename');
+});
+
 test('renameActiveChat updates the local tab title before the rename request resolves', async () => {
   let resolveRename;
   const renameResponse = new Promise((resolve) => {

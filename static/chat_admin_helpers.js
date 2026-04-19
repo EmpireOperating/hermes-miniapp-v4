@@ -125,15 +125,24 @@
 
       chatTitleHint.textContent = mode === 'rename' ? 'Update this chat title.' : 'Create a title for this chat.';
       chatTitleConfirm.textContent = mode === 'rename' ? 'Rename' : 'Create';
+      if ('value' in chatTitleConfirm) {
+        chatTitleConfirm.value = 'confirm';
+      }
+      if ('returnValue' in chatTitleModal) {
+        chatTitleModal.returnValue = '';
+      }
       chatTitleInput.value = fallbackDefault || defaultTitle;
       setChatTitleSelectedTag(showTagToggles ? parsedCurrent.tag : 'none');
 
       return new Promise((resolve) => {
         let done = false;
+        let confirmIntent = false;
 
         const cleanup = () => {
           chatTitleForm.removeEventListener('submit', onSubmit);
           chatTitleConfirm.removeEventListener?.('click', onConfirmClick);
+          chatTitleConfirm.removeEventListener?.('mouseup', onConfirmIntent);
+          chatTitleConfirm.removeEventListener?.('touchend', onConfirmIntent);
           chatTitleCancel.removeEventListener('click', onCancel);
           chatTitleModal.removeEventListener('cancel', onCancel);
           chatTitleModal.removeEventListener('close', onClose);
@@ -169,13 +178,28 @@
           onSubmit(event);
         };
 
+        const onConfirmIntent = () => {
+          confirmIntent = true;
+        };
+
         const onCancel = (event) => {
           event?.preventDefault?.();
+          confirmIntent = false;
           finish(null);
           if (chatTitleModal.open) chatTitleModal.close();
         };
 
-        const onClose = () => finish(null);
+        const onClose = () => {
+          if (done) return;
+          const returnValue = String(chatTitleModal?.returnValue || '').trim().toLowerCase();
+          const shouldSubmit = returnValue === 'confirm' || confirmIntent;
+          confirmIntent = false;
+          if (shouldSubmit && chatTitleInput.value.trim()) {
+            onSubmit({ preventDefault() {} });
+            return;
+          }
+          finish(null);
+        };
 
         const applyTagSelection = (event) => {
           const requestedTag = String(event?.currentTarget?.dataset?.chatTitleTag || 'none').toLowerCase();
@@ -222,6 +246,8 @@
 
         chatTitleForm.addEventListener('submit', onSubmit);
         chatTitleConfirm.addEventListener?.('click', onConfirmClick);
+        chatTitleConfirm.addEventListener?.('mouseup', onConfirmIntent);
+        chatTitleConfirm.addEventListener?.('touchend', onConfirmIntent);
         chatTitleCancel.addEventListener('click', onCancel);
         chatTitleModal.addEventListener('cancel', onCancel);
         chatTitleModal.addEventListener('close', onClose);
@@ -311,8 +337,17 @@
         return sourceChat;
       };
 
+      let optimisticRenameApplied = false;
       if (localSnapshot) {
-        applyRenamedChat(prepareRenamedChat(cleaned));
+        try {
+          applyRenamedChat(prepareRenamedChat(cleaned));
+          optimisticRenameApplied = true;
+        } catch (error) {
+          windowObject?.console?.warn?.(
+            '[chat-rename] optimistic local rename failed before request; falling back to server-confirmed rename',
+            error,
+          );
+        }
       }
 
       try {
@@ -322,7 +357,7 @@
           : null;
         applyRenamedChat(prepareRenamedChat(cleaned, nextChat));
       } catch (error) {
-        if (localSnapshot) {
+        if (optimisticRenameApplied && localSnapshot) {
           applyRenamedChat(prepareRenamedChat(currentTitle));
         }
         throw error;

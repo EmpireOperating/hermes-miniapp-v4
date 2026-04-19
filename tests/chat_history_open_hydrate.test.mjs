@@ -28,6 +28,9 @@ test('chat history exports hydration helper subcontrollers with stable ownership
   assert.equal(typeof runtimeHydrationFlow.createHydrationFlowController, 'function');
   assert.equal(typeof runtimeOpenFlow.createCachedOpenController, 'function');
   assert.equal(typeof runtimeOpenFlow.createHistoryOpenController, 'function');
+
+  const harness = buildHarness();
+  assert.equal(typeof harness.controller.buildChatPreservingUnread, 'function');
 });
 
 test('visibility resume helper only forces resume for pending chats that still need recovery', async () => {
