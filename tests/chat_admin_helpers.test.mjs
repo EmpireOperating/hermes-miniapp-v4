@@ -542,7 +542,7 @@ test('renameActiveChat updates the local tab title before the rename request res
       options: { preserveActivationUnread: true },
     },
     {
-      chat: { id: 7, title: '[bug]Current renamed', is_pinned: true, unread_count: 5 },
+      chat: { id: 7, title: '[bug]Current renamed', is_pinned: true, unread_count: 5, newest_unread_message_id: 41 },
       options: { preserveActivationUnread: true },
     },
   ]);
@@ -562,6 +562,104 @@ test('renameActiveChat updates the local tab title before the rename request res
       newest_unread_message_id: 41,
     },
   ]);
+});
+
+test('renameActiveChat does not reactivate the renamed chat if focus moved before the response returns', async () => {
+  let resolveRename;
+  const renameResponse = new Promise((resolve) => {
+    resolveRename = resolve;
+  });
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true, unread_count: 5, newest_unread_message_id: 41 }],
+      [9, { id: 9, title: 'Elsewhere', is_pinned: false }],
+    ],
+    initialPinnedChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true, unread_count: 5, newest_unread_message_id: 41 }],
+    ],
+    apiPost: async () => renameResponse,
+    upsertChat: (chat) => {
+      const cloned = { ...chat };
+      harness.upsertedChats.push(cloned);
+      harness.chats.set(Number(chat.id), cloned);
+      if (chat.is_pinned) {
+        harness.pinnedChats.set(Number(chat.id), { ...cloned });
+      } else {
+        harness.pinnedChats.delete(Number(chat.id));
+      }
+    },
+  });
+
+  const renamePromise = harness.controller.renameActiveChat();
+  harness.chatTitleInput.value = 'Current renamed';
+  harness.chatTitleForm.dispatch('submit');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  harness.setActiveChatId(9);
+  resolveRename({
+    chat: { id: 7, title: '[bug]Current renamed', is_pinned: true },
+  });
+  await renamePromise;
+
+  assert.equal(harness.activeChatId, 9);
+  assert.deepEqual(harness.setActiveCalls, [7]);
+  assert.equal(harness.renderedTabs.length >= 1, true);
+});
+
+test('renameActiveChat rollback restores the prior title without clobbering newer unread state', async () => {
+  let rejectRename;
+  const renameResponse = new Promise((_, reject) => {
+    rejectRename = reject;
+  });
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true, unread_count: 5, newest_unread_message_id: 41 }],
+    ],
+    initialPinnedChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true, unread_count: 5, newest_unread_message_id: 41 }],
+    ],
+    apiPost: async () => renameResponse,
+    upsertChat: (chat) => {
+      const cloned = { ...chat };
+      harness.upsertedChats.push(cloned);
+      harness.chats.set(Number(chat.id), cloned);
+      if (chat.is_pinned) {
+        harness.pinnedChats.set(Number(chat.id), { ...cloned });
+      } else {
+        harness.pinnedChats.delete(Number(chat.id));
+      }
+    },
+  });
+
+  const renamePromise = harness.controller.renameActiveChat();
+  harness.chatTitleInput.value = 'Current renamed';
+  harness.chatTitleForm.dispatch('submit');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  harness.chats.set(7, {
+    ...harness.chats.get(7),
+    unread_count: 8,
+    newest_unread_message_id: 77,
+  });
+  harness.pinnedChats.set(7, {
+    ...harness.pinnedChats.get(7),
+    unread_count: 8,
+    newest_unread_message_id: 77,
+  });
+
+  rejectRename(new Error('rename failed'));
+  await assert.rejects(renamePromise, /rename failed/);
+
+  assert.deepEqual(harness.upsertedChats.at(-1), {
+    id: 7,
+    title: '[bug]Current',
+    is_pinned: true,
+    unread_count: 8,
+    newest_unread_message_id: 77,
+  });
+  assert.equal(harness.chats.get(7)?.title, '[bug]Current');
+  assert.equal(harness.chats.get(7)?.unread_count, 8);
+  assert.equal(harness.chats.get(7)?.newest_unread_message_id, 77);
 });
 
 test('removeActiveChat keeps silent-close semantics and preserves removed pinned chats for reopen', async () => {
