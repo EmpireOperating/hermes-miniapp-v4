@@ -136,7 +136,7 @@
           chatTitleCancel.removeEventListener('click', onCancel);
           chatTitleModal.removeEventListener('cancel', onCancel);
           chatTitleModal.removeEventListener('close', onClose);
-          chatTitleInput.removeEventListener?.('keydown', onTagRotationKeyDown);
+          chatTitleInput.removeEventListener?.('keydown', onTitleInputKeyDown);
           chatTitleTagButtons.forEach((button) => {
             button.removeEventListener('click', onTagSelect);
             button.removeEventListener('mousedown', onTagMouseDown);
@@ -198,9 +198,18 @@
           applyTagSelection(event);
         };
 
-        const onTagRotationKeyDown = (event) => {
+        const onTitleInputKeyDown = (event) => {
+          if (event?.key === 'Enter' && !event?.shiftKey && !event?.altKey && !event?.ctrlKey && !event?.metaKey && !event?.isComposing) {
+            event.preventDefault?.();
+            if (typeof chatTitleForm.requestSubmit === 'function') {
+              chatTitleForm.requestSubmit();
+            } else {
+              onSubmit(event);
+            }
+            return;
+          }
           if (!showTagToggles) return;
-          if (event?.altKey || event?.ctrlKey || event?.metaKey) return;
+          if (event?.altKey || event?.ctrlKey || event?.metaKey || !event?.shiftKey) return;
           if (event?.key === 'ArrowRight') {
             event.preventDefault?.();
             rotateChatTitleSelectedTag(1);
@@ -218,7 +227,7 @@
         chatTitleCancel.addEventListener('click', onCancel);
         chatTitleModal.addEventListener('cancel', onCancel);
         chatTitleModal.addEventListener('close', onClose);
-        chatTitleInput.addEventListener?.('keydown', onTagRotationKeyDown);
+        chatTitleInput.addEventListener?.('keydown', onTitleInputKeyDown);
         chatTitleTagButtons.forEach((button) => button.addEventListener('click', onTagSelect));
         chatTitleTagButtons.forEach((button) => button.addEventListener('mousedown', onTagMouseDown));
         chatTitleTagButtons.forEach((button) => button.addEventListener('touchstart', onTagTouchStart, { passive: false }));
