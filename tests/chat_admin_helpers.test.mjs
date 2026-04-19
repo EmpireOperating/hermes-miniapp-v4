@@ -86,6 +86,7 @@ function buildHarness(overrides = {}) {
   const keyboardShortcutsModal = overrides.keyboardShortcutsModal || createModal();
   const chatTitleModal = overrides.chatTitleModal || createModal();
   const chatTitleForm = overrides.chatTitleForm || createEventTarget();
+  const chatTitleConfirm = overrides.chatTitleConfirm || createEventTarget({ textContent: '' });
   const chatTabContextMenu = overrides.chatTabContextMenu || {
     hidden: true,
     style: { left: '', top: '' },
@@ -163,7 +164,7 @@ function buildHarness(overrides = {}) {
     chatTitleHint: { textContent: '', hidden: false },
     chatTitleInput,
     chatTitleCancel: createButton(),
-    chatTitleConfirm: { textContent: '' },
+    chatTitleConfirm,
     chatTitleTagLabel: { hidden: false },
     chatTitleTagRow: { hidden: false },
     chatTitleTagButtons,
@@ -288,6 +289,7 @@ function buildHarness(overrides = {}) {
     keyboardShortcutsModal,
     chatTitleModal,
     chatTitleForm,
+    chatTitleConfirm,
     chatTabContextMenu,
     chatTabContextRename,
     chatTabContextPin,
@@ -477,6 +479,42 @@ test('createChat fallback prompt applies selected tag and hydrates the new activ
   assert.deepEqual(harness.setActiveCalls, [13]);
   assert.deepEqual(harness.renderedMessages, [13]);
   assert.deepEqual(harness.focusComposerCalls, [13]);
+});
+
+test('rename modal confirm click survives mobile dialog-close semantics and still submits the rename', async () => {
+  const harness = buildHarness({
+    chatTitleConfirm: createEventTarget({ textContent: '' }),
+    upsertChat: (chat) => {
+      const cloned = { ...chat };
+      harness.upsertedChats.push(cloned);
+      harness.chats.set(Number(chat.id), cloned);
+      if (chat.is_pinned) {
+        harness.pinnedChats.set(Number(chat.id), { ...cloned });
+      } else {
+        harness.pinnedChats.delete(Number(chat.id));
+      }
+    },
+  });
+
+  const renamePromise = harness.controller.renameActiveChat();
+  harness.chatTitleInput.value = 'Current renamed';
+  let confirmPrevented = false;
+  harness.chatTitleConfirm.dispatch('click', {
+    preventDefault() {
+      confirmPrevented = true;
+    },
+  });
+  if (!confirmPrevented) {
+    harness.chatTitleModal.close();
+  }
+  await renamePromise;
+
+  assert.equal(confirmPrevented, true);
+  assert.deepEqual(harness.apiCalls[0], {
+    path: '/api/chats/rename',
+    payload: { chat_id: 7, title: '[bug]Current renamed' },
+  });
+  assert.equal(harness.chats.get(7)?.title, '[bug]Current renamed');
 });
 
 test('renameActiveChat updates the local tab title before the rename request resolves', async () => {
