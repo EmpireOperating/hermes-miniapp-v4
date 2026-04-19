@@ -408,7 +408,7 @@ test('touchstart tag toggle still applies selection when click is suppressed by 
   assert.equal(result, '[feat]Zero Tab');
 });
 
-test('rename modal ArrowRight and ArrowLeft rotate tag selection while title input stays focused', async () => {
+test('rename modal only rotates tags on Shift+Arrow and leaves plain arrows to native cursor movement', async () => {
   const harness = buildHarness();
 
   const titlePromise = harness.controller.askForChatTitle({
@@ -417,29 +417,80 @@ test('rename modal ArrowRight and ArrowLeft rotate tag selection while title inp
     defaultTitle: 'Current',
   });
 
-  harness.chatTitleInput.dispatch('keydown', { key: 'ArrowRight', currentTarget: harness.chatTitleInput, target: harness.chatTitleInput });
-  harness.chatTitleInput.dispatch('keydown', { key: 'ArrowRight', currentTarget: harness.chatTitleInput, target: harness.chatTitleInput });
-  harness.chatTitleInput.dispatch('keydown', { key: 'ArrowLeft', currentTarget: harness.chatTitleInput, target: harness.chatTitleInput });
+  let plainArrowPrevented = false;
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowRight',
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    preventDefault() {
+      plainArrowPrevented = true;
+    },
+  });
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowRight',
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    shiftKey: true,
+  });
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowLeft',
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    shiftKey: true,
+  });
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowRight',
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    shiftKey: true,
+  });
   harness.chatTitleInput.value = 'Rotated title';
   harness.chatTitleForm.dispatch('submit');
 
   const result = await titlePromise;
   assert.equal(result, '[feat]Rotated title');
+  assert.equal(plainArrowPrevented, false);
   assert.equal(harness.chatTitleInput.focusCalls > 0, true);
   assert.equal(harness.chatTitleTagButtons[0].attributes.get('aria-pressed'), 'false');
   assert.equal(harness.chatTitleTagButtons[1].attributes.get('aria-pressed'), 'true');
   assert.equal(harness.chatTitleTagButtons[2].attributes.get('aria-pressed'), 'false');
 });
 
-test('createChat modal applies selected tag and hydrates the new active chat', async () => {
+test('createChat modal only rotates tags on Shift+Arrow and hydrates the new active chat', async () => {
   const harness = buildHarness();
 
   const createPromise = harness.controller.createChat();
+
+  let plainArrowPrevented = false;
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowRight',
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    preventDefault() {
+      plainArrowPrevented = true;
+    },
+  });
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowRight',
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    shiftKey: true,
+  });
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowRight',
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    shiftKey: true,
+  });
+
   harness.chatTitleInput.value = 'Launch plan';
-  harness.chatTitleTagButtons[2].dispatch('touchstart', { currentTarget: harness.chatTitleTagButtons[2] });
   harness.chatTitleForm.dispatch('submit');
   await createPromise;
 
+  assert.equal(plainArrowPrevented, false);
+  assert.equal(harness.chatTitleTagButtons[0].attributes.get('aria-pressed'), 'false');
+  assert.equal(harness.chatTitleTagButtons[1].attributes.get('aria-pressed'), 'false');
+  assert.equal(harness.chatTitleTagButtons[2].attributes.get('aria-pressed'), 'true');
   assert.deepEqual(harness.apiCalls[0], {
     path: '/api/chats',
     payload: { title: '[bug]Launch plan' },
