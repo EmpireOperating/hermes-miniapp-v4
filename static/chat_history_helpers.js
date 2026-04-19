@@ -741,6 +741,7 @@
       scheduleActiveMessageView: mutationController.scheduleActiveMessageView,
       markRead: readSyncController.markRead,
       maybeMarkRead: readSyncController.maybeMarkRead,
+      buildChatPreservingUnread: readSyncController.buildChatPreservingUnread,
       syncActiveViewportReadState: readSyncController.syncActiveViewportReadState,
       syncActiveStreamUnseenState: readSyncController.syncActiveStreamUnseenState,
       getCurrentUnreadCount: readSyncController.getCurrentUnreadCount,
