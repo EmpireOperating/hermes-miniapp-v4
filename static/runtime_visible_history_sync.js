@@ -109,7 +109,10 @@
       } = renderState;
       refreshTabNode(activeId);
       if (shouldRenderActiveHistory) {
-        renderMessages(activeId, { preserveViewport: true });
+        renderMessages(activeId, {
+          preserveViewport: true,
+          suppressAutoStickAtBottom: true,
+        });
       }
       syncHydratedActiveReadState(activeId, {
         unreadCount: data.chat?.unread_count,

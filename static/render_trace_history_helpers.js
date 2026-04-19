@@ -195,6 +195,7 @@
     function tryAppendOnlyRender(targetChatId, history, {
       preserveViewport,
       forceBottom,
+      suppressAutoStickAtBottom,
       isSameRenderedChat,
       shouldVirtualize,
       prevScrollTop,
@@ -246,7 +247,9 @@
       appendMessagesFn(fragment, appendedSlice, { startIndex: previouslyRenderedLength });
       messagesEl.appendChild(fragment);
 
-      const shouldStickBottom = Boolean(wasNearBottom);
+      const shouldStickBottom = Boolean(
+        forceBottom || (!suppressAutoStickAtBottom && preserveViewport && isSameRenderedChat && wasNearBottom)
+      );
       if (shouldStickBottom) {
         messagesEl.scrollTop = messagesEl.scrollHeight;
       } else {
@@ -349,13 +352,20 @@
       }
     }
 
-    function renderMessages(chatId, { preserveViewport = false, forceBottom = false, forceVirtualize = false } = {}) {
+    function renderMessages(chatId, {
+      preserveViewport = false,
+      forceBottom = false,
+      forceVirtualize = false,
+      suppressAutoStickAtBottom = false,
+    } = {}) {
       const targetChatId = Number(chatId);
       const isSameRenderedChat = Number(getRenderedChatId?.()) === targetChatId;
       const prevScrollTop = Number(messagesEl.scrollTop || 0);
       const prevViewportSnapshot = captureViewportSnapshot();
       const wasNearBottom = isNearBottom(messagesEl, 40);
-      const shouldStick = Boolean(forceBottom || (preserveViewport && isSameRenderedChat && wasNearBottom));
+      const shouldStick = Boolean(
+        forceBottom || (!suppressAutoStickAtBottom && preserveViewport && isSameRenderedChat && wasNearBottom)
+      );
 
       const history = histories.get(targetChatId) || [];
       const shouldVirtualize = Boolean(forceVirtualize) || shouldVirtualizeHistory(history.length);
@@ -369,6 +379,7 @@
         prevScrollTop,
         prevViewportSnapshot,
         wasNearBottom,
+        suppressAutoStickAtBottom,
       })) {
         finalizeRenderMessages(targetChatId, history, { shouldVirtualize, forceBottom });
         if (Number(getActiveChatId?.()) === targetChatId) {

@@ -24,6 +24,7 @@
       syncVisibleActiveChat,
       syncActiveMessageView,
       getStreamAbortControllers,
+      shouldDeferImmediateActiveMessageView = null,
       maybeRefreshForBootstrapVersionMismatch = null,
       markBackgrounded = null,
       markVisibilityResume = null,
@@ -199,9 +200,13 @@
       const streamAbortControllers = getStreamAbortControllers();
       const presenceSyncPromise = syncUnreadNotificationPresence({ visible: true });
       const activeId = Number(getActiveChatId());
-      if (activeId > 0) {
+      const shouldSkipImmediateActiveSync = activeId > 0
+        && typeof shouldDeferImmediateActiveMessageView === 'function'
+        && Boolean(shouldDeferImmediateActiveMessageView(activeId));
+      if (activeId > 0 && !shouldSkipImmediateActiveSync) {
         // Visibility/focus resumption is a common point where throttled UI work catches up.
-        // Force an immediate reconciliation from canonical history for the active chat.
+        // Force an immediate reconciliation from canonical history for the active chat unless
+        // unread metadata says local transcript is known stale and active hydration should win first.
         syncActiveMessageView(activeId, { preserveViewport: true });
       }
 
