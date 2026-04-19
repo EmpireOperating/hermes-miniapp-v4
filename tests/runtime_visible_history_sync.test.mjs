@@ -243,3 +243,60 @@ test('createVisibleSyncController passes the actual hydration historyChanged res
   assert.equal(renderDecisionCalls.length, 1);
   assert.equal(renderDecisionCalls[0].historyChanged, true);
 });
+
+test('createVisibleSyncController renders hydrated active history with suppressAutoStickAtBottom so visibility resumes do not auto-clear unread state', async () => {
+  const renderCalls = [];
+  const visibleSyncGenerationRef = { value: 0, get() { return this.value; }, set(next) { this.value = Number(next) || 0; } };
+
+  const controller = visibleHistorySync.createVisibleSyncController({
+    histories: new Map([[7, [{ id: 1, role: 'assistant', body: 'old' }]]]),
+    getActiveChatId: () => 7,
+    loadChatHistory: async () => ({
+      chat: { id: 7, unread_count: 1, newest_unread_message_id: 2 },
+      history: [
+        { id: 1, role: 'assistant', body: 'old' },
+        { id: 2, role: 'assistant', body: 'fresh unseen' },
+      ],
+    }),
+    hydrationApplyController: {
+      applyHydratedServerState: async () => ({
+        data: { chat: { id: 7, unread_count: 1, newest_unread_message_id: 2 } },
+        restoredPendingSnapshot: false,
+        historyChanged: true,
+        finalHistory: [
+          { id: 1, role: 'assistant', body: 'old' },
+          { id: 2, role: 'assistant', body: 'fresh unseen' },
+        ],
+        pendingState: {
+          chatPending: false,
+          localPendingWithoutLiveStream: false,
+          localAssistantPendingWithoutLiveStream: false,
+          snapshotPendingWithoutLiveStream: false,
+          matchedVisibleHydratedCompletion: false,
+        },
+      }),
+    },
+    renderDecisionController: {
+      buildHydrationRenderState: () => ({ shouldRenderActiveHistory: true }),
+    },
+    refreshTabNode: () => {},
+    renderMessages: (chatId, options = {}) => renderCalls.push({ chatId: Number(chatId), options }),
+    maybeTriggerVisibleHydrationHaptic: () => {},
+    syncHydratedActiveReadState: () => {},
+    pendingChats: new Set(),
+    visibleSyncGenerationRef,
+    visibilityResumeController: {
+      maybeResumeVisibilitySync: () => {},
+    },
+  });
+
+  await controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
+
+  assert.deepEqual(renderCalls, [{
+    chatId: 7,
+    options: {
+      preserveViewport: true,
+      suppressAutoStickAtBottom: true,
+    },
+  }]);
+});

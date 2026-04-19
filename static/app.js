@@ -2603,6 +2603,28 @@ function createVisibilitySkinControllerStateDeps() {
 }
 
 function createVisibilitySkinControllerRuntimeDeps() {
+  function historyContainsMessageId(history, messageId) {
+    const targetId = Math.max(0, Number(messageId || 0));
+    if (targetId <= 0 || !Array.isArray(history)) {
+      return false;
+    }
+    return history.some((item) => Number(item?.id || 0) === targetId);
+  }
+
+  function shouldDeferImmediateActiveMessageView(chatId) {
+    const key = Number(chatId || 0);
+    if (key <= 0) {
+      return false;
+    }
+    const activeChat = chats.get(key);
+    const unreadAnchorMessageId = Math.max(0, Number(activeChat?.newest_unread_message_id || 0));
+    if (unreadAnchorMessageId <= 0) {
+      return false;
+    }
+    const history = histories.get(key) || [];
+    return !historyContainsMessageId(history, unreadAnchorMessageId);
+  }
+
   return {
     apiPost,
     syncTelegramChromeForSkin,
@@ -2613,6 +2635,7 @@ function createVisibilitySkinControllerRuntimeDeps() {
     syncVisibleActiveChat,
     syncActiveMessageView,
     getStreamAbortControllers,
+    shouldDeferImmediateActiveMessageView,
     maybeRefreshForBootstrapVersionMismatch,
     markBackgrounded,
     markVisibilityResume,

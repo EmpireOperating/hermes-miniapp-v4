@@ -19,7 +19,7 @@ test('syncVisibleActiveChat hydrates active history and resumes pending streams 
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.deepEqual(harness.histories.get(7), [{ id: 1, role: 'assistant', body: 'hello' }]);
-  assert.deepEqual(harness.renderedMessages.at(-1), { chatId: 7, options: { preserveViewport: true } });
+  assert.deepEqual(harness.renderedMessages.at(-1), { chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } });
   assert.deepEqual(visibilityChecks.at(-1), {
     hidden: false,
     activeChatId: 7,
@@ -99,7 +99,7 @@ test('syncVisibleActiveChat retries once when unread advances but first hydrate 
 
   assert.equal(historyCalls, 2);
   assert.deepEqual(harness.histories.get(7), [{ id: 2, role: 'assistant', body: 'fresh final reply' }]);
-  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } }]);
   assert.deepEqual(harness.resumedChats, []);
 });
 
@@ -139,7 +139,7 @@ test('syncVisibleActiveChat treats visible resume like an activation fetch so ac
     payload: { chat_id: 7, activate: true },
   });
   assert.deepEqual(harness.histories.get(7), [{ id: 2, role: 'assistant', body: 'fresh final reply' }]);
-  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } }]);
 });
 
 test('syncVisibleActiveChat fires a hydration haptic when visible resume reveals a newer unread assistant reply', async () => {
@@ -261,7 +261,7 @@ test('syncVisibleActiveChat restores fresh pending snapshot even when local hist
   await harness.controller.syncVisibleActiveChat({ hidden: false, streamAbortControllers: new Map() });
 
   assert.deepEqual(harness.restoredSnapshots, [7]);
-  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } }]);
   assert.deepEqual(harness.resumedChats, [{ chatId: 7, options: { force: true } }]);
 });
 
@@ -299,7 +299,7 @@ test('syncVisibleActiveChat rerenders active chat with completed transcript inst
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.deepEqual(harness.restoredSnapshots, []);
-  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } }]);
   assert.deepEqual(harness.histories.get(7), [
     { id: 10, role: 'tool', body: 'read_file', created_at: '2026-04-09T18:15:00Z', pending: false },
     { id: 11, role: 'assistant', body: 'hello', created_at: '2026-04-09T18:16:00Z', pending: false },
@@ -387,7 +387,7 @@ test('syncVisibleActiveChat ignores stale overlapping refreshes for the same act
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.deepEqual(harness.histories.get(7), [{ id: 2, role: 'assistant', body: 'fresh response' }]);
-  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } }]);
   assert.deepEqual(harness.resumedChats, []);
 });
 
@@ -449,7 +449,7 @@ test('syncVisibleActiveChat rerenders when rendered active transcript is stale e
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } }]);
   assert.deepEqual(harness.resumedChats, []);
 });
 
@@ -480,7 +480,7 @@ test('syncVisibleActiveChat rerenders identical active history when unread is pr
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } }]);
   assert.equal(harness.chats.get(7).unread_count, 2);
   assert.deepEqual(harness.markReadCalls, []);
   assert.deepEqual(harness.resumedChats, []);
@@ -549,7 +549,7 @@ test('syncVisibleActiveChat finalizes local pending immediately when hydrated co
   assert.equal(harness.pendingChats.has(7), false);
   assert.deepEqual(harness.resumedChats, []);
   assert.deepEqual(harness.refreshedTabs, [7]);
-  assert.deepEqual(harness.renderedMessages.at(-1), { chatId: 7, options: { preserveViewport: true } });
+  assert.deepEqual(harness.renderedMessages.at(-1), { chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } });
 });
 
 test('syncVisibleActiveChat ignores stale history responses when active chat changes mid-request', async () => {
@@ -725,6 +725,6 @@ test('syncVisibleActiveChat does not consume active-chat unread on visibility re
     path: '/api/chats/history',
     payload: { chat_id: 7, activate: true },
   });
-  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true, suppressAutoStickAtBottom: true } }]);
 });
 
