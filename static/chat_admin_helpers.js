@@ -262,28 +262,54 @@
       const nextTitle = await askForChatTitle({ mode: 'rename', currentTitle, defaultTitle: currentTitle });
       if (!nextTitle) return;
       const cleaned = nextTitle.trim() || currentTitle;
-      const data = await apiPost('/api/chats/rename', { chat_id: targetChatId, title: cleaned });
-      const nextChat = data?.chat && typeof data.chat === 'object'
-        ? { ...data.chat }
-        : data?.chat;
+      const isActiveTarget = targetChatId === Number(getActiveChatId());
       const localChat = getChatRecord(targetChatId);
-      const localUnread = Math.max(0, Number(localChat?.unread_count || 0));
-      const preparedChat = nextChat && typeof nextChat === 'object'
-        ? (() => {
-          const mergedChat = { ...nextChat, unread_count: Math.max(localUnread, Number(nextChat?.unread_count || 0)) };
-          if (typeof buildChatPreservingUnread === 'function') {
-            return buildChatPreservingUnread(mergedChat, { preserveActivationUnread: true });
-          }
-          return mergedChat;
-        })()
-        : nextChat;
-      upsertChat(preparedChat);
-      if (targetChatId === Number(getActiveChatId())) {
-        setActiveChatMeta(targetChatId);
-      } else {
-        renderTabs();
+      const localSnapshot = localChat && typeof localChat === 'object'
+        ? { ...localChat }
+        : null;
+
+      const applyRenamedChat = (chatRecord) => {
+        if (!chatRecord || typeof chatRecord !== 'object') return;
+        upsertChat(chatRecord);
+        if (isActiveTarget) {
+          setActiveChatMeta(targetChatId);
+        } else {
+          renderTabs();
+        }
+        renderPinnedChats();
+      };
+
+      if (localSnapshot) {
+        const optimisticBase = { ...localSnapshot, title: cleaned };
+        const optimisticChat = typeof buildChatPreservingUnread === 'function'
+          ? buildChatPreservingUnread(optimisticBase, { preserveActivationUnread: true })
+          : optimisticBase;
+        applyRenamedChat(optimisticChat);
       }
-      renderPinnedChats();
+
+      try {
+        const data = await apiPost('/api/chats/rename', { chat_id: targetChatId, title: cleaned });
+        const nextChat = data?.chat && typeof data.chat === 'object'
+          ? { ...data.chat }
+          : data?.chat;
+        const latestLocalChat = getChatRecord(targetChatId);
+        const localUnread = Math.max(0, Number(latestLocalChat?.unread_count || 0));
+        const preparedChat = nextChat && typeof nextChat === 'object'
+          ? (() => {
+            const mergedChat = { ...nextChat, unread_count: Math.max(localUnread, Number(nextChat?.unread_count || 0)) };
+            if (typeof buildChatPreservingUnread === 'function') {
+              return buildChatPreservingUnread(mergedChat, { preserveActivationUnread: true });
+            }
+            return mergedChat;
+          })()
+          : nextChat;
+        applyRenamedChat(preparedChat);
+      } catch (error) {
+        if (localSnapshot) {
+          applyRenamedChat(localSnapshot);
+        }
+        throw error;
+      }
     }
 
     async function renameActiveChat() {
