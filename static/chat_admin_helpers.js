@@ -133,6 +133,7 @@
 
         const cleanup = () => {
           chatTitleForm.removeEventListener('submit', onSubmit);
+          chatTitleConfirm.removeEventListener?.('click', onConfirmClick);
           chatTitleCancel.removeEventListener('click', onCancel);
           chatTitleModal.removeEventListener('cancel', onCancel);
           chatTitleModal.removeEventListener('close', onClose);
@@ -161,6 +162,11 @@
           const formatted = showTagToggles ? formatTaggedChatTitle(value, chatTitleSelectedTag) : value;
           finish(formatted);
           if (chatTitleModal.open) chatTitleModal.close();
+        };
+
+        const onConfirmClick = (event) => {
+          event?.preventDefault?.();
+          onSubmit(event);
         };
 
         const onCancel = (event) => {
@@ -215,6 +221,7 @@
         };
 
         chatTitleForm.addEventListener('submit', onSubmit);
+        chatTitleConfirm.addEventListener?.('click', onConfirmClick);
         chatTitleCancel.addEventListener('click', onCancel);
         chatTitleModal.addEventListener('cancel', onCancel);
         chatTitleModal.addEventListener('close', onClose);
