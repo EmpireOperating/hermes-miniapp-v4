@@ -27,6 +27,12 @@ const devAuthHashSecret = desktopTestingRequested && currentLocationHash.startsW
   : "";
 const filePreviewConfig = window.__HERMES_FILE_PREVIEW__ || { enabled: false, allowedRoots: [] };
 const filePreviewFeatureEnabled = Boolean(filePreviewConfig.enabled);
+const visualDevConfig = window.__HERMES_VISUAL_DEV__ || {
+  enabled: false,
+  operatorOnly: true,
+  allowedPreviewOrigins: [],
+  allowedParentOrigins: [],
+};
 const featureConfig = window.__HERMES_FEATURES__ || { mobileTabCarousel: false, tabActionsMenu: false };
 const mobileTabCarouselFeatureEnabled = Boolean(featureConfig.mobileTabCarousel);
 const tabActionsMenuFeatureEnabled = Boolean(featureConfig.tabActionsMenu);
@@ -307,6 +313,9 @@ function createDeferredHelperRegistry({
     startupBindingsHelpers: windowObject.HermesMiniappStartupBindings || createDeferredApiHelper('HermesMiniappStartupBindings'),
     renderTraceHelpers: windowObject.HermesMiniappRenderTrace || createDeferredRenderTraceApiHelper('HermesMiniappRenderTrace'),
     filePreviewHelpers: windowObject.HermesMiniappFilePreview || createDeferredControllerHelper('HermesMiniappFilePreview'),
+    visualDevModeHelpers: windowObject.HermesMiniappVisualDevMode || createDeferredControllerHelper('HermesMiniappVisualDevMode'),
+    visualDevAttachHelpers: windowObject.HermesMiniappVisualDevAttach || createDeferredControllerHelper('HermesMiniappVisualDevAttach'),
+    visualDevPromptContextHelpers: windowObject.HermesMiniappVisualDevPromptContext || createDeferredControllerHelper('HermesMiniappVisualDevPromptContext'),
   };
 }
 
@@ -329,6 +338,9 @@ const {
   startupBindingsHelpers,
   renderTraceHelpers,
   filePreviewHelpers,
+  visualDevModeHelpers,
+  visualDevAttachHelpers,
+  visualDevPromptContextHelpers,
 } = createDeferredHelperRegistry({
   windowObject: window,
   interactionFallbacks: deferredInteractionFallbacks,
@@ -433,6 +445,42 @@ const filePreviewExpandUp = document.getElementById("file-preview-expand-up");
 const filePreviewLoadFull = document.getElementById("file-preview-load-full");
 const filePreviewExpandDown = document.getElementById("file-preview-expand-down");
 const filePreviewClose = document.getElementById("file-preview-close");
+const visualDevWorkspace = document.getElementById("visual-dev-workspace");
+const visualDevStatusLabel = document.getElementById("visual-dev-status-label");
+const visualDevOwnershipLabel = document.getElementById("visual-dev-ownership-label");
+const visualDevSelectionChip = document.getElementById("visual-dev-selection-chip");
+const visualDevScreenshotChip = document.getElementById("visual-dev-screenshot-chip");
+const visualDevComposerSelectionChip = document.getElementById("visual-dev-composer-selection-chip");
+const visualDevComposerScreenshotChip = document.getElementById("visual-dev-composer-screenshot-chip");
+const visualDevComposerPreviewChip = document.getElementById("visual-dev-composer-preview-chip");
+const visualDevComposerConsoleChip = document.getElementById("visual-dev-composer-console-chip");
+const visualDevAttachedSelectionChip = document.getElementById("visual-dev-attached-selection-chip");
+const visualDevAttachedSelectionClearButton = document.getElementById("visual-dev-attached-selection-clear");
+const visualDevAttachedScreenshotChip = document.getElementById("visual-dev-attached-screenshot-chip");
+const visualDevAttachedScreenshotClearButton = document.getElementById("visual-dev-attached-screenshot-clear");
+const visualDevAttachedPreviewChip = document.getElementById("visual-dev-attached-preview-chip");
+const visualDevAttachedPreviewClearButton = document.getElementById("visual-dev-attached-preview-clear");
+const visualDevAttachedConsoleChip = document.getElementById("visual-dev-attached-console-chip");
+const visualDevAttachedConsoleClearButton = document.getElementById("visual-dev-attached-console-clear");
+const visualDevPreviewFrame = document.getElementById("visual-dev-preview-frame");
+const visualDevSettingsOpen = document.getElementById("visual-dev-settings-open");
+const visualDevAttachButton = document.getElementById("visual-dev-attach-button");
+const visualDevRefreshButton = document.getElementById("visual-dev-refresh-button");
+const visualDevInspectButton = document.getElementById("visual-dev-inspect-button");
+const visualDevScreenshotButton = document.getElementById("visual-dev-screenshot-button");
+const visualDevLogsButton = document.getElementById("visual-dev-logs-button");
+const visualDevOpenExternalButton = document.getElementById("visual-dev-open-external-button");
+const visualDevDetachButton = document.getElementById("visual-dev-detach-button");
+const visualDevConsoleDrawer = document.getElementById("visual-dev-console-drawer");
+const visualDevRuntimeSummary = document.getElementById("visual-dev-runtime-summary");
+const visualDevConsoleList = document.getElementById("visual-dev-console-list");
+const visualDevAttachModal = document.getElementById("visual-dev-attach-modal");
+const visualDevAttachForm = document.getElementById("visual-dev-attach-form");
+const visualDevPreviewUrlInput = document.getElementById("visual-dev-preview-url");
+const visualDevPreviewTitleInput = document.getElementById("visual-dev-preview-title");
+const visualDevCurrentChatLabel = document.getElementById("visual-dev-current-chat-label");
+const visualDevCurrentSessionLabel = document.getElementById("visual-dev-current-session-label");
+const visualDevAttachCancel = document.getElementById("visual-dev-attach-cancel");
 const chatTabContextMenu = document.getElementById("chat-tab-context-menu");
 const chatTabContextRename = document.getElementById("chat-tab-context-rename");
 const chatTabContextPin = document.getElementById("chat-tab-context-pin");
@@ -1264,6 +1312,21 @@ async function apiPost(url, payload) {
   return bootstrapAuthController.apiPost(url, payload);
 }
 
+async function apiGetJson(url) {
+  const query = new URLSearchParams(authPayload());
+  const response = await fetch(query.toString() ? `${url}?${query.toString()}` : url, {
+    credentials: 'same-origin',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+  const data = await safeReadJson(response);
+  if (!response.ok || data?.ok === false) {
+    throw new Error(String(data?.error || `Request failed (${response.status || 0})`));
+  }
+  return data;
+}
+
 function cloneFilePreviewRequest(previewRequest = {}) {
   return filePreviewController.cloneFilePreviewRequest(previewRequest);
 }
@@ -1772,6 +1835,10 @@ function ensurePendingToolTraceMessage(chatId) {
 
 function appendInlineToolTrace(chatId, textOrPayload, payload = null) {
   return toolTraceController.appendInlineToolTrace(chatId, textOrPayload, payload);
+}
+
+function collapsePendingToolTrace(chatId) {
+  return toolTraceController.collapsePendingToolTrace(chatId);
 }
 
 function dropPendingToolTraceMessages(chatId) {
@@ -2313,12 +2380,16 @@ const activeChatMetaController = chatHistoryHelpers.createMetaController({
 function setActiveChatMeta(chatId, options = {}) {
   const result = activeChatMetaController.setActiveChatMeta(chatId, options);
   persistPreferredActiveChatId(chatId);
+  visualDevController.syncActiveChatSession();
+  visualDevAttachController.refreshUi();
   return result;
 }
 
 function setNoActiveChatMeta() {
   const result = activeChatMetaController.setNoActiveChatMeta();
   persistPreferredActiveChatId(null);
+  visualDevController.syncActiveChatSession();
+  visualDevAttachController.refreshUi();
   return result;
 }
 
@@ -2503,6 +2574,111 @@ function createShellUiController() {
 }
 
 const shellUiController = createShellUiController();
+
+function createVisualDevControllerDeps() {
+  return {
+    config: visualDevConfig,
+    shellHelpers: window.HermesMiniappVisualDevShell || createDeferredControllerHelper('HermesMiniappVisualDevShell'),
+    previewHelpers: window.HermesMiniappVisualDevPreview || createDeferredControllerHelper('HermesMiniappVisualDevPreview'),
+    shellRoot: visualDevWorkspace,
+    previewFrame: visualDevPreviewFrame,
+    ownershipLabel: visualDevOwnershipLabel,
+    statusLabel: visualDevStatusLabel,
+    selectionChip: visualDevSelectionChip,
+    screenshotChip: visualDevScreenshotChip,
+    composerSelectionChip: visualDevComposerSelectionChip,
+    composerScreenshotChip: visualDevComposerScreenshotChip,
+    composerPreviewChip: visualDevComposerPreviewChip,
+    composerConsoleChip: visualDevComposerConsoleChip,
+    consoleDrawer: visualDevConsoleDrawer,
+    runtimeSummary: visualDevRuntimeSummary,
+    consoleList: visualDevConsoleList,
+    getIsAuthenticated: () => isAuthenticated,
+    getActiveChatId: () => Number(activeChatId),
+    getParentOrigin: () => window.location.origin,
+    chatLabelForId: (chatId) => compactChatLabel(chatId, 36),
+    apiGetJson: (url) => apiGetJson(url),
+    apiPost,
+    onUiError: reportUiError,
+  };
+}
+
+function createVisualDevController() {
+  return visualDevModeHelpers.createController(createVisualDevControllerDeps());
+}
+
+const visualDevController = createVisualDevController();
+
+function createVisualDevAttachControllerDeps() {
+  return {
+    enabled: Boolean(visualDevConfig.enabled),
+    getActiveChatId: () => Number(activeChatId),
+    getActiveChatLabel: () => compactChatLabel(activeChatId, 36),
+    visualDevController,
+    dialog: visualDevAttachModal,
+    form: visualDevAttachForm,
+    previewUrlInput: visualDevPreviewUrlInput,
+    previewTitleInput: visualDevPreviewTitleInput,
+    currentChatLabel: visualDevCurrentChatLabel,
+    currentSessionLabel: visualDevCurrentSessionLabel,
+    settingsOpenButton: visualDevSettingsOpen,
+    attachButton: visualDevAttachButton,
+    refreshButton: visualDevRefreshButton,
+    inspectButton: visualDevInspectButton,
+    screenshotButton: visualDevScreenshotButton,
+    openExternalButton: visualDevOpenExternalButton,
+    logsButton: visualDevLogsButton,
+    detachButton: visualDevDetachButton,
+    cancelButton: visualDevAttachCancel,
+    openExternalUrl: (url) => window.open(url, '_blank', 'noopener'),
+    reloadPreview: () => {
+      if (!visualDevPreviewFrame) return;
+      visualDevPreviewFrame.src = String(visualDevPreviewFrame.src || 'about:blank');
+    },
+    onError: reportUiError,
+  };
+}
+
+function createVisualDevAttachController() {
+  return visualDevAttachHelpers.createController(createVisualDevAttachControllerDeps());
+}
+
+const visualDevAttachController = createVisualDevAttachController();
+
+function createVisualDevPromptContextControllerDeps() {
+  return {
+    enabled: Boolean(visualDevConfig.enabled),
+    promptEl,
+    selectionChip: visualDevComposerSelectionChip,
+    screenshotChip: visualDevComposerScreenshotChip,
+    previewChip: visualDevComposerPreviewChip,
+    consoleChip: visualDevComposerConsoleChip,
+    attachedSelectionChip: visualDevAttachedSelectionChip,
+    attachedSelectionClearButton: visualDevAttachedSelectionClearButton,
+    attachedScreenshotChip: visualDevAttachedScreenshotChip,
+    attachedScreenshotClearButton: visualDevAttachedScreenshotClearButton,
+    attachedPreviewChip: visualDevAttachedPreviewChip,
+    attachedPreviewClearButton: visualDevAttachedPreviewClearButton,
+    attachedConsoleChip: visualDevAttachedConsoleChip,
+    attachedConsoleClearButton: visualDevAttachedConsoleClearButton,
+    getSelectionContext: () => visualDevController.getActiveContext?.().selection || null,
+    getScreenshotContext: () => visualDevController.getActiveContext?.().screenshot || null,
+    getPreviewContext: () => visualDevController.getActiveContext?.().preview || null,
+    getConsoleContext: () => visualDevController.getActiveContext?.().console || null,
+    ensureComposerVisible,
+    focusPrompt: () => composerViewportController.focusComposerAfterQuoteInsertion(),
+    notifyInput: (value) => {
+      if (!activeChatId) return;
+      setDraft(activeChatId, value || '');
+    },
+  };
+}
+
+function createVisualDevPromptContextController() {
+  return visualDevPromptContextHelpers.createController(createVisualDevPromptContextControllerDeps());
+}
+
+const visualDevPromptContextController = createVisualDevPromptContextController();
 
 function createComposerViewportControllerDeps() {
   return {
@@ -2996,7 +3172,11 @@ async function maybeRefreshForBootstrapVersionMismatch() {
 }
 
 async function bootstrap() {
-  return startupBindingsController.bootstrap();
+  visualDevAttachController.bind();
+  visualDevPromptContextController.bind();
+  await startupBindingsController.bootstrap();
+  await visualDevController.bootstrap();
+  await visualDevAttachController.refreshUi();
 }
 
 async function saveSkinPreference(skin) {
@@ -3053,6 +3233,7 @@ const streamController = streamControllerHelpers.createController({
   streamDebugLog,
   finalizeStreamPendingState,
   appendInlineToolTrace,
+  collapsePendingToolTrace,
   loadChatHistory,
   upsertChat,
   histories,
@@ -3096,6 +3277,8 @@ const streamController = streamControllerHelpers.createController({
   delayMs: resumeRecoveryPolicy.delayMs,
   markChatStreamPending,
   getStoredStreamCursor,
+  getVisualDevRequestContext: () => visualDevPromptContextController.getRequestContext?.() || null,
+  clearVisualDevRequestContext: () => visualDevPromptContextController.clearRequestContext?.(),
   isNearBottom,
 });
 

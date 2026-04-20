@@ -173,16 +173,58 @@
 
           <div class="activity-rail" id="activity-rail">
             <span class="activity-chip" id="latency-chip">latency: --</span>
+            <button type="button" id="visual-dev-composer-selection-chip" class="activity-chip activity-chip--context" hidden>UI context: none</button>
+            <button type="button" id="visual-dev-composer-screenshot-chip" class="activity-chip activity-chip--context" hidden>Screenshot context: none</button>
+            <button type="button" id="visual-dev-composer-preview-chip" class="activity-chip activity-chip--context" hidden>Preview URL: none</button>
+            <button type="button" id="visual-dev-composer-console-chip" class="activity-chip activity-chip--context" hidden>Console: none</button>
           </div>
 
           <form id="chat-form" class="composer">
             <label class="composer__label" for="prompt">Message</label>
             <textarea id="prompt" name="prompt" rows="4" placeholder="Type a message…" maxlength="{{ max_message_len }}" enterkeyhint="send" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea>
+            <div class="composer__context-row" id="visual-dev-attached-context-row">
+              <span id="visual-dev-attached-selection-chip" class="activity-chip activity-chip--context" hidden>Next send UI: none</span>
+              <button type="button" id="visual-dev-attached-selection-clear" class="activity-chip activity-chip--context activity-chip--clear" hidden>Clear UI</button>
+              <span id="visual-dev-attached-screenshot-chip" class="activity-chip activity-chip--context" hidden>Next send screenshot: none</span>
+              <button type="button" id="visual-dev-attached-screenshot-clear" class="activity-chip activity-chip--context activity-chip--clear" hidden>Clear screenshot</button>
+              <span id="visual-dev-attached-preview-chip" class="activity-chip activity-chip--context" hidden>Next send preview: none</span>
+              <button type="button" id="visual-dev-attached-preview-clear" class="activity-chip activity-chip--context activity-chip--clear" hidden>Clear preview</button>
+              <span id="visual-dev-attached-console-chip" class="activity-chip activity-chip--context" hidden>Next send console: none</span>
+              <button type="button" id="visual-dev-attached-console-clear" class="activity-chip activity-chip--context activity-chip--clear" hidden>Clear console</button>
+            </div>
             <div class="composer__actions">
               <div class="composer__hint">Enter to send • Shift+Enter for new line</div>
               <button id="send-button" type="submit">Send</button>
             </div>
           </form>
+        </section>
+
+        <section id="visual-dev-workspace" class="panel visual-dev-workspace" data-visual-dev-enabled="false" hidden>
+          <div class="panel__header panel__header--terminal visual-dev-workspace__header">
+            <span>Visual dev preview</span>
+            <div class="visual-dev-workspace__actions">
+              <button type="button" id="visual-dev-attach-button" class="action-button action-button--subtle">Attach</button>
+              <button type="button" id="visual-dev-refresh-button" class="action-button action-button--subtle">Refresh</button>
+              <button type="button" id="visual-dev-inspect-button" class="action-button action-button--subtle">Inspect</button>
+              <button type="button" id="visual-dev-screenshot-button" class="action-button action-button--subtle">Screenshot</button>
+              <button type="button" id="visual-dev-logs-button" class="action-button action-button--subtle">Logs</button>
+              <button type="button" id="visual-dev-open-external-button" class="action-button action-button--subtle">Open</button>
+              <button type="button" id="visual-dev-detach-button" class="action-button action-button--subtle">Detach</button>
+            </div>
+            <span id="visual-dev-status-label" class="panel__hint">idle</span>
+          </div>
+          <div class="visual-dev-workspace__ownership-row">
+            <span id="visual-dev-ownership-label">No preview attached</span>
+            <span id="visual-dev-selection-chip" class="activity-chip">Selected: none</span>
+            <span id="visual-dev-screenshot-chip" class="activity-chip">Screenshot: none</span>
+          </div>
+          <div class="visual-dev-workspace__preview-wrap">
+            <iframe id="visual-dev-preview-frame" class="visual-dev-workspace__preview" title="Visual dev preview" src="about:blank" loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+          </div>
+          <div id="visual-dev-console-drawer" class="visual-dev-workspace__drawer" data-open="false" hidden>
+            <div id="visual-dev-runtime-summary" class="visual-dev-workspace__runtime-summary">Runtime: idle</div>
+            <pre id="visual-dev-console-list" class="visual-dev-workspace__console-list">No console events yet.</pre>
+          </div>
         </section>
       </main>
     </div>
@@ -229,6 +271,7 @@
         <div class="settings-modal__debug">
           <p class="modal__hint">Debug</p>
           <button type="button" class="status-pill status-pill--debug" id="render-trace-badge" aria-pressed="false">Render Trace OFF</button>
+          <button type="button" class="action-button action-button--subtle" id="visual-dev-settings-open">Attach visual dev preview</button>
         </div>
         {% if dev_auth_enabled %}
         <p class="modal__hint">Desktop-only sign-in for local dev testing.</p>
@@ -279,6 +322,23 @@
           <button type="button" id="file-preview-close" class="action-button">Close</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="visual-dev-attach-modal" class="modal" aria-labelledby="visual-dev-attach-title">
+      <form method="dialog" id="visual-dev-attach-form" class="modal__card">
+        <h2 id="visual-dev-attach-title" class="modal__title">Visual dev preview</h2>
+        <p class="modal__hint">Attach a trusted preview URL to the active chat. This enables split-view dev mode on the isolated instance.</p>
+        <p class="modal__hint" id="visual-dev-current-chat-label">No chat selected</p>
+        <p class="modal__hint" id="visual-dev-current-session-label">No preview attached</p>
+        <label for="visual-dev-preview-url" class="modal__label">Preview URL</label>
+        <input id="visual-dev-preview-url" class="modal__input" type="url" inputmode="url" autocomplete="off" placeholder="https://preview.example.com/app" required>
+        <label for="visual-dev-preview-title" class="modal__label">Preview title</label>
+        <input id="visual-dev-preview-title" class="modal__input" type="text" autocomplete="off" placeholder="Optional label">
+        <div class="modal__actions">
+          <button type="button" id="visual-dev-attach-cancel" class="action-button">Cancel</button>
+          <button type="submit" id="visual-dev-attach-confirm" class="action-button">Attach preview</button>
+        </div>
+      </form>
     </dialog>
 
     {% if dev_auth_enabled %}
@@ -341,6 +401,12 @@
         mobileTabCarousel: {{ 'true' if mobile_tab_carousel_enabled else 'false' }},
         tabActionsMenu: {{ 'true' if tab_actions_menu_enabled else 'false' }}
       };
+      window.__HERMES_VISUAL_DEV__ = {
+        enabled: {{ 'true' if visual_dev_enabled else 'false' }},
+        operatorOnly: {{ 'true' if visual_dev_operator_only else 'false' }},
+        allowedPreviewOrigins: {{ visual_dev_allowed_preview_origins_json|safe }},
+        allowedParentOrigins: {{ visual_dev_allowed_parent_origins_json|safe }}
+      };
     </script>
     <script defer src="/static/app_shared_utils.js?v={{ shared_utils_version }}"></script>
     <script defer src="/static/chat_ui_helpers.js?v={{ chat_ui_helpers_version }}"></script>
@@ -382,5 +448,11 @@
     <script defer src="/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}"></script>
     <script defer src="/static/file_preview_helpers.js?v={{ file_preview_helpers_version }}"></script>
     <script defer src="/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}"></script>
+    <script defer src="/static/visual_dev_shell_helpers.js?v={{ visual_dev_shell_helpers_version }}"></script>
+    <script defer src="/static/visual_dev_preview_helpers.js?v={{ visual_dev_preview_helpers_version }}"></script>
+    <script defer src="/static/visual_dev_mode_helpers.js?v={{ visual_dev_mode_helpers_version }}"></script>
+    <script defer src="/static/visual_dev_attach_helpers.js?v={{ visual_dev_attach_helpers_version }}"></script>
+    <script defer src="/static/visual_dev_prompt_context_helpers.js?v={{ visual_dev_prompt_context_helpers_version }}"></script>
+    <script defer src="/static/visual_dev_bridge.js?v={{ visual_dev_bridge_version }}"></script>
   </body>
 </html>

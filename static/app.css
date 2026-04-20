@@ -1124,6 +1124,20 @@ body[data-tab-actions-menu="false"] .chat-tab__overflow {
 .activity-chip::after {
   content: none;
 }
+.activity-chip--context {
+  cursor: default;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--ink);
+  font: inherit;
+}
+.activity-chip--clear {
+  cursor: pointer;
+  border-style: dashed;
+  color: var(--muted);
+}
+.activity-chip--context[hidden] {
+  display: none;
+}
 .jump-latest,
 .jump-last-start {
   position: absolute;
@@ -1220,6 +1234,15 @@ textarea:disabled {
   gap: 12px;
   margin-top: 12px;
   flex-wrap: wrap;
+}
+.composer__context-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.composer__context-row[hidden] {
+  display: none;
 }
 .composer__hint {
   color: var(--muted);
@@ -1443,4 +1466,79 @@ textarea:disabled {
   textarea {
     min-height: 84px;
   }
+}
+
+.visual-dev-workspace {
+  min-width: 0;
+}
+
+.visual-dev-workspace__header {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.visual-dev-workspace__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-left: auto;
+}
+
+.visual-dev-workspace__actions .action-button {
+  min-height: 32px;
+}
+
+.visual-dev-workspace__ownership-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 0 1rem 0.8rem;
+}
+
+.visual-dev-workspace__preview-wrap {
+  flex: 1 1 auto;
+  min-height: 420px;
+  padding: 0 1rem 1rem;
+}
+
+.visual-dev-workspace__preview {
+  width: 100%;
+  min-height: 420px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  background: rgba(7, 10, 16, 0.9);
+}
+
+.visual-dev-workspace__drawer {
+  margin: 0 1rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-top: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(7, 10, 16, 0.92);
+  padding: 0.85rem 1rem;
+}
+
+.visual-dev-workspace__drawer[data-severity="warn"] {
+  border-top-color: color-mix(in srgb, var(--warning, #f5c542) 65%, var(--line));
+}
+
+.visual-dev-workspace__drawer[data-severity="error"] {
+  border-top-color: color-mix(in srgb, var(--danger, #ff6b6b) 70%, var(--line));
+}
+
+.visual-dev-workspace__runtime-summary {
+  font-size: 0.88rem;
+  color: rgba(255, 255, 255, 0.82);
+  margin-bottom: 0.65rem;
+}
+
+.visual-dev-workspace__console-list {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 0.82rem/1.45 "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
+  color: rgba(210, 236, 255, 0.92);
 }
