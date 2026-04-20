@@ -265,6 +265,12 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
             "render_trace_history_helpers.js": "render-trace-history-v",
             "render_trace_helpers.js": "render-trace-v",
             "file_preview_helpers.js": "file-preview-v",
+            "visual_dev_shell_helpers.js": "visual-dev-shell-v",
+            "visual_dev_preview_helpers.js": "visual-dev-preview-v",
+            "visual_dev_mode_helpers.js": "visual-dev-mode-v",
+            "visual_dev_attach_helpers.js": "visual-dev-attach-v",
+            "visual_dev_prompt_context_helpers.js": "visual-dev-prompt-context-v",
+            "visual_dev_bridge.js": "visual-dev-bridge-v",
             "app.js": "app-v",
         }[filename]
 
@@ -312,6 +318,12 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     render_trace_history_src = '/static/render_trace_history_helpers.js?v=render-trace-history-v'
     render_trace_src = '/static/render_trace_helpers.js?v=render-trace-v'
     file_preview_src = '/static/file_preview_helpers.js?v=file-preview-v'
+    visual_dev_shell_src = '/static/visual_dev_shell_helpers.js?v=visual-dev-shell-v'
+    visual_dev_preview_src = '/static/visual_dev_preview_helpers.js?v=visual-dev-preview-v'
+    visual_dev_mode_src = '/static/visual_dev_mode_helpers.js?v=visual-dev-mode-v'
+    visual_dev_attach_src = '/static/visual_dev_attach_helpers.js?v=visual-dev-attach-v'
+    visual_dev_prompt_context_src = '/static/visual_dev_prompt_context_helpers.js?v=visual-dev-prompt-context-v'
+    visual_dev_bridge_src = '/static/visual_dev_bridge.js?v=visual-dev-bridge-v'
     app_src = '/static/app.js?v=app-v'
     assert runtime_attention_src in page
     assert runtime_read_state_src in page
@@ -352,6 +364,12 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     assert render_trace_history_src in page
     assert render_trace_src in page
     assert file_preview_src in page
+    assert visual_dev_shell_src in page
+    assert visual_dev_preview_src in page
+    assert visual_dev_mode_src in page
+    assert visual_dev_attach_src in page
+    assert visual_dev_prompt_context_src in page
+    assert visual_dev_bridge_src in page
     assert app_src in page
     runtime_chat_history_sync_pos = page.rindex(runtime_chat_history_sync_src)
     runtime_visible_history_sync_pos = page.rindex(runtime_visible_history_sync_src)
@@ -390,8 +408,11 @@ def test_app_uses_independent_js_asset_versions(monkeypatch, tmp_path) -> None:
     composer_viewport_pos = page.rindex(composer_viewport_src)
     file_preview_pos = page.rindex(file_preview_src)
     visibility_skin_pos = page.rindex(visibility_skin_src)
+    visual_dev_shell_pos = page.rindex(visual_dev_shell_src)
+    visual_dev_preview_pos = page.rindex(visual_dev_preview_src)
+    visual_dev_bridge_pos = page.rindex(visual_dev_bridge_src)
 
-    assert shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < runtime_chat_history_sync_pos < runtime_visible_history_sync_pos < runtime_hydration_state_pos < runtime_hydration_apply_pos < runtime_visible_hydration_pos < runtime_hydration_flow_pos < runtime_open_flow_pos < runtime_chat_meta_pos < runtime_local_mutation_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < interaction_pos < runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < startup_bindings_pos < app_pos < chat_admin_pos < actions_pos < keyboard_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos
+    assert shared_pos < chat_ui_pos < chat_tabs_pos < stream_state_pos < runtime_chat_history_sync_pos < runtime_visible_history_sync_pos < runtime_hydration_state_pos < runtime_hydration_apply_pos < runtime_visible_hydration_pos < runtime_hydration_flow_pos < runtime_open_flow_pos < runtime_chat_meta_pos < runtime_local_mutation_pos < stream_controller_pos < composer_pos < bootstrap_auth_pos < chat_history_pos < startup_metrics_pos < render_trace_text_pos < render_trace_debug_pos < render_trace_message_pos < render_trace_history_pos < render_trace_pos < interaction_pos < runtime_unread_pos < runtime_latency_pos < runtime_history_pos < runtime_pos < startup_bindings_pos < app_pos < chat_admin_pos < actions_pos < keyboard_pos < shell_ui_pos < composer_viewport_pos < file_preview_pos < visibility_skin_pos < visual_dev_shell_pos < visual_dev_preview_pos < visual_dev_bridge_pos
 
 
 def test_app_hides_dev_stream_and_source_pills_from_main_ui(monkeypatch, tmp_path) -> None:
@@ -1345,8 +1366,29 @@ def test_message_action_copy_helpers_are_split_to_module() -> None:
     assert '/static/render_trace_history_helpers.js?v={{ render_trace_history_helpers_version }}' in template
     assert '/static/render_trace_helpers.js?v={{ render_trace_helpers_version }}' in template
     assert '/static/file_preview_helpers.js?v={{ file_preview_helpers_version }}' in template
-    assert 'id="file-preview-modal"' in template
-    assert 'id="file-preview-lines"' in template
+def test_visual_dev_template_wiring_present() -> None:
+    template = _read_repo_file("templates", "app.html")
+    script = _read_repo_file("static", "app.js")
+
+    assert '/static/visual_dev_bridge.js?v={{ visual_dev_bridge_version }}' in template
+    assert '/static/visual_dev_attach_helpers.js?v={{ visual_dev_attach_helpers_version }}' in template
+    assert 'id="visual-dev-workspace"' in template
+    assert 'id="visual-dev-preview-frame"' in template
+    assert 'id="visual-dev-composer-selection-chip"' in template
+    assert 'id="visual-dev-composer-screenshot-chip"' in template
+    assert 'id="visual-dev-attach-button"' in template
+    assert 'id="visual-dev-refresh-button"' in template
+    assert 'id="visual-dev-open-external-button"' in template
+    assert 'id="visual-dev-detach-button"' in template
+    assert 'id="visual-dev-settings-open"' in template
+    assert 'id="visual-dev-attach-modal"' in template
+    assert 'id="visual-dev-attach-form"' in template
+    assert 'id="visual-dev-preview-url"' in template
+    assert 'id="visual-dev-preview-title"' in template
+    assert 'window.__HERMES_VISUAL_DEV__ = {' in template
+    assert 'allowedPreviewOrigins: {{ visual_dev_allowed_preview_origins_json|safe }}' in template
+    assert 'allowedParentOrigins: {{ visual_dev_allowed_parent_origins_json|safe }}' in template
+
     assert 'id="file-preview-expand-up"' in template
     assert 'id="file-preview-load-full"' in template
     assert 'id="file-preview-expand-down"' in template

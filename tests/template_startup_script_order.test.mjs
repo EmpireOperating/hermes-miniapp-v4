@@ -123,6 +123,12 @@ test('non-critical startup helpers load after app.js', () => {
     '/static/composer_viewport_helpers.js?v={{ composer_viewport_helpers_version }}',
     '/static/file_preview_helpers.js?v={{ file_preview_helpers_version }}',
     '/static/visibility_skin_helpers.js?v={{ visibility_skin_helpers_version }}',
+    '/static/visual_dev_shell_helpers.js?v={{ visual_dev_shell_helpers_version }}',
+    '/static/visual_dev_preview_helpers.js?v={{ visual_dev_preview_helpers_version }}',
+    '/static/visual_dev_mode_helpers.js?v={{ visual_dev_mode_helpers_version }}',
+    '/static/visual_dev_attach_helpers.js?v={{ visual_dev_attach_helpers_version }}',
+    '/static/visual_dev_prompt_context_helpers.js?v={{ visual_dev_prompt_context_helpers_version }}',
+    '/static/visual_dev_bridge.js?v={{ visual_dev_bridge_version }}',
   ];
   deferredHelpers.forEach((fragment) => {
     assert.ok(

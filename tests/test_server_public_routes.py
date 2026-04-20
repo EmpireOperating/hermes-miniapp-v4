@@ -223,3 +223,48 @@ def test_mini_app_route_exposes_tab_actions_menu_feature_flag(monkeypatch, tmp_p
 
     assert response.status_code == 200
     assert captured["tab_actions_menu_enabled"] is True
+
+
+def test_mini_app_route_exposes_visual_dev_config(monkeypatch, tmp_path) -> None:
+    app, public_bp = _build_app(tmp_path)
+
+    captured: dict[str, object] = {}
+
+    def fake_render_template(_name: str, **kwargs):
+        captured.update(kwargs)
+        return "<html>ok</html>"
+
+    monkeypatch.setattr(server_public_routes, "render_template", fake_render_template)
+
+    register_public_routes(
+        public_bp,
+        app=app,
+        allowed_skins={"terminal", "minimal"},
+        skin_cookie_name="skin",
+        max_message_len=4096,
+        dev_reload=False,
+        dev_reload_interval_ms=300,
+        request_debug=False,
+        dev_auth_enabled=False,
+        visual_dev_enabled=True,
+        visual_dev_operator_only=True,
+        visual_dev_allowed_preview_origins=("https://preview.example.com",),
+        visual_dev_allowed_parent_origins=("https://miniapp.example.com",),
+        static_no_store_filenames={"app.js"},
+        asset_version_fn=lambda _: "v1",
+        dev_reload_version_fn=lambda: "r1",
+        ensure_csp_nonce_fn=lambda: "nonce",
+    )
+    app.register_blueprint(public_bp)
+    client = app.test_client()
+
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert captured["visual_dev_enabled"] is True
+    assert captured["visual_dev_operator_only"] is True
+    assert captured["visual_dev_allowed_preview_origins_json"] == '["https://preview.example.com"]'
+    assert captured["visual_dev_attach_helpers_version"] == "v1"
+    assert captured["visual_dev_prompt_context_helpers_version"] == "v1"
+    assert captured["visual_dev_allowed_parent_origins_json"] == '["https://miniapp.example.com"]'
+

@@ -68,6 +68,13 @@ class MiniAppConfig:
     dev_auth_expires_at_epoch: int | None
     job_event_history_max_jobs: int
     job_event_history_ttl_seconds: int
+    visual_dev_enabled: bool
+    visual_dev_operator_only: bool
+    visual_dev_allowed_preview_origins: set[str]
+    visual_dev_bridge_allowed_parents: set[str]
+    visual_dev_artifact_dir: Path
+    visual_dev_max_console_events: int
+    visual_dev_screenshot_max_bytes: int
     dev_reload_watch_paths: tuple[Path, ...]
 
     def resolved_persistent_runtime_ownership(self) -> str:
@@ -96,6 +103,7 @@ class MiniAppConfig:
         ui_settings = _parse_ui_settings()
         dev_auth_settings = _parse_dev_auth_settings()
         job_history_settings = _parse_job_history_settings()
+        visual_dev_settings = _parse_visual_dev_settings(base_dir)
 
         return cls(
             port=_as_int("PORT", 8080),
@@ -152,6 +160,13 @@ class MiniAppConfig:
             dev_auth_expires_at_epoch=dev_auth_settings["dev_auth_expires_at_epoch"],
             job_event_history_max_jobs=job_history_settings["job_event_history_max_jobs"],
             job_event_history_ttl_seconds=job_history_settings["job_event_history_ttl_seconds"],
+            visual_dev_enabled=visual_dev_settings["visual_dev_enabled"],
+            visual_dev_operator_only=visual_dev_settings["visual_dev_operator_only"],
+            visual_dev_allowed_preview_origins=visual_dev_settings["visual_dev_allowed_preview_origins"],
+            visual_dev_bridge_allowed_parents=visual_dev_settings["visual_dev_bridge_allowed_parents"],
+            visual_dev_artifact_dir=visual_dev_settings["visual_dev_artifact_dir"],
+            visual_dev_max_console_events=visual_dev_settings["visual_dev_max_console_events"],
+            visual_dev_screenshot_max_bytes=visual_dev_settings["visual_dev_screenshot_max_bytes"],
             dev_reload_watch_paths=_default_dev_reload_watch_paths(base_dir),
         )
 
@@ -166,14 +181,14 @@ def normalize_origin(value: str | None) -> str:
     return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}".rstrip("/")
 
 
-def _parse_allowed_origins(raw: str) -> set[str]:
+def _parse_allowed_origins(raw: str, *, env_name: str = "MINI_APP_ALLOWED_ORIGINS") -> set[str]:
     origins: set[str] = set()
     for value in str(raw).split(","):
         candidate = normalize_origin(value)
         if not value.strip():
             continue
         if not candidate:
-            raise ValueError(f"Invalid origin in MINI_APP_ALLOWED_ORIGINS: {value.strip()}")
+            raise ValueError(f"Invalid origin in {env_name}: {value.strip()}")
         origins.add(candidate)
     return origins
 
@@ -414,6 +429,37 @@ def _parse_job_history_settings() -> dict[str, int]:
     }
 
 
+def _parse_visual_dev_settings(base_dir: Path) -> dict[str, bool | int | Path | set[str]]:
+    return {
+        "visual_dev_enabled": _as_bool("MINI_APP_VISUAL_DEV_ENABLED", default=False),
+        "visual_dev_operator_only": _as_bool("MINI_APP_VISUAL_DEV_OPERATOR_ONLY", default=True),
+        "visual_dev_allowed_preview_origins": _parse_allowed_origins(
+            os.environ.get("MINI_APP_VISUAL_DEV_ALLOWED_PREVIEW_ORIGINS", ""),
+            env_name="MINI_APP_VISUAL_DEV_ALLOWED_PREVIEW_ORIGINS",
+        ),
+        "visual_dev_bridge_allowed_parents": _parse_allowed_origins(
+            os.environ.get("MINI_APP_VISUAL_DEV_BRIDGE_ALLOWED_PARENTS", ""),
+            env_name="MINI_APP_VISUAL_DEV_BRIDGE_ALLOWED_PARENTS",
+        ),
+        "visual_dev_artifact_dir": _as_path(
+            "MINI_APP_VISUAL_DEV_ARTIFACT_DIR",
+            base_dir / "visual-dev-artifacts",
+        ),
+        "visual_dev_max_console_events": _as_int_in_range(
+            "MINI_APP_VISUAL_DEV_MAX_CONSOLE_EVENTS",
+            200,
+            min_value=1,
+            max_value=5000,
+        ),
+        "visual_dev_screenshot_max_bytes": _as_int_in_range(
+            "MINI_APP_VISUAL_DEV_SCREENSHOT_MAX_BYTES",
+            2 * 1024 * 1024,
+            min_value=1024,
+            max_value=50 * 1024 * 1024,
+        ),
+    }
+
+
 def _default_dev_reload_watch_paths(base_dir: Path) -> tuple[Path, ...]:
     return (
         base_dir / "server.py",
@@ -453,6 +499,13 @@ def _as_choice(name: str, default: str, allowed: set[str]) -> str:
         allowed_text = ", ".join(sorted(allowed))
         raise ValueError(f"{name} must be one of: {allowed_text}")
     return raw
+
+
+def _as_path(name: str, default: Path) -> Path:
+    raw = str(os.environ.get(name, "")).strip()
+    if not raw:
+        return default
+    return Path(raw).expanduser()
 
 
 def _as_optional_int_any(*names: str) -> int | None:

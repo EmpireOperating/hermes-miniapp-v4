@@ -202,3 +202,60 @@ def test_config_reads_mobile_tab_carousel_feature_flag(monkeypatch) -> None:
     cfg = _cfg()
 
     assert cfg.mobile_tab_carousel_enabled is True
+
+
+def test_config_disables_visual_dev_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("MINI_APP_VISUAL_DEV_ENABLED", raising=False)
+    monkeypatch.delenv("MINI_APP_VISUAL_DEV_OPERATOR_ONLY", raising=False)
+    monkeypatch.delenv("MINI_APP_VISUAL_DEV_ALLOWED_PREVIEW_ORIGINS", raising=False)
+    monkeypatch.delenv("MINI_APP_VISUAL_DEV_BRIDGE_ALLOWED_PARENTS", raising=False)
+    monkeypatch.delenv("MINI_APP_VISUAL_DEV_ARTIFACT_DIR", raising=False)
+    monkeypatch.delenv("MINI_APP_VISUAL_DEV_MAX_CONSOLE_EVENTS", raising=False)
+    monkeypatch.delenv("MINI_APP_VISUAL_DEV_SCREENSHOT_MAX_BYTES", raising=False)
+
+    cfg = _cfg()
+
+    assert cfg.visual_dev_enabled is False
+    assert cfg.visual_dev_operator_only is True
+    assert cfg.visual_dev_allowed_preview_origins == set()
+    assert cfg.visual_dev_bridge_allowed_parents == set()
+    assert cfg.visual_dev_artifact_dir.name == "visual-dev-artifacts"
+    assert cfg.visual_dev_max_console_events == 200
+    assert cfg.visual_dev_screenshot_max_bytes == 2 * 1024 * 1024
+
+
+def test_config_normalizes_visual_dev_origin_lists(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_ENABLED", "1")
+    monkeypatch.setenv(
+        "MINI_APP_VISUAL_DEV_ALLOWED_PREVIEW_ORIGINS",
+        " https://Preview.EXAMPLE.com/path , https://cdn.example.com ",
+    )
+    monkeypatch.setenv(
+        "MINI_APP_VISUAL_DEV_BRIDGE_ALLOWED_PARENTS",
+        " https://MiniApp.EXAMPLE.com/app , https://ops.example.com ",
+    )
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_ARTIFACT_DIR", str(tmp_path / "visual-dev"))
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_MAX_CONSOLE_EVENTS", "75")
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_SCREENSHOT_MAX_BYTES", "65536")
+
+    cfg = _cfg()
+
+    assert cfg.visual_dev_enabled is True
+    assert cfg.visual_dev_allowed_preview_origins == {
+        "https://preview.example.com",
+        "https://cdn.example.com",
+    }
+    assert cfg.visual_dev_bridge_allowed_parents == {
+        "https://miniapp.example.com",
+        "https://ops.example.com",
+    }
+    assert cfg.visual_dev_artifact_dir == tmp_path / "visual-dev"
+    assert cfg.visual_dev_max_console_events == 75
+    assert cfg.visual_dev_screenshot_max_bytes == 65536
+
+
+def test_config_rejects_invalid_visual_dev_origin(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_ALLOWED_PREVIEW_ORIGINS", "notaurl")
+
+    with pytest.raises(ValueError, match="MINI_APP_VISUAL_DEV_ALLOWED_PREVIEW_ORIGINS"):
+        _cfg()
