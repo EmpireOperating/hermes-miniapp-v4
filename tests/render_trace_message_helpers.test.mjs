@@ -103,6 +103,36 @@ test('renderToolTraceBody builds expandable trace, syncs collapsed state on togg
   assert.deepEqual(windowScrollCalls, [[0, 180]]);
 });
 
+test('renderToolTraceBody uses tracked tool call count when available', () => {
+  const documentObject = {
+    createElement(tagName) {
+      return createToolTraceNode(tagName);
+    },
+  };
+  const windowObject = {
+    scrollY: 0,
+    scrollTo() {},
+    requestAnimationFrame(cb) {
+      cb();
+    },
+  };
+  const container = createToolTraceNode('div');
+  const message = {
+    body: '📖 read_file: loaded 100 bytes\n📖 read_file: done',
+    pending: true,
+    collapsed: false,
+    tool_call_count: 1,
+  };
+
+  renderTraceMessageHelpers.renderToolTraceBody(container, message, {
+    cleanDisplayTextFn: (value) => String(value || ''),
+    documentObject,
+    windowObject,
+  });
+
+  assert.equal(container.children[0].children[0].textContent, 'Tool activity (1) · live');
+});
+
 test('renderToolTraceBody preserves inner tool list scroll position across rerenders when reading older entries', () => {
   const documentObject = {
     createElement(tagName) {

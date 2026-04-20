@@ -465,8 +465,25 @@
       });
       const bootstrapChats = Array.isArray(data?.chats) ? data.chats : [];
       const bootstrapPinnedChats = Array.isArray(data?.pinned_chats) ? data.pinned_chats : [];
+      const bootstrapHistories = data?.bootstrap_histories && typeof data.bootstrap_histories === 'object'
+        ? data.bootstrap_histories
+        : {};
       syncPinnedChats(bootstrapPinnedChats);
       const hasPinnedChats = bootstrapPinnedChats.length > 0 || bootstrapChats.some((chat) => Boolean(chat?.is_pinned));
+      Object.entries(bootstrapHistories).forEach(([chatIdKey, historyPayload]) => {
+        const chatId = Number(chatIdKey || 0);
+        if (chatId <= 0 || chatId === Number(data?.active_chat_id || 0)) {
+          return;
+        }
+        if (!Array.isArray(historyPayload)) {
+          return;
+        }
+        const existingHistory = histories.get(chatId);
+        if (Array.isArray(existingHistory) && existingHistory.length > 0) {
+          return;
+        }
+        histories.set(chatId, pruneStaleSigningMessages([...historyPayload]));
+      });
       const activeId = Number(data.active_chat_id || 0);
       if (activeId > 0 && typeof syncBootstrapActivationReadState === "function") {
         const activeChat = chats?.get?.(activeId) || data?.chats?.find?.((chat) => Number(chat?.id) === activeId) || null;

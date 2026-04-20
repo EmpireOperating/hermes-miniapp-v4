@@ -166,6 +166,76 @@ test('hydrateChatAfterGracefulResumeCompletion rerenders when rendered active tr
   assert.deepEqual(renderedMessages, [{ chatId: 9, options: { preserveViewport: true } }]);
 });
 
+test('hydrateChatAfterGracefulResumeCompletion rerenders active terminal history when no transcript is currently rendered', async () => {
+  const phases = new Map();
+  const renderedMessages = [];
+  const histories = new Map([[9, [
+    { id: 101, role: 'user', body: 'older question', pending: false },
+    { id: 102, role: 'assistant', body: 'newer hydrated reply', pending: false },
+  ]]]);
+  const controller = streamController.createController({
+    parseSseEvent: sharedUtils.parseSseEvent,
+    formatLatency: sharedUtils.formatLatency,
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: (chatId) => phases.get(Number(chatId)) || streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: (chatId, phase) => phases.set(Number(chatId), phase),
+    isPatchPhaseAllowed: () => false,
+    chats: new Map([[9, { id: 9, pending: false, unread_count: 0 }]]),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    finalizeInlineToolTrace: () => {},
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    patchVisiblePendingAssistant: () => false,
+    patchVisibleToolTrace: () => false,
+    renderTraceLog: () => {},
+    syncActiveMessageView: () => {},
+    scheduleActiveMessageView: () => {},
+    setChatLatency: () => {},
+    incrementUnread: () => {},
+    getActiveChatId: () => 9,
+    getRenderedChatId: () => 0,
+    getRenderedTranscriptSignature: () => '',
+    triggerIncomingMessageHaptic: () => {},
+    messagesEl: null,
+    promptEl: { focus: () => {} },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    streamDebugLog: () => {},
+    finalizeStreamPendingState: () => {},
+    appendInlineToolTrace: () => {},
+    loadChatHistory: async () => ({
+      chat: { id: 9, pending: false, title: 'chat-9', unread_count: 0 },
+      history: [
+        { id: 101, role: 'user', body: 'older question', pending: false },
+        { id: 102, role: 'assistant', body: 'newer hydrated reply', pending: false },
+      ],
+    }),
+    upsertChat: () => {},
+    histories,
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    renderMessages: (chatId, options = {}) => renderedMessages.push({ chatId: Number(chatId), options }),
+    persistStreamCursor: () => {},
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+  });
+
+  await controller.hydrateChatAfterGracefulResumeCompletion(9, { forceCompleted: true });
+
+  assert.deepEqual(renderedMessages, [{ chatId: 9, options: { preserveViewport: true } }]);
+});
+
 test('hydrateChatAfterGracefulResumeCompletion rerenders when hydrated transcript removes stale trailing tool activity after identical final assistant text', async () => {
   const phases = new Map();
   const renderedMessages = [];
@@ -651,6 +721,93 @@ test('finalizeStreamLifecycle finalizes pending state for owning non-aborted str
   assert.deepEqual(harness.finalizeCalls, [{ chatId: 9, wasAborted: false }]);
   assert.deepEqual(harness.syncActiveViewportReadStateCalls, [[9, { atBottom: true }]]);
   assert.equal(harness.controller.hasLiveStreamController(9), false);
+});
+
+test('finalizeStreamLifecycle waits for terminal hydration before syncing active read state', async () => {
+  const phases = new Map();
+  const renderedMessages = [];
+  const syncActiveViewportReadStateCalls = [];
+  let resolveHydration = null;
+  const hydrationPromise = new Promise((resolve) => {
+    resolveHydration = resolve;
+  });
+  const controller = streamController.createController({
+    parseSseEvent: sharedUtils.parseSseEvent,
+    formatLatency: sharedUtils.formatLatency,
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: (chatId) => phases.get(Number(chatId)) || streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: (chatId, phase) => phases.set(Number(chatId), phase),
+    isPatchPhaseAllowed: () => false,
+    chats: new Map([[9, { id: 9, pending: false }]]),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    finalizeInlineToolTrace: () => {},
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    patchVisiblePendingAssistant: () => false,
+    patchVisibleToolTrace: () => false,
+    renderTraceLog: () => {},
+    syncActiveMessageView: () => {},
+    scheduleActiveMessageView: () => {},
+    setChatLatency: () => {},
+    incrementUnread: () => {},
+    getActiveChatId: () => 9,
+    getRenderedChatId: () => 0,
+    getRenderedTranscriptSignature: () => '',
+    triggerIncomingMessageHaptic: () => {},
+    messagesEl: null,
+    promptEl: { focus: () => {} },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    syncActiveViewportReadState: (chatId, options = {}) => {
+      syncActiveViewportReadStateCalls.push([Number(chatId), { ...options }]);
+    },
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    streamDebugLog: () => {},
+    finalizeStreamPendingState: () => {},
+    appendInlineToolTrace: () => {},
+    loadChatHistory: async () => {
+      await hydrationPromise;
+      return {
+        chat: { id: 9, pending: false, title: 'chat-9' },
+        history: [{ id: 101, role: 'assistant', body: 'final answer', pending: false }],
+      };
+    },
+    upsertChat: () => {},
+    histories: new Map([[9, []]]),
+    mergeHydratedHistory: ({ nextHistory }) => nextHistory,
+    renderMessages: (chatId, options = {}) => renderedMessages.push({ chatId: Number(chatId), options }),
+    persistStreamCursor: () => {},
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    markStreamComplete: () => {},
+  });
+
+  const owningController = new AbortController();
+  controller.setStreamAbortController(9, owningController);
+  controller.applyDonePayload(9, { reply: 'final answer', latency_ms: 7, turn_count: 1 }, { value: '' });
+
+  const finalizePromise = controller.finalizeStreamLifecycle(9, owningController, { wasAborted: false });
+  await Promise.resolve();
+
+  assert.deepEqual(renderedMessages, []);
+  assert.deepEqual(syncActiveViewportReadStateCalls, []);
+
+  resolveHydration();
+  await finalizePromise;
+
+  assert.deepEqual(renderedMessages, [{ chatId: 9, options: { preserveViewport: true } }]);
+  assert.deepEqual(syncActiveViewportReadStateCalls, [[9, { atBottom: false }]]);
 });
 
 test('finalizeStreamLifecycle uses the shared viewport-read helper for active off-bottom completion', async () => {

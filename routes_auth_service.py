@@ -9,6 +9,8 @@ from file_preview_eligibility import file_preview_allowed_roots, file_preview_co
 
 
 _AUTH_PRUNE_INTERVAL_SECONDS = 300
+_AUTH_BOOTSTRAP_VISIBLE_HISTORY_CHATS = 4
+_AUTH_BOOTSTRAP_INACTIVE_HISTORY_LIMIT = 40
 _last_pruned_auth_sessions_at = 0
 
 
@@ -164,6 +166,41 @@ class AuthBootstrapService:
         )
         return int(active_chat_id), history
 
+    def _load_visible_bootstrap_histories(
+        self,
+        *,
+        store: Any,
+        user_id: str,
+        chats: list[dict[str, object]],
+        active_chat_id: int | None,
+    ) -> dict[str, list[dict[str, object]]]:
+        if not hasattr(store, "get_history"):
+            return {}
+        max_visible = max(1, int(_AUTH_BOOTSTRAP_VISIBLE_HISTORY_CHATS))
+        candidate_chats = [
+            chat for chat in chats[:max_visible]
+            if int(chat.get("id") or 0) > 0 and int(chat.get("id") or 0) != int(active_chat_id or 0)
+        ]
+        payload: dict[str, list[dict[str, object]]] = {}
+        for chat in candidate_chats:
+            chat_id = int(chat["id"])
+            history = [
+                self.serialize_turn(turn)
+                for turn in store.get_history(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    limit=_AUTH_BOOTSTRAP_INACTIVE_HISTORY_LIMIT,
+                )
+            ]
+            history = self.augment_history_with_runtime_pending(
+                user_id=user_id,
+                chat_id=chat_id,
+                history=history,
+                chat_pending=bool(chat.get("pending")),
+            )
+            payload[str(chat_id)] = history
+        return payload
+
     @staticmethod
     def parse_preferred_chat_id(payload: dict[str, object]) -> tuple[int | None, tuple[dict[str, object], int] | None]:
         if "preferred_chat_id" not in payload or payload.get("preferred_chat_id") in (None, ""):
@@ -227,6 +264,13 @@ class AuthBootstrapService:
             if stored_active_chat_id and int(stored_active_chat_id) not in visible_chat_ids:
                 store.clear_active_chat(user_id=user_id)
 
+        bootstrap_histories = self._load_visible_bootstrap_histories(
+            store=store,
+            user_id=user_id,
+            chats=chats,
+            active_chat_id=active_chat_id,
+        ) if chats else {}
+
         skin = store.get_skin(user_id=user_id)
         telegram_unread_notifications_enabled = store.get_telegram_unread_notifications_enabled(user_id=user_id)
         return {
@@ -243,6 +287,7 @@ class AuthBootstrapService:
                 "telegram_unread_notifications_enabled": telegram_unread_notifications_enabled,
                 "active_chat_id": active_chat_id,
                 "history": history,
+                "bootstrap_histories": bootstrap_histories,
                 "chats": chats,
                 "pinned_chats": pinned_chats,
             },

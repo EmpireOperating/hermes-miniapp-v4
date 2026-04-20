@@ -25,7 +25,7 @@ function createEventTarget(initial = {}) {
   };
 }
 
-function buildHarness({ visibilityState = 'visible', authenticated = true, pendingChatsSize = 0, apiPostImpl = null } = {}) {
+function buildHarness({ visibilityState = 'visible', authenticated = true, pendingChatsSize = 0, apiPostImpl = null, shouldDeferImmediateActiveMessageView = null } = {}) {
   let currentSkin = 'terminal';
   const skinCalls = [];
   const reloadCalls = [];
@@ -151,6 +151,11 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
       callOrder.push('syncActiveMessageView');
       syncActiveMessageViewCalls.push({ chatId, options });
     },
+    shouldDeferImmediateActiveMessageView: (chatId) => (
+      typeof shouldDeferImmediateActiveMessageView === 'function'
+        ? Boolean(shouldDeferImmediateActiveMessageView(chatId))
+        : false
+    ),
     getStreamAbortControllers: () => streamAbortControllers,
     markBackgrounded: (marker) => lifecycleMarks.push({ ...marker }),
     markVisibilityResume: (marker) => visibilityResumes.push({ ...marker }),
@@ -306,6 +311,28 @@ test('handleVisibilityChange refreshes lifecycle and delegates active-chat recon
     'syncVisibleActiveChat',
   ]);
   assert.equal(harness.callOrder.indexOf('syncVisibleActiveChat') < harness.callOrder.indexOf('refreshChats'), true);
+});
+
+test('handleVisibilityChange defers eager active transcript repaint when the active chat has unread anchor metadata that local history still lacks', async () => {
+  const harness = buildHarness({
+    visibilityState: 'visible',
+    authenticated: true,
+    shouldDeferImmediateActiveMessageView: (chatId) => Number(chatId) === 1,
+  });
+
+  await harness.controller.handleVisibilityChange();
+
+  assert.deepEqual(harness.syncActiveMessageViewCalls, []);
+  assert.equal(harness.syncVisibleActiveChatCalls.length, 1);
+  assert.deepEqual(harness.syncVisibleActiveChatCalls[0], {
+    hidden: false,
+    streamAbortControllers: harness.streamAbortControllers,
+  });
+  assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
+  assert.deepEqual(harness.callOrder.slice(0, 2), [
+    'apiPost:/api/presence/state',
+    'syncVisibleActiveChat',
+  ]);
 });
 
 test('handleVisibilityChange is a no-op when document is hidden', async () => {

@@ -188,7 +188,7 @@
     </div>
 
     <dialog id="chat-title-modal" class="modal" aria-labelledby="chat-title-modal-title">
-      <form method="dialog" id="chat-title-form" class="modal__card">
+      <form id="chat-title-form" class="modal__card">
         <h2 id="chat-title-modal-title" class="modal__title">Chat title</h2>
         <p class="modal__hint" id="chat-title-modal-hint">Name this chat.</p>
         <div id="chat-title-tag-label" class="modal__label chat-title-tag-label" hidden>Tag</div>
@@ -201,7 +201,7 @@
         <input id="chat-title-input" class="modal__input" type="text" maxlength="120" autocomplete="off" required>
         <div class="modal__actions">
           <button type="button" id="chat-title-cancel" class="action-button">Cancel</button>
-          <button type="submit" id="chat-title-confirm" class="action-button">Save</button>
+          <button type="submit" id="chat-title-confirm" class="action-button" value="confirm">Save</button>
         </div>
       </form>
     </dialog>

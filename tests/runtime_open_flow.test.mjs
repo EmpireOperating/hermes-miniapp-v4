@@ -12,6 +12,7 @@ test('createCachedOpenController prioritizes hydration immediately for unread ca
   const hydrationCalls = [];
   const controller = openFlow.createCachedOpenController({
     normalizeChatId: (chatId) => Number(chatId),
+    histories: new Map([[7, [{ id: 1, body: 'cached reply' }]]]),
     setActiveChatMeta: () => {},
     renderMessages: () => {},
     getActiveChatId: () => 7,
@@ -42,6 +43,46 @@ test('createCachedOpenController prioritizes hydration immediately for unread ca
   assert.deepEqual(scheduled, [0]);
   assert.deepEqual(hydrationCalls, [[7, 4, true]]);
   assert.equal(traces.find((entry) => entry.eventName === 'cached-hydrate-scheduled')?.details?.prioritizeHydration, true);
+});
+
+test('createCachedOpenController avoids requestIdle for deferred cached hydration when idle hydration is disabled', () => {
+  const traces = [];
+  const scheduled = [];
+  const idleCalls = [];
+  const hydrationCalls = [];
+  const controller = openFlow.createCachedOpenController({
+    normalizeChatId: (chatId) => Number(chatId),
+    setActiveChatMeta: () => {},
+    renderMessages: () => {},
+    getActiveChatId: () => 7,
+    getLastOpenChatRequestId: () => 4,
+    scheduleTimeout: (callback, delay = 0) => {
+      scheduled.push(Number(delay));
+      callback();
+    },
+    requestIdle: (callback, options = {}) => {
+      idleCalls.push(options);
+      callback();
+    },
+    enqueueUiMutation: (callback) => callback(),
+    shouldDeferNonCriticalCachedOpen: () => true,
+    shouldUseIdleForDeferredCachedHydration: () => false,
+    traceChatHistory: (eventName, details = {}) => traces.push({ eventName, details }),
+    nowMs: () => 1000,
+    isActiveChat: () => true,
+    chats: new Map([[7, { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false }]]),
+  }, {
+    hydrateChatFromServer: async (...args) => {
+      hydrationCalls.push(args);
+    },
+  });
+
+  controller.openCachedChat(7, 4, 900);
+
+  assert.deepEqual(idleCalls, []);
+  assert.deepEqual(scheduled, [32]);
+  assert.deepEqual(hydrationCalls, [[7, 4, true]]);
+  assert.equal(traces.find((entry) => entry.eventName === 'cached-hydrate-scheduled')?.details?.allowIdleHydration, false);
 });
 
 test('createHistoryOpenController delegates open threshold arming to read-state authority when available', async () => {

@@ -173,12 +173,17 @@ test('stream controller exports transcript and lifecycle subcontrollers with sta
   const patchedAssistantCalls = [];
   const patchedToolCalls = [];
   const hydrationCalls = [];
+  const registeredHydrationPromises = [];
   const fallbackReconciles = [];
   const doneSessionController = {
     immediateFinalizedChats: new Set(),
     consumeFirstAssistantNotification: () => ({ messageKey: '', unreadIncremented: false }),
     setStreamStatusForVisibleChat: (chatId, text) => streamStatuses.push({ chatId: Number(chatId), text }),
     setStreamChipForVisibleChat: (chatId, text) => streamChips.push({ chatId: Number(chatId), text }),
+    registerTerminalHydrationPromise: (chatId, promise) => {
+      registeredHydrationPromises.push({ chatId: Number(chatId), hasPromise: Boolean(promise && typeof promise.then === 'function') });
+      return promise;
+    },
   };
   const terminalController = streamController.createStreamTerminalEventController({
     formatLatency: sharedUtils.formatLatency,
@@ -219,6 +224,7 @@ test('stream controller exports transcript and lifecycle subcontrollers with sta
   assert.deepEqual(patchedToolCalls, [9]);
   assert.deepEqual(fallbackReconciles, [9]);
   assert.deepEqual(hydrationCalls, [{ chatId: 9, options: { forceCompleted: true } }]);
+  assert.deepEqual(registeredHydrationPromises, [{ chatId: 9, hasPromise: true }]);
   assert.deepEqual(latencyUpdates, [{ chatId: 9, text: '1s' }]);
   assert.deepEqual(streamStatuses, [{ chatId: 9, text: 'Reply received in chat-9' }]);
   assert.deepEqual(streamChips, [{ chatId: 9, text: 'stream: complete · #9' }]);
@@ -571,9 +577,11 @@ test('createStreamLifecycleController marks replacement sends with interrupt whe
   }
 });
 
-test('createStreamLifecycleController defers send-path resume handoff until after finalize to avoid recursive stack growth', async () => {
+test('createStreamLifecycleController fails fast on unexpected send-path early close instead of auto-resuming recursively', async () => {
   const scheduled = [];
   const fetchCalls = [];
+  const pendingAssistantUpdates = [];
+  const streamPhases = [];
   const previousDocument = globalThis.document;
   globalThis.document = { visibilityState: 'visible' };
   const sessionController = streamController.createStreamSessionController({
@@ -597,11 +605,11 @@ test('createStreamLifecycleController defers send-path resume handoff until afte
   const lifecycleController = streamController.createStreamLifecycleController({
     STREAM_PHASES: streamState.STREAM_PHASES,
     getStreamPhase: () => streamState.STREAM_PHASES.IDLE,
-    setStreamPhase: () => {},
+    setStreamPhase: (_chatId, phase) => { streamPhases.push(String(phase)); },
     chats: new Map([[7, { pending: false }]]),
     pendingChats: new Set(),
     chatLabel: (chatId) => `chat-${chatId}`,
-    updatePendingAssistant: () => {},
+    updatePendingAssistant: (_chatId, text) => { pendingAssistantUpdates.push(String(text)); },
     markStreamUpdate: () => {},
     syncActiveMessageView: () => {},
     getActiveChatId: () => 7,
@@ -619,7 +627,7 @@ test('createStreamLifecycleController defers send-path resume handoff until afte
     renderTraceLog: () => {},
     authPayload: (payload) => payload,
     parseStreamErrorPayload: () => ({}),
-    summarizeUiFailure: () => 'failed',
+    summarizeUiFailure: (_message, { fallback } = {}) => String(fallback || 'failed'),
     getIsAuthenticated: () => true,
     setIsAuthenticated: () => {},
     authStatusEl: { textContent: '' },
@@ -660,8 +668,113 @@ test('createStreamLifecycleController defers send-path resume handoff until afte
     await lifecycleController.sendPrompt('hello');
 
     assert.equal(fetchCalls.length, 1);
-    assert.equal(scheduled.length, 1);
-    assert.equal(scheduled[0].delay, 0);
+    assert.equal(scheduled.length, 0);
+    assert.equal(streamPhases.includes(streamState.STREAM_PHASES.ERROR), true);
+    assert.equal(pendingAssistantUpdates.some((text) => /closed before completion/i.test(text)), true);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test('createStreamLifecycleController fails fast on unexpected resume early close and blocks reconnect churn', async () => {
+  const previousDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'visible', activeElement: null };
+  const sessionController = streamController.createStreamSessionController({
+    getActiveChatId: () => 7,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    persistStreamCursor: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    incrementUnread: () => {},
+    renderTabs: () => {},
+  });
+  const chat = { pending: true };
+  const blockedChats = [];
+  const systemMessages = [];
+  const finalizeCalls = [];
+  const streamPhases = [];
+  const transcriptController = {
+    hydrateChatAfterGracefulResumeCompletion: async () => {},
+    consumeStreamWithReconnect: async (_chatId, _response, _builtReplyRef, options = {}) => {
+      await options.onEarlyClose?.({ expectedSegmentEnd: false });
+      return false;
+    },
+  };
+  const lifecycleController = streamController.createStreamLifecycleController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: () => streamState.STREAM_PHASES.PENDING_TOOL,
+    setStreamPhase: (_chatId, phase) => { streamPhases.push(String(phase)); },
+    chats: new Map([[7, chat]]),
+    pendingChats: new Set([7]),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    syncActiveMessageView: () => {},
+    getActiveChatId: () => 7,
+    messagesEl: { scrollHeight: 0, clientHeight: 0, scrollTop: 0, focus: () => {} },
+    promptEl: { value: '', selectionStart: 0, selectionEnd: 0 },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: (text) => { systemMessages.push(String(text)); },
+    finalizeStreamPendingState: (chatId, wasAborted) => {
+      finalizeCalls.push({ chatId: Number(chatId), wasAborted: Boolean(wasAborted) });
+      if (!wasAborted) {
+        chat.pending = false;
+      }
+    },
+    renderTraceLog: () => {},
+    authPayload: (payload) => payload,
+    parseStreamErrorPayload: () => ({}),
+    summarizeUiFailure: (_message, { fallback } = {}) => String(fallback || 'failed'),
+    getIsAuthenticated: () => true,
+    setIsAuthenticated: () => {},
+    authStatusEl: { textContent: '' },
+    dropPendingToolTraceMessages: () => {},
+    addLocalMessage: () => {},
+    setDraft: () => {},
+    resetToolStream: () => {},
+    clearReconnectResumeBlock: () => {},
+    resetReconnectResumeBudget: () => {},
+    consumeReconnectResumeBudget: () => ({ allowed: true, attempts: 1, maxAttempts: 6 }),
+    suppressBlockedChatPending: () => {},
+    blockReconnectResume: (chatId) => { blockedChats.push(Number(chatId)); },
+    isReconnectResumeBlocked: () => false,
+    resumeAttemptedAtByChat: new Map(),
+    resumeCooldownUntilByChat: new Map(),
+    resumeInFlightByChat: new Set(),
+    isTransientResumeRecoveryError: () => false,
+    nextResumeRecoveryDelayMs: () => 0,
+    delayMs: async () => {},
+    markChatStreamPending: () => {},
+    getStoredStreamCursor: () => null,
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    isNearBottom: () => true,
+    fetchImpl: async () => ({ ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => '' }),
+    setTimeoutFn: () => 0,
+    finalizeInlineToolTrace: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    syncActivePendingStatus: () => {},
+    markReconnectFailed: () => {},
+    markStreamReconnecting: () => {},
+  }, sessionController, transcriptController);
+
+  try {
+    await lifecycleController.resumePendingChatStream(7, { force: true });
+
+    assert.deepEqual(blockedChats, [7]);
+    assert.equal(streamPhases.includes(streamState.STREAM_PHASES.ERROR), true);
+    assert.equal(systemMessages.some((text) => /closed before completion/i.test(text)), true);
+    assert.equal(systemMessages.some((text) => /paused/i.test(text)), true);
+    assert.deepEqual(finalizeCalls, [{ chatId: 7, wasAborted: false }]);
+    assert.equal(chat.pending, false);
   } finally {
     globalThis.document = previousDocument;
   }

@@ -285,6 +285,27 @@ test('applyAuthBootstrap updates auth-facing UI and history state', () => {
   assert.deepEqual(harness.getResumeCalls(), []);
 });
 
+test('applyAuthBootstrap seeds inactive visible bootstrap histories without overwriting existing cached chats', () => {
+  const harness = buildHarness();
+  harness.histories.set(8, [{ role: 'assistant', body: 'existing cache' }]);
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    skin: 'oracle',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: false }, { id: 8, pending: false }, { id: 9, pending: false }],
+    pinned_chats: [],
+    history: [],
+    bootstrap_histories: {
+      '8': [{ role: 'assistant', body: 'server cache' }],
+      '9': [{ role: 'assistant', body: 'prefetched open chat' }],
+    },
+  }, { preferredUsername: 'Desktop' });
+
+  assert.deepEqual(harness.histories.get(8), [{ role: 'assistant', body: 'existing cache' }]);
+  assert.deepEqual(harness.histories.get(9), [{ role: 'assistant', body: 'prefetched open chat' }]);
+});
+
 test('applyAuthBootstrap scrubs stale signing-in system messages from local history after successful auth', () => {
   const harness = buildHarness();
 

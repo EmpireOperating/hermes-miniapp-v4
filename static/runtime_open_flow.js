@@ -10,6 +10,7 @@
       requestIdle,
       enqueueUiMutation,
       shouldDeferNonCriticalCachedOpen,
+      shouldUseIdleForDeferredCachedHydration = () => true,
       traceChatHistory,
       nowMs,
       isActiveChat,
@@ -90,13 +91,15 @@
       }
 
       const hydrate = () => hydrateCachedChat({ targetChatId, requestId, openStartedAtMs });
-      if (shouldDeferMeta && typeof requestIdle === 'function' && !prioritizeHydration) {
+      const allowIdleHydration = Boolean(shouldUseIdleForDeferredCachedHydration(targetChatId));
+      if (shouldDeferMeta && typeof requestIdle === 'function' && !prioritizeHydration && allowIdleHydration) {
         traceChatHistory('cached-hydrate-scheduled', {
           chatId: targetChatId,
           requestId,
           mode: 'idle',
           timeoutMs: 250,
           prioritizeHydration,
+          allowIdleHydration,
         });
         requestIdle(hydrate, { timeout: 250 });
       } else {
@@ -107,6 +110,7 @@
           mode: 'timeout',
           delayMs,
           prioritizeHydration,
+          allowIdleHydration,
         });
         scheduleTimeout(hydrate, delayMs);
       }

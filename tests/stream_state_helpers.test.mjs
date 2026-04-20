@@ -215,6 +215,7 @@ test('createPersistenceController persists and restores pending stream snapshots
       created_at: '2026-04-02T00:00:00Z',
       pending: true,
       collapsed: false,
+      tool_call_count: 2,
     },
     {
       role: 'hermes',
@@ -258,6 +259,48 @@ test('createPersistenceController preserves collapsed pending tool traces across
   const restored = controller.restorePendingStreamSnapshot(6);
   assert.equal(restored, true);
   assert.equal(histories.get(6)[0].collapsed, true);
+});
+
+test('createPersistenceController preserves tracked tool call count across snapshot restore', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const histories = new Map([[16, [
+    {
+      role: 'tool',
+      body: '📖 read_file: loaded 100 bytes\n📖 read_file: done',
+      pending: true,
+      collapsed: false,
+      created_at: '2026-04-02T00:00:00Z',
+      tool_call_count: 1,
+    },
+  ]]]);
+  const chats = new Map([[16, { id: 16, pending: true }]]);
+
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
+    histories,
+    chats,
+    nowFn: () => 1_000,
+    dateNowFn: () => 1_000,
+  });
+
+  const snapshot = controller.persistPendingStreamSnapshot(16);
+  assert.equal(snapshot.tool.tool_call_count, 1);
+
+  histories.set(16, []);
+  const restored = controller.restorePendingStreamSnapshot(16);
+  assert.equal(restored, true);
+  assert.equal(histories.get(16)[0].tool_call_count, 1);
 });
 
 test('createPersistenceController refreshes existing pending assistant body from snapshot restore', () => {
@@ -510,6 +553,7 @@ test('createPersistenceController keeps newer remote pending snapshots for other
         created_at: '2026-04-02T00:00:00Z',
         pending: true,
         collapsed: false,
+        tool_call_count: 1,
       },
       assistant: null,
     },

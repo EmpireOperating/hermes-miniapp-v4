@@ -28,10 +28,12 @@ test('createToolTraceController upserts tool deltas by message_id + tool_call_id
   const pending = toolTrace.findPendingToolTraceMessage(7);
   assert.equal(Boolean(pending), true);
   assert.equal(pending.body, '📖 read_file: loaded 100 bytes\n📖 read_file: done');
+  assert.equal(pending.tool_call_count, 1);
 
   toolTrace.finalizeInlineToolTrace(7);
   const finalized = histories.get(7)[0];
   assert.equal(finalized.body, '📖 read_file: loaded 100 bytes\n📖 read_file: done');
+  assert.equal(finalized.tool_call_count, 1);
   assert.equal('_toolTraceOrder' in finalized, false);
   assert.equal('_toolTraceLines' in finalized, false);
 });
@@ -51,6 +53,7 @@ test('createToolTraceController appends pending tool traces and preserves open s
   assert.equal(Boolean(pending), true);
   assert.equal(pending.body, 'read_file\nsearch_files');
   assert.equal(pending.collapsed, false);
+  assert.equal(pending.tool_call_count, 2);
 
   toolTrace.finalizeInlineToolTrace(7);
   const finalized = histories.get(7)[0];
@@ -58,6 +61,7 @@ test('createToolTraceController appends pending tool traces and preserves open s
   assert.equal(finalized.pending, false);
   assert.equal(finalized.collapsed, false);
   assert.equal(finalized.body, 'read_file\nsearch_files');
+  assert.equal(finalized.tool_call_count, 2);
 });
 
 test('createToolTraceController preserves restored tool lines when resumed tool events gain dedupe ids', () => {

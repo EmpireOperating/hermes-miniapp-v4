@@ -782,13 +782,13 @@ def test_store_startup_dead_letters_recoverable_running_jobs(tmp_path) -> None:
     assert claimed["id"] == job_id
     assert claimed["attempts"] == 1
 
-    # Simulate process restart: schema recovery should fail the orphaned running job
-    # instead of silently requeueing it into a stuck resume loop.
+    # Simulate a fresh store/runtime recovery pass: schema recovery should fail the
+    # orphaned running job instead of silently requeueing it into a stuck resume loop.
     recovered_store = SessionStore(store.db_path)
     state = recovered_store.get_job_state(job_id)
     assert state is not None
     assert state["status"] == "dead"
-    assert state["error"] == "interrupted_by_service_restart"
+    assert state["error"] == "interrupted_by_runtime_recovery"
     startup_stats = recovered_store.startup_recovery_stats()
     assert startup_stats["startup_recovered_running_total"] >= 1
     assert startup_stats["startup_clamped_exhausted_total"] == 0
@@ -812,7 +812,7 @@ def test_store_startup_dead_letters_exhausted_running_jobs(tmp_path) -> None:
     state = recovered_store.get_job_state(job_id)
     assert state is not None
     assert state["status"] == "dead"
-    assert state["error"] == "interrupted_by_service_restart"
+    assert state["error"] == "interrupted_by_runtime_recovery"
     startup_stats = recovered_store.startup_recovery_stats()
     assert startup_stats["startup_recovered_running_total"] >= 1
     assert startup_stats["startup_clamped_exhausted_total"] == 0
