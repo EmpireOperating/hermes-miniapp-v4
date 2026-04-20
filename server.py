@@ -51,12 +51,14 @@ from routes_chat import register_chat_routes
 from routes_chat_context import ChatRouteContext
 from routes_jobs_runtime import register_jobs_runtime_routes
 from routes_meta import register_meta_routes
+from routes_visual_dev import register_visual_dev_routes
 from security_headers import apply_security_headers, generate_csp_nonce
 from server_public_routes import register_public_routes
 from server_request_adapters import build_server_request_adapters
 from server_startup import log_startup_diagnostics, startup_diagnostics_payload
 from store import ChatThread, SessionStore
 from validators import parse_chat_id, validate_message, validate_title
+from visual_dev_runtime import VisualDevRuntime
 
 SESSION_STORE_PATH = Path(os.environ.get("MINI_APP_SESSION_STORE_PATH") or (BASE_DIR / "sessions.db"))
 CLIENT_BOOT_SUMMARY_LOG_PATH = Path(
@@ -125,6 +127,8 @@ TAB_ACTIONS_MENU_ENABLED = CONFIG.tab_actions_menu_enabled
 DEV_AUTH_SECRET = CONFIG.dev_auth_secret
 JOB_EVENT_HISTORY_MAX_JOBS = CONFIG.job_event_history_max_jobs
 JOB_EVENT_HISTORY_TTL_SECONDS = CONFIG.job_event_history_ttl_seconds
+VISUAL_DEV_ENABLED = CONFIG.visual_dev_enabled
+VISUAL_DEV_OPERATOR_ONLY = CONFIG.visual_dev_operator_only
 DEV_RELOAD_WATCH_PATHS = CONFIG.dev_reload_watch_paths
 STATIC_NO_STORE_FILENAMES = {
     "app.js",
@@ -168,6 +172,12 @@ STATIC_NO_STORE_FILENAMES = {
     "render_trace_history_helpers.js",
     "render_trace_helpers.js",
     "file_preview_helpers.js",
+    "visual_dev_shell_helpers.js",
+    "visual_dev_preview_helpers.js",
+    "visual_dev_mode_helpers.js",
+    "visual_dev_attach_helpers.js",
+    "visual_dev_prompt_context_helpers.js",
+    "visual_dev_bridge.js",
 }
 STATIC_NO_STORE_PATHS = {f"/static/{name}" for name in STATIC_NO_STORE_FILENAMES}
 
@@ -271,6 +281,7 @@ _RUNTIME_DEPS = create_runtime_dependencies(
     session_id_builder=_session_id_for,
 )
 runtime = _RUNTIME_DEPS.runtime
+visual_dev_runtime = VisualDevRuntime()
 PRESENCE_LEASE_TTL_SECONDS = 45
 presence_tracker = MiniAppPresenceTracker(default_ttl_seconds=PRESENCE_LEASE_TTL_SECONDS)
 runtime.telegram_unread_reply_notifier = TelegramUnreadReplyNotifier(
@@ -545,6 +556,10 @@ register_public_routes(
     tab_actions_menu_enabled=TAB_ACTIONS_MENU_ENABLED,
     file_preview_enabled=_FILE_PREVIEW_ENABLED,
     file_preview_allowed_roots=_FILE_PREVIEW_ALLOWED_ROOTS,
+    visual_dev_enabled=VISUAL_DEV_ENABLED,
+    visual_dev_operator_only=VISUAL_DEV_OPERATOR_ONLY,
+    visual_dev_allowed_preview_origins=tuple(sorted(CONFIG.visual_dev_allowed_preview_origins)),
+    visual_dev_allowed_parent_origins=tuple(sorted(CONFIG.visual_dev_bridge_allowed_parents)),
     static_no_store_filenames=STATIC_NO_STORE_FILENAMES,
     asset_version_fn=lambda filename: _asset_version(filename),
     dev_reload_version_fn=lambda: _dev_reload_version(),
@@ -613,6 +628,25 @@ register_jobs_runtime_routes(
     request_payload_fn=_request_payload,
     json_user_id_or_error_fn=_json_user_id_or_error,
     verify_for_json_fn=_verify_for_json,
+    operator_token=str(os.environ.get("MINI_APP_OPERATOR_API_TOKEN") or "").strip(),
+)
+
+
+register_visual_dev_routes(
+    api_bp,
+    store_getter=_RUNTIME_DEPS.store_getter,
+    visual_dev_runtime_getter=lambda: visual_dev_runtime,
+    request_payload_fn=_request_payload,
+    json_user_id_or_error_fn=_json_user_id_or_error,
+    chat_id_from_payload_or_error_fn=lambda payload, user_id: _chat_id_from_payload_or_error(payload, user_id=user_id),
+    json_error_fn=_json_error,
+    visual_dev_enabled=VISUAL_DEV_ENABLED,
+    visual_dev_operator_only=VISUAL_DEV_OPERATOR_ONLY,
+    allowed_preview_origins=CONFIG.visual_dev_allowed_preview_origins,
+    allowed_bridge_parents=CONFIG.visual_dev_bridge_allowed_parents,
+    artifact_dir=CONFIG.visual_dev_artifact_dir,
+    max_console_events=CONFIG.visual_dev_max_console_events,
+    screenshot_max_bytes=CONFIG.visual_dev_screenshot_max_bytes,
     operator_token=str(os.environ.get("MINI_APP_OPERATOR_API_TOKEN") or "").strip(),
 )
 

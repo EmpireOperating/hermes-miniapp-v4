@@ -27,6 +27,7 @@ class StoreSchemaMixin:
             self._ensure_chat_job_schema(conn)
             self._ensure_runtime_checkpoint_schema(conn)
             self._ensure_auth_session_schema(conn)
+            self._ensure_visual_dev_schema(conn)
             self._migrate_legacy_history(conn)
 
     def _default_startup_recovery_stats(self) -> dict[str, int]:
@@ -94,6 +95,7 @@ class StoreSchemaMixin:
                 user_id TEXT NOT NULL,
                 chat_id INTEGER NOT NULL,
                 operator_message_id INTEGER NOT NULL,
+                visual_context TEXT,
                 status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'error', 'dead')),
                 attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
                 max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
@@ -262,6 +264,8 @@ class StoreSchemaMixin:
             conn.execute("ALTER TABLE chat_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 4")
         if "next_attempt_at" not in chat_job_columns:
             conn.execute("ALTER TABLE chat_jobs ADD COLUMN next_attempt_at TEXT")
+        if "visual_context" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN visual_context TEXT")
 
         self._migrate_chat_jobs_invariants(conn)
         conn.execute(
@@ -308,6 +312,124 @@ class StoreSchemaMixin:
             conn.execute("ALTER TABLE auth_sessions ADD COLUMN display_name TEXT")
         if "username" not in auth_session_columns:
             conn.execute("ALTER TABLE auth_sessions ADD COLUMN username TEXT")
+
+    def _ensure_visual_dev_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_dev_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                preview_url TEXT NOT NULL,
+                preview_origin TEXT NOT NULL,
+                preview_title TEXT NOT NULL DEFAULT '',
+                bridge_parent_origin TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'attached',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                detached_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_dev_selections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                selection_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES visual_dev_sessions(session_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_dev_artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                artifact_kind TEXT NOT NULL,
+                storage_path TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT '',
+                byte_size INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES visual_dev_sessions(session_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_dev_console_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES visual_dev_sessions(session_id) ON DELETE CASCADE
+            )
+            """
+        )
+        session_columns = self._table_columns(conn, "visual_dev_sessions")
+        if "preview_title" not in session_columns:
+            conn.execute("ALTER TABLE visual_dev_sessions ADD COLUMN preview_title TEXT NOT NULL DEFAULT ''")
+        if "bridge_parent_origin" not in session_columns:
+            conn.execute(
+                "ALTER TABLE visual_dev_sessions ADD COLUMN bridge_parent_origin TEXT NOT NULL DEFAULT ''"
+            )
+        if "status" not in session_columns:
+            conn.execute("ALTER TABLE visual_dev_sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'attached'")
+        if "metadata_json" not in session_columns:
+            conn.execute(
+                "ALTER TABLE visual_dev_sessions ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "detached_at" not in session_columns:
+            conn.execute("ALTER TABLE visual_dev_sessions ADD COLUMN detached_at TEXT")
+
+        selection_columns = self._table_columns(conn, "visual_dev_selections")
+        if "payload_json" not in selection_columns:
+            conn.execute(
+                "ALTER TABLE visual_dev_selections ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+        artifact_columns = self._table_columns(conn, "visual_dev_artifacts")
+        if "content_type" not in artifact_columns:
+            conn.execute(
+                "ALTER TABLE visual_dev_artifacts ADD COLUMN content_type TEXT NOT NULL DEFAULT ''"
+            )
+        if "byte_size" not in artifact_columns:
+            conn.execute(
+                "ALTER TABLE visual_dev_artifacts ADD COLUMN byte_size INTEGER NOT NULL DEFAULT 0"
+            )
+        if "metadata_json" not in artifact_columns:
+            conn.execute(
+                "ALTER TABLE visual_dev_artifacts ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+        console_columns = self._table_columns(conn, "visual_dev_console_events")
+        if "metadata_json" not in console_columns:
+            conn.execute(
+                "ALTER TABLE visual_dev_console_events ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_visual_dev_sessions_user_chat_active ON visual_dev_sessions(user_id, chat_id) WHERE detached_at IS NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_visual_dev_sessions_user_updated ON visual_dev_sessions(user_id, updated_at DESC, session_id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_visual_dev_selections_session_id ON visual_dev_selections(session_id, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_visual_dev_artifacts_session_id ON visual_dev_artifacts(session_id, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_visual_dev_console_events_session_id ON visual_dev_console_events(session_id, id DESC)"
+        )
 
     def _table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
         return {
@@ -359,6 +481,7 @@ class StoreSchemaMixin:
                 user_id TEXT NOT NULL,
                 chat_id INTEGER NOT NULL,
                 operator_message_id INTEGER NOT NULL,
+                visual_context TEXT,
                 status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'error', 'dead')),
                 attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
                 max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
@@ -378,6 +501,7 @@ class StoreSchemaMixin:
                 user_id,
                 chat_id,
                 operator_message_id,
+                visual_context,
                 status,
                 attempts,
                 max_attempts,
@@ -393,6 +517,7 @@ class StoreSchemaMixin:
                 user_id,
                 chat_id,
                 operator_message_id,
+                visual_context,
                 CASE
                     WHEN status IN ('queued', 'running', 'done', 'error', 'dead') THEN status
                     ELSE 'dead'
@@ -490,6 +615,14 @@ class StoreSchemaMixin:
         ).fetchone()
         if not row:
             raise KeyError(f"Chat {chat_id} not found")
+
+    def _ensure_visual_dev_session_exists(self, conn: sqlite3.Connection, session_id: str) -> None:
+        row = conn.execute(
+            "SELECT session_id FROM visual_dev_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"Visual dev session {session_id} not found")
 
     def startup_recovery_stats(self) -> dict[str, int]:
         stats = getattr(self, "_startup_recovery_stats", None)

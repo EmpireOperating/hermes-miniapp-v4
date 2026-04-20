@@ -16,6 +16,7 @@ from store_models import (
 )
 from store_runtime import StoreRuntimeMixin
 from store_schema import StoreSchemaMixin
+from store_visual_dev import StoreVisualDevMixin
 
 
 class SessionStore(
@@ -24,6 +25,7 @@ class SessionStore(
     StoreJobsMixin,
     StoreRuntimeMixin,
     StoreAuthMixin,
+    StoreVisualDevMixin,
 ):
     """SQLite-backed storage for per-user preferences, chat threads, and messages."""
 
