@@ -410,7 +410,7 @@ test('touchstart tag toggle still applies selection when click is suppressed by 
   assert.equal(result, '[feat]Zero Tab');
 });
 
-test('rename modal ArrowRight and ArrowLeft rotate tag selection while title input stays focused', async () => {
+test('rename modal uses Alt+ArrowLeft and Alt+ArrowRight for tag rotation while plain arrows stay available for caret movement', async () => {
   const harness = buildHarness();
 
   const titlePromise = harness.controller.askForChatTitle({
@@ -419,14 +419,59 @@ test('rename modal ArrowRight and ArrowLeft rotate tag selection while title inp
     defaultTitle: 'Current',
   });
 
-  harness.chatTitleInput.dispatch('keydown', { key: 'ArrowRight', currentTarget: harness.chatTitleInput, target: harness.chatTitleInput });
-  harness.chatTitleInput.dispatch('keydown', { key: 'ArrowRight', currentTarget: harness.chatTitleInput, target: harness.chatTitleInput });
-  harness.chatTitleInput.dispatch('keydown', { key: 'ArrowLeft', currentTarget: harness.chatTitleInput, target: harness.chatTitleInput });
+  let plainArrowPrevented = false;
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowRight',
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    preventDefault() {
+      plainArrowPrevented = true;
+    },
+  });
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowLeft',
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    preventDefault() {
+      plainArrowPrevented = true;
+    },
+  });
+
+  let altArrowPreventedCount = 0;
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowRight',
+    altKey: true,
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    preventDefault() {
+      altArrowPreventedCount += 1;
+    },
+  });
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowLeft',
+    altKey: true,
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    preventDefault() {
+      altArrowPreventedCount += 1;
+    },
+  });
+  harness.chatTitleInput.dispatch('keydown', {
+    key: 'ArrowRight',
+    altKey: true,
+    currentTarget: harness.chatTitleInput,
+    target: harness.chatTitleInput,
+    preventDefault() {
+      altArrowPreventedCount += 1;
+    },
+  });
   harness.chatTitleInput.value = 'Rotated title';
   harness.chatTitleForm.dispatch('submit');
 
   const result = await titlePromise;
   assert.equal(result, '[feat]Rotated title');
+  assert.equal(plainArrowPrevented, false);
+  assert.equal(altArrowPreventedCount, 3);
   assert.equal(harness.chatTitleInput.focusCalls > 0, true);
   assert.equal(harness.chatTitleTagButtons[0].attributes.get('aria-pressed'), 'false');
   assert.equal(harness.chatTitleTagButtons[1].attributes.get('aria-pressed'), 'true');
