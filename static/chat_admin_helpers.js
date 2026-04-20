@@ -230,7 +230,7 @@
 
         const onTagRotationKeyDown = (event) => {
           if (!showTagToggles) return;
-          if (event?.altKey || event?.ctrlKey || event?.metaKey) return;
+          if (!event?.altKey || event?.ctrlKey || event?.metaKey) return;
           if (event?.key === 'ArrowRight') {
             event.preventDefault?.();
             rotateChatTitleSelectedTag(1);

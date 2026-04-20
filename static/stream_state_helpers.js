@@ -355,6 +355,9 @@
       const toolCollapsed = typeof pendingTool?.collapsed === "boolean"
         ? pendingTool.collapsed
         : (typeof existingSnapshot?.tool?.collapsed === "boolean" ? existingSnapshot.tool.collapsed : false);
+      const toolCallCount = Number.isFinite(Number(pendingTool?.tool_call_count)) && Number(pendingTool?.tool_call_count) > 0
+        ? Number(pendingTool.tool_call_count)
+        : toolJournalLines.length;
       const snapshot = {
         ts: timestampMs,
         tool_journal_lines: toolJournalLines,
@@ -364,6 +367,7 @@
           created_at: String(pendingTool?.created_at || existingSnapshot?.tool?.created_at || new Date(timestampMs).toISOString()),
           pending: true,
           collapsed: toolCollapsed,
+          tool_call_count: toolCallCount,
         } : null,
         assistant: pendingAssistant ? {
           role: String(pendingAssistant.role || "hermes").toLowerCase() === "assistant" ? "assistant" : "hermes",

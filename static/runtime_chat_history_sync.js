@@ -150,12 +150,13 @@
         .slice(0, 4);
       if (!ids.length) return;
 
-      const [priorityId, ...remainingIds] = ids;
+      const immediateIds = ids.slice(0, 2);
+      const remainingIds = ids.slice(2);
       traceChatHistory('warm-cache-start', {
         chatIds: ids.map((id) => normalizeChatId(id)),
-        priorityChatId: normalizeChatId(priorityId),
+        priorityChatIds: immediateIds.map((id) => normalizeChatId(id)),
       });
-      prefetchChatHistory(priorityId);
+      immediateIds.forEach((id) => prefetchChatHistory(id));
       if (!remainingIds.length) {
         return;
       }

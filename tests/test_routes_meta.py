@@ -1117,6 +1117,9 @@ def test_desktop_dev_auth_bootstrap_guards_present() -> None:
     assert "filePreviewHelpers.createController({" in app_script
     assert "createDeferredControllerHelper('HermesMiniappFilePreview')" in app_script
     assert "chat-title-modal" in template
+    assert '<form id="chat-title-form" class="modal__card">' in template
+    assert 'method="dialog" id="chat-title-form"' not in template
+    assert '<button type="submit" id="chat-title-confirm" class="action-button" value="confirm">Save</button>' in template
     assert '{% if dev_auth_enabled %}' in template
     assert "dev-auth-modal" in template
     assert "dev-auth-secret" in template

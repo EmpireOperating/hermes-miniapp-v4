@@ -189,6 +189,65 @@ class _PendingRefreshStoreStub(_StoreStub):
         return [_Turn(id=11, chat_id=7, role="hermes", body="Recovered reply", created_at="2026-04-10T00:00:00Z")]
 
 
+class _BootstrapHistoriesStoreStub(_StoreStub):
+    def __init__(self):
+        super().__init__(checkpoint_state=None)
+
+    def prune_expired_auth_sessions(self, _now_ts: int) -> None:
+        return None
+
+    def list_chats(self, *, user_id: str):
+        assert user_id == "123"
+        return [
+            {"id": 7, "title": "Ideas", "pending": False, "unread_count": 0, "is_pinned": False},
+            {"id": 8, "title": "Spec", "pending": False, "unread_count": 0, "is_pinned": False},
+            {"id": 9, "title": "Tests", "pending": True, "unread_count": 0, "is_pinned": False},
+            {"id": 10, "title": "Notes", "pending": False, "unread_count": 0, "is_pinned": False},
+            {"id": 11, "title": "Overflow", "pending": False, "unread_count": 0, "is_pinned": False},
+        ]
+
+    def list_pinned_chat_summaries(self, *, user_id: str):
+        assert user_id == "123"
+        return []
+
+    def get_active_chat(self, user_id: str):
+        assert user_id == "123"
+        return 7
+
+    def has_explicit_empty_chat_state(self, user_id: str) -> bool:
+        assert user_id == "123"
+        return False
+
+    def ensure_default_chat(self, user_id: str) -> int:
+        assert user_id == "123"
+        return 7
+
+    def get_skin(self, user_id: str) -> str:
+        assert user_id == "123"
+        return "terminal"
+
+    def get_telegram_unread_notifications_enabled(self, user_id: str) -> bool:
+        assert user_id == "123"
+        return False
+
+    def get_history(self, *, user_id: str, chat_id: int, limit: int = 120):
+        assert user_id == "123"
+        if chat_id == 7:
+            assert limit == 120
+            return [_Turn(id=70, chat_id=7, role="hermes", body="active history", created_at="2026-04-10T00:00:00Z")]
+        assert limit == 40
+        return [_Turn(id=chat_id * 10, chat_id=chat_id, role="hermes", body=f"bootstrap {chat_id}", created_at="2026-04-10T00:00:00Z")]
+
+    def get_runtime_checkpoint_state(self, session_id: str):
+        if session_id.endswith("-9"):
+            return {
+                "updated_at": "2026-04-10T00:00:01Z",
+                "pending_tool_lines": ["read_file"],
+                "pending_assistant": "still working",
+            }
+        return None
+
+
 def _service(*, checkpoint_state=None, store=None) -> AuthBootstrapService:
     active_store = store or _StoreStub(checkpoint_state=checkpoint_state)
     return AuthBootstrapService(
@@ -348,6 +407,35 @@ def test_auth_success_state_refreshes_chats_after_pending_recovery() -> None:
     assert payload["history"][-1]["body"] == "Recovered reply"
 
 
+def test_auth_success_state_includes_bootstrap_histories_for_initial_visible_inactive_chats() -> None:
+    store = _BootstrapHistoriesStoreStub()
+    service = AuthBootstrapService(
+        store_getter=lambda: store,
+        runtime_getter=lambda: SimpleNamespace(ensure_pending_jobs=lambda _user_id: None),
+        serialize_chat_fn=lambda chat: chat,
+        session_id_builder_fn=lambda user_id, chat_id: f"miniapp-{user_id}-{chat_id}",
+    )
+
+    result = service.auth_success_state(
+        SimpleNamespace(id=123, first_name="Operator", username="operator"),
+        auth_mode="telegram",
+        allow_empty=False,
+    )
+
+    payload = result["payload"]
+    assert payload["active_chat_id"] == 7
+    assert payload["history"][-1]["body"] == "active history"
+    assert payload["bootstrap_histories"] == {
+        "8": [{"id": 80, "chat_id": 8, "role": "hermes", "body": "bootstrap 8", "created_at": "2026-04-10T00:00:00Z"}],
+        "9": [
+            {"id": 90, "chat_id": 9, "role": "hermes", "body": "bootstrap 9", "created_at": "2026-04-10T00:00:00Z"},
+            {"id": 0, "chat_id": 9, "role": "tool", "body": "read_file", "created_at": "2026-04-10T00:00:01Z", "pending": True},
+            {"id": 0, "chat_id": 9, "role": "assistant", "body": "still working", "created_at": "2026-04-10T00:00:01Z", "pending": True},
+        ],
+        "10": [{"id": 100, "chat_id": 10, "role": "hermes", "body": "bootstrap 10", "created_at": "2026-04-10T00:00:00Z"}],
+    }
+
+
 def test_auth_success_state_prefers_preferred_chat_without_overwriting_shared_active_chat() -> None:
     store = _UnreadBootstrapStoreStub()
     service = _service(store=store)
@@ -362,7 +450,7 @@ def test_auth_success_state_prefers_preferred_chat_without_overwriting_shared_ac
 
     def get_history(*, user_id: str, chat_id: int, limit: int = 120):
         assert user_id == "123"
-        assert limit == 120
+        assert limit in {40, 120}
         return [_Turn(id=chat_id, chat_id=chat_id, role="hermes", body=f"history {chat_id}", created_at="2026-04-10T00:00:00Z")]
 
     store.list_chats = list_chats

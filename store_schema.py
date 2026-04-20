@@ -160,7 +160,7 @@ class StoreSchemaMixin:
                 job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
             )
             SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts,
-                   'interrupted_by_service_restart'
+                   'interrupted_by_runtime_recovery'
             FROM chat_jobs
             WHERE status = 'running'
               AND NOT EXISTS (
@@ -172,7 +172,7 @@ class StoreSchemaMixin:
             """
             UPDATE chat_jobs
             SET status = 'dead',
-                error = 'interrupted_by_service_restart',
+                error = 'interrupted_by_runtime_recovery',
                 finished_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE status = 'running'

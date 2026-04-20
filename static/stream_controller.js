@@ -147,15 +147,43 @@
       return String(line || "").trim();
     }
 
-    function resolveToolDedupeKey(payload) {
+    function resolveToolCallKey(payload) {
       if (!payload || typeof payload !== "object") return "";
       const messageId = payload.message_id || payload.msg_id || payload.assistant_message_id || payload.turn_id;
       const toolCallId = payload.tool_call_id || payload.call_id;
       if (!messageId || !toolCallId) {
         return "";
       }
+      return `${messageId}::${toolCallId}`;
+    }
+
+    function resolveToolDedupeKey(payload) {
+      const toolCallKey = resolveToolCallKey(payload);
+      if (!toolCallKey) return "";
       const phase = payload.phase || payload.status || "";
-      return `${messageId}::${toolCallId}::${phase}`;
+      return `${toolCallKey}::${phase}`;
+    }
+
+    function countToolTraceLines(text) {
+      return String(text || "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .length;
+    }
+
+    function syncToolTraceCallCount(trace) {
+      if (!trace || typeof trace !== "object") return 0;
+      const callKeys = Array.isArray(trace._toolTraceCallKeys)
+        ? trace._toolTraceCallKeys.filter((value) => String(value || "").trim())
+        : [];
+      const nextCount = callKeys.length || countToolTraceLines(trace.body || "");
+      if (nextCount > 0) {
+        trace.tool_call_count = nextCount;
+      } else {
+        delete trace.tool_call_count;
+      }
+      return nextCount;
     }
 
     function rebuildToolTraceBodyFromEntries(trace) {
@@ -176,26 +204,25 @@
 
     function seedToolTraceEntriesFromBody(trace) {
       if (!trace || typeof trace !== "object") return;
-      if (Array.isArray(trace._toolTraceOrder) && trace._toolTraceOrder.length && trace._toolTraceLines && typeof trace._toolTraceLines === "object") {
-        return;
-      }
       const existingLines = String(trace.body || "")
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean);
-      if (!existingLines.length) {
-        if (!Array.isArray(trace._toolTraceOrder)) {
+      if (!Array.isArray(trace._toolTraceOrder) || !trace._toolTraceOrder.length || !trace._toolTraceLines || typeof trace._toolTraceLines !== "object") {
+        if (!existingLines.length) {
           trace._toolTraceOrder = [];
-        }
-        if (!trace._toolTraceLines || typeof trace._toolTraceLines !== "object") {
           trace._toolTraceLines = {};
+        } else {
+          trace._toolTraceOrder = existingLines.map((_, index) => `__restored__${index}`);
+          trace._toolTraceLines = Object.fromEntries(
+            existingLines.map((line, index) => [`__restored__${index}`, line]),
+          );
         }
-        return;
       }
-      trace._toolTraceOrder = existingLines.map((_, index) => `__restored__${index}`);
-      trace._toolTraceLines = Object.fromEntries(
-        existingLines.map((line, index) => [`__restored__${index}`, line]),
-      );
+      if (!Array.isArray(trace._toolTraceCallKeys) || !trace._toolTraceCallKeys.length) {
+        trace._toolTraceCallKeys = existingLines.map((_, index) => `__restored_call__${index}`);
+      }
+      syncToolTraceCallCount(trace);
     }
 
     function appendInlineToolTrace(chatId, textOrPayload, explicitPayload = null) {
@@ -208,6 +235,7 @@
 
       if (!dedupeKey) {
         trace.body = trace.body ? `${trace.body}\n${line}` : line;
+        syncToolTraceCallCount(trace);
         persistPendingStreamSnapshot?.(key);
         return;
       }
@@ -222,8 +250,13 @@
       if (!trace._toolTraceOrder.includes(dedupeKey)) {
         trace._toolTraceOrder.push(dedupeKey);
       }
+      const toolCallKey = resolveToolCallKey(payload);
+      if (toolCallKey && !trace._toolTraceCallKeys.includes(toolCallKey)) {
+        trace._toolTraceCallKeys.push(toolCallKey);
+      }
       trace._toolTraceLines[dedupeKey] = line;
       rebuildToolTraceBodyFromEntries(trace);
+      syncToolTraceCallCount(trace);
       persistPendingStreamSnapshot?.(key);
     }
 
@@ -255,8 +288,10 @@
           item.body = content;
           item.pending = false;
           item.collapsed = typeof item.collapsed === "boolean" ? item.collapsed : false;
+          syncToolTraceCallCount(item);
           delete item._toolTraceOrder;
           delete item._toolTraceLines;
+          delete item._toolTraceCallKeys;
         }
         changed = true;
         break;
@@ -455,12 +490,43 @@
       incrementUnread,
       renderTabs,
     });
+    const terminalHydrationPromisesByChat = new Map();
+
+    function registerTerminalHydrationPromise(chatId, promise) {
+      const key = Number(chatId);
+      if (!key || !promise || typeof promise.then !== 'function') {
+        return null;
+      }
+      terminalHydrationPromisesByChat.set(key, promise);
+      const clearIfCurrent = () => {
+        if (terminalHydrationPromisesByChat.get(key) === promise) {
+          terminalHydrationPromisesByChat.delete(key);
+        }
+      };
+      promise.then(clearIfCurrent, clearIfCurrent);
+      return promise;
+    }
+
+    async function awaitTerminalHydration(chatId) {
+      const key = Number(chatId);
+      const promise = terminalHydrationPromisesByChat.get(key);
+      if (!promise || typeof promise.then !== 'function') {
+        return;
+      }
+      try {
+        await promise;
+      } catch {
+        // Best-effort hydration only; callers handle fallback state separately.
+      }
+    }
 
     return {
       ...statusController,
       ...replayCursorController,
       ...abortRegistry,
       ...notificationController,
+      registerTerminalHydrationPromise,
+      awaitTerminalHydration,
     };
   }
 
@@ -478,6 +544,7 @@
     const {
       loadChatHistory,
       getActiveChatId,
+      getRenderedChatId = null,
       clearStreamCursor,
       clearPendingStreamSnapshot,
       clearReconnectResumeBlock,
@@ -569,9 +636,16 @@
             ? String(getRenderedTranscriptSignature(key) || '')
             : '',
         });
+        const shouldForceUnrenderedActiveTerminalRender = Boolean(
+          forceCompleted
+          && Number(getActiveChatId()) === key
+          && typeof getRenderedChatId === 'function'
+          && Number(getRenderedChatId()) !== key
+          && nextHistory.length > 0
+        );
         const shouldRenderActiveChat = Number(getActiveChatId()) === key
           && typeof renderMessages === "function"
-          && renderDecision.shouldRenderActiveHistory;
+          && (renderDecision.shouldRenderActiveHistory || shouldForceUnrenderedActiveTerminalRender);
         renderTraceLog("stream-done-hydrate", {
           chatId: key,
           forceCompleted: Boolean(forceCompleted),
@@ -649,6 +723,7 @@
       consumeFirstAssistantNotification,
       setStreamStatusForVisibleChat,
       setStreamChipForVisibleChat,
+      registerTerminalHydrationPromise,
     } = sessionController;
     const {
       hydrateChatAfterGracefulResumeCompletion,
@@ -695,7 +770,10 @@
       if (fallbackRender || doneActiveChatId === Number(chatId)) {
         reconcileVisibleTranscriptFallback(chatId);
       }
-      void hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted: true });
+      registerTerminalHydrationPromise?.(
+        chatId,
+        hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted: true }),
+      );
       const deliveredLatency = formatLatency(payload.latency_ms);
       if (typeof deps.markStreamComplete === "function") {
         deps.markStreamComplete(chatId, deliveredLatency);
@@ -1444,6 +1522,7 @@
     const hydrationController = createTranscriptHydrationController({
       loadChatHistory: deps.loadChatHistory,
       getActiveChatId: deps.getActiveChatId,
+      getRenderedChatId: deps.getRenderedChatId,
       clearStreamCursor: deps.clearStreamCursor,
       clearPendingStreamSnapshot: deps.clearPendingStreamSnapshot,
       clearReconnectResumeBlock: deps.clearReconnectResumeBlock,
@@ -1580,9 +1659,11 @@
           onEarlyClose: async ({ expectedSegmentEnd = false } = {}) => {
             if (expectedSegmentEnd) {
               deps.resetReconnectResumeBudget?.(chatId);
+              wasAborted = true;
+              shouldResumeAfterFinally = true;
+              return;
             }
-            wasAborted = true;
-            shouldResumeAfterFinally = true;
+            throw new Error('Hermes stream closed before completion. Send a new message to try again.');
           },
         });
         if (resumed) {
@@ -1838,9 +1919,11 @@
           onEarlyClose: async ({ expectedSegmentEnd = false } = {}) => {
             if (expectedSegmentEnd) {
               deps.resetReconnectResumeBudget?.(key);
+              wasAborted = true;
+              setShouldResumeAfterFinally(true);
+              return;
             }
-            wasAborted = true;
-            setShouldResumeAfterFinally(true);
+            throw new Error('Hermes stream closed before completion. Send a new message to try again.');
           },
         });
         if (resumed) {
@@ -2163,6 +2246,7 @@
       clearStreamAbortController,
       consumeFirstAssistantNotification,
       focusRestoreEligibleByChat,
+      awaitTerminalHydration,
     } = sessionController;
     const {
       focusPrimaryChatControlIfActiveChat,
@@ -2204,6 +2288,8 @@
       }
 
       syncClosingConfirmation();
+
+      await awaitTerminalHydration?.(key);
 
       try {
         if (Number(getActiveChatId()) === key) {

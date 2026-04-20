@@ -507,6 +507,7 @@ test('openChat emits cached-open timing breadcrumbs for deferred cached switches
     mode: 'timeout',
     delayMs: 32,
     prioritizeHydration: false,
+    allowIdleHydration: true,
   });
   assert.equal(harness.renderTraceLogs[2].details.deferred, true);
   assert.equal(harness.renderTraceLogs[3].details.chatId, 7);
@@ -651,6 +652,35 @@ test('openChat uses requestIdle to delay cached hydration when deferring non-cri
   assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), false);
 
   await idleCallbacks[0].callback();
+  assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), true);
+});
+
+test('openChat uses timeout instead of requestIdle for deferred cached hydration when idle hydration is disabled', async () => {
+  const idleCallbacks = [];
+  const scheduledHydrations = [];
+  const harness = buildHarness({
+    shouldDeferNonCriticalCachedOpen: () => true,
+    shouldUseIdleForDeferredCachedHydration: () => false,
+    requestIdle: (callback, options) => {
+      idleCallbacks.push({ callback, options });
+    },
+    scheduleTimeout: (callback, delay) => {
+      scheduledHydrations.push({ callback, delay });
+    },
+  });
+  harness.histories.set(7, [{ id: 9, role: 'assistant', body: 'cached' }]);
+  harness.chats.get(7).unread_count = 0;
+  harness.chats.get(7).newest_unread_message_id = 0;
+  harness.chats.get(7).pending = false;
+
+  await harness.controller.openChat(7);
+
+  assert.equal(idleCallbacks.length, 0);
+  assert.equal(scheduledHydrations.length, 1);
+  assert.equal(scheduledHydrations[0].delay, 32);
+  assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), false);
+
+  await scheduledHydrations[0].callback();
   assert.equal(harness.apiCalls.some((call) => call.path === '/api/chats/history'), true);
 });
 
@@ -956,7 +986,7 @@ test('openChat failure stays attached to the requested chat instead of the newly
   assert.equal(activeHistory.length, 0);
 });
 
-test('warmChatHistoryCache prefetches the first uncached tab immediately before idle warming the rest', () => {
+test('warmChatHistoryCache prefetches the first two uncached tabs immediately before idle warming the rest', () => {
   const idleCallbacks = [];
   const scheduledCallbacks = [];
   const harness = buildHarness({
@@ -965,6 +995,7 @@ test('warmChatHistoryCache prefetches the first uncached tab immediately before 
       [8, { id: 8, pending: false }],
       [9, { id: 9, pending: false }],
       [10, { id: 10, pending: false }],
+      [11, { id: 11, pending: false }],
     ]),
     requestIdle: (callback, options = {}) => {
       idleCallbacks.push({ callback, options });
@@ -974,13 +1005,13 @@ test('warmChatHistoryCache prefetches the first uncached tab immediately before 
       return scheduledCallbacks.length;
     },
   });
-  harness.histories.set(9, [{ id: 1, role: 'assistant', body: 'cached' }]);
+  harness.histories.set(10, [{ id: 1, role: 'assistant', body: 'cached' }]);
 
   harness.controller.warmChatHistoryCache();
 
   assert.deepEqual(
     harness.apiCalls.map((call) => [call.path, Number(call.payload?.chat_id)]),
-    [['/api/chats/history', 8]],
+    [['/api/chats/history', 8], ['/api/chats/history', 9]],
   );
   assert.equal(idleCallbacks.length, 1);
   assert.deepEqual(idleCallbacks[0].options, { timeout: 1200 });
@@ -989,18 +1020,19 @@ test('warmChatHistoryCache prefetches the first uncached tab immediately before 
 
   assert.deepEqual(
     harness.apiCalls.map((call) => [call.path, Number(call.payload?.chat_id)]),
-    [['/api/chats/history', 8], ['/api/chats/history', 10]],
+    [['/api/chats/history', 8], ['/api/chats/history', 9], ['/api/chats/history', 11]],
   );
   assert.equal(scheduledCallbacks.length, 1);
 });
 
-test('warmChatHistoryCache prefetches the first uncached tab immediately without requestIdle support', () => {
+test('warmChatHistoryCache prefetches the first two uncached tabs immediately without requestIdle support', () => {
   const scheduledCallbacks = [];
   const harness = buildHarness({
     chats: new Map([
       [7, { id: 7, pending: false }],
       [8, { id: 8, pending: false }],
       [9, { id: 9, pending: false }],
+      [10, { id: 10, pending: false }],
     ]),
     scheduleTimeout: (callback) => {
       scheduledCallbacks.push(callback);
@@ -1012,7 +1044,7 @@ test('warmChatHistoryCache prefetches the first uncached tab immediately without
 
   assert.deepEqual(
     harness.apiCalls.map((call) => [call.path, Number(call.payload?.chat_id)]),
-    [['/api/chats/history', 8]],
+    [['/api/chats/history', 8], ['/api/chats/history', 9]],
   );
   assert.equal(scheduledCallbacks.length, 1);
 
@@ -1020,7 +1052,7 @@ test('warmChatHistoryCache prefetches the first uncached tab immediately without
 
   assert.deepEqual(
     harness.apiCalls.map((call) => [call.path, Number(call.payload?.chat_id)]),
-    [['/api/chats/history', 8], ['/api/chats/history', 9]],
+    [['/api/chats/history', 8], ['/api/chats/history', 9], ['/api/chats/history', 10]],
   );
 });
 

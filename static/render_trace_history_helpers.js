@@ -246,17 +246,12 @@
       appendMessagesFn(fragment, appendedSlice, { startIndex: previouslyRenderedLength });
       messagesEl.appendChild(fragment);
 
-      const shouldStickBottom = Boolean(wasNearBottom);
-      if (shouldStickBottom) {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      } else {
-        restoreViewportSnapshot(prevViewportSnapshot || { scrollTop: prevScrollTop });
-      }
+      restoreViewportSnapshot(prevViewportSnapshot || { scrollTop: prevScrollTop });
 
       renderTraceLogFn?.('append-only-render', {
         chatId: Number(targetChatId),
         appendedCount: appendedSlice.length,
-        shouldStickBottom,
+        shouldStickBottom: false,
         preservedScrollTop: Math.max(0, prevScrollTop),
       });
 
@@ -355,7 +350,7 @@
       const prevScrollTop = Number(messagesEl.scrollTop || 0);
       const prevViewportSnapshot = captureViewportSnapshot();
       const wasNearBottom = isNearBottom(messagesEl, 40);
-      const shouldStick = Boolean(forceBottom || (preserveViewport && isSameRenderedChat && wasNearBottom));
+      const shouldStick = Boolean(forceBottom);
 
       const history = histories.get(targetChatId) || [];
       const shouldVirtualize = Boolean(forceVirtualize) || shouldVirtualizeHistory(history.length);

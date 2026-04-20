@@ -94,8 +94,11 @@
 
     const summary = documentObject.createElement("summary");
     const lineCount = lines.length;
+    const toolCallCount = Number(message?.tool_call_count);
+    const hasToolCallCount = Number.isFinite(toolCallCount) && toolCallCount > 0;
+    const summaryCount = hasToolCallCount ? toolCallCount : lineCount;
     const liveSuffix = message?.pending ? " · live" : "";
-    summary.textContent = `Tool activity (${lineCount})${liveSuffix}`;
+    summary.textContent = `Tool activity (${summaryCount})${liveSuffix}`;
     details.appendChild(summary);
 
     const list = documentObject.createElement("div");
