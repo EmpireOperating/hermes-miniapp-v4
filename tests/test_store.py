@@ -518,6 +518,39 @@ def test_start_chat_job_prevents_cross_instance_duplicate_open_jobs(tmp_path) ->
 
 
 
+def test_start_chat_job_persists_visual_context_on_claimed_job(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u8-visual"
+    chat_id = store.ensure_default_chat(user_id)
+
+    visual_context = {
+        "selection": {
+            "label": "Launch button",
+            "selector": "#launch-button",
+            "tagName": "button",
+            "text": "Launch",
+        },
+        "screenshot": {
+            "label": "Current preview",
+            "storage_path": "/tmp/visual-dev.png",
+        },
+    }
+
+    start_result = store.start_chat_job(
+        user_id=user_id,
+        chat_id=chat_id,
+        message="Use the selected UI",
+        visual_context=visual_context,
+    )
+
+    assert start_result["created"] is True
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["chat_id"] == chat_id
+    assert claimed["visual_context"] == visual_context
+
+
+
 def test_get_job_state_scopes_queue_metrics_to_same_user(tmp_path) -> None:
     store = _store(tmp_path)
 

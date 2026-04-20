@@ -17,6 +17,7 @@ from store_jobs_claim import claim_next_job, dead_letter_exhausted_queued_jobs
 from store_jobs_queries import cleanup_stale_jobs, get_job_state, get_open_job, has_open_job, list_dead_letters, list_jobs
 from store_jobs_retry import dead_letter_stale_open_job_for_chat, dead_letter_stale_running_jobs, retry_or_dead_letter_job
 from store_models import MAX_OPERATOR_MESSAGE_LEN
+from visual_dev_context import serialize_visual_context
 
 
 class StoreJobsMixin:
@@ -79,8 +80,17 @@ class StoreJobsMixin:
         self._job_enqueue_lock = new_lock
         return new_lock
 
-    def start_chat_job(self, *, user_id: str, chat_id: int, message: str, max_attempts: int = 4) -> dict[str, Any]:
+    def start_chat_job(
+        self,
+        *,
+        user_id: str,
+        chat_id: int,
+        message: str,
+        max_attempts: int = 4,
+        visual_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         cleaned_message = str(message or "").strip()
+        serialized_visual_context = serialize_visual_context(visual_context)
         if not cleaned_message:
             raise ValueError("Message body cannot be empty")
         if len(cleaned_message) > MAX_OPERATOR_MESSAGE_LEN:
@@ -117,15 +127,23 @@ class StoreJobsMixin:
                             user_id,
                             chat_id,
                             operator_message_id,
+                            visual_context,
                             status,
                             attempts,
                             max_attempts,
                             next_attempt_at,
                             updated_at
                         )
-                        VALUES (?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        VALUES (?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         """,
-                        (user_id, chat_id, operator_message_id, JOB_STATUS_QUEUED, max(1, int(max_attempts))),
+                        (
+                            user_id,
+                            chat_id,
+                            operator_message_id,
+                            serialized_visual_context,
+                            JOB_STATUS_QUEUED,
+                            max(1, int(max_attempts)),
+                        ),
                     )
                     return {
                         "created": True,

@@ -306,7 +306,12 @@ test('stream event helper bands expose direct meta/chunk/error ownership', () =>
     setStreamPhase: (chatId, phase) => updates.push({ type: 'phase', chatId: Number(chatId), phase }),
     updatePendingAssistant: (chatId, text, pending) => updates.push({ type: 'assistant', chatId: Number(chatId), text, pending }),
     markStreamUpdate: (chatId) => updates.push({ type: 'mark', chatId: Number(chatId) }),
+    collapsePendingToolTrace: (chatId) => {
+      updates.push({ type: 'collapse-tools', chatId: Number(chatId) });
+      return true;
+    },
     patchVisiblePendingAssistant: () => false,
+    patchVisibleToolTrace: () => false,
     renderTraceLog: () => {},
   }, {
     notifyFirstAssistantChunk: (chatId) => updates.push({ type: 'notify', chatId: Number(chatId) }),
@@ -317,11 +322,14 @@ test('stream event helper bands expose direct meta/chunk/error ownership', () =>
   chunkController.handleChunkEvent(7, { text: 'hello' }, builtReplyRef);
   assert.equal(builtReplyRef.value, 'hello');
   assert.deepEqual(fallbacks, [7]);
-  const notifyIndex = updates.findIndex((entry) => entry.type === 'notify');
   const assistantIndex = updates.findIndex((entry) => entry.type === 'assistant' && entry.text === 'hello' && entry.pending === true);
+  const collapseIndex = updates.findIndex((entry) => entry.type === 'collapse-tools');
+  const notifyIndex = updates.findIndex((entry) => entry.type === 'notify');
+  assert.notEqual(collapseIndex, -1);
   assert.notEqual(notifyIndex, -1);
   assert.notEqual(assistantIndex, -1);
-  assert.equal(assistantIndex < notifyIndex, true);
+  assert.equal(assistantIndex < collapseIndex, true);
+  assert.equal(collapseIndex < notifyIndex, true);
 
   const errorController = streamController.createStreamErrorEventController({
     STREAM_PHASES: streamState.STREAM_PHASES,
@@ -577,7 +585,113 @@ test('createStreamLifecycleController marks replacement sends with interrupt whe
   }
 });
 
-test('createStreamLifecycleController fails fast on unexpected send-path early close instead of auto-resuming recursively', async () => {
+test('createStreamLifecycleController merges explicit visual-dev request context into the outgoing stream payload and clears it after send', async () => {
+  const fetchBodies = [];
+  const clearedContexts = [];
+  const previousDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'visible', activeElement: null };
+  const sessionController = streamController.createStreamSessionController({
+    getActiveChatId: () => 7,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    persistStreamCursor: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    incrementUnread: () => {},
+    renderTabs: () => {},
+  });
+  const transcriptController = {
+    hydrateChatAfterGracefulResumeCompletion: async () => {},
+    consumeStreamWithReconnect: async () => false,
+  };
+  const lifecycleController = streamController.createStreamLifecycleController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: () => streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: () => {},
+    chats: new Map([[7, { pending: false }]]),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    syncActiveMessageView: () => {},
+    getActiveChatId: () => 7,
+    messagesEl: { scrollHeight: 0, clientHeight: 0, scrollTop: 0, focus: () => {} },
+    promptEl: { value: '', selectionStart: 0, selectionEnd: 0 },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    finalizeStreamPendingState: () => {},
+    renderTraceLog: () => {},
+    authPayload: (payload) => payload,
+    parseStreamErrorPayload: () => ({}),
+    summarizeUiFailure: () => 'failed',
+    getIsAuthenticated: () => true,
+    setIsAuthenticated: () => {},
+    authStatusEl: { textContent: '' },
+    dropPendingToolTraceMessages: () => {},
+    addLocalMessage: () => {},
+    setDraft: () => {},
+    resetToolStream: () => {},
+    clearReconnectResumeBlock: () => {},
+    resetReconnectResumeBudget: () => {},
+    consumeReconnectResumeBudget: () => ({ allowed: true, attempts: 1, maxAttempts: 6 }),
+    suppressBlockedChatPending: () => {},
+    blockReconnectResume: () => {},
+    isReconnectResumeBlocked: () => false,
+    resumeAttemptedAtByChat: new Map(),
+    resumeCooldownUntilByChat: new Map(),
+    resumeInFlightByChat: new Set(),
+    isTransientResumeRecoveryError: () => false,
+    nextResumeRecoveryDelayMs: () => 0,
+    delayMs: async () => {},
+    markChatStreamPending: () => {},
+    getStoredStreamCursor: () => null,
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    getVisualDevRequestContext: () => ({
+      selection: { label: 'Play button', selector: '#play' },
+      screenshot: { storage_path: '/tmp/capture.png' },
+      preview: { preview_url: 'https://preview.example.com/app', preview_title: 'Preview app' },
+      console: { runtime_state: 'build_failed', runtime_message: 'Vite compile failed', level: 'error', message: 'Build exploded' },
+    }),
+    clearVisualDevRequestContext: () => { clearedContexts.push('cleared'); },
+    isNearBottom: () => true,
+    fetchImpl: async (_url, options) => {
+      fetchBodies.push(JSON.parse(String(options?.body || '{}')));
+      return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => '' };
+    },
+    setTimeoutFn: (fn) => fn(),
+    finalizeInlineToolTrace: () => {},
+    triggerIncomingMessageHaptic: () => {},
+  }, sessionController, transcriptController);
+
+  try {
+    await lifecycleController.sendPrompt('teach me');
+
+    assert.deepEqual(fetchBodies, [{
+      chat_id: 7,
+      message: 'teach me',
+      interrupt: false,
+      visual_context: {
+        selection: { label: 'Play button', selector: '#play' },
+        screenshot: { storage_path: '/tmp/capture.png' },
+        preview: { preview_url: 'https://preview.example.com/app', preview_title: 'Preview app' },
+        console: { runtime_state: 'build_failed', runtime_message: 'Vite compile failed', level: 'error', message: 'Build exploded' },
+      },
+    }]);
+    assert.deepEqual(clearedContexts, ['cleared']);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test('createStreamLifecycleController defers send-path resume handoff until after finalize to avoid recursive stack growth', async () => {
   const scheduled = [];
   const fetchCalls = [];
   const pendingAssistantUpdates = [];

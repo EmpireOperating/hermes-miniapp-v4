@@ -6,6 +6,7 @@ from flask import Response, g, request
 
 from routes_chat_context import ChatRouteContext
 from routes_chat_stream_service import after_event_id_from_payload, build_stream_route_service, stream_segment_seconds_for_headers
+from visual_dev_context import normalize_visual_context
 
 
 def register_stream_routes(
@@ -72,6 +73,7 @@ def register_stream_routes(
                 chat_id=chat_id,
                 message=message,
                 max_attempts=job_max_attempts,
+                visual_context=normalize_visual_context(payload.get("visual_context")),
             )
         )
         if not_found_error:

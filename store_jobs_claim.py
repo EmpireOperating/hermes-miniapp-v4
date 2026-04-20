@@ -1,9 +1,11 @@
 from __future__ import annotations
+from collections.abc import Callable
 
 from sqlite3 import Connection
 from typing import Any
 
 from job_status import JOB_STATUS_DEAD, JOB_STATUS_QUEUED, JOB_STATUS_RUNNING
+from visual_dev_context import deserialize_visual_context
 
 def dead_letter_exhausted_queued_jobs(
     conn: Connection,
@@ -93,7 +95,7 @@ def claim_next_job(conn: Connection) -> dict[str, Any] | None:
         return None
     claimed = conn.execute(
         """
-        SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts
+        SELECT id, user_id, chat_id, operator_message_id, visual_context, attempts, max_attempts
         FROM chat_jobs
         WHERE id = ?
         LIMIT 1
@@ -107,6 +109,7 @@ def claim_next_job(conn: Connection) -> dict[str, Any] | None:
         "user_id": str(claimed["user_id"]),
         "chat_id": int(claimed["chat_id"]),
         "operator_message_id": int(claimed["operator_message_id"]),
+        "visual_context": deserialize_visual_context(claimed["visual_context"]),
         "attempts": int(claimed["attempts"] or 0),
         "max_attempts": int(claimed["max_attempts"] or 1),
     }

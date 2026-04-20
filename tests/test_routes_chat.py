@@ -800,6 +800,47 @@ def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None
     assert "already working" in body
 
 
+
+def test_stream_chat_passes_visual_context_to_start_chat_job(monkeypatch, tmp_path) -> None:
+    server, client = _authed_client(monkeypatch, tmp_path)
+    chat_id = server.store.ensure_default_chat("123")
+    captured: dict[str, object] = {}
+
+    def fake_start_chat_job(**kwargs):
+        captured.update(kwargs)
+        return {
+            "created": False,
+            "job_id": 999,
+            "operator_message_id": 888,
+            "open_job": {"id": 999, "operator_message_id": 888},
+        }
+
+    monkeypatch.setattr(server.store, "start_chat_job", fake_start_chat_job)
+    monkeypatch.setattr(server.store, "get_open_job", lambda *, user_id, chat_id: None)
+
+    visual_context = {
+        "selection": {"label": "Launch button", "selector": "#launch-button"},
+        "screenshot": {"label": "Current preview", "storage_path": "/tmp/visual-dev.png"},
+    }
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "init_data": "ok",
+            "chat_id": chat_id,
+            "message": "make this tighter",
+            "visual_context": visual_context,
+        },
+    )
+
+    assert response.status_code == 409
+    assert captured["user_id"] == "123"
+    assert captured["chat_id"] == chat_id
+    assert captured["message"] == "make this tighter"
+    assert captured["visual_context"] == visual_context
+
+
+
 def test_stream_chat_rejects_late_duplicate_start_without_appending_operator_message(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
 

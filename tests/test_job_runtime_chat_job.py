@@ -195,6 +195,60 @@ def test_execute_chat_job_completes_and_publishes_done_event() -> None:
     assert any(name == "done" and payload.get("reply") == "hello world" for _, name, payload in runtime.published)
 
 
+
+def test_execute_chat_job_includes_visual_context_in_upstream_message() -> None:
+    runtime = _FakeRuntime(events=[{"type": "done", "reply": "ok", "latency_ms": 5}])
+    job = {
+        "id": 32,
+        "user_id": "u",
+        "chat_id": 9,
+        "operator_message_id": 1,
+        "visual_context": {
+            "selection": {
+                "label": "Launch button",
+                "selector": "#launch-button",
+                "tagName": "button",
+                "text": "Launch",
+            },
+            "screenshot": {
+                "label": "Current preview",
+                "storage_path": "/tmp/visual-dev.png",
+            },
+            "preview": {
+                "preview_url": "https://preview.example.com/app",
+                "preview_title": "Preview app",
+            },
+            "console": {
+                "runtime_state": "build_failed",
+                "runtime_message": "Vite compile failed",
+                "level": "error",
+                "message": "Build exploded",
+            },
+        },
+    }
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert runtime.client.stream_calls
+    sent_message = str(runtime.client.stream_calls[-1].get("message") or "")
+    assert "Visual UI context for this turn" in sent_message
+    assert "Launch button" in sent_message
+    assert "#launch-button" in sent_message
+    assert "Current preview" in sent_message
+    assert "/tmp/visual-dev.png" in sent_message
+    assert "Preview app" in sent_message
+    assert "https://preview.example.com/app" in sent_message
+    assert "build_failed" in sent_message
+    assert "Vite compile failed" in sent_message
+    assert "Build exploded" in sent_message
+
+
 def test_execute_chat_job_persists_live_pending_tool_and_assistant_checkpoint_state() -> None:
     runtime = _FakeRuntime(
         events=[

@@ -35,6 +35,7 @@ test('app.js tool-trace wrappers delegate through helper-owned snapshot-aware co
 
   const delegateExpectations = [
     ['appendInlineToolTrace', 'toolTraceController.appendInlineToolTrace(chatId, textOrPayload, payload)'],
+    ['collapsePendingToolTrace', 'toolTraceController.collapsePendingToolTrace(chatId)'],
     ['dropPendingToolTraceMessages', 'toolTraceController.dropPendingToolTraceMessages(chatId)'],
     ['finalizeInlineToolTrace', 'toolTraceController.finalizeInlineToolTrace(chatId)'],
   ];

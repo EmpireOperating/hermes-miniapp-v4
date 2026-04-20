@@ -124,6 +124,26 @@ test('createToolTraceController preserves explicit collapsed state across finali
   assert.equal(finalized.collapsed, true);
 });
 
+test('createToolTraceController can collapse a pending tool trace when assistant output starts', () => {
+  const histories = new Map([[7, [{ role: 'tool', body: 'read_file', pending: true, collapsed: false }]]]);
+  const persisted = [];
+
+  const toolTrace = streamController.createToolTraceController({
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+    persistPendingStreamSnapshot: (chatId) => persisted.push(Number(chatId)),
+  });
+
+  const changed = toolTrace.collapsePendingToolTrace(7);
+  assert.equal(changed, true);
+  assert.equal(histories.get(7)[0].collapsed, true);
+  assert.deepEqual(persisted, [7]);
+
+  const secondChange = toolTrace.collapsePendingToolTrace(7);
+  assert.equal(secondChange, false);
+  assert.deepEqual(persisted, [7]);
+});
+
 test('createToolTraceController tolerates detached tool stream UI removal', () => {
   const histories = new Map([[7, [{ role: 'hermes', body: 'pending', pending: true }]]]);
 

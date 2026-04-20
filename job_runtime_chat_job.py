@@ -5,6 +5,8 @@ import time
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Callable, Iterable
 
+from visual_dev_context import build_visual_context_message_block
+
 if TYPE_CHECKING:
     from job_runtime import JobRuntime
 
@@ -119,6 +121,9 @@ def execute_chat_job(
         except Exception:  # noqa: BLE001 - best-effort thread guardrail only
             chat_title = None
     run_message = _build_chat_scoped_message(message=message, chat_title=chat_title)
+    visual_context_block = build_visual_context_message_block(job.get("visual_context"))
+    if visual_context_block:
+        run_message = f"{run_message}\n\n{visual_context_block}" if run_message else visual_context_block
     session_id = runtime.session_id_builder(user_id, chat_id)
     include_history = runtime.client.should_include_conversation_history(session_id=session_id)
     history: list[dict[str, object]] = []

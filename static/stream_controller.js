@@ -272,6 +272,16 @@
       return nextHistory.length !== history.length;
     }
 
+    function collapsePendingToolTrace(chatId) {
+      const trace = findPendingToolTraceMessage(chatId);
+      if (!trace || trace.collapsed === true) {
+        return false;
+      }
+      trace.collapsed = true;
+      persistPendingStreamSnapshot?.(Number(chatId));
+      return true;
+    }
+
     function finalizeInlineToolTrace(chatId) {
       const key = Number(chatId);
       const history = histories.get(key) || [];
@@ -309,6 +319,7 @@
       findPendingToolTraceMessage,
       ensurePendingToolTraceMessage,
       appendInlineToolTrace,
+      collapsePendingToolTrace,
       dropPendingToolTraceMessages,
       finalizeInlineToolTrace,
     };
@@ -971,7 +982,9 @@
       setStreamPhase,
       updatePendingAssistant,
       markStreamUpdate,
+      collapsePendingToolTrace,
       patchVisiblePendingAssistant,
+      patchVisibleToolTrace,
       renderTraceLog,
     } = deps;
     const {
@@ -988,16 +1001,24 @@
       builtReplyRef.value += chunkText;
       updatePendingAssistant(chatId, builtReplyRef.value, true);
       markStreamUpdate(chatId);
+      const collapsedToolTrace = !hadAssistantText && chunkText
+        ? collapsePendingToolTrace?.(chatId) === true
+        : false;
       const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, true);
+      const patchedToolTrace = collapsedToolTrace
+        ? (typeof patchVisibleToolTrace === 'function' ? patchVisibleToolTrace(chatId) : false)
+        : true;
       renderTraceLog('stream-chunk-patch', {
         chatId: Number(chatId),
         phase: deps.getStreamPhase(chatId),
         patchedAssistant,
-        fallbackRender: !patchedAssistant,
+        collapsedToolTrace,
+        patchedToolTrace,
+        fallbackRender: !patchedAssistant || !patchedToolTrace,
         chunkLength: String(payload.text || '').length,
         replyLength: builtReplyRef.value.length,
       });
-      if (!patchedAssistant) {
+      if (!patchedAssistant || !patchedToolTrace) {
         reconcileVisibleTranscriptFallback(chatId);
       }
       if (!hadAssistantText && chunkText) {
@@ -1061,6 +1082,7 @@
       patchVisibleToolTrace,
       renderTraceLog,
       appendInlineToolTrace,
+      collapsePendingToolTrace,
       updatePendingAssistant,
       markStreamUpdate,
       patchVisiblePendingAssistant,
@@ -1104,7 +1126,9 @@
       setStreamPhase,
       updatePendingAssistant,
       markStreamUpdate,
+      collapsePendingToolTrace,
       patchVisiblePendingAssistant,
+      patchVisibleToolTrace,
       renderTraceLog,
       getStreamPhase,
     }, sessionController, fallbackController);
@@ -1597,6 +1621,8 @@
       authPayload,
       fetchImpl = (...args) => fetch(...args),
       triggerIncomingMessageHaptic,
+      getVisualDevRequestContext = () => null,
+      clearVisualDevRequestContext = () => {},
     } = deps;
     const {
       hydrateChatAfterGracefulResumeCompletion,
@@ -1614,16 +1640,32 @@
       let shouldResumeAfterFinally = false;
       try {
         const resumePendingChatStream = getResumePendingChatStream();
+        const visualContext = getVisualDevRequestContext?.();
+        const requestPayload = {
+          chat_id: chatId,
+          message: cleaned,
+          interrupt: interruptRequested,
+        };
+        if ((visualContext?.selection && typeof visualContext.selection === "object")
+          || (visualContext?.screenshot && typeof visualContext.screenshot === "object")
+          || (visualContext?.preview && typeof visualContext.preview === "object")
+          || (visualContext?.console && typeof visualContext.console === "object")) {
+          requestPayload.visual_context = {
+            selection: visualContext?.selection || null,
+            screenshot: visualContext?.screenshot || null,
+            preview: visualContext?.preview || null,
+            console: visualContext?.console || null,
+          };
+        }
         const response = await fetchImpl("/api/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(authPayload({
-            chat_id: chatId,
-            message: cleaned,
-            interrupt: interruptRequested,
-          })),
+          body: JSON.stringify(authPayload(requestPayload)),
           signal: streamController.signal,
         });
+        if (requestPayload.visual_context) {
+          clearVisualDevRequestContext?.();
+        }
 
         if (!response.ok || !response.body) {
           const fallback = await response.text();
