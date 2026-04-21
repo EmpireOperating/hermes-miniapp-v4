@@ -91,42 +91,51 @@
       }
     }
 
-    function prefetchChatHistory(chatId) {
+    function prefetchChatHistory(chatId, { forceRefresh = false } = {}) {
       const key = normalizeChatId(chatId);
-      if (!key || histories.has(key) || prefetchingHistories.has(key)) {
+      const hadCachedHistory = histories.has(key);
+      if (!key || prefetchingHistories.has(key) || hadCachedHistory) {
         return;
       }
+      const currentHistory = [];
       prefetchingHistories.add(key);
       const startedAtMs = nowMs();
       traceChatHistory('prefetch-start', {
         chatId: key,
+        forceRefresh: false,
+        hadCachedHistory,
       });
       void loadChatHistory(key, { activate: false })
         .then((data) => {
           const decision = transcriptAuthority.describeSpeculativeHistoryCommit({
             currentChat: chats?.get?.(key) || null,
             incomingChat: data?.chat || null,
-            currentHistory: histories?.get?.(key) || [],
+            currentHistory,
             incomingHistory: data?.history || [],
             source: 'prefetch',
             isActiveChat: isActiveChat(key),
-            cacheFilledElsewhere: histories.has(key),
+            cacheFilledElsewhere: !hadCachedHistory && histories.has(key),
           });
-          const { activeNow, cacheFilledElsewhere, laggingMetadata } = decision.reasons;
+          const { activeNow, cacheFilledElsewhere, laggingMetadata, transcriptAdvancedWhileLaggingMetadata } = decision.reasons;
           if (!decision.commit) {
             traceChatHistory('prefetch-skipped-commit', {
               chatId: key,
               activeNow,
               cacheFilledElsewhere,
               laggingPrefetchResult: laggingMetadata,
+              transcriptAdvancedWhileLaggingMetadata,
               durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
             });
             return;
           }
-          upsertChatPreservingUnread(data.chat);
+          upsertChatPreservingUnread(data.chat, {
+            preserveLaggingLocalState: laggingMetadata,
+          });
           histories.set(key, data.history || []);
           traceChatHistory('prefetch-finished', {
             chatId: key,
+            forceRefresh: Boolean(forceRefresh),
+            hadCachedHistory,
             durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
             historyCount: Array.isArray(data?.history) ? data.history.length : 0,
           });
@@ -134,6 +143,8 @@
         .catch((error) => {
           traceChatHistory('prefetch-failed', {
             chatId: key,
+            forceRefresh: Boolean(forceRefresh),
+            hadCachedHistory,
             durationMs: Math.max(0, Math.round(nowMs() - startedAtMs)),
             message: String(error?.message || ''),
           });
@@ -144,26 +155,49 @@
     }
 
     function warmChatHistoryCache() {
-      const ids = [...chats.keys()]
+      const candidates = [...chats.keys()]
         .filter((id) => !isActiveChat(id))
-        .filter((id) => !histories.has(Number(id)) && !prefetchingHistories.has(Number(id)))
+        .map((id) => {
+          const key = Number(id);
+          if (prefetchingHistories.has(key) || histories.has(key)) {
+            return null;
+          }
+          const chat = chats?.get?.(key) || null;
+          const hasUnread = Math.max(0, Number(chat?.unread_count || 0)) > 0
+            || Math.max(0, Number(chat?.newest_unread_message_id || 0)) > 0;
+          const isPending = Boolean(chat?.pending);
+          return {
+            id: key,
+            forceRefresh: false,
+            priority: (isPending ? 2 : 0) + (hasUnread ? 1 : 0),
+          };
+        })
+        .filter(Boolean)
+        .sort((left, right) => {
+          if (left.priority !== right.priority) {
+            return right.priority - left.priority;
+          }
+          return Number(left.id) - Number(right.id);
+        })
         .slice(0, 4);
-      if (!ids.length) return;
+      if (!candidates.length) return;
 
-      const immediateIds = ids.slice(0, 2);
-      const remainingIds = ids.slice(2);
+      const immediateCandidates = candidates.slice(0, 2);
+      const remainingCandidates = candidates.slice(2);
       traceChatHistory('warm-cache-start', {
-        chatIds: ids.map((id) => normalizeChatId(id)),
-        priorityChatIds: immediateIds.map((id) => normalizeChatId(id)),
+        chatIds: candidates.map((candidate) => normalizeChatId(candidate.id)),
+        priorityChatIds: immediateCandidates.map((candidate) => normalizeChatId(candidate.id)),
+        refreshChatIds: candidates.filter((candidate) => candidate.forceRefresh).map((candidate) => normalizeChatId(candidate.id)),
       });
-      immediateIds.forEach((id) => prefetchChatHistory(id));
-      if (!remainingIds.length) {
+      immediateCandidates.forEach((candidate) => prefetchChatHistory(candidate.id, { forceRefresh: candidate.forceRefresh }));
+      if (!remainingCandidates.length) {
         return;
       }
 
       const warmNext = (index) => {
-        if (index >= remainingIds.length) return;
-        prefetchChatHistory(remainingIds[index]);
+        if (index >= remainingCandidates.length) return;
+        const candidate = remainingCandidates[index];
+        prefetchChatHistory(candidate.id, { forceRefresh: candidate.forceRefresh });
         scheduleTimeout(() => warmNext(index + 1), 160);
       };
 

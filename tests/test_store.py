@@ -864,6 +864,109 @@ def test_retry_or_dead_letter_job_is_idempotent_for_same_job(tmp_path) -> None:
     assert len(matching) == 1
 
 
+def test_retry_or_dead_letter_job_persists_failure_metadata(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u10-meta"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "retry me")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+
+    retried = store.retry_or_dead_letter_job(
+        job_id,
+        "Subprocess worker exited rc=-9",
+        retry_base_seconds=0,
+        failure_metadata={
+            "child_pid": 3227335,
+            "child_transport": "chat-worker-subprocess",
+            "terminal_return_code": -9,
+            "terminal_failure_kind": "failed",
+            "terminal_outcome": "retryable_failure",
+            "terminal_error": "Subprocess worker exited rc=-9",
+            "limit_breach": "memory",
+            "limit_breach_detail": "signal_kill_suspected_oom",
+        },
+    )
+    assert retried is False
+
+    state = store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+    assert state["child_pid"] == 3227335
+    assert state["child_transport"] == "chat-worker-subprocess"
+    assert state["terminal_return_code"] == -9
+    assert state["terminal_failure_kind"] == "failed"
+    assert state["terminal_outcome"] == "retryable_failure"
+    assert state["terminal_error"] == "Subprocess worker exited rc=-9"
+    assert state["limit_breach"] == "memory"
+    assert state["limit_breach_detail"] == "signal_kill_suspected_oom"
+
+    dead_letters = store.list_dead_letters(user_id, limit=20)
+    matching = [item for item in dead_letters if item["job_id"] == job_id]
+    assert len(matching) == 1
+    assert matching[0]["child_pid"] == 3227335
+    assert matching[0]["terminal_return_code"] == -9
+    assert matching[0]["limit_breach"] == "memory"
+
+
+def test_retry_or_dead_letter_job_upgrades_runtime_recovery_label_with_failure_metadata(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u10-upgrade"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "recover me")
+
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=1)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+
+    import sqlite3
+
+    conn = sqlite3.connect(store.db_path)
+    conn.execute(
+        "UPDATE chat_jobs SET status = 'dead', error = 'interrupted_by_runtime_recovery', finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (job_id,),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO chat_job_dead_letters (job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (job_id, user_id, chat_id, operator_message_id, 1, 1, 'interrupted_by_runtime_recovery'),
+    )
+    conn.commit()
+    conn.close()
+
+    retried = store.retry_or_dead_letter_job(
+        job_id,
+        "Subprocess worker exited rc=-9",
+        retry_base_seconds=0,
+        failure_metadata={
+            "child_pid": 3227335,
+            "child_transport": "chat-worker-subprocess",
+            "terminal_return_code": -9,
+            "terminal_failure_kind": "failed",
+            "terminal_outcome": "retryable_failure",
+            "terminal_error": "Subprocess worker exited rc=-9",
+            "limit_breach": "memory",
+            "limit_breach_detail": "signal_kill_suspected_oom",
+        },
+    )
+    assert retried is False
+
+    state = store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+    assert state["error"] == "Subprocess worker exited rc=-9"
+    assert state["child_pid"] == 3227335
+    assert state["terminal_return_code"] == -9
+    assert state["limit_breach_detail"] == "signal_kill_suspected_oom"
+
+    dead_letters = store.list_dead_letters(user_id, limit=20)
+    matching = [item for item in dead_letters if item["job_id"] == job_id]
+    assert len(matching) == 1
+    assert matching[0]["error"] == "Subprocess worker exited rc=-9"
+    assert matching[0]["child_pid"] == 3227335
+
+
 def test_complete_job_only_applies_to_running_state(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u11"

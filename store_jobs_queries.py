@@ -68,7 +68,9 @@ def get_open_job(conn: Connection, *, user_id: str, chat_id: int) -> dict[str, A
 def get_job_state(conn: Connection, *, job_id: int) -> dict[str, Any] | None:
     row = conn.execute(
         """
-        SELECT id, user_id, chat_id, status, error, attempts, max_attempts, created_at, started_at, next_attempt_at
+        SELECT id, user_id, chat_id, status, error, attempts, max_attempts, created_at, started_at, next_attempt_at,
+               child_pid, child_transport, terminal_return_code, terminal_failure_kind, terminal_outcome,
+               terminal_error, limit_breach, limit_breach_detail
         FROM chat_jobs
         WHERE id = ?
         LIMIT 1
@@ -105,6 +107,14 @@ def get_job_state(conn: Connection, *, job_id: int) -> dict[str, Any] | None:
         "created_at": str(row["created_at"] or ""),
         "started_at": str(row["started_at"] or ""),
         "next_attempt_at": str(row["next_attempt_at"] or ""),
+        "child_pid": int(row["child_pid"] or 0),
+        "child_transport": str(row["child_transport"] or ""),
+        "terminal_return_code": row["terminal_return_code"],
+        "terminal_failure_kind": str(row["terminal_failure_kind"] or ""),
+        "terminal_outcome": str(row["terminal_outcome"] or ""),
+        "terminal_error": str(row["terminal_error"] or ""),
+        "limit_breach": str(row["limit_breach"] or ""),
+        "limit_breach_detail": str(row["limit_breach_detail"] or ""),
         "queued_ahead": int((queued_ahead["c"] if queued_ahead else 0) or 0),
         "running_total": int((running_total["c"] if running_total else 0) or 0),
     }
@@ -114,7 +124,9 @@ def list_jobs(conn: Connection, *, user_id: str, limit: int) -> list[dict[str, A
     rows = conn.execute(
         """
         SELECT id, chat_id, operator_message_id, status, attempts, max_attempts, next_attempt_at,
-               error, created_at, started_at, finished_at, updated_at
+               error, child_pid, child_transport, terminal_return_code, terminal_failure_kind,
+               terminal_outcome, terminal_error, limit_breach, limit_breach_detail,
+               created_at, started_at, finished_at, updated_at
         FROM chat_jobs
         WHERE user_id = ?
         ORDER BY id DESC
@@ -132,6 +144,14 @@ def list_jobs(conn: Connection, *, user_id: str, limit: int) -> list[dict[str, A
             "max_attempts": int(row["max_attempts"] or 0),
             "next_attempt_at": row["next_attempt_at"],
             "error": row["error"],
+            "child_pid": row["child_pid"],
+            "child_transport": row["child_transport"],
+            "terminal_return_code": row["terminal_return_code"],
+            "terminal_failure_kind": row["terminal_failure_kind"],
+            "terminal_outcome": row["terminal_outcome"],
+            "terminal_error": row["terminal_error"],
+            "limit_breach": row["limit_breach"],
+            "limit_breach_detail": row["limit_breach_detail"],
             "created_at": row["created_at"],
             "started_at": row["started_at"],
             "finished_at": row["finished_at"],
@@ -144,7 +164,9 @@ def list_jobs(conn: Connection, *, user_id: str, limit: int) -> list[dict[str, A
 def list_dead_letters(conn: Connection, *, user_id: str, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT id, job_id, chat_id, operator_message_id, attempts, max_attempts, error, created_at
+        SELECT id, job_id, chat_id, operator_message_id, attempts, max_attempts, error,
+               child_pid, child_transport, terminal_return_code, terminal_failure_kind,
+               terminal_outcome, terminal_error, limit_breach, limit_breach_detail, created_at
         FROM chat_job_dead_letters
         WHERE user_id = ?
         ORDER BY id DESC
@@ -161,6 +183,14 @@ def list_dead_letters(conn: Connection, *, user_id: str, limit: int) -> list[dic
             "attempts": int(row["attempts"] or 0),
             "max_attempts": int(row["max_attempts"] or 0),
             "error": row["error"],
+            "child_pid": row["child_pid"],
+            "child_transport": row["child_transport"],
+            "terminal_return_code": row["terminal_return_code"],
+            "terminal_failure_kind": row["terminal_failure_kind"],
+            "terminal_outcome": row["terminal_outcome"],
+            "terminal_error": row["terminal_error"],
+            "limit_breach": row["limit_breach"],
+            "limit_breach_detail": row["limit_breach_detail"],
             "created_at": row["created_at"],
         }
         for row in rows

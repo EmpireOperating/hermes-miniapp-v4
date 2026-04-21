@@ -137,7 +137,7 @@
     }
 
     function renderVirtualizedHistory(targetChatId, history, {
-      prevScrollTop,
+      renderScrollTop,
       preserveViewport,
       forceBottom,
       shouldStick,
@@ -146,7 +146,7 @@
       const viewportHeight = Math.max(messagesEl.clientHeight || 0, 320);
       const range = computeVirtualRange({
         total: history.length,
-        scrollTop: forceBottom ? Number.MAX_SAFE_INTEGER : prevScrollTop,
+        scrollTop: forceBottom ? Number.MAX_SAFE_INTEGER : renderScrollTop,
         viewportHeight,
         forceBottom: forceBottom || (!preserveViewport && shouldStick),
         estimatedHeight,
@@ -351,6 +351,13 @@
       const prevViewportSnapshot = captureViewportSnapshot();
       const wasNearBottom = isNearBottom(messagesEl, 40);
       const shouldStick = Boolean(forceBottom);
+      const hasStoredScrollTop = chatScrollTop.has(targetChatId);
+      const storedTargetScrollTop = hasStoredScrollTop
+        ? Math.max(0, Number(chatScrollTop.get(targetChatId)) || 0)
+        : 0;
+      const renderScrollTop = (!forceBottom && !isSameRenderedChat && hasStoredScrollTop)
+        ? storedTargetScrollTop
+        : prevScrollTop;
 
       const history = histories.get(targetChatId) || [];
       const shouldVirtualize = Boolean(forceVirtualize) || shouldVirtualizeHistory(history.length);
@@ -386,7 +393,7 @@
 
       if (shouldVirtualize) {
         renderVirtualizedHistory(targetChatId, history, {
-          prevScrollTop,
+          renderScrollTop,
           preserveViewport,
           forceBottom,
           shouldStick,

@@ -90,6 +90,7 @@ class SubprocessJobWorkerLauncher:
     _last_terminal_error: str | None = None
     _last_limit_breach: str | None = None
     _last_limit_breach_detail: str | None = None
+    _last_child_pid: int | None = None
 
     def describe(self) -> dict[str, object]:
         return {
@@ -113,6 +114,8 @@ class SubprocessJobWorkerLauncher:
             "last_terminal_error": self._last_terminal_error,
             "last_limit_breach": self._last_limit_breach,
             "last_limit_breach_detail": self._last_limit_breach_detail,
+            "last_child_pid": self._last_child_pid,
+            "transport": self.transport,
         }
 
     def _stderr_excerpt_suffix(self, stderr_excerpt: str | None) -> str:
@@ -161,10 +164,14 @@ class SubprocessJobWorkerLauncher:
         non_retryable_error_cls: type[Exception],
         client_error_cls: type[Exception],
     ) -> None:
+        self._last_failure_kind = None
+        self._last_return_code = None
+        self._last_stderr_excerpt = None
         self._last_terminal_outcome = None
         self._last_terminal_error = None
         self._last_limit_breach = None
         self._last_limit_breach_detail = None
+        self._last_child_pid = None
 
         try:
             chat_worker_runner.run_chat_worker_job(
@@ -291,6 +298,7 @@ class SubprocessJobWorkerLauncher:
         register_child_spawn = getattr(runtime.client, "register_child_spawn", None)
         if not callable(register_child_spawn):
             return None
+        self._last_child_pid = int(proc.pid)
         try:
             register_child_spawn(
                 transport=self.transport,

@@ -377,6 +377,15 @@
     return transcriptRenderSignature(previousHistory) !== transcriptRenderSignature(incomingHistory);
   }
 
+  function isAppendOnlyHistoryExtension(previousHistory, incomingHistory) {
+    const previous = Array.isArray(previousHistory) ? previousHistory : [];
+    const incoming = Array.isArray(incomingHistory) ? incomingHistory : [];
+    if (!previous.length || incoming.length <= previous.length) {
+      return false;
+    }
+    return !historiesDiffer(previous, incoming.slice(0, previous.length));
+  }
+
   function describeActiveTranscriptRender({
     previousHistory = [],
     incomingHistory = [],
@@ -385,11 +394,29 @@
     historyChanged = false,
     hadCachedHistory = false,
     unreadCount = 0,
+    isRenderedChatActiveTarget = false,
+    isChatStuckToBottom = true,
+    shouldVirtualizeIncomingHistory = false,
   } = {}) {
     const previousRenderSignature = historyRenderSignature(previousHistory);
     const nextRenderSignature = historyRenderSignature(incomingHistory);
     const normalizedRenderedTranscriptSignature = String(renderedTranscriptSignature || '');
+    const canPreserveExistingViewportTranscript = Boolean(
+      normalizedRenderedTranscriptSignature
+      && normalizedRenderedTranscriptSignature === previousRenderSignature
+    );
+    const shouldSkipOffscreenAppendOnlyHydrateRender = Boolean(
+      hadCachedHistory
+      && historyChanged
+      && !restoredPendingSnapshot
+      && isRenderedChatActiveTarget
+      && !isChatStuckToBottom
+      && canPreserveExistingViewportTranscript
+      && isAppendOnlyHistoryExtension(previousHistory, incomingHistory)
+    );
     const shouldForceStaleRenderedTranscriptRender = Boolean(
+      !shouldSkipOffscreenAppendOnlyHydrateRender
+      &&
       normalizedRenderedTranscriptSignature
       && normalizedRenderedTranscriptSignature !== nextRenderSignature
     );
@@ -399,15 +426,22 @@
       && !restoredPendingSnapshot
       && Math.max(0, Number(unreadCount || 0)) > 0
       && hasVisibleAssistantLikeTranscript(incomingHistory)
+      && (
+        !normalizedRenderedTranscriptSignature
+        || normalizedRenderedTranscriptSignature !== nextRenderSignature
+      )
     );
-    const shouldRenderActiveHistory = previousRenderSignature !== nextRenderSignature
+    const shouldRenderActiveHistory = !shouldSkipOffscreenAppendOnlyHydrateRender && (
+      previousRenderSignature !== nextRenderSignature
       || Boolean(restoredPendingSnapshot)
       || shouldForceUnreadTranscriptRender
-      || shouldForceStaleRenderedTranscriptRender;
+      || shouldForceStaleRenderedTranscriptRender
+    );
     return {
       previousRenderSignature,
       nextRenderSignature,
       renderedTranscriptSignature: normalizedRenderedTranscriptSignature,
+      shouldSkipOffscreenAppendOnlyHydrateRender,
       shouldForceUnreadTranscriptRender,
       shouldForceStaleRenderedTranscriptRender,
       shouldRenderActiveHistory,
@@ -453,7 +487,15 @@
 
     if (source === 'prefetch') {
       reasons.laggingMetadata = isLaggingChatMetadata(currentChat, incomingChat);
-      const commit = !reasons.activeNow && !reasons.cacheFilledElsewhere && !reasons.laggingMetadata;
+      reasons.transcriptAdvancedWhileLaggingMetadata = Boolean(
+        reasons.laggingMetadata
+        && Array.isArray(currentHistory)
+        && currentHistory.length > 0
+        && didTranscriptMateriallyAdvance(currentHistory, incomingHistory)
+      );
+      const commit = !reasons.activeNow
+        && !reasons.cacheFilledElsewhere
+        && (!reasons.laggingMetadata || reasons.transcriptAdvancedWhileLaggingMetadata);
       return { commit, reasons };
     }
 
@@ -492,6 +534,7 @@
     preserveLatestCompletedAssistantMessage,
     reconcilePendingAssistantUpdate,
     didTranscriptMateriallyAdvance,
+    isAppendOnlyHistoryExtension,
     describeActiveTranscriptRender,
     isLaggingChatMetadata,
     describeSpeculativeHistoryCommit,

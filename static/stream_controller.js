@@ -87,8 +87,72 @@
       return;
     }
 
+    function mergeToolTraceBodies(primaryBody, candidateBody) {
+      const primaryText = String(primaryBody || "").trim();
+      const candidateText = String(candidateBody || "").trim();
+      if (!primaryText) return candidateText;
+      if (!candidateText) return primaryText;
+      if (primaryText === candidateText) return primaryText;
+      if (primaryText.includes(candidateText)) return primaryText;
+      if (candidateText.includes(primaryText)) return candidateText;
+      return candidateText.length >= primaryText.length
+        ? candidateText
+        : primaryText;
+    }
+
+    function collapsePendingToolTraceMessages(chatId) {
+      const key = Number(chatId);
+      const history = Array.isArray(histories.get(key)) ? histories.get(key) : [];
+      const pendingToolIndexes = [];
+      for (let index = 0; index < history.length; index += 1) {
+        const item = history[index];
+        if (item?.role === "tool" && item?.pending) {
+          pendingToolIndexes.push(index);
+        }
+      }
+      if (!pendingToolIndexes.length) {
+        return null;
+      }
+      if (pendingToolIndexes.length === 1) {
+        return history[pendingToolIndexes[0]] || null;
+      }
+
+      const preferredIndex = pendingToolIndexes[pendingToolIndexes.length - 1];
+      const preferredItem = history[preferredIndex] || {};
+      const mergedTool = { ...preferredItem };
+      for (const index of pendingToolIndexes) {
+        if (index === preferredIndex) continue;
+        const candidate = history[index] || {};
+        mergedTool.body = mergeToolTraceBodies(mergedTool.body, candidate.body);
+        if (!String(mergedTool.created_at || "") && String(candidate.created_at || "")) {
+          mergedTool.created_at = candidate.created_at;
+        }
+        if (typeof preferredItem?.collapsed !== "boolean" && typeof candidate?.collapsed === "boolean") {
+          mergedTool.collapsed = candidate.collapsed;
+        }
+      }
+      mergedTool.pending = true;
+
+      const nextHistory = history.filter((item, index) => !pendingToolIndexes.includes(index));
+      const assistantInsertIndex = nextHistory.findIndex((item) => {
+        if (!item?.pending) return false;
+        const role = String(item?.role || "").toLowerCase();
+        return role === "hermes" || role === "assistant";
+      });
+      if (assistantInsertIndex >= 0) {
+        nextHistory.splice(assistantInsertIndex, 0, mergedTool);
+      } else {
+        nextHistory.push(mergedTool);
+      }
+      histories.set(key, nextHistory);
+      persistPendingStreamSnapshot?.(key);
+      return mergedTool;
+    }
+
     function findPendingToolTraceMessage(chatId) {
       const key = Number(chatId);
+      const collapsed = collapsePendingToolTraceMessages(key);
+      if (collapsed) return collapsed;
       const history = histories.get(key) || [];
       for (let index = history.length - 1; index >= 0; index -= 1) {
         const item = history[index];
@@ -101,7 +165,7 @@
 
     function ensurePendingToolTraceMessage(chatId) {
       const key = Number(chatId);
-      const history = histories.get(key) || [];
+      const history = Array.isArray(histories.get(key)) ? histories.get(key) : [];
       const existing = findPendingToolTraceMessage(key);
       if (existing) return existing;
 
@@ -274,6 +338,7 @@
 
     function finalizeInlineToolTrace(chatId) {
       const key = Number(chatId);
+      collapsePendingToolTraceMessages(key);
       const history = histories.get(key) || [];
       let changed = false;
 

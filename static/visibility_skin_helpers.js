@@ -21,6 +21,7 @@
       getIsAuthenticated,
       getActiveChatId,
       refreshChats,
+      warmChatHistoryCache,
       syncVisibleActiveChat,
       syncActiveMessageView,
       getStreamAbortControllers,
@@ -183,12 +184,13 @@
     }
 
     let focusResumeArmed = false;
+    let visibleResumeInFlight = null;
 
     async function syncVisibleActiveChatDelegate(options = {}) {
       return syncVisibleActiveChat(options);
     }
 
-    async function resumeVisibleApp(trigger = 'visibilitychange') {
+    async function runVisibleResume(trigger = 'visibilitychange') {
       markVisibilityResume?.({
         trigger,
         pendingChatCount: Number(pendingChats?.size || 0),
@@ -227,7 +229,27 @@
         // best effort status sync
       }
 
+      try {
+        warmChatHistoryCache?.();
+      } catch {
+        // best effort inactive-chat warm sync
+      }
+
       await Promise.allSettled([presenceSyncPromise]);
+    }
+
+    function resumeVisibleApp(trigger = 'visibilitychange') {
+      if (visibleResumeInFlight) {
+        return visibleResumeInFlight;
+      }
+      visibleResumeInFlight = (async () => {
+        try {
+          await runVisibleResume(trigger);
+        } finally {
+          visibleResumeInFlight = null;
+        }
+      })();
+      return visibleResumeInFlight;
     }
 
     async function handleVisibilityChange() {

@@ -99,6 +99,14 @@ class StoreSchemaMixin:
                 max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
                 next_attempt_at TEXT,
                 error TEXT,
+                child_pid INTEGER,
+                child_transport TEXT,
+                terminal_return_code INTEGER,
+                terminal_failure_kind TEXT,
+                terminal_outcome TEXT,
+                terminal_error TEXT,
+                limit_breach TEXT,
+                limit_breach_detail TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 finished_at TEXT,
@@ -117,6 +125,14 @@ class StoreSchemaMixin:
                 attempts INTEGER NOT NULL,
                 max_attempts INTEGER NOT NULL,
                 error TEXT,
+                child_pid INTEGER,
+                child_transport TEXT,
+                terminal_return_code INTEGER,
+                terminal_failure_kind TEXT,
+                terminal_outcome TEXT,
+                terminal_error TEXT,
+                limit_breach TEXT,
+                limit_breach_detail TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -131,6 +147,23 @@ class StoreSchemaMixin:
             )
             """
         )
+        dead_letter_columns = self._table_columns(conn, "chat_job_dead_letters")
+        if "child_pid" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN child_pid INTEGER")
+        if "child_transport" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN child_transport TEXT")
+        if "terminal_return_code" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN terminal_return_code INTEGER")
+        if "terminal_failure_kind" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN terminal_failure_kind TEXT")
+        if "terminal_outcome" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN terminal_outcome TEXT")
+        if "terminal_error" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN terminal_error TEXT")
+        if "limit_breach" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN limit_breach TEXT")
+        if "limit_breach_detail" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN limit_breach_detail TEXT")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_job_dead_letters_job_id ON chat_job_dead_letters(job_id)"
         )
@@ -262,6 +295,22 @@ class StoreSchemaMixin:
             conn.execute("ALTER TABLE chat_jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 4")
         if "next_attempt_at" not in chat_job_columns:
             conn.execute("ALTER TABLE chat_jobs ADD COLUMN next_attempt_at TEXT")
+        if "child_pid" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN child_pid INTEGER")
+        if "child_transport" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN child_transport TEXT")
+        if "terminal_return_code" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN terminal_return_code INTEGER")
+        if "terminal_failure_kind" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN terminal_failure_kind TEXT")
+        if "terminal_outcome" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN terminal_outcome TEXT")
+        if "terminal_error" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN terminal_error TEXT")
+        if "limit_breach" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN limit_breach TEXT")
+        if "limit_breach_detail" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN limit_breach_detail TEXT")
 
         self._migrate_chat_jobs_invariants(conn)
         conn.execute(
@@ -364,6 +413,14 @@ class StoreSchemaMixin:
                 max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
                 next_attempt_at TEXT,
                 error TEXT,
+                child_pid INTEGER,
+                child_transport TEXT,
+                terminal_return_code INTEGER,
+                terminal_failure_kind TEXT,
+                terminal_outcome TEXT,
+                terminal_error TEXT,
+                limit_breach TEXT,
+                limit_breach_detail TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 finished_at TEXT,
@@ -383,6 +440,14 @@ class StoreSchemaMixin:
                 max_attempts,
                 next_attempt_at,
                 error,
+                child_pid,
+                child_transport,
+                terminal_return_code,
+                terminal_failure_kind,
+                terminal_outcome,
+                terminal_error,
+                limit_breach,
+                limit_breach_detail,
                 created_at,
                 started_at,
                 finished_at,
@@ -407,6 +472,14 @@ class StoreSchemaMixin:
                 END,
                 next_attempt_at,
                 error,
+                child_pid,
+                child_transport,
+                terminal_return_code,
+                terminal_failure_kind,
+                terminal_outcome,
+                terminal_error,
+                limit_breach,
+                limit_breach_detail,
                 created_at,
                 started_at,
                 finished_at,
