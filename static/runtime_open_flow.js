@@ -11,6 +11,7 @@
       enqueueUiMutation,
       shouldDeferNonCriticalCachedOpen,
       shouldUseIdleForDeferredCachedHydration = () => true,
+      prioritizedCachedRenderFallbackDelayMs = 24,
       traceChatHistory,
       nowMs,
       isActiveChat,
@@ -60,7 +61,7 @@
           requestId,
           latestRequestId: Number(getLastOpenChatRequestId()) || 0,
         });
-        return;
+        return Promise.resolve();
       }
       if (!isActiveChat(targetChatId)) {
         traceChatHistory('cached-hydrate-skipped-inactive', {
@@ -68,52 +69,73 @@
           requestId,
           activeChatId: normalizeChatId(getActiveChatId()),
         });
-        return;
+        return Promise.resolve();
       }
       traceChatHistory('cached-hydrate-begin', {
         chatId: targetChatId,
         requestId,
         durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
       });
-      void hydrationController.hydrateChatFromServer(targetChatId, requestId, true).catch(() => {
+      return hydrationController.hydrateChatFromServer(targetChatId, requestId, true).catch(() => {
       });
     }
 
     function openCachedChat(targetChatId, requestId, openStartedAtMs) {
       const shouldDeferMeta = Boolean(shouldDeferNonCriticalCachedOpen(targetChatId));
       const prioritizeHydration = shouldPrioritizeCachedHydration(targetChatId);
+      let hydrationSettled = false;
       setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: shouldDeferMeta });
-      const renderCached = () => renderCachedChat({ targetChatId, requestId, openStartedAtMs, shouldDeferMeta });
-      if (shouldDeferMeta) {
+      const renderCached = () => {
+        if (shouldDeferMeta && hydrationSettled) {
+          traceChatHistory('cached-render-skipped-hydrate-settled', {
+            chatId: targetChatId,
+            requestId,
+            prioritizeHydration,
+            durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
+          });
+          return;
+        }
+        renderCachedChat({ targetChatId, requestId, openStartedAtMs, shouldDeferMeta });
+      };
+      const renderFallbackDelayMs = prioritizeHydration && shouldDeferMeta
+        ? Math.max(0, Number(prioritizedCachedRenderFallbackDelayMs) || 0)
+        : 0;
+      if (renderFallbackDelayMs > 0) {
+        traceChatHistory('cached-render-scheduled', {
+          chatId: targetChatId,
+          requestId,
+          mode: 'timeout',
+          delayMs: renderFallbackDelayMs,
+          prioritizeHydration,
+        });
+        scheduleTimeout(renderCached, renderFallbackDelayMs);
+      } else if (shouldDeferMeta) {
         enqueueUiMutation(renderCached);
       } else {
         renderCached();
       }
 
-      const hydrate = () => hydrateCachedChat({ targetChatId, requestId, openStartedAtMs });
+      const hydrate = () => {
+        const hydrationPromise = hydrateCachedChat({ targetChatId, requestId, openStartedAtMs });
+        if (hydrationPromise && typeof hydrationPromise.finally === 'function') {
+          return hydrationPromise.finally(() => {
+            hydrationSettled = true;
+          });
+        }
+        hydrationSettled = true;
+        return hydrationPromise;
+      };
       const allowIdleHydration = Boolean(shouldUseIdleForDeferredCachedHydration(targetChatId));
-      if (shouldDeferMeta && typeof requestIdle === 'function' && !prioritizeHydration && allowIdleHydration) {
-        traceChatHistory('cached-hydrate-scheduled', {
-          chatId: targetChatId,
-          requestId,
-          mode: 'idle',
-          timeoutMs: 250,
-          prioritizeHydration,
-          allowIdleHydration,
-        });
-        requestIdle(hydrate, { timeout: 250 });
-      } else {
-        const delayMs = prioritizeHydration ? 0 : (shouldDeferMeta ? 32 : 0);
-        traceChatHistory('cached-hydrate-scheduled', {
-          chatId: targetChatId,
-          requestId,
-          mode: 'timeout',
-          delayMs,
-          prioritizeHydration,
-          allowIdleHydration,
-        });
-        scheduleTimeout(hydrate, delayMs);
-      }
+      const delayMs = prioritizeHydration ? 0 : (shouldDeferMeta ? 0 : 0);
+      traceChatHistory('cached-hydrate-scheduled', {
+        chatId: targetChatId,
+        requestId,
+        mode: 'timeout',
+        delayMs,
+        prioritizeHydration,
+        allowIdleHydration,
+      });
+      scheduleTimeout(hydrate, delayMs);
     }
 
     return {

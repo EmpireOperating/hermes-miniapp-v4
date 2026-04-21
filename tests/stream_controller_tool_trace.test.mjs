@@ -170,6 +170,36 @@ test('createToolTraceController can drop stale pending tool traces before a new 
   assert.deepEqual(persisted, [7, 7]);
 });
 
+test('createToolTraceController collapses duplicate live tool traces into one pending tool message before appending', () => {
+  const histories = new Map([[7, [
+    { role: 'tool', body: 'older live tool', pending: true, collapsed: true, created_at: '2026-04-20T15:30:00Z' },
+    { role: 'tool', body: 'newer live tool\nwith more detail', pending: true, collapsed: false, created_at: '2026-04-20T15:31:00Z' },
+    { role: 'assistant', body: 'pending', pending: true, created_at: '2026-04-20T15:31:30Z' },
+  ]]]);
+  const persisted = [];
+
+  const toolTrace = streamController.createToolTraceController({
+    histories,
+    cleanDisplayText: (text) => String(text || '').trim(),
+    persistPendingStreamSnapshot: (chatId) => persisted.push(Number(chatId)),
+  });
+
+  toolTrace.appendInlineToolTrace(7, 'latest live tool');
+
+  assert.deepEqual(histories.get(7), [
+    {
+      role: 'tool',
+      body: 'newer live tool\nwith more detail\nlatest live tool',
+      pending: true,
+      collapsed: false,
+      created_at: '2026-04-20T15:31:00Z',
+      tool_call_count: 3,
+    },
+    { role: 'assistant', body: 'pending', pending: true, created_at: '2026-04-20T15:31:30Z' },
+  ]);
+  assert.deepEqual(persisted, [7, 7]);
+});
+
 test('createToolTraceController snapshots pending trace mutations inside the helper owner', () => {
   const histories = new Map([[9, [{ role: 'assistant', body: 'pending', pending: true }]]]);
   const persisted = [];

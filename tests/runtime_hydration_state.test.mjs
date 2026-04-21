@@ -188,5 +188,54 @@ test('createHistoryRenderDecisionController reads unread count and rendered tran
     historyChanged: true,
     hadCachedHistory: true,
     unreadCount: 3,
+    isRenderedChatActiveTarget: false,
+    isChatStuckToBottom: true,
+    shouldVirtualizeIncomingHistory: false,
+  }]);
+});
+
+test('createHistoryRenderDecisionController exposes viewport preservation context for virtualized append-only hydrates', () => {
+  const calls = [];
+  const controller = hydrationState.createHistoryRenderDecisionController({
+    chats: new Map([[7, { id: 7, unread_count: 1 }]]),
+    getRenderedTranscriptSignature: (chatId) => `rendered:${chatId}`,
+    getRenderedChatId: () => 7,
+    isChatStuckToBottom: (chatId) => Number(chatId) === 9,
+    shouldVirtualizeHistory: (count) => Number(count) >= 2,
+    describeActiveTranscriptRender: (args) => {
+      calls.push(args);
+      return { shouldRenderActiveHistory: false, shouldSkipOffscreenAppendOnlyHydrateRender: true };
+    },
+  });
+
+  const result = controller.buildHydrationRenderState({
+    targetChatId: 7,
+    previousHistory: [{ id: 1, role: 'assistant', body: 'old' }],
+    finalHistory: [
+      { id: 1, role: 'assistant', body: 'old' },
+      { id: 2, role: 'assistant', body: 'fresh' },
+    ],
+    hadCachedHistory: true,
+    historyChanged: true,
+    restoredPendingSnapshot: false,
+  });
+
+  assert.equal(result.currentUnread, 1);
+  assert.equal(result.shouldRenderActiveHistory, false);
+  assert.equal(result.shouldSkipOffscreenAppendOnlyHydrateRender, true);
+  assert.deepEqual(calls, [{
+    previousHistory: [{ id: 1, role: 'assistant', body: 'old' }],
+    incomingHistory: [
+      { id: 1, role: 'assistant', body: 'old' },
+      { id: 2, role: 'assistant', body: 'fresh' },
+    ],
+    renderedTranscriptSignature: 'rendered:7',
+    restoredPendingSnapshot: false,
+    historyChanged: true,
+    hadCachedHistory: true,
+    unreadCount: 1,
+    isRenderedChatActiveTarget: true,
+    isChatStuckToBottom: false,
+    shouldVirtualizeIncomingHistory: true,
   }]);
 });

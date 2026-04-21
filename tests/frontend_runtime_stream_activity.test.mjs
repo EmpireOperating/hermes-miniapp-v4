@@ -350,6 +350,57 @@ test('createStreamActivityController keeps terminal latency monotonic against th
 });
 
 
+test('createStreamActivityController resolves final latency from live elapsed time when visibility resume discovers the stream already completed', () => {
+  const chats = new Map([[7, { pending: false, title: 'Project Helios' }]]);
+  const streamChip = { textContent: 'stream: active · Project Helios', title: '' };
+  const latencyChip = { textContent: 'latency: 12s · live', title: '' };
+  const streamStatus = { textContent: '' };
+  const setChatLatencyCalls = [];
+  const realNow = Date.now;
+  Date.now = () => 1_000_000;
+  try {
+    let hasLiveController = true;
+    const controller = runtime.createStreamActivityController({
+      chats,
+      getActiveChatId: () => 7,
+      hasLiveStreamController: () => hasLiveController,
+      getChatLatencyText: () => '12s · live',
+      chatLabel: () => 'Project Helios',
+      compactChatLabel: () => 'Project Helios',
+      setStreamStatus: (text) => {
+        streamStatus.textContent = text;
+      },
+      setActivityChip: (chip, text) => {
+        chip.textContent = text;
+      },
+      streamChip,
+      latencyChip,
+      setChatLatency: (chatId, text) => {
+        setChatLatencyCalls.push({ chatId, text });
+      },
+      syncActiveLatencyChip: () => {
+        latencyChip.textContent = 'latency: 12s · live';
+      },
+      formatLatency: sharedUtils.formatLatency,
+    });
+
+    controller.markStreamActive(7, { elapsedMs: 12_000 });
+    assert.equal(latencyChip.textContent, 'latency: 12s · live');
+
+    hasLiveController = false;
+    Date.now = () => 1_168_000;
+    controller.syncActivePendingStatus();
+
+    assert.equal(latencyChip.textContent, 'latency: 3m 0s');
+    assert.deepEqual(setChatLatencyCalls.at(-1), { chatId: 7, text: '3m 0s' });
+    assert.equal(streamStatus.textContent, 'Reply received in Project Helios');
+    assert.equal(streamChip.textContent, 'stream: complete · Project Helios');
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+
 test('createStreamActivityController ignores inactive chat stream/status updates while preserving active tab pills', () => {
   const chats = new Map([
     [7, { pending: false, title: 'Active Chat' }],

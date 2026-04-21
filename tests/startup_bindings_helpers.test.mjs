@@ -711,3 +711,52 @@ test('installPendingCompletionWatchdog refreshes pending active chat with hidden
   assert.equal(harness.syncVisibleActiveChatCalls[0].streamAbortControllers instanceof Map, true);
   assert.equal(harness.syncVisibleActiveChatCalls[0].streamAbortControllers.has(7), true);
 });
+
+test('installPendingCompletionWatchdog coalesces overlapping in-flight watchdog passes', async () => {
+  let releaseRefresh;
+  const refreshStarted = [];
+  const refreshChatsCalls = [];
+  const syncVisibleActiveChatCalls = [];
+  const intervalCallbacks = [];
+  const controller = startupBindings.createPendingWatchdogController({
+    windowObject: {
+      setInterval(callback) {
+        intervalCallbacks.push(callback);
+        return intervalCallbacks.length;
+      },
+    },
+    documentObject: { visibilityState: 'visible' },
+    pendingChats: new Set([7]),
+    getIsAuthenticated: () => true,
+    getActiveChatId: () => 7,
+    refreshChats: async () => {
+      refreshStarted.push('start');
+      await new Promise((resolve) => {
+        releaseRefresh = resolve;
+      });
+      refreshChatsCalls.push({});
+    },
+    syncVisibleActiveChat: async (options = {}) => {
+      syncVisibleActiveChatCalls.push(options);
+    },
+    getStreamAbortControllers: () => new Map([[7, { aborted: false }]]),
+  });
+
+  controller.installPendingCompletionWatchdog();
+  assert.equal(intervalCallbacks.length, 1);
+
+  intervalCallbacks[0]();
+  await flushAsync();
+  intervalCallbacks[0]();
+  await flushAsync();
+
+  assert.equal(refreshStarted.length, 1);
+  assert.equal(refreshChatsCalls.length, 0);
+  assert.equal(syncVisibleActiveChatCalls.length, 0);
+
+  releaseRefresh();
+  await flushAsync();
+
+  assert.equal(refreshChatsCalls.length, 1);
+  assert.equal(syncVisibleActiveChatCalls.length, 1);
+});

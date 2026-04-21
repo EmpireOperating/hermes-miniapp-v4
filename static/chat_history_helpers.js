@@ -380,6 +380,9 @@
       isActiveChat,
       hasLocalPendingWithoutLiveStream,
       getRenderedTranscriptSignature = null,
+      getRenderedChatId = null,
+      isChatStuckToBottom = null,
+      shouldVirtualizeHistory = null,
       triggerIncomingMessageHaptic = null,
     } = deps;
 
@@ -397,6 +400,9 @@
     const renderDecisionController = createHistoryRenderDecisionController({
       chats,
       getRenderedTranscriptSignature,
+      getRenderedChatId,
+      isChatStuckToBottom,
+      shouldVirtualizeHistory,
     });
     const retryController = createUnreadHydrationRetryController();
     const hydrationApplyController = createHydrationApplyController({
@@ -632,6 +638,9 @@
       shouldDeferNonCriticalCachedOpen = () => false,
       shouldUseIdleForDeferredCachedHydration = () => true,
       getRenderedTranscriptSignature = null,
+      getRenderedChatId = null,
+      isChatStuckToBottom = null,
+      shouldVirtualizeHistory = null,
       triggerIncomingMessageHaptic = null,
       syncUnreadNotificationPresence = null,
       getDocumentVisibilityState = () => 'visible',
@@ -728,6 +737,9 @@
       isActiveChat,
       hasLocalPendingWithoutLiveStream: readSyncController.hasLocalPendingWithoutLiveStream,
       getRenderedTranscriptSignature,
+      getRenderedChatId,
+      isChatStuckToBottom,
+      shouldVirtualizeHistory,
       triggerIncomingMessageHaptic,
     });
 

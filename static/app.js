@@ -2427,6 +2427,9 @@ chatHistoryController = chatHistoryHelpers.createController({
     if (!key || key !== Number(renderedChatId)) return '';
     return String(renderedTranscriptSignatureByChat.get(key) || '');
   },
+  getRenderedChatId: () => Number(renderedChatId) || 0,
+  isChatStuckToBottom: (chatId) => Boolean(chatStickToBottom.get(Number(chatId))),
+  shouldVirtualizeHistory,
   renderTraceLog,
   nowMs: () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
@@ -2633,6 +2636,7 @@ function createVisibilitySkinControllerRuntimeDeps() {
     getActiveChatId: () => Number(activeChatId),
     getPresenceInstanceId,
     refreshChats,
+    warmChatHistoryCache,
     syncVisibleActiveChat,
     syncActiveMessageView,
     getStreamAbortControllers,
