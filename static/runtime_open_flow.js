@@ -161,7 +161,7 @@
       statusController,
     } = deps;
 
-    async function openChat(chatId) {
+    async function openChat(chatId, { suppressColdOpenRender = false } = {}) {
       const targetChatId = normalizeChatId(chatId);
       const requestId = getLastOpenChatRequestId() + 1;
       setLastOpenChatRequestId(requestId);
@@ -171,6 +171,7 @@
         chatId: targetChatId,
         requestId,
         hadCachedHistory,
+        suppressColdOpenRender: Boolean(suppressColdOpenRender),
       });
       syncOpenActivationReadState(targetChatId);
 
@@ -180,7 +181,9 @@
       }
 
       setActiveChatMeta(targetChatId, { fullTabRender: false, deferNonCritical: true });
-      renderMessages(targetChatId);
+      if (!suppressColdOpenRender) {
+        renderMessages(targetChatId);
+      }
 
       try {
         await hydrationController.hydrateChatFromServer(targetChatId, requestId, false);

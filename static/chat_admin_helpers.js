@@ -43,6 +43,7 @@
       chatLabel,
       getActiveChatId,
       openChat,
+      invalidateOpenChatRequests = null,
       onLatencyByChatMutated,
       buildChatPreservingUnread,
       chatTabContextMenu,
@@ -589,11 +590,16 @@
       latencyByChat.delete(activeChatId);
       onLatencyByChatMutated?.(latencyByChat);
 
+      let optimisticHydratePromise = null;
       if (optimisticNextChatId > 0) {
         setActiveChatMeta(optimisticNextChatId, { fullTabRender: false, deferNonCritical: true });
         renderTabs();
         renderPinnedChats();
-        renderMessages(optimisticNextChatId);
+        if (histories.has(optimisticNextChatId)) {
+          renderMessages(optimisticNextChatId);
+        } else {
+          optimisticHydratePromise = Promise.resolve(openChat(optimisticNextChatId, { suppressColdOpenRender: true }));
+        }
       } else {
         setNoActiveChatMeta();
       }
@@ -607,6 +613,9 @@
           ...(optimisticNextChatId > 0 ? { preferred_chat_id: optimisticNextChatId } : {}),
         });
       } catch (error) {
+        if (optimisticHydratePromise) {
+          invalidateOpenChatRequests?.();
+        }
         restoreMap(chats, optimisticSnapshot.chats);
         restoreMap(pinnedChats, optimisticSnapshot.pinnedChats);
         restoreMap(histories, optimisticSnapshot.histories);
@@ -643,6 +652,9 @@
 
       const nextActiveChatId = Number(data.active_chat_id || 0);
       if (!nextActiveChatId) {
+        if (optimisticHydratePromise) {
+          invalidateOpenChatRequests?.();
+        }
         renderPinnedChats();
         return;
       }
@@ -652,9 +664,18 @@
         if (nextActiveChatId !== Number(getActiveChatId())) {
           await openChat(nextActiveChatId);
         } else if (!histories.has(nextActiveChatId)) {
-          await openChat(nextActiveChatId);
+          if (optimisticHydratePromise) {
+            await optimisticHydratePromise;
+          }
+          if (!histories.has(nextActiveChatId)) {
+            await openChat(nextActiveChatId);
+          }
         }
         return;
+      }
+
+      if (optimisticHydratePromise && nextActiveChatId !== optimisticNextChatId) {
+        invalidateOpenChatRequests?.();
       }
 
       histories.set(nextActiveChatId, data.history || []);
