@@ -339,7 +339,7 @@ test('createPersistenceController refreshes existing pending assistant body from
   const restored = controller.restorePendingStreamSnapshot(8);
   assert.equal(restored, true);
   assert.deepEqual(histories.get(8), [
-    { role: 'tool', body: 'tool A', pending: true, created_at: '2026-04-02T00:00:00Z', collapsed: false },
+    { role: 'tool', body: 'tool A', pending: true, created_at: '2026-04-02T00:00:00Z', collapsed: false, tool_call_count: 1 },
     { role: 'hermes', body: 'older partial', pending: true, created_at: '2026-04-02T00:00:01Z' },
   ]);
 });
@@ -499,6 +499,52 @@ test('createPersistenceController mergePendingSnapshotIntoHistory keeps snapshot
   assert.deepEqual(originalHistory, [
     { id: 11, role: 'assistant', body: 'final answer', pending: false, created_at: '2026-04-02T00:00:02Z' },
   ]);
+});
+
+test('createPersistenceController mergePendingSnapshotIntoHistory preserves snapshot tool call count when refreshing an existing pending tool row', () => {
+  const storage = new Map();
+  const localStorageRef = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+  };
+  const controller = streamState.createPersistenceController({
+    localStorageRef,
+    streamResumeCursorStorageKey: 'resume-key',
+    pendingStreamSnapshotStorageKey: 'snapshot-key',
+    pendingStreamSnapshotMaxAgeMs: 15 * 60 * 1000,
+    histories: new Map(),
+    chats: new Map(),
+    nowFn: () => 1_000,
+    dateNowFn: () => 1_000,
+  });
+
+  const originalHistory = [
+    { role: 'tool', body: 'read_file', pending: true, collapsed: false, created_at: '2026-04-02T00:00:00Z' },
+  ];
+  const snapshot = {
+    ts: 1_000,
+    tool_journal_lines: ['read_file', 'search_files', 'write_file'],
+    tool: {
+      role: 'tool',
+      body: 'read_file\nsearch_files\nwrite_file',
+      pending: true,
+      collapsed: false,
+      created_at: '2026-04-02T00:00:00Z',
+      tool_call_count: 3,
+    },
+    assistant: null,
+  };
+
+  const merged = controller.mergePendingSnapshotIntoHistory(originalHistory, snapshot);
+  assert.equal(merged.changed, true);
+  assert.equal(merged.history.length, 1);
+  assert.equal(merged.history[0].body, 'read_file\nsearch_files\nwrite_file');
+  assert.equal(merged.history[0].tool_call_count, 3);
+  assert.equal(originalHistory[0].tool_call_count, undefined);
 });
 
 test('createPersistenceController keeps newer remote pending snapshots for other chats when persisting local updates', () => {
