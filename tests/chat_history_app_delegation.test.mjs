@@ -20,7 +20,7 @@ test('app.js chat-history wrappers keep delegating to chatHistoryController', as
   const delegateExpectations = [
     ['historiesDiffer', 'chatHistoryController.historiesDiffer(currentHistory, incomingHistory)'],
     ['hydrateChatFromServer', 'chatHistoryController.hydrateChatFromServer(targetChatId, requestId, hadCachedHistory)'],
-    ['openChat', 'chatHistoryController.openChat(chatId)'],
+    ['openChat', 'chatHistoryController.openChat(chatId, options)'],
     ['markRead', 'chatHistoryController.markRead(chatId)'],
     ['maybeMarkRead', 'chatHistoryController.maybeMarkRead(chatId, options)'],
     ['loadChatHistory', 'chatHistoryController.loadChatHistory(chatId, options)'],

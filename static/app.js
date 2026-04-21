@@ -673,7 +673,7 @@ function createChatTabsController() {
   mobileTabCarouselEnabled: mobileTabCarouselFeatureEnabled,
   getIsMobileCarouselViewport: () => isCoarsePointer(),
   getCurrentUnreadCount,
-  openChat: (chatId) => openChat(chatId),
+  openChat: (chatId, options) => openChat(chatId, options),
   clearChatStreamState,
   chatUiHelpers,
   pinnedChatsWrap,
@@ -2481,6 +2481,9 @@ const chatAdminController = chatAdminHelpers.createController({
   chatLabel,
   getActiveChatId: () => Number(activeChatId),
   openChat,
+  invalidateOpenChatRequests: () => {
+    lastOpenChatRequestId += 1;
+  },
   onLatencyByChatMutated: persistLatencyByChatToStorage,
   buildChatPreservingUnread: (chat, options = {}) => chatHistoryController.buildChatPreservingUnread(chat, options),
   focusComposerForNewChat,
@@ -2867,8 +2870,8 @@ async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) 
   return chatHistoryController.hydrateChatFromServer(targetChatId, requestId, hadCachedHistory);
 }
 
-async function openChat(chatId) {
-  return chatHistoryController.openChat(chatId);
+async function openChat(chatId, options) {
+  return chatHistoryController.openChat(chatId, options);
 }
 
 async function markRead(chatId) {

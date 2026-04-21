@@ -137,6 +137,7 @@ function buildHarness(overrides = {}) {
   const syncPinCalls = [];
   const promptCalls = [];
   const latencyMutationCalls = [];
+  const invalidateOpenChatRequestCalls = [];
   const focusComposerCalls = [];
   const buildChatPreservingUnreadCalls = [];
   let activeChatId = 7;
@@ -258,6 +259,9 @@ function buildHarness(overrides = {}) {
     openChat: async (chatId) => {
       openChatCalls.push(Number(chatId));
     },
+    invalidateOpenChatRequests: () => {
+      invalidateOpenChatRequestCalls.push('invalidate');
+    },
     onLatencyByChatMutated: (mapRef) => {
       latencyMutationCalls.push(new Map(mapRef));
     },
@@ -312,6 +316,7 @@ function buildHarness(overrides = {}) {
     syncPinCalls,
     promptCalls,
     latencyMutationCalls,
+    invalidateOpenChatRequestCalls,
     focusComposerCalls,
     get activeChatId() {
       return activeChatId;
@@ -985,6 +990,156 @@ test('removeActiveChat prefers the tab to the right in visual tab order before f
   assert.deepEqual(harness.renderedMessages, [13, 13]);
 });
 
+test('removeActiveChat hydrates the optimistic fallback tab immediately when its history is not cached yet', async () => {
+  let resolveRemove;
+  const removePromise = new Promise((resolve) => {
+    resolveRemove = resolve;
+  });
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true }],
+      [11, { id: 11, title: 'Pinned reopened', is_pinned: true }],
+      [13, { id: 13, title: 'Newest chat', is_pinned: false }],
+    ],
+    initialHistories: [
+      [7, [{ id: 1, body: 'old' }]],
+      [11, [{ id: 2, body: 'cached left' }]],
+    ],
+    orderedChatIds: [11, 7, 13],
+    openChat: async (chatId, options = {}) => {
+      harness.openChatCalls.push({ chatId: Number(chatId), options: { ...options } });
+      if (!options?.suppressColdOpenRender) {
+        harness.renderedMessages.push(Number(chatId));
+      }
+      harness.histories.set(Number(chatId), [{ id: 300, body: 'hydrated right' }]);
+    },
+    apiPost: async (path, payload) => {
+      if (path !== '/api/chats/remove') {
+        throw new Error(`unexpected api path ${path}`);
+      }
+      assert.deepEqual(payload, { chat_id: 7, allow_empty: true, include_full_state: false, preferred_chat_id: 13 });
+      return removePromise;
+    },
+  });
+
+  const pendingRemoval = harness.controller.removeActiveChat();
+
+  await Promise.resolve();
+  assert.equal(harness.activeChatId, 13);
+  assert.deepEqual(harness.setActiveCalls, [13]);
+  assert.deepEqual(harness.openChatCalls, [{
+    chatId: 13,
+    options: { suppressColdOpenRender: true, suppressFailureSystemMessage: true },
+  }]);
+  assert.deepEqual(harness.renderedMessages, []);
+  assert.deepEqual(harness.renderedTabs, ['tabs']);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
+
+  resolveRemove({
+    removed_chat_id: 7,
+    active_chat_id: 13,
+    active_chat: { id: 13, title: 'Newest chat', is_pinned: false },
+    chats: [
+      { id: 11, title: 'Pinned reopened', is_pinned: true },
+      { id: 13, title: 'Newest chat', is_pinned: false },
+    ],
+    pinned_chats: [{ id: 11, title: 'Pinned reopened', is_pinned: true }],
+    history: [{ id: 99, body: 'fresh' }],
+  });
+
+  await pendingRemoval;
+  assert.deepEqual(harness.renderedMessages, [13]);
+});
+
+test('removeActiveChat invalidates stale optimistic fallback hydration when the server chooses a different active chat', async () => {
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true }],
+      [11, { id: 11, title: 'Pinned left', is_pinned: true }],
+      [13, { id: 13, title: 'Uncached right', is_pinned: false }],
+      [15, { id: 15, title: 'Authoritative server choice', is_pinned: false }],
+    ],
+    initialHistories: [
+      [7, [{ id: 1, body: 'old' }]],
+      [11, [{ id: 2, body: 'cached left' }]],
+    ],
+    orderedChatIds: [11, 7, 13, 15],
+    openChat: async (chatId, options = {}) => {
+      harness.openChatCalls.push({ chatId: Number(chatId), options: { ...options } });
+    },
+    apiPost: async (path) => {
+      if (path !== '/api/chats/remove') {
+        throw new Error(`unexpected api path ${path}`);
+      }
+      return {
+        removed_chat_id: 7,
+        active_chat_id: 15,
+        active_chat: { id: 15, title: 'Authoritative server choice', is_pinned: false },
+        chats: [
+          { id: 11, title: 'Pinned left', is_pinned: true },
+          { id: 13, title: 'Uncached right', is_pinned: false },
+          { id: 15, title: 'Authoritative server choice', is_pinned: false },
+        ],
+        pinned_chats: [{ id: 11, title: 'Pinned left', is_pinned: true }],
+        history: [{ id: 400, body: 'server authoritative history' }],
+      };
+    },
+  });
+
+  await harness.controller.removeActiveChat();
+
+  assert.equal(harness.activeChatId, 15);
+  assert.deepEqual(harness.setActiveCalls, [13, 15]);
+  assert.deepEqual(harness.invalidateOpenChatRequestCalls, ['invalidate']);
+  assert.deepEqual(harness.openChatCalls, [{
+    chatId: 13,
+    options: { suppressColdOpenRender: true, suppressFailureSystemMessage: true },
+  }]);
+  assert.deepEqual(harness.renderedMessages, [15]);
+});
+
+test('removeActiveChat invalidates uncached optimistic fallback hydration when the backend request fails', async () => {
+  let releaseOpenChat;
+  const openChatPromise = new Promise((resolve) => {
+    releaseOpenChat = resolve;
+  });
+  const harness = buildHarness({
+    initialChats: [
+      [7, { id: 7, title: '[bug]Current', is_pinned: true }],
+      [11, { id: 11, title: 'Pinned left', is_pinned: true }],
+      [13, { id: 13, title: 'Uncached right', is_pinned: false }],
+    ],
+    initialHistories: [
+      [7, [{ id: 1, body: 'old' }]],
+      [11, [{ id: 2, body: 'cached left' }]],
+    ],
+    orderedChatIds: [11, 7, 13],
+    openChat: async (chatId, options = {}) => {
+      harness.openChatCalls.push({ chatId: Number(chatId), options: { ...options } });
+      await openChatPromise;
+    },
+    apiPost: async (path) => {
+      if (path !== '/api/chats/remove') {
+        throw new Error(`unexpected api path ${path}`);
+      }
+      throw new Error('remove failed');
+    },
+  });
+
+  await assert.rejects(harness.controller.removeActiveChat(), /remove failed/);
+
+  assert.equal(harness.activeChatId, 7);
+  assert.deepEqual(harness.setActiveCalls, [13, 7]);
+  assert.deepEqual(harness.invalidateOpenChatRequestCalls, ['invalidate']);
+  assert.deepEqual(harness.openChatCalls, [{
+    chatId: 13,
+    options: { suppressColdOpenRender: true, suppressFailureSystemMessage: true },
+  }]);
+
+  releaseOpenChat();
+  await Promise.resolve();
+});
+
 test('removeActiveChat rolls back the optimistic close if the backend request fails', async () => {
   const harness = buildHarness({
     initialChats: [
@@ -1052,6 +1207,10 @@ test('removeActiveChat reopens the server-selected next chat when the remove res
     initialHistories: [
       [7, [{ id: 1, body: 'old' }]],
     ],
+    openChat: async (chatId) => {
+      harness.openChatCalls.push(Number(chatId));
+      harness.histories.set(Number(chatId), [{ id: 300, body: 'hydrated next' }]);
+    },
     apiPost: async (path, payload) => {
       if (path !== '/api/chats/remove') {
         throw new Error(`unexpected api path ${path}`);
