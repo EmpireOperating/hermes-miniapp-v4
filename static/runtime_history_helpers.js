@@ -34,6 +34,12 @@
     if (role === 'tool' && typeof localItem?.collapsed === 'boolean') {
       nextItem.collapsed = localItem.collapsed;
     }
+    if (role === 'tool') {
+      const localToolCallCount = Number(localItem?.tool_call_count);
+      if (Number.isFinite(localToolCallCount) && localToolCallCount > 0) {
+        nextItem.tool_call_count = localToolCallCount;
+      }
+    }
     return nextItem;
   }
 
@@ -59,6 +65,13 @@
       const candidateBody = String(item?.body || '');
       if (candidateBody.length > keptBody.length) {
         keptPendingTool.body = candidateBody;
+      }
+      const keptToolCallCount = Number(keptPendingTool?.tool_call_count);
+      const candidateToolCallCount = Number(item?.tool_call_count);
+      if (Number.isFinite(candidateToolCallCount) && candidateToolCallCount > 0) {
+        if (!Number.isFinite(keptToolCallCount) || candidateToolCallCount >= keptToolCallCount) {
+          keptPendingTool.tool_call_count = candidateToolCallCount;
+        }
       }
       if (typeof item?.collapsed === 'boolean') {
         keptPendingTool.collapsed = item.collapsed;
@@ -130,7 +143,16 @@
     };
 
     for (const toolMessage of localCompletedTools) {
-      if (findIncomingIndexByFingerprint(toolMessage) >= 0) {
+      const matchingIncomingIndex = findIncomingIndexByFingerprint(toolMessage);
+      if (matchingIncomingIndex >= 0) {
+        const hydratedItem = incoming[matchingIncomingIndex] || {};
+        const localToolCallCount = Number(toolMessage?.tool_call_count);
+        if (Number.isFinite(localToolCallCount) && localToolCallCount > 0) {
+          incoming[matchingIncomingIndex] = {
+            ...hydratedItem,
+            tool_call_count: localToolCallCount,
+          };
+        }
         continue;
       }
 

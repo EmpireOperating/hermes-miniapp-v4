@@ -70,8 +70,14 @@ test('mergeHydratedHistory preserves completed local tool trace on force-complet
 });
 
 
-test('mergeHydratedHistory does not duplicate completed local tool trace when server history already includes it', () => {
-  const completedTool = { role: 'tool', body: 'fetching quote', created_at: '2026-03-25T10:00:01Z', pending: false };
+test('mergeHydratedHistory does not duplicate completed local tool trace when server history already includes it and preserves local tool count metadata', () => {
+  const completedTool = {
+    role: 'tool',
+    body: 'fetching quote',
+    created_at: '2026-03-25T10:00:01Z',
+    pending: false,
+    tool_call_count: 1,
+  };
   const previousHistory = [
     { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
     completedTool,
@@ -79,7 +85,7 @@ test('mergeHydratedHistory does not duplicate completed local tool trace when se
   ];
   const hydrated = [
     { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
-    { ...completedTool, id: 2 },
+    { ...completedTool, id: 2, tool_call_count: undefined },
     { id: 3, role: 'hermes', body: 'done', created_at: '2026-03-25T10:00:04Z', pending: false },
   ];
 
@@ -92,6 +98,7 @@ test('mergeHydratedHistory does not duplicate completed local tool trace when se
 
   assert.equal(merged.filter((item) => item.role === 'tool').length, 1);
   assert.equal(merged[1].id, 2);
+  assert.equal(merged[1].tool_call_count, 1);
 });
 
 
@@ -167,13 +174,14 @@ test('mergeHydratedHistory avoids duplicating pending entries already present in
 });
 
 
-test('mergeHydratedHistory preserves local collapsed state for matching pending tool traces', () => {
+test('mergeHydratedHistory preserves local collapsed state and tool call count for matching pending tool traces', () => {
   const pendingTool = {
     role: 'tool',
-    body: 'fetching quote',
+    body: 'fetching quote\nrendering answer',
     created_at: '2026-03-25T10:00:01Z',
     pending: true,
     collapsed: true,
+    tool_call_count: 1,
   };
   const previousHistory = [
     { id: 1, role: 'operator', body: 'run this', created_at: '2026-03-25T10:00:00Z' },
@@ -192,6 +200,7 @@ test('mergeHydratedHistory preserves local collapsed state for matching pending 
   });
 
   assert.equal(merged[1].collapsed, true);
+  assert.equal(merged[1].tool_call_count, 1);
 });
 
 
@@ -252,8 +261,8 @@ test('mergeHydratedHistory does not duplicate singleton pending tool trace when 
 test('mergeHydratedHistory collapses duplicate local pending tool rows created by repeated reload restores', () => {
   const previousHistory = [
     { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
-    { role: 'tool', body: 'read_file', created_at: '2026-04-09T20:40:04Z', pending: true, collapsed: false },
-    { role: 'tool', body: 'read_file\nsearch_files\nwrite_file', created_at: '2026-04-09T20:40:05Z', pending: true, collapsed: true },
+    { role: 'tool', body: 'read_file', created_at: '2026-04-09T20:40:04Z', pending: true, collapsed: false, tool_call_count: 1 },
+    { role: 'tool', body: 'read_file\nsearch_files\nwrite_file', created_at: '2026-04-09T20:40:05Z', pending: true, collapsed: true, tool_call_count: 2 },
   ];
   const hydrated = [
     { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
@@ -271,6 +280,7 @@ test('mergeHydratedHistory collapses duplicate local pending tool rows created b
   assert.equal(toolRows.length, 1);
   assert.equal(toolRows[0].body, 'read_file\nsearch_files\nwrite_file');
   assert.equal(toolRows[0].collapsed, true);
+  assert.equal(toolRows[0].tool_call_count, 2);
 });
 
 

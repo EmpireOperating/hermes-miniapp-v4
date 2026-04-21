@@ -424,17 +424,23 @@
         } else if (pendingToolIndex >= 0) {
           const currentTool = nextHistory[pendingToolIndex] || {};
           const currentBody = String(currentTool?.body || '');
+          const snapshotToolCallCount = Number(snapshot?.tool?.tool_call_count);
+          const currentToolCallCount = Number(currentTool?.tool_call_count);
           const nextTool = {
             ...currentTool,
             body: journalBody,
             pending: true,
             collapsed: typeof currentTool?.collapsed === 'boolean' ? currentTool.collapsed : restoredToolCollapsed,
           };
+          if (Number.isFinite(snapshotToolCallCount) && snapshotToolCallCount > 0) {
+            nextTool.tool_call_count = snapshotToolCallCount;
+          }
           if (
             currentBody !== journalBody
             || !currentBody.includes(journalBody)
             || currentTool.pending !== true
             || currentTool.collapsed !== nextTool.collapsed
+            || (Number.isFinite(snapshotToolCallCount) && snapshotToolCallCount > 0 && snapshotToolCallCount !== currentToolCallCount)
           ) {
             nextHistory[pendingToolIndex] = nextTool;
             changed = true;
@@ -445,6 +451,9 @@
             body: journalBody,
             pending: true,
             collapsed: restoredToolCollapsed,
+            tool_call_count: Number.isFinite(Number(snapshot.tool?.tool_call_count)) && Number(snapshot.tool.tool_call_count) > 0
+              ? Number(snapshot.tool.tool_call_count)
+              : undefined,
           });
           changed = true;
         }
