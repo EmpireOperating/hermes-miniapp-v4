@@ -501,6 +501,7 @@ test('openChat emits cached-open timing breadcrumbs for deferred cached switches
     requestId: 1,
     hadCachedHistory: true,
     suppressColdOpenRender: false,
+    suppressFailureSystemMessage: false,
   });
   assert.deepEqual(harness.renderTraceLogs[1].details, {
     chatId: 7,
@@ -600,6 +601,7 @@ test('openChat emits cold-open timing breadcrumbs for first activation fetches',
     requestId: 1,
     hadCachedHistory: false,
     suppressColdOpenRender: false,
+    suppressFailureSystemMessage: false,
   });
   assert.deepEqual(harness.renderTraceLogs[2].details, {
     chatId: 8,
