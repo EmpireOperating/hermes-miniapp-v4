@@ -1027,7 +1027,10 @@ test('removeActiveChat hydrates the optimistic fallback tab immediately when its
   await Promise.resolve();
   assert.equal(harness.activeChatId, 13);
   assert.deepEqual(harness.setActiveCalls, [13]);
-  assert.deepEqual(harness.openChatCalls, [{ chatId: 13, options: { suppressColdOpenRender: true } }]);
+  assert.deepEqual(harness.openChatCalls, [{
+    chatId: 13,
+    options: { suppressColdOpenRender: true, suppressFailureSystemMessage: true },
+  }]);
   assert.deepEqual(harness.renderedMessages, []);
   assert.deepEqual(harness.renderedTabs, ['tabs']);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
@@ -1088,7 +1091,10 @@ test('removeActiveChat invalidates stale optimistic fallback hydration when the 
   assert.equal(harness.activeChatId, 15);
   assert.deepEqual(harness.setActiveCalls, [13, 15]);
   assert.deepEqual(harness.invalidateOpenChatRequestCalls, ['invalidate']);
-  assert.deepEqual(harness.openChatCalls, [{ chatId: 13, options: { suppressColdOpenRender: true } }]);
+  assert.deepEqual(harness.openChatCalls, [{
+    chatId: 13,
+    options: { suppressColdOpenRender: true, suppressFailureSystemMessage: true },
+  }]);
   assert.deepEqual(harness.renderedMessages, [15]);
 });
 
@@ -1125,7 +1131,10 @@ test('removeActiveChat invalidates uncached optimistic fallback hydration when t
   assert.equal(harness.activeChatId, 7);
   assert.deepEqual(harness.setActiveCalls, [13, 7]);
   assert.deepEqual(harness.invalidateOpenChatRequestCalls, ['invalidate']);
-  assert.deepEqual(harness.openChatCalls, [{ chatId: 13, options: { suppressColdOpenRender: true } }]);
+  assert.deepEqual(harness.openChatCalls, [{
+    chatId: 13,
+    options: { suppressColdOpenRender: true, suppressFailureSystemMessage: true },
+  }]);
 
   releaseOpenChat();
   await Promise.resolve();

@@ -161,7 +161,7 @@
       statusController,
     } = deps;
 
-    async function openChat(chatId, { suppressColdOpenRender = false } = {}) {
+    async function openChat(chatId, { suppressColdOpenRender = false, suppressFailureSystemMessage = false } = {}) {
       const targetChatId = normalizeChatId(chatId);
       const requestId = getLastOpenChatRequestId() + 1;
       setLastOpenChatRequestId(requestId);
@@ -172,6 +172,7 @@
         requestId,
         hadCachedHistory,
         suppressColdOpenRender: Boolean(suppressColdOpenRender),
+        suppressFailureSystemMessage: Boolean(suppressFailureSystemMessage),
       });
       syncOpenActivationReadState(targetChatId);
 
@@ -194,7 +195,7 @@
           durationMs: Math.max(0, Math.round(nowMs() - openStartedAtMs)),
           message: String(error?.message || ''),
         });
-        if (requestId === getLastOpenChatRequestId()) {
+        if (requestId === getLastOpenChatRequestId() && !suppressFailureSystemMessage) {
           appendSystemMessage(error.message || 'Failed to open chat.', targetChatId);
         }
       }

@@ -598,7 +598,10 @@
         if (histories.has(optimisticNextChatId)) {
           renderMessages(optimisticNextChatId);
         } else {
-          optimisticHydratePromise = Promise.resolve(openChat(optimisticNextChatId, { suppressColdOpenRender: true }));
+          optimisticHydratePromise = Promise.resolve(openChat(optimisticNextChatId, {
+            suppressColdOpenRender: true,
+            suppressFailureSystemMessage: true,
+          }));
         }
       } else {
         setNoActiveChatMeta();
