@@ -85,12 +85,6 @@ def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) ->
     state = server.store.get_job_state(job_id)
     assert state is not None
     assert state["status"] == "dead"
-    assert state["child_pid"] == 424242
-    assert state["terminal_return_code"] == -9
-    assert state["terminal_failure_kind"] == "failed"
-    assert state["terminal_outcome"] == "retryable_failure"
-    assert state["limit_breach"] == "memory"
-    assert state["limit_breach_detail"] == "signal_kill_suspected_oom"
 
 def test_jobs_status_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)

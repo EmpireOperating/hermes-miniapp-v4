@@ -213,6 +213,14 @@ def cleanup_stale_jobs(
                j.operator_message_id,
                j.attempts,
                j.max_attempts,
+               j.child_pid,
+               j.child_transport,
+               j.terminal_return_code,
+               j.terminal_failure_kind,
+               j.terminal_outcome,
+               j.terminal_error,
+               j.limit_breach,
+               j.limit_breach_detail,
                ct.id AS thread_id,
                ct.is_archived AS thread_archived,
                m.id AS operator_exists
@@ -259,11 +267,31 @@ def cleanup_stale_jobs(
             UPDATE chat_jobs
             SET status = ?,
                 error = ?,
+                child_pid = ?,
+                child_transport = ?,
+                terminal_return_code = ?,
+                terminal_failure_kind = ?,
+                terminal_outcome = ?,
+                terminal_error = ?,
+                limit_breach = ?,
+                limit_breach_detail = ?,
                 finished_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status IN {SQL_JOB_STATUS_OPEN}
             """,
-            (JOB_STATUS_DEAD, reason, job_id),
+            (
+                JOB_STATUS_DEAD,
+                reason,
+                row["child_pid"],
+                row["child_transport"],
+                row["terminal_return_code"],
+                row["terminal_failure_kind"],
+                row["terminal_outcome"],
+                row["terminal_error"],
+                row["limit_breach"],
+                row["limit_breach_detail"],
+                job_id,
+            ),
         )
         if updated.rowcount == 0:
             continue
@@ -277,6 +305,16 @@ def cleanup_stale_jobs(
             attempts=attempts,
             max_attempts=max_attempts,
             error=reason,
+            failure_metadata={
+                "child_pid": row["child_pid"],
+                "child_transport": row["child_transport"],
+                "terminal_return_code": row["terminal_return_code"],
+                "terminal_failure_kind": row["terminal_failure_kind"],
+                "terminal_outcome": row["terminal_outcome"],
+                "terminal_error": row["terminal_error"],
+                "limit_breach": row["limit_breach"],
+                "limit_breach_detail": row["limit_breach_detail"],
+            },
         )
         cleaned.append(
             {
