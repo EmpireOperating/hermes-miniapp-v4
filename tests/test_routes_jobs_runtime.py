@@ -892,6 +892,7 @@ def test_publish_job_event_throttles_touch_job_frequency(monkeypatch, tmp_path) 
 
 def test_publish_job_event_delivers_done_when_subscriber_queue_is_full(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
+    server.runtime.shutdown(reason="test-event-buffer-manual-drive", join_timeout=0.2)
 
     user_id = "terminal-overflow"
     chat_id = server.store.ensure_default_chat(user_id)
