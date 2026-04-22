@@ -12,6 +12,7 @@ from pathlib import Path
 import hermes_client
 import hermes_client_agent
 import hermes_client_cli
+import hermes_client_tool_progress
 import pytest
 
 
@@ -1875,10 +1876,117 @@ def test_persistent_agent_supports_event_typed_tool_progress_callback(monkeypatc
     )
 
     tool_event = next(event for event in events if event.get("type") == "tool")
+    assert tool_event.get("event_type") == "tool.started"
     assert tool_event.get("tool_name") == "terminal"
     assert tool_event.get("preview") == "date"
     assert tool_event.get("args") == {"command": "date"}
+    assert tool_event.get("phase") == "started"
     assert any(event.get("type") == "done" and event.get("reply") == "typed-progress-ok" for event in events)
+
+
+def test_persistent_agent_tool_progress_preserves_canonical_phase_and_ids(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    class _StructuredProgressAgent:
+        def __init__(self, **kwargs):
+            self.tool_progress_callback = kwargs.get("tool_progress_callback")
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            assert self.tool_progress_callback is not None
+            self.tool_progress_callback(
+                "tool.completed",
+                "read_file",
+                "loaded",
+                {"path": "/tmp/x", "tool_call_id": "call-7", "message_id": 52},
+            )
+            return {"final_response": "structured-progress-ok", "error": None, "messages": []}
+
+    class _StructuredProgressRunAgentModule:
+        AIAgent = _StructuredProgressAgent
+
+    monkeypatch.setitem(sys.modules, "run_agent", _StructuredProgressRunAgentModule())
+
+    client = hermes_client.HermesClient()
+    events = list(
+        client._stream_via_persistent_agent(
+            user_id="123",
+            message="hello",
+            session_id="miniapp-123-persistent-structured-progress",
+            conversation_history=[{"role": "operator", "body": "old"}],
+        )
+    )
+
+    tool_event = next(event for event in events if event.get("type") == "tool")
+    assert tool_event.get("event_type") == "tool.completed"
+    assert tool_event.get("phase") == "completed"
+    assert tool_event.get("tool_call_id") == "call-7"
+    assert tool_event.get("message_id") == 52
+    assert tool_event.get("display")
+
+
+def test_tool_progress_normalizer_accepts_legacy_four_arg_callback_with_metadata() -> None:
+    normalized = hermes_client_tool_progress.normalize_tool_progress_callback_args(
+        ("read_file", "loaded", {"path": "/tmp/x"}, {"message_id": 9, "tool_call_id": "call-legacy"})
+    )
+
+    assert normalized is not None
+    assert normalized["event_type"] == "tool.started"
+    assert normalized["tool_name"] == "read_file"
+    assert normalized["preview"] == "loaded"
+    assert normalized["args"] == {"path": "/tmp/x"}
+    assert normalized["message_id"] == 9
+    assert normalized["tool_call_id"] == "call-legacy"
+
+
+def test_tool_progress_item_preserves_id_alias_as_tool_call_id() -> None:
+    item = hermes_client_tool_progress.build_tool_progress_item(
+        event_type="tool.completed",
+        tool_name="read_file",
+        preview="loaded",
+        args={"id": "call-from-id", "turn_id": 12},
+        display="read_file loaded",
+    )
+
+    event = hermes_client_tool_progress.stream_event_from_tool_item(
+        item,
+        display_formatter=lambda tool_name, preview=None, args=None: f"{tool_name}:{preview}",
+    )
+
+    assert item["tool_call_id"] == "call-from-id"
+    assert item["message_id"] == 12
+    assert event["tool_call_id"] == "call-from-id"
+    assert event["message_id"] == 12
+    assert event["event_type"] == "tool.completed"
+    assert event["phase"] == "completed"
+
+
+def test_tool_progress_dedupe_key_requires_stable_tool_call_id_for_new_mode() -> None:
+    key = hermes_client_tool_progress.tool_progress_dedupe_key(
+        {
+            "event_type": "tool.started",
+            "tool_name": "search_files",
+            "preview": "first",
+            "args": {},
+            "metadata": {},
+        },
+        mode="new",
+    )
+
+    assert key is None
+
+
+def test_tool_progress_dedupe_key_uses_event_type_tool_name_and_stable_call_id() -> None:
+    key = hermes_client_tool_progress.tool_progress_dedupe_key(
+        {
+            "event_type": "tool.updated",
+            "tool_name": "search_files",
+            "tool_call_id": "call-123",
+        },
+        mode="new",
+    )
+
+    assert key == "tool.updated::search_files::call-123"
 
 
 def test_direct_agent_timeout_resets_on_progress_events(monkeypatch) -> None:
@@ -3265,8 +3373,8 @@ def test_stream_via_agent_runner_script_supports_event_typed_tool_progress_callb
     script = client._agent_runner_script()
 
     assert "def progress_callback(*callback_args):" in script
-    assert "event_type = 'tool.started'" in script
-    assert "if event_type != 'tool.started':" in script
+    assert "normalize_tool_progress_callback_args(callback_args)" in script
+    assert "build_tool_progress_item(" in script
 
 
 def test_stream_via_agent_runner_script_compiles_and_escapes_protocol_newline() -> None:

@@ -387,6 +387,84 @@
     };
   }
 
+  function createAttentionStateController({
+    getActiveChatId,
+    isDocumentHidden = () => (typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false),
+    triggerIncomingMessageHaptic,
+    incrementUnread,
+    renderTabs,
+  }) {
+    const firstAssistantController = createFirstAssistantNotificationController({
+      getActiveChatId,
+      isDocumentHidden,
+      triggerIncomingMessageHaptic,
+      incrementUnread,
+      renderTabs,
+    });
+
+    function applyEffect(chatId, effect) {
+      return executeAttentionEffect({
+        chatId,
+        effect,
+        triggerIncomingMessageHaptic,
+        incrementUnread,
+        renderTabs,
+      });
+    }
+
+    function applyDoneAttention(chatId, {
+      updateUnread = true,
+      doneTurnCount = 0,
+      earlyAssistantNotification = null,
+    } = {}) {
+      const notificationState = earlyAssistantNotification || firstAssistantController.consumeFirstAssistantNotification(chatId);
+      const effect = describeDoneAttentionEffect({
+        chatId,
+        activeChatId: getActiveChatId?.(),
+        hidden: Boolean(isDocumentHidden?.()),
+        updateUnread,
+        earlyAssistantNotification: notificationState,
+        doneTurnCount,
+      });
+      return {
+        effect,
+        notificationState,
+        execution: applyEffect(chatId, effect),
+      };
+    }
+
+    function applyEarlyCloseAttention(chatId, { earlyAssistantNotification = null } = {}) {
+      const notificationState = earlyAssistantNotification || firstAssistantController.consumeFirstAssistantNotification(chatId);
+      const effect = describeEarlyCloseAttentionEffect({
+        chatId,
+        activeChatId: getActiveChatId?.(),
+        hidden: Boolean(isDocumentHidden?.()),
+        earlyAssistantNotification: notificationState,
+      });
+      return {
+        effect,
+        notificationState,
+        execution: applyEffect(chatId, effect),
+      };
+    }
+
+    function applyResumeCompletionAttention(chatId) {
+      const effect = describeResumeCompletionAttentionEffect({ chatId });
+      return {
+        effect,
+        execution: applyEffect(chatId, effect),
+      };
+    }
+
+    return {
+      ...firstAssistantController,
+      applyEffect,
+      applyDoneAttention,
+      applyEarlyCloseAttention,
+      applyResumeCompletionAttention,
+    };
+  }
+
   const api = {
     shouldResumeOnVisibilityChange,
     shouldIncrementUnread,
@@ -394,6 +472,7 @@
     latestCompletedAssistantEffectKey,
     createAttentionEffectsController,
     createFirstAssistantNotificationController,
+    createAttentionStateController,
     describeHydrationAttentionEffect,
     shouldTriggerHydrationAttentionEffect,
     describeFirstAssistantAttentionEffect,
