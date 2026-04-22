@@ -71,9 +71,12 @@ def test_stream_controller_module_exports_core_api():
     assert "async function hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted = false } = {})" in controller_js
     assert "async function consumeStreamWithReconnect(chatId, response, builtReplyRef" in controller_js
     assert "async function finalizeStreamLifecycle(chatId, streamController, { wasAborted })" in controller_js
-    assert "if (typeof deps.markToolActivity === \"function\") {" in controller_js
-    assert "if (typeof deps.markStreamComplete === \"function\") {" in controller_js
-    assert 'renderTraceLog("stream-done-state"' in controller_js
+    assert "if (typeof deps.markToolActivity === 'function') {" in controller_js
+    assert "if (typeof deps.markStreamComplete === 'function') {" in controller_js
+    assert 'buildResumeCompleteTransition' in controller_js
+    assert 'applyResumeCompletionTransition' in controller_js
+    assert 'renderTraceLog(transition.traceStateEvent, {' in controller_js
+    assert "traceStateEvent: 'stream-done-state'," in controller_js
     assert 'syncActiveMessageView(chatId, { preserveViewport: true });' in controller_js
     assert 'streamDebugLog("sse-read"' in controller_js
     assert 'chunkPreview:' not in controller_js
@@ -111,10 +114,11 @@ def test_app_resume_handles_no_active_job_reconnect_gracefully():
     assert "const parsedResumeError = parseStreamErrorPayload(fallback);" in stream_controller_js
     assert "const alreadyWorking = response.status === 409;" in stream_controller_js
     assert "await resumePendingChatStream(chatId, { force: true });" in stream_controller_js
-    assert "await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });" in stream_controller_js
-    assert "executeAttentionEffect({" in stream_controller_js
-    assert "effect: describeResumeCompletionAttentionEffect({ chatId: key })," in stream_controller_js
-    assert "triggerIncomingMessageHaptic," in stream_controller_js
+    assert "buildResumeCompleteTransition(chatId, {" in stream_controller_js
+    assert "hydrationOptions: { forceCompleted: true }," in stream_controller_js
+    assert "statusKind: 'resume_complete'," in stream_controller_js
+    assert "applyResumeCompletionTransition?.(key, { clearStreamCursor: false, clearPendingSnapshot: true });" in stream_controller_js
+    assert "applyResumeCompletionTransition?.(key, { clearStreamCursor: false, clearPendingSnapshot: false });" in stream_controller_js
     assert "deps.markResumeAlreadyComplete?.(key);" in stream_controller_js
     assert "const transientReconnectFailure = isTransientResumeRecoveryError(error);" in stream_controller_js
     assert "console.warn(`[W_STREAM_RECONNECT_RETRY] chat=${key} attempt=${attempt}/${RESUME_RECOVERY_MAX_ATTEMPTS}`, error);" in stream_controller_js

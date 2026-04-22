@@ -12,6 +12,7 @@ from pathlib import Path
 import hermes_client
 import hermes_client_agent
 import hermes_client_cli
+import hermes_client_tool_progress
 import pytest
 
 
@@ -1875,10 +1876,89 @@ def test_persistent_agent_supports_event_typed_tool_progress_callback(monkeypatc
     )
 
     tool_event = next(event for event in events if event.get("type") == "tool")
+    assert tool_event.get("event_type") == "tool.started"
     assert tool_event.get("tool_name") == "terminal"
     assert tool_event.get("preview") == "date"
     assert tool_event.get("args") == {"command": "date"}
+    assert tool_event.get("phase") == "started"
     assert any(event.get("type") == "done" and event.get("reply") == "typed-progress-ok" for event in events)
+
+
+def test_persistent_agent_tool_progress_preserves_canonical_phase_and_ids(monkeypatch) -> None:
+    monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "1")
+    monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
+
+    class _StructuredProgressAgent:
+        def __init__(self, **kwargs):
+            self.tool_progress_callback = kwargs.get("tool_progress_callback")
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            assert self.tool_progress_callback is not None
+            self.tool_progress_callback(
+                "tool.completed",
+                "read_file",
+                "loaded",
+                {"path": "/tmp/x", "tool_call_id": "call-7", "message_id": 52},
+            )
+            return {"final_response": "structured-progress-ok", "error": None, "messages": []}
+
+    class _StructuredProgressRunAgentModule:
+        AIAgent = _StructuredProgressAgent
+
+    monkeypatch.setitem(sys.modules, "run_agent", _StructuredProgressRunAgentModule())
+
+    client = hermes_client.HermesClient()
+    events = list(
+        client._stream_via_persistent_agent(
+            user_id="123",
+            message="hello",
+            session_id="miniapp-123-persistent-structured-progress",
+            conversation_history=[{"role": "operator", "body": "old"}],
+        )
+    )
+
+    tool_event = next(event for event in events if event.get("type") == "tool")
+    assert tool_event.get("event_type") == "tool.completed"
+    assert tool_event.get("phase") == "completed"
+    assert tool_event.get("tool_call_id") == "call-7"
+    assert tool_event.get("message_id") == 52
+    assert tool_event.get("display")
+
+
+def test_tool_progress_normalizer_accepts_legacy_four_arg_callback_with_metadata() -> None:
+    normalized = hermes_client_tool_progress.normalize_tool_progress_callback_args(
+        ("read_file", "loaded", {"path": "/tmp/x"}, {"message_id": 9, "tool_call_id": "call-legacy"})
+    )
+
+    assert normalized is not None
+    assert normalized["event_type"] == "tool.started"
+    assert normalized["tool_name"] == "read_file"
+    assert normalized["preview"] == "loaded"
+    assert normalized["args"] == {"path": "/tmp/x"}
+    assert normalized["message_id"] == 9
+    assert normalized["tool_call_id"] == "call-legacy"
+
+
+def test_tool_progress_item_preserves_id_alias_as_tool_call_id() -> None:
+    item = hermes_client_tool_progress.build_tool_progress_item(
+        event_type="tool.completed",
+        tool_name="read_file",
+        preview="loaded",
+        args={"id": "call-from-id", "turn_id": 12},
+        display="read_file loaded",
+    )
+
+    event = hermes_client_tool_progress.stream_event_from_tool_item(
+        item,
+        display_formatter=lambda tool_name, preview=None, args=None: f"{tool_name}:{preview}",
+    )
+
+    assert item["tool_call_id"] == "call-from-id"
+    assert item["message_id"] == 12
+    assert event["tool_call_id"] == "call-from-id"
+    assert event["message_id"] == 12
+    assert event["event_type"] == "tool.completed"
+    assert event["phase"] == "completed"
 
 
 def test_direct_agent_timeout_resets_on_progress_events(monkeypatch) -> None:
@@ -2204,6 +2284,34 @@ def test_observed_descendant_telemetry_tracks_active_and_recent_events(monkeypat
     client = hermes_client.HermesClient()
     client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
 
+    proc_status_by_pid = {
+        53101: {
+            "VmRSS": "2222 kB",
+            "VmHWM": "3333 kB",
+            "VmPeak": "4444 kB",
+            "Threads": "8",
+            "state": "R (running)",
+            "state_code": "R",
+        },
+        53102: {
+            "VmRSS": "5555 kB",
+            "VmHWM": "6666 kB",
+            "VmPeak": "7777 kB",
+            "Threads": "3",
+            "state": "S (sleeping)",
+            "state_code": "S",
+        },
+    }
+    meminfo = {
+        "MemAvailable": "9999 kB",
+        "MemFree": "1111 kB",
+        "SwapTotal": "12000 kB",
+        "SwapFree": "3000 kB",
+    }
+
+    monkeypatch.setattr(client, "_read_process_status", lambda pid: dict(proc_status_by_pid.get(int(pid), {})) or None)
+    monkeypatch.setattr(client, "_read_meminfo", lambda: dict(meminfo))
+
     client.observe_descendant_spawn(
         transport="agent-direct",
         pid=53101,
@@ -2228,13 +2336,31 @@ def test_observed_descendant_telemetry_tracks_active_and_recent_events(monkeypat
     assert diagnostics.get("descendant_active_by_chat") == {"88": 2}
     assert diagnostics.get("descendant_high_water_total") == 2
     recent = diagnostics.get("recent_descendant_events") or []
-    assert any(event.get("event") == "descendant_spawn" and event.get("pid") == 53101 for event in recent)
+    spawn_one = next(event for event in recent if event.get("event") == "descendant_spawn" and event.get("pid") == 53101)
+    spawn_two = next(event for event in recent if event.get("event") == "descendant_spawn" and event.get("pid") == 53102)
+    assert spawn_one["command_preview"] == "python worker.py"
+    assert spawn_one["rss_kb"] == 2222
+    assert spawn_one["vm_hwm_kb"] == 3333
+    assert spawn_one["vm_peak_kb"] == 4444
+    assert spawn_one["thread_count"] == 8
+    assert spawn_one["process_state"] == "R (running)"
+    assert spawn_two["command_preview"] == "python cli.py"
+    assert spawn_two["rss_kb"] == 5555
 
     client.observe_descendant_finish(pid=53101, outcome="completed", return_code=0, parent_transport="chat-worker-subprocess", parent_pid=43001)
     diagnostics = client.child_spawn_diagnostics()
     assert diagnostics.get("descendant_active_total") == 1
     recent = diagnostics.get("recent_descendant_events") or []
-    assert any(event.get("event") == "descendant_finish" and event.get("pid") == 53101 for event in recent)
+    finish_one = next(event for event in recent if event.get("event") == "descendant_finish" and event.get("pid") == 53101)
+    assert finish_one["command_preview"] == "python worker.py"
+    assert finish_one["start_rss_kb"] == 2222
+    assert finish_one["start_vm_peak_kb"] == 4444
+    assert finish_one["start_thread_count"] == 8
+    assert finish_one["host_mem_available_kb"] == 9999
+    assert finish_one["host_mem_free_kb"] == 1111
+    assert finish_one["host_swap_total_kb"] == 12000
+    assert finish_one["host_swap_free_kb"] == 3000
+    assert finish_one["host_swap_used_kb"] == 9000
     client.clear_spawn_trace_context()
 
 
@@ -2281,6 +2407,75 @@ def test_child_spawn_timeout_counters_track_by_job_and_chat(monkeypatch) -> None
     recent = timeout_info.get("recent_events") or []
     assert len(recent) == 2
     assert all(item.get("event") == "timeout_finish" for item in recent)
+    client.clear_spawn_trace_context()
+
+
+def test_child_spawn_recent_events_include_command_and_memory_snapshots(monkeypatch) -> None:
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
+
+    proc_status_by_pid = {
+        42150: {
+            "VmRSS": "1234 kB",
+            "VmHWM": "2345 kB",
+            "VmPeak": "3456 kB",
+            "Threads": "7",
+            "state": "R (running)",
+            "state_code": "R",
+        }
+    }
+    meminfo = {
+        "MemAvailable": "4567 kB",
+        "MemFree": "1111 kB",
+        "SwapTotal": "8192 kB",
+        "SwapFree": "2048 kB",
+    }
+
+    monkeypatch.setattr(client, "_read_process_status", lambda pid: dict(proc_status_by_pid.get(int(pid), {})) or None)
+    monkeypatch.setattr(client, "_read_meminfo", lambda: dict(meminfo))
+
+    client.register_child_spawn(
+        transport="chat-worker-subprocess",
+        pid=42150,
+        command=["docker", "run", "demo"],
+        session_id="miniapp-123-88",
+    )
+    client.observe_child_process_sample(pid=42150)
+    client.deregister_child_spawn(pid=42150, outcome="chat-worker-subprocess:failed:failed", return_code=-9)
+
+    diagnostics = client.child_spawn_diagnostics()
+    recent_events = diagnostics.get("recent_events") or []
+    spawn_event = next(event for event in recent_events if event.get("event") == "spawn" and event.get("pid") == 42150)
+    sample_event = next(event for event in recent_events if event.get("event") == "sample" and event.get("pid") == 42150)
+    finish_event = next(event for event in recent_events if event.get("event") == "finish" and event.get("pid") == 42150)
+
+    assert spawn_event["command_preview"] == "docker run demo"
+    assert spawn_event["rss_kb"] == 1234
+    assert spawn_event["vm_hwm_kb"] == 2345
+    assert spawn_event["vm_peak_kb"] == 3456
+    assert spawn_event["thread_count"] == 7
+    assert spawn_event["process_state"] == "R (running)"
+    assert spawn_event["process_state_code"] == "R"
+
+    assert sample_event["command_preview"] == "docker run demo"
+    assert sample_event["rss_kb"] == 1234
+    assert sample_event["vm_hwm_kb"] == 2345
+    assert sample_event["vm_peak_kb"] == 3456
+    assert sample_event["host_mem_available_kb"] == 4567
+    assert sample_event["host_mem_free_kb"] == 1111
+    assert sample_event["host_swap_total_kb"] == 8192
+    assert sample_event["host_swap_free_kb"] == 2048
+    assert sample_event["host_swap_used_kb"] == 6144
+
+    assert finish_event["command_preview"] == "docker run demo"
+    assert finish_event["start_rss_kb"] == 1234
+    assert finish_event["start_vm_peak_kb"] == 3456
+    assert finish_event["start_thread_count"] == 7
+    assert finish_event["host_mem_available_kb"] == 4567
+    assert finish_event["host_mem_free_kb"] == 1111
+    assert finish_event["host_swap_total_kb"] == 8192
+    assert finish_event["host_swap_free_kb"] == 2048
+    assert finish_event["host_swap_used_kb"] == 6144
     client.clear_spawn_trace_context()
 
 
@@ -3265,8 +3460,8 @@ def test_stream_via_agent_runner_script_supports_event_typed_tool_progress_callb
     script = client._agent_runner_script()
 
     assert "def progress_callback(*callback_args):" in script
-    assert "event_type = 'tool.started'" in script
-    assert "if event_type != 'tool.started':" in script
+    assert "normalize_tool_progress_callback_args(callback_args)" in script
+    assert "build_tool_progress_item(" in script
 
 
 def test_stream_via_agent_runner_script_compiles_and_escapes_protocol_newline() -> None:

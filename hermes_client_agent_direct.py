@@ -12,6 +12,11 @@ import uuid
 from collections import deque
 from typing import Any, Iterator
 
+from hermes_client_tool_progress import (
+    build_tool_progress_item,
+    normalize_tool_progress_callback_args,
+    stream_event_from_tool_item,
+)
 from hermes_client_types import HermesClientError
 
 
@@ -255,16 +260,7 @@ class HermesClientDirectAgentMixin:
                 first_progress_seen = True
                 kind = item.get("kind")
                 if kind == "tool":
-                    tool_name = str(item.get("tool_name") or "")
-                    preview = item.get("preview")
-                    args = item.get("args") if isinstance(item.get("args"), dict) else {}
-                    yield {
-                        "type": "tool",
-                        "tool_name": tool_name,
-                        "preview": preview,
-                        "args": args,
-                        "display": self._format_tool_progress(tool_name, preview=preview, args=args),
-                    }
+                    yield stream_event_from_tool_item(item, display_formatter=self._format_tool_progress)
                 elif kind == "done":
                     reply = str(item.get("reply") or "")
                     chunk_size = max(1, self.stream_chunk_size)
@@ -371,6 +367,8 @@ class HermesClientDirectAgentMixin:
             import sys
             import time
 
+            from hermes_client_tool_progress import build_tool_progress_item, normalize_tool_progress_callback_args
+
             _protocol_stdout = getattr(sys, '__stdout__', None) or sys.stdout
 
             def emit(payload):
@@ -386,43 +384,27 @@ class HermesClientDirectAgentMixin:
                 raise SystemExit(1)
 
             tool_progress_mode = str(payload.get('tool_progress_mode') or 'all').strip().lower()
-            last_tool = {'name': None}
+            last_tool = {'key': None}
             started = time.perf_counter()
 
             def progress_callback(*callback_args):
                 if tool_progress_mode == 'off':
                     return
-                if not callback_args:
+                normalized = normalize_tool_progress_callback_args(callback_args)
+                if not normalized:
                     return
-
-                event_type = 'tool.started'
-                tool_name = None
-                preview = None
-                args = None
-                if len(callback_args) >= 4 and str(callback_args[0] or '').strip():
-                    event_type = str(callback_args[0] or '').strip()
-                    tool_name = callback_args[1]
-                    preview = callback_args[2]
-                    args = callback_args[3]
-                else:
-                    tool_name = callback_args[0]
-                    preview = callback_args[1] if len(callback_args) >= 2 else None
-                    args = callback_args[2] if len(callback_args) >= 3 else None
-
-                if event_type != 'tool.started':
+                dedupe_key = f"{normalized['event_type']}::{normalized['tool_name']}::{normalized.get('tool_call_id') or ''}"
+                if tool_progress_mode == 'new' and dedupe_key == last_tool['key']:
                     return
-                tool_name = str(tool_name or '').strip()
-                if not tool_name:
-                    return
-                if tool_progress_mode == 'new' and tool_name == last_tool['name']:
-                    return
-                last_tool['name'] = tool_name
-                emit({
-                    'kind': 'tool',
-                    'tool_name': tool_name,
-                    'preview': preview or '',
-                    'args': args if isinstance(args, dict) else {},
-                })
+                last_tool['key'] = dedupe_key
+                emit(build_tool_progress_item(
+                    event_type=normalized['event_type'],
+                    tool_name=normalized['tool_name'],
+                    preview=normalized.get('preview'),
+                    args=normalized.get('args'),
+                    metadata=normalized.get('metadata'),
+                    display='',
+                ))
 
             agent_kwargs = {
                 'max_iterations': int(payload.get('max_iterations') or 90),
