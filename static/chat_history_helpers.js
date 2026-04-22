@@ -543,6 +543,9 @@
       isActiveChat,
       hasLocalPendingWithoutLiveStream,
       getRenderedTranscriptSignature: deps.getRenderedTranscriptSignature,
+      getRenderedChatId: deps.getRenderedChatId,
+      isChatStuckToBottom: deps.isChatStuckToBottom,
+      shouldVirtualizeHistory: deps.shouldVirtualizeHistory,
       triggerIncomingMessageHaptic: deps.triggerIncomingMessageHaptic,
     });
     const cachedOpenController = createCachedOpenController({
