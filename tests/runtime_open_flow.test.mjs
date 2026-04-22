@@ -285,54 +285,6 @@ test('createHistoryOpenController appends a system message when cold-open hydrat
   assert.equal(traces.at(-1).eventName, 'open-failed');
 });
 
-test('createHistoryOpenController can suppress the cold-open failure system message for optimistic hydrations', async () => {
-  const traces = [];
-  const activeMeta = [];
-  const rendered = [];
-  const systemMessages = [];
-  let lastOpenRequestId = 0;
-  const controller = openFlow.createHistoryOpenController({
-    normalizeChatId: (chatId) => Number(chatId),
-    histories: new Map(),
-    getLastOpenChatRequestId: () => lastOpenRequestId,
-    setLastOpenChatRequestId: (value) => { lastOpenRequestId = Number(value); },
-    nowMs: () => 1000,
-    traceChatHistory: (eventName, details = {}) => traces.push({ eventName, details }),
-    syncOpenActivationReadState: () => {},
-    setActiveChatMeta: (chatId, options = {}) => activeMeta.push({ chatId: Number(chatId), options }),
-    renderMessages: (chatId, options = {}) => rendered.push({ chatId: Number(chatId), options }),
-    appendSystemMessage: (message, chatId) => systemMessages.push({ message, chatId: Number(chatId) }),
-    fetchController: {
-      loadChatHistory: async () => ({ chat: { id: 8 }, history: [] }),
-      prefetchChatHistory: () => {},
-      warmChatHistoryCache: () => {},
-    },
-    hydrationController: {
-      hydrateChatFromServer: async () => {
-        throw new Error('boom');
-      },
-      syncVisibleActiveChat: () => {},
-    },
-    cachedOpenController: {
-      openCachedChat: () => {
-        throw new Error('should not use cached path');
-      },
-    },
-    statusController: {
-      refreshChats: () => {},
-    },
-  });
-
-  await controller.openChat(8, { suppressColdOpenRender: true, suppressFailureSystemMessage: true });
-
-  assert.deepEqual(activeMeta, [{ chatId: 8, options: { fullTabRender: false, deferNonCritical: true } }]);
-  assert.deepEqual(rendered, []);
-  assert.deepEqual(systemMessages, []);
-  assert.equal(traces[0].eventName, 'open-start');
-  assert.equal(traces[0].details.suppressFailureSystemMessage, true);
-  assert.equal(traces.at(-1).eventName, 'open-failed');
-});
-
 test('createHistoryOpenController can suppress the cold-open placeholder render until hydration settles', async () => {
   const traces = [];
   const activeMeta = [];

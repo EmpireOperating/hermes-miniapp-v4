@@ -103,6 +103,47 @@ test('syncVisibleActiveChat retries once when unread advances but first hydrate 
   assert.deepEqual(harness.resumedChats, []);
 });
 
+test('syncVisibleActiveChat skips rerender for append-only unread hydrate when the active viewport is away from bottom', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    getRenderedTranscriptSignature: () => '0::assistant::old reply::final::::',
+    getRenderedChatId: () => 7,
+    isChatStuckToBottom: () => false,
+    shouldVirtualizeHistory: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 1, newest_unread_message_id: 2 },
+          history: [
+            { id: 1, role: 'assistant', body: 'old reply' },
+            { id: 2, role: 'assistant', body: 'fresh final reply' },
+          ],
+        };
+      }
+      if (path === '/api/chats/mark-read') {
+        harness.markReadCalls.push(Number(payload.chat_id));
+        return { chat: { id: Number(payload.chat_id), pending: false, unread_count: 0 } };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'old reply' }]);
+  harness.chats.set(7, { id: 7, unread_count: 1, newest_unread_message_id: 2, pending: false });
+
+  await harness.controller.syncVisibleActiveChat({
+    hidden: false,
+    streamAbortControllers: new Map(),
+  });
+
+  assert.deepEqual(harness.histories.get(7), [
+    { id: 1, role: 'assistant', body: 'old reply' },
+    { id: 2, role: 'assistant', body: 'fresh final reply' },
+  ]);
+  assert.deepEqual(harness.renderedMessages, []);
+  assert.equal(harness.markReadCalls.length, 0);
+});
+
 test('syncVisibleActiveChat treats visible resume like an activation fetch so active hidden chats catch up even when unread markers stay zero', async () => {
   let historyCalls = 0;
   const harness = buildHarness({
