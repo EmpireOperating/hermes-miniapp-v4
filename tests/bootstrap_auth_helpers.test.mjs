@@ -109,7 +109,15 @@ function buildHarness(overrides = {}) {
     messagesEl,
     refreshOperatorRoleLabels: () => { roleLabelsRefreshed += 1; },
     setSkin: (value) => { skin = String(value); },
-    syncChats: (chatList) => upsertedChats.push(...chatList),
+    syncChats: (chatList) => {
+      upsertedChats.push(...chatList);
+      for (const chat of chatList || []) {
+        if (!chat || typeof chat !== 'object') continue;
+        const chatId = Number(chat.id || 0);
+        if (!chatId) continue;
+        chats.set(chatId, { ...(chats.get(chatId) || {}), ...chat });
+      }
+    },
     syncPinnedChats: (list) => pinnedSyncs.push(list),
     histories,
     setActiveChatMeta: (chatId) => { activeChatId = chatId == null ? null : Number(chatId); },
@@ -488,7 +496,26 @@ test('applyAuthBootstrap avoids forced virtualization on mobile bootstrap opens 
   }, { preferredUsername: 'Desktop' });
 
   assert.deepEqual(harness.renderedMessages, [5]);
-  assert.deepEqual(harness.getRenderedMessageOptions(), [{ forceVirtualize: false }]);
+  assert.deepEqual(harness.getRenderedMessageOptions(), [{ forceVirtualize: false, preserveViewport: false }]);
+});
+
+test('applyAuthBootstrap preserves viewport on initial active render when bootstrap metadata says unread content exists', () => {
+  const harness = buildHarness();
+
+  harness.controller.applyAuthBootstrap({
+    user: { username: 'desktop', display_name: 'Desktop Tester' },
+    skin: 'terminal',
+    active_chat_id: 5,
+    chats: [{ id: 5, pending: false, unread_count: 1, newest_unread_message_id: 22 }],
+    pinned_chats: [],
+    history: [
+      { id: 21, role: 'operator', body: 'question' },
+      { id: 22, role: 'assistant', body: 'reply' },
+    ],
+  }, { preferredUsername: 'Desktop' });
+
+  assert.deepEqual(harness.renderedMessages, [5]);
+  assert.deepEqual(harness.getRenderedMessageOptions(), [{ forceVirtualize: false, preserveViewport: true }]);
 });
 
 test('applyAuthBootstrap delays history warming on mobile so reopen stays light but switching smooths out shortly after', async () => {
