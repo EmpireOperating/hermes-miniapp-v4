@@ -16,6 +16,47 @@ It provides a chat-oriented web UI inside Telegram while keeping Hermes executio
 - Rate limiting, origin checks, CSP, and secure-cookie support
 - Extensive Python and Node-based test coverage
 
+## Start here
+
+If you are brand new to the repo, use this reading order:
+
+1. Read the setup decision guide below.
+2. Follow `docs/setup.md` for the canonical bootstrap path.
+3. Read `docs/architecture.md` for the high-level request flow.
+4. Read `docs/code-reading-guide.md` for the fastest way to navigate the codebase.
+5. Use `CONTRIBUTING.md` once you are ready to change code.
+
+If you are evaluating the project before committing to Telegram/DNS work, you can validate a lot locally first:
+- bootstrap the repo with `scripts/setup.sh`
+- run `scripts/setup.sh doctor`
+- start the app with `.venv/bin/python server.py`
+- verify `curl http://127.0.0.1:8080/health`
+- run `scripts/test.sh`
+
+That local validation path proves the repo boots, dependencies install, the Flask app serves, and the test suite passes before you do the real Telegram-facing HTTPS work.
+
+## Choose your setup path
+
+Most newcomers get stuck not on Python or Flask, but on deciding which backend mode and rollout path to choose. Use this default decision table:
+
+- Fastest local validation
+  - goal: prove the repo boots and serves locally
+  - use: `scripts/setup.sh`, `scripts/setup.sh doctor`, `.venv/bin/python server.py`, `curl http://127.0.0.1:8080/health`
+  - best for: first-time humans and agents validating the repo without touching Telegram yet
+- Simplest real deployment
+  - goal: get a real Mini App working with the least machine-specific setup
+  - use: `HERMES_API_URL` or `HERMES_STREAM_URL` plus a real `MINI_APP_URL`
+  - best for: most operators and OSS evaluators
+- Same-machine advanced setup
+  - goal: run the Mini App against a local Hermes Agent runtime or CLI
+  - use: local agent/CLI configuration variables
+  - best for: contributors who already know their Hermes environment well
+
+Recommended default:
+- for most humans: start with `HERMES_API_URL` or `HERMES_STREAM_URL`
+- for agents like Hermes: start with bootstrap, doctor JSON, health check, then tests
+- only choose local-agent mode first if you specifically need same-machine runtime behavior
+
 ## Architecture
 
 Request path:
@@ -178,6 +219,49 @@ Recommended real-world rollout checklist:
 Important: `MINI_APP_URL` must be a real HTTPS URL on a domain or subdomain you control. The name itself does not matter much; if you do not already have one, the cheapest domain you can buy and control is usually fine.
 
 For a fuller walkthrough, platform notes, and troubleshooting, see `docs/setup.md` and `docs/setup-troubleshooting.md`.
+
+## Agent quickstart
+
+If you are using Hermes or another coding agent to evaluate the repo, this is the most direct path:
+
+```bash
+python3 scripts/setup_bootstrap.py --write-env-if-missing --non-interactive
+python3 scripts/setup_doctor.py --json
+.venv/bin/python server.py
+curl http://127.0.0.1:8080/health
+scripts/test.sh
+```
+
+For a fully clean environment smoke test, also run:
+
+```bash
+scripts/install_smoke.sh
+```
+
+The setup doctor JSON includes a `summary.next_steps` list, which makes it especially friendly for automated agents.
+
+## Start reading the code here
+
+The repo is intentionally split into many small backend modules and frontend helpers. If you open files in a random order, it can feel denser than it really is.
+
+Recommended reading order:
+
+1. `server.py` and `app_factory.py`
+   - app bootstrap, config loading, and route wiring
+2. `docs/architecture.md`
+   - request flow and subsystem map
+3. `routes_auth.py`, `routes_chat.py`, `routes_chat_stream.py`
+   - main HTTP entry points for auth, chat, and streaming
+4. `hermes_client.py`
+   - runtime-selection policy and Hermes execution routing
+5. `store.py` plus `store_*.py`
+   - SQLite-backed persistence split by concern
+6. `static/app.js` and `static/stream_controller.js`
+   - frontend bootstrap and streaming orchestration
+7. focused helper modules under `static/`
+   - tabs, history, unread state, file preview, shell UI, and keyboard flows
+
+If you want the shortest newcomer path, read architecture first, then route entry points, then the storage/runtime split.
 
 ## Local Hermes Agent runtime configuration
 
