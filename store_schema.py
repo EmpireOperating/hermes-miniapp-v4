@@ -27,6 +27,7 @@ class StoreSchemaMixin:
             self._ensure_chat_job_schema(conn)
             self._ensure_runtime_checkpoint_schema(conn)
             self._ensure_auth_session_schema(conn)
+            self._ensure_visual_dev_schema(conn)
             self._migrate_legacy_history(conn)
 
     def _default_startup_recovery_stats(self) -> dict[str, int]:
@@ -358,6 +359,80 @@ class StoreSchemaMixin:
         if "username" not in auth_session_columns:
             conn.execute("ALTER TABLE auth_sessions ADD COLUMN username TEXT")
 
+    def _ensure_visual_dev_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_dev_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                preview_url TEXT NOT NULL,
+                preview_origin TEXT NOT NULL,
+                preview_title TEXT NOT NULL DEFAULT '',
+                bridge_parent_origin TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'attached',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                detached_at TEXT,
+                FOREIGN KEY(chat_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_dev_selections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                selection_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES visual_dev_sessions(session_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_dev_artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                artifact_kind TEXT NOT NULL,
+                storage_path TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT '',
+                byte_size INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES visual_dev_sessions(session_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visual_dev_console_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(session_id) REFERENCES visual_dev_sessions(session_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_visual_dev_sessions_user_chat_active ON visual_dev_sessions(user_id, chat_id, detached_at, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_visual_dev_selections_session_id ON visual_dev_selections(session_id, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_visual_dev_artifacts_session_id ON visual_dev_artifacts(session_id, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_visual_dev_console_events_session_id ON visual_dev_console_events(session_id, id DESC)"
+        )
+
     def _table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
         return {
             str(row["name"])
@@ -563,6 +638,14 @@ class StoreSchemaMixin:
         ).fetchone()
         if not row:
             raise KeyError(f"Chat {chat_id} not found")
+
+    def _ensure_visual_dev_session_exists(self, conn: sqlite3.Connection, session_id: str) -> None:
+        row = conn.execute(
+            "SELECT session_id FROM visual_dev_sessions WHERE session_id = ? LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"Visual dev session {session_id} not found")
 
     def startup_recovery_stats(self) -> dict[str, int]:
         stats = getattr(self, "_startup_recovery_stats", None)

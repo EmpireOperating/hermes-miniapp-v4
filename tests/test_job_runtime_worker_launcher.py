@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
+import queue
 import signal
 import subprocess
 import time
@@ -76,6 +78,37 @@ def test_chat_worker_subprocess_skips_warm_attach_when_contract_disabled(monkeyp
         def __init__(self, *args, **kwargs):
             attach_server_created["value"] = True
             raise AssertionError("warm attach server should not start when contract disabled")
+
+    monkeypatch.setattr(chat_worker_subprocess, "_stream_request", fake_stream_request)
+    monkeypatch.setattr(chat_worker_subprocess, "_WarmAttachServer", UnexpectedAttachServer)
+    monkeypatch.setattr(chat_worker_subprocess.sys, "stdin", io.StringIO('{"user_id":"123","message":"hello","session_id":"miniapp-123-55"}'))
+
+    result = chat_worker_subprocess.main()
+
+    assert result == 0
+    assert attach_server_created["value"] is False
+    assert len(stream_calls) == 1
+    assert stream_calls[0]["emit_terminal"] is True
+
+
+def test_chat_worker_subprocess_skips_warm_attach_by_default_even_when_contract_enabled(monkeypatch) -> None:
+    class FakeClient:
+        def warm_session_contract(self):
+            return SimpleNamespace(enabled=True)
+
+    monkeypatch.delenv("MINI_APP_SUBPROCESS_WARM_ATTACH", raising=False)
+    monkeypatch.setattr(chat_worker_subprocess, "HermesClient", FakeClient)
+    stream_calls: list[dict[str, object]] = []
+    attach_server_created = {"value": False}
+
+    def fake_stream_request(**kwargs):
+        stream_calls.append(dict(kwargs))
+        return 0
+
+    class UnexpectedAttachServer:
+        def __init__(self, *args, **kwargs):
+            attach_server_created["value"] = True
+            raise AssertionError("warm attach server should stay off by default for subprocess workers")
 
     monkeypatch.setattr(chat_worker_subprocess, "_stream_request", fake_stream_request)
     monkeypatch.setattr(chat_worker_subprocess, "_WarmAttachServer", UnexpectedAttachServer)
@@ -279,11 +312,9 @@ def test_subprocess_worker_stream_parses_events_tracks_spawn_and_stderr(monkeypa
             self.pid = 91234
             self.stdin = io.StringIO()
             self.stdout = io.StringIO(
-                '{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/attach.sock","resume_token":"token-123","resume_deadline_ms":123456}\n'
                 '{"type":"chunk","text":"hello"}\n'
                 '{"type":"done","reply":"ok","latency_ms":1}\n'
                 '{"type":"worker_terminal","outcome":"success"}\n'
-                '{"type":"attach_ready","session_id":"miniapp-123-55","transport_kind":"unix_socket_jsonl","worker_endpoint":"/tmp/attach.sock","resume_token":"token-456","resume_deadline_ms":123999}\n'
             )
             self.returncode = 0
 
@@ -341,11 +372,8 @@ def test_subprocess_worker_stream_parses_events_tracks_spawn_and_stderr(monkeypa
 
     assert [event["type"] for event in events] == ["chunk", "done"]
     assert tracked_spawns == [(launcher.transport, 91234)]
-    assert tracked_attach_ready == [
-        ("miniapp-123-55", 91234, "unix_socket_jsonl"),
-        ("miniapp-123-55", 91234, "unix_socket_jsonl"),
-    ]
-    assert tracked_finishes == [(91234, f"{launcher.transport}:detached_warm_worker", 0)]
+    assert tracked_attach_ready == []
+    assert tracked_finishes == [(91234, f"{launcher.transport}:completed", 0)]
     info = launcher.describe()
     assert info["last_stderr_excerpt"] == "worker stderr sample"
     assert info["limits"] == {"memory_mb": 1024, "max_tasks": 64, "max_open_files": 256}
@@ -353,12 +381,14 @@ def test_subprocess_worker_stream_parses_events_tracks_spawn_and_stderr(monkeypa
     assert captured_popen_kwargs["env"]["MINI_APP_JOB_WORKER_LAUNCHER"] == "inline"
     assert captured_popen_kwargs["env"]["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP"] == "shared"
     assert captured_popen_kwargs["env"]["MINI_APP_PERSISTENT_SESSIONS"] == "1"
+    assert captured_popen_kwargs["env"]["MINI_APP_SUBPROCESS_WARM_ATTACH"] == "0"
 
 
-def test_subprocess_worker_stream_synthesizes_done_for_detached_warm_handoff(monkeypatch, tmp_path) -> None:
+def test_subprocess_worker_stream_can_detach_when_warm_attach_explicitly_enabled(monkeypatch, tmp_path) -> None:
     script_path = tmp_path / "chat_worker_subprocess.py"
     script_path.write_text("# synthetic test script placeholder\n", encoding="utf-8")
 
+    monkeypatch.setenv("MINI_APP_SUBPROCESS_WARM_ATTACH", "1")
     launcher = SubprocessJobWorkerLauncher(script_path=script_path, python_executable="python3")
 
     class FakeProcess:
@@ -411,6 +441,7 @@ def test_subprocess_worker_stream_detaches_immediately_after_done_when_attach_re
     script_path = tmp_path / "chat_worker_subprocess.py"
     script_path.write_text("# synthetic test script placeholder\n", encoding="utf-8")
 
+    monkeypatch.setenv("MINI_APP_SUBPROCESS_WARM_ATTACH", "1")
     launcher = SubprocessJobWorkerLauncher(script_path=script_path, python_executable="python3")
 
     class FakeProcess:
@@ -720,6 +751,59 @@ def test_subprocess_worker_timeout_forces_termination(monkeypatch, tmp_path) -> 
     assert "timed out stderr trail" in str(info["last_stderr_excerpt"])
     assert info["last_terminal_outcome"] == "timeout_killed"
     assert "timed out stderr trail" in str(info["last_terminal_error"])
+
+
+def test_subprocess_worker_stream_emits_periodic_memory_samples_while_running() -> None:
+    class FakeLineQueue:
+        def __init__(self) -> None:
+            self._items = [queue.Empty(), '{"type":"done","reply":"ok","latency_ms":1}\n', None]
+
+        def get(self, timeout=None):
+            item = self._items.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        def get_nowait(self):
+            item = self._items.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    monotonic_values = iter([0.0, 6.0, 6.1, 6.2])
+    lifecycle = job_runtime_worker_launcher_subprocess.SubprocessStreamLifecycle(
+        transport="chat-worker-subprocess",
+        timeout_seconds=30.0,
+        first_event_timeout_seconds=7.5,
+        kill_grace_seconds=0.01,
+        stderr_excerpt_bytes=128,
+        decode_event=lambda raw: json.loads(raw),
+        stdout_line_queue=lambda proc: FakeLineQueue(),
+        read_stderr_excerpt=lambda stderr_file, max_bytes: None,
+        signal_process_tree=lambda proc, sig: None,
+        classify_limit_breach=lambda **kwargs: (None, None),
+        build_timeout_message=lambda **kwargs: "timeout",
+        build_exit_message=lambda **kwargs: "exit",
+        monotonic_now=lambda: next(monotonic_values, 6.2),
+        memory_sample_interval_seconds=5.0,
+    )
+
+    state = job_runtime_worker_launcher_subprocess.SubprocessStreamState()
+    samples: list[dict[str, object]] = []
+    runtime = SimpleNamespace(
+        client=SimpleNamespace(
+            observe_child_process_sample=lambda **kwargs: samples.append(dict(kwargs)),
+        )
+    )
+    proc = SimpleNamespace(pid=93210, stdout=object(), poll=lambda: None)
+
+    events = list(lifecycle.iter_events(runtime, proc=proc, session_id="miniapp-123-55", state=state))
+
+    assert [event["type"] for event in events] == ["done"]
+    assert len(samples) == 1
+    assert samples[0]["pid"] == 93210
+    assert samples[0]["transport"] == "chat-worker-subprocess"
+    assert samples[0]["session_id"] == "miniapp-123-55"
 
 
 def test_subprocess_worker_times_out_distinctly_before_first_event(monkeypatch, tmp_path) -> None:
