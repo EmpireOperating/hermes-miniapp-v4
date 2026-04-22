@@ -600,7 +600,12 @@
         historyCount: bootstrapHistory.length,
         restoredPendingSnapshot,
       });
-      renderMessages(activeId, { forceVirtualize: bootstrapForceVirtualize });
+      const shouldPreserveInitialViewport = Math.max(0, Number(activeChat?.unread_count || 0)) > 0
+        || unreadAnchorMessageId > 0;
+      renderMessages(activeId, {
+        forceVirtualize: bootstrapForceVirtualize,
+        preserveViewport: shouldPreserveInitialViewport,
+      });
       onBootstrapStage?.("initial-render-finished", {
         activeChatId: activeId,
         historyCount: bootstrapHistory.length,

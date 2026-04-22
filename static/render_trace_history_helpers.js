@@ -310,6 +310,11 @@
         restoreViewportSnapshot(prevViewportSnapshot || { scrollTop: prevScrollTop });
       } else if (chatScrollTop.has(targetChatId) && !shouldStick) {
         messagesEl.scrollTop = Math.max(0, chatScrollTop.get(targetChatId));
+      } else if (preserveViewport && !shouldStick) {
+        // Fresh bootstrap / host-recreated unread renders can arrive before we have any
+        // per-chat scroll snapshot. In that case, preserving the current top-of-log viewport
+        // is safer than snapping to bottom and immediately clearing unread state.
+        messagesEl.scrollTop = Math.max(0, Number(prevScrollTop) || 0);
       } else {
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }

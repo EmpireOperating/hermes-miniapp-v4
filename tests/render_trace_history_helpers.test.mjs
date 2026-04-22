@@ -445,6 +445,58 @@ test('createHistoryRenderController renderMessages delegates at-bottom unseen cl
   assert.deepEqual(refreshed, [7]);
 });
 
+test('createHistoryRenderController preserveViewport keeps a fresh unread bootstrap render at the top when no prior scroll snapshot exists', () => {
+  const histories = new Map([[7, [
+    { id: 1, role: 'operator', body: 'prompt', created_at: '2026-04-08T08:00:00Z' },
+    { id: 2, role: 'assistant', body: 'reply', created_at: '2026-04-08T08:00:01Z' },
+  ]]]);
+  const delegated = [];
+  const messagesEl = {
+    scrollHeight: 1200,
+    clientHeight: 400,
+    scrollTop: 0,
+    innerHTML: '',
+    appendChild(node) {
+      return node;
+    },
+    querySelectorAll() {
+      return [];
+    },
+  };
+  const controller = renderTraceHistoryHelpers.createHistoryRenderController({
+    messagesEl,
+    jumpLatestButton: { hidden: true },
+    jumpLastStartButton: { hidden: true },
+    histories,
+    virtualizationRanges: new Map(),
+    virtualMetrics: new Map(),
+    renderedHistoryLength: new Map(),
+    renderedHistoryVirtualized: new Map(),
+    unseenStreamChats: new Set(),
+    chatScrollTop: new Map(),
+    chatStickToBottom: new Map(),
+    getActiveChatId: () => 7,
+    getRenderedChatId: () => 0,
+    setRenderedChatId: () => {},
+    refreshTabNode: () => {},
+    syncActiveViewportReadState: (chatId, options = {}) => {
+      delegated.push([Number(chatId), { atBottom: options.atBottom }]);
+      return true;
+    },
+    clearSelectionQuoteStateFn: () => {},
+    syncLiveToolStreamForChatFn: () => {},
+    appendMessagesFn: () => {},
+    shouldUseAppendOnlyRenderFn: () => false,
+    renderTraceLogFn: () => {},
+    createFragmentFn: () => ({ children: [] }),
+  });
+
+  controller.renderMessages(7, { preserveViewport: true });
+
+  assert.equal(messagesEl.scrollTop, 0);
+  assert.deepEqual(delegated, []);
+});
+
 function createAnchoredMessageNode(messageKey, offsetTop, offsetHeight = 100) {
   return { dataset: { messageKey }, offsetTop, offsetHeight };
 }
