@@ -12,6 +12,7 @@ from hermes_client_tool_progress import (
     build_tool_progress_item,
     normalize_tool_progress_callback_args,
     stream_event_from_tool_item,
+    tool_progress_dedupe_key,
 )
 from hermes_client_types import HermesClientError
 
@@ -112,8 +113,8 @@ class HermesClientPersistentAgentMixin:
             normalized = normalize_tool_progress_callback_args(callback_args)
             if not normalized:
                 return
-            dedupe_key = f"{normalized['event_type']}::{normalized['tool_name']}::{normalized.get('tool_call_id') or ''}"
-            if self.tool_progress_mode == "new" and dedupe_key == last_tool_key["value"]:
+            dedupe_key = tool_progress_dedupe_key(normalized, mode=self.tool_progress_mode)
+            if dedupe_key and dedupe_key == last_tool_key["value"]:
                 return
             last_tool_key["value"] = dedupe_key
             event_queue.put(

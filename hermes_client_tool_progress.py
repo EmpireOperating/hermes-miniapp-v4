@@ -104,6 +104,20 @@ def normalize_tool_progress_callback_args(callback_args: tuple[Any, ...] | list[
     return result
 
 
+def tool_progress_dedupe_key(item: dict[str, Any], *, mode: str) -> str | None:
+    normalized_mode = str(mode or "all").strip().lower()
+    if normalized_mode != "new":
+        return None
+    tool_call_id = str(item.get("tool_call_id") or "").strip()
+    if not tool_call_id:
+        return None
+    event_type = _normalize_event_type(item.get("event_type"))
+    tool_name = str(item.get("tool_name") or "").strip()
+    if not tool_name:
+        return None
+    return f"{event_type}::{tool_name}::{tool_call_id}"
+
+
 def build_tool_progress_item(
     *,
     event_type: str,

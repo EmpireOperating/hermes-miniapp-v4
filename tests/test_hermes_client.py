@@ -1961,6 +1961,34 @@ def test_tool_progress_item_preserves_id_alias_as_tool_call_id() -> None:
     assert event["phase"] == "completed"
 
 
+def test_tool_progress_dedupe_key_requires_stable_tool_call_id_for_new_mode() -> None:
+    key = hermes_client_tool_progress.tool_progress_dedupe_key(
+        {
+            "event_type": "tool.started",
+            "tool_name": "search_files",
+            "preview": "first",
+            "args": {},
+            "metadata": {},
+        },
+        mode="new",
+    )
+
+    assert key is None
+
+
+def test_tool_progress_dedupe_key_uses_event_type_tool_name_and_stable_call_id() -> None:
+    key = hermes_client_tool_progress.tool_progress_dedupe_key(
+        {
+            "event_type": "tool.updated",
+            "tool_name": "search_files",
+            "tool_call_id": "call-123",
+        },
+        mode="new",
+    )
+
+    assert key == "tool.updated::search_files::call-123"
+
+
 def test_direct_agent_timeout_resets_on_progress_events(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_DIRECT_AGENT", "1")
     monkeypatch.setenv("MINI_APP_PERSISTENT_SESSIONS", "0")
