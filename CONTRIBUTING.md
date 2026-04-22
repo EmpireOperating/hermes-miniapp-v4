@@ -5,6 +5,7 @@ Thanks for your interest in improving Hermes Mini App v4.
 ## Before you start
 
 - Read `README.md` for setup and test commands.
+- Read `docs/code-reading-guide.md` if you are new to the repo layout.
 - Check existing issues or discussions before starting large changes.
 - For security-sensitive bugs, do not open a public issue. Follow `SECURITY.md` instead.
 

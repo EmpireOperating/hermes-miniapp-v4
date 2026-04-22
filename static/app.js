@@ -349,6 +349,7 @@ const jumpLastStartButton = document.getElementById("jump-last-start");
 const body = document.body;
 const SKIN_STORAGE_KEY = "hermes_skin";
 const PINNED_CHATS_COLLAPSED_STORAGE_KEY = "hermes_pinned_chats_collapsed";
+const CHAT_TAB_ORDER_STORAGE_KEY = "hermes_chat_tab_order";
 const DEV_AUTH_SESSION_STORAGE_KEY = "hermes_dev_auth_defaults";
 const PINNED_CHATS_AUTO_COLLAPSE_THRESHOLD = 8;
 const ALLOWED_SKINS = new Set(["terminal", "oracle", "obsidian"]);
@@ -648,6 +649,7 @@ function applyStoredPinnedChatsCollapsePreference({
 function createChatTabsController() {
   return chatTabsHelpers.createController(createChatTabsControllerDeps({
   localStorageRef: localStorage,
+  orderedChatIdsStorageKey: CHAT_TAB_ORDER_STORAGE_KEY,
   pinnedChatsCollapsedStorageKey: PINNED_CHATS_COLLAPSED_STORAGE_KEY,
   pinnedChatsAutoCollapseThreshold: PINNED_CHATS_AUTO_COLLAPSE_THRESHOLD,
   chats,
