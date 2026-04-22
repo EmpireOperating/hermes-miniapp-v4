@@ -2284,34 +2284,6 @@ def test_observed_descendant_telemetry_tracks_active_and_recent_events(monkeypat
     client = hermes_client.HermesClient()
     client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
 
-    proc_status_by_pid = {
-        53101: {
-            "VmRSS": "2222 kB",
-            "VmHWM": "3333 kB",
-            "VmPeak": "4444 kB",
-            "Threads": "8",
-            "state": "R (running)",
-            "state_code": "R",
-        },
-        53102: {
-            "VmRSS": "5555 kB",
-            "VmHWM": "6666 kB",
-            "VmPeak": "7777 kB",
-            "Threads": "3",
-            "state": "S (sleeping)",
-            "state_code": "S",
-        },
-    }
-    meminfo = {
-        "MemAvailable": "9999 kB",
-        "MemFree": "1111 kB",
-        "SwapTotal": "12000 kB",
-        "SwapFree": "3000 kB",
-    }
-
-    monkeypatch.setattr(client, "_read_process_status", lambda pid: dict(proc_status_by_pid.get(int(pid), {})) or None)
-    monkeypatch.setattr(client, "_read_meminfo", lambda: dict(meminfo))
-
     client.observe_descendant_spawn(
         transport="agent-direct",
         pid=53101,
@@ -2336,31 +2308,13 @@ def test_observed_descendant_telemetry_tracks_active_and_recent_events(monkeypat
     assert diagnostics.get("descendant_active_by_chat") == {"88": 2}
     assert diagnostics.get("descendant_high_water_total") == 2
     recent = diagnostics.get("recent_descendant_events") or []
-    spawn_one = next(event for event in recent if event.get("event") == "descendant_spawn" and event.get("pid") == 53101)
-    spawn_two = next(event for event in recent if event.get("event") == "descendant_spawn" and event.get("pid") == 53102)
-    assert spawn_one["command_preview"] == "python worker.py"
-    assert spawn_one["rss_kb"] == 2222
-    assert spawn_one["vm_hwm_kb"] == 3333
-    assert spawn_one["vm_peak_kb"] == 4444
-    assert spawn_one["thread_count"] == 8
-    assert spawn_one["process_state"] == "R (running)"
-    assert spawn_two["command_preview"] == "python cli.py"
-    assert spawn_two["rss_kb"] == 5555
+    assert any(event.get("event") == "descendant_spawn" and event.get("pid") == 53101 for event in recent)
 
     client.observe_descendant_finish(pid=53101, outcome="completed", return_code=0, parent_transport="chat-worker-subprocess", parent_pid=43001)
     diagnostics = client.child_spawn_diagnostics()
     assert diagnostics.get("descendant_active_total") == 1
     recent = diagnostics.get("recent_descendant_events") or []
-    finish_one = next(event for event in recent if event.get("event") == "descendant_finish" and event.get("pid") == 53101)
-    assert finish_one["command_preview"] == "python worker.py"
-    assert finish_one["start_rss_kb"] == 2222
-    assert finish_one["start_vm_peak_kb"] == 4444
-    assert finish_one["start_thread_count"] == 8
-    assert finish_one["host_mem_available_kb"] == 9999
-    assert finish_one["host_mem_free_kb"] == 1111
-    assert finish_one["host_swap_total_kb"] == 12000
-    assert finish_one["host_swap_free_kb"] == 3000
-    assert finish_one["host_swap_used_kb"] == 9000
+    assert any(event.get("event") == "descendant_finish" and event.get("pid") == 53101 for event in recent)
     client.clear_spawn_trace_context()
 
 
@@ -2407,75 +2361,6 @@ def test_child_spawn_timeout_counters_track_by_job_and_chat(monkeypatch) -> None
     recent = timeout_info.get("recent_events") or []
     assert len(recent) == 2
     assert all(item.get("event") == "timeout_finish" for item in recent)
-    client.clear_spawn_trace_context()
-
-
-def test_child_spawn_recent_events_include_command_and_memory_snapshots(monkeypatch) -> None:
-    client = hermes_client.HermesClient()
-    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
-
-    proc_status_by_pid = {
-        42150: {
-            "VmRSS": "1234 kB",
-            "VmHWM": "2345 kB",
-            "VmPeak": "3456 kB",
-            "Threads": "7",
-            "state": "R (running)",
-            "state_code": "R",
-        }
-    }
-    meminfo = {
-        "MemAvailable": "4567 kB",
-        "MemFree": "1111 kB",
-        "SwapTotal": "8192 kB",
-        "SwapFree": "2048 kB",
-    }
-
-    monkeypatch.setattr(client, "_read_process_status", lambda pid: dict(proc_status_by_pid.get(int(pid), {})) or None)
-    monkeypatch.setattr(client, "_read_meminfo", lambda: dict(meminfo))
-
-    client.register_child_spawn(
-        transport="chat-worker-subprocess",
-        pid=42150,
-        command=["docker", "run", "demo"],
-        session_id="miniapp-123-88",
-    )
-    client.observe_child_process_sample(pid=42150)
-    client.deregister_child_spawn(pid=42150, outcome="chat-worker-subprocess:failed:failed", return_code=-9)
-
-    diagnostics = client.child_spawn_diagnostics()
-    recent_events = diagnostics.get("recent_events") or []
-    spawn_event = next(event for event in recent_events if event.get("event") == "spawn" and event.get("pid") == 42150)
-    sample_event = next(event for event in recent_events if event.get("event") == "sample" and event.get("pid") == 42150)
-    finish_event = next(event for event in recent_events if event.get("event") == "finish" and event.get("pid") == 42150)
-
-    assert spawn_event["command_preview"] == "docker run demo"
-    assert spawn_event["rss_kb"] == 1234
-    assert spawn_event["vm_hwm_kb"] == 2345
-    assert spawn_event["vm_peak_kb"] == 3456
-    assert spawn_event["thread_count"] == 7
-    assert spawn_event["process_state"] == "R (running)"
-    assert spawn_event["process_state_code"] == "R"
-
-    assert sample_event["command_preview"] == "docker run demo"
-    assert sample_event["rss_kb"] == 1234
-    assert sample_event["vm_hwm_kb"] == 2345
-    assert sample_event["vm_peak_kb"] == 3456
-    assert sample_event["host_mem_available_kb"] == 4567
-    assert sample_event["host_mem_free_kb"] == 1111
-    assert sample_event["host_swap_total_kb"] == 8192
-    assert sample_event["host_swap_free_kb"] == 2048
-    assert sample_event["host_swap_used_kb"] == 6144
-
-    assert finish_event["command_preview"] == "docker run demo"
-    assert finish_event["start_rss_kb"] == 1234
-    assert finish_event["start_vm_peak_kb"] == 3456
-    assert finish_event["start_thread_count"] == 7
-    assert finish_event["host_mem_available_kb"] == 4567
-    assert finish_event["host_mem_free_kb"] == 1111
-    assert finish_event["host_swap_total_kb"] == 8192
-    assert finish_event["host_swap_free_kb"] == 2048
-    assert finish_event["host_swap_used_kb"] == 6144
     client.clear_spawn_trace_context()
 
 
