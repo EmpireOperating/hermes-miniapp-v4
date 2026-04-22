@@ -8,8 +8,10 @@ The docs tree is intended to stay scoped to Hermes Mini App. Unrelated project d
 
 1. `../README.md`
 2. `setup.md`
-3. `../CONTRIBUTING.md`
-4. `../SECURITY.md`
+3. `architecture.md`
+4. `code-reading-guide.md`
+5. `../CONTRIBUTING.md`
+6. `../SECURITY.md`
 
 ## Public-facing docs
 
@@ -19,6 +21,8 @@ The docs tree is intended to stay scoped to Hermes Mini App. Unrelated project d
   - keyed troubleshooting matrix for setup doctor failures and warnings, including DNS/domain and Windows-mode guidance
 - `architecture.md`
   - high-level component and request-flow overview
+- `code-reading-guide.md`
+  - recommended file-reading order for newcomers who want to understand the repo without starting from random modules
 - `deployment.md`
   - deployment and production-hardening guidance
 
