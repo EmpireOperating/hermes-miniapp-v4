@@ -217,6 +217,7 @@ class SubprocessJobWorkerLauncher:
             build_timeout_message=self._subprocess_timeout_message_for_phase,
             build_exit_message=self._subprocess_exit_message,
             monotonic_now=time.monotonic,
+            memory_sample_interval_seconds=5.0,
         )
 
     def _build_stream_payload(
@@ -256,6 +257,7 @@ class SubprocessJobWorkerLauncher:
         child_env["MINI_APP_JOB_WORKER_LAUNCHER"] = "inline"
         child_env["MINI_APP_PERSISTENT_RUNTIME_OWNERSHIP"] = "shared"
         child_env["MINI_APP_PERSISTENT_SESSIONS"] = "1"
+        child_env.setdefault("MINI_APP_SUBPROCESS_WARM_ATTACH", "0")
         return child_env
 
     def _assert_spawn_allowed(self, runtime: "JobRuntime", *, session_id: str) -> str | None:

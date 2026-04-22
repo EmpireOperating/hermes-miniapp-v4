@@ -33,6 +33,7 @@ class SubprocessStreamState:
     failure_kind: str | None = None
     terminal_outcome: str | None = None
     terminal_error: str | None = None
+    last_memory_sample_at: float | None = None
 
 
 class SubprocessStreamLifecycle:
@@ -52,6 +53,7 @@ class SubprocessStreamLifecycle:
         build_timeout_message: Callable[..., str],
         build_exit_message: Callable[..., str],
         monotonic_now: Callable[[], float] = time.monotonic,
+        memory_sample_interval_seconds: float = 5.0,
     ) -> None:
         self.transport = transport
         self.timeout_seconds = float(timeout_seconds)
@@ -66,6 +68,28 @@ class SubprocessStreamLifecycle:
         self.build_timeout_message = build_timeout_message
         self.build_exit_message = build_exit_message
         self.monotonic_now = monotonic_now
+        self.memory_sample_interval_seconds = max(1.0, float(memory_sample_interval_seconds))
+
+    def maybe_emit_memory_sample(
+        self,
+        runtime: 'JobRuntime',
+        *,
+        proc: subprocess.Popen[str],
+        session_id: str,
+        state: SubprocessStreamState,
+        now: float,
+    ) -> None:
+        if state.detached_warm_worker or int(getattr(proc, 'pid', 0) or 0) <= 0:
+            return
+        last_sample_at = state.last_memory_sample_at
+        if last_sample_at is not None and (now - float(last_sample_at)) < self.memory_sample_interval_seconds:
+            return
+        observe_child_process_sample = getattr(runtime.client, 'observe_child_process_sample', None)
+        if not callable(observe_child_process_sample):
+            state.last_memory_sample_at = now
+            return
+        observe_child_process_sample(pid=int(proc.pid), transport=self.transport, session_id=str(session_id or ''))
+        state.last_memory_sample_at = now
 
     def handle_child_spawn_event(
         self,
@@ -211,6 +235,7 @@ class SubprocessStreamLifecycle:
             try:
                 raw_line = line_queue.get(timeout=min(0.2, remaining))
             except queue.Empty:
+                self.maybe_emit_memory_sample(runtime, proc=proc, session_id=session_id, state=state, now=now)
                 if proc.poll() is not None:
                     try:
                         raw_line = line_queue.get_nowait()
