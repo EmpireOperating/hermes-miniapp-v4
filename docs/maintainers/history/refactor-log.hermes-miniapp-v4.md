@@ -5,6 +5,15 @@
 > The active backlog now lives in `docs/maintainers/history/refactor-plan.hermes-miniapp-v4.md`.
 
 
+## Execution 2026-04-23 16:30Z
+- Ran `refactor-execute-pass` for R75 on a clean non-live worktree (`refactor/r75-fail-open-telemetry`) based on `origin/main`.
+- R75: Hardened child-process telemetry so subprocess memory sampling is fail-open and spawn-tracker bookkeeping no longer holds `_spawn_tracker_lock` across `/proc` and host-memory reads. `SubprocessStreamLifecycle.maybe_emit_memory_sample(...)` now logs and suppresses telemetry-sampling failures, while `HermesClient.observe_child_process_sample(...)` and `observe_descendant_finish(...)` gather process snapshots outside the critical section and only reacquire the lock to append finalized event payloads.
+- Added targeted regressions in `tests/test_job_runtime_worker_launcher.py` for failed memory sampling and in `tests/test_hermes_client.py` for the lock-scope contract around child/descendant snapshot collection.
+- Validation evidence:
+  - `python3 -m py_compile hermes_client.py job_runtime_worker_launcher_subprocess.py tests/test_hermes_client.py tests/test_job_runtime_worker_launcher.py` → passed
+  - `python3 -m pytest -q tests/test_job_runtime_worker_launcher.py -k "memory_sample or descendant or subprocess"` → `26 passed, 4 deselected`
+  - `python3 -m pytest -q tests/test_hermes_client.py -k "child_spawn or descendant or recall_health"` → `9 passed, 108 deselected`
+
 ## Execution 2026-04-23 15:20Z
 - Ran `refactor-execute-pass` for R73, R74, and R77 on a clean non-live worktree (`refactor/r73-r74-r77`) based on `origin/main` because the live worktree was dirty with unrelated clusters.
 - R73: Hardened subprocess register-failure cleanup in `job_runtime_worker_launcher.py` / `job_runtime_worker_launcher_subprocess.py` so `register_child_spawn(...)` failures stay inside the normal finalize path. Added direct regression coverage in `tests/test_job_runtime_worker_launcher.py` for SIGKILL/reap, stderr handle closure, and launcher diagnostic updates on register failure.

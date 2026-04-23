@@ -7,41 +7,41 @@
 ## Project snapshot
 - Project: hermes-miniapp-v4
 - Project slug: hermes-miniapp-v4
-- Generated: 2026-04-23T15:20:04Z
+- Generated: 2026-04-23T16:47:24Z
 - Plan maintenance note: Compacted on 2026-04-11 so this file stays focused on active work; older completed-item detail and refresh evidence live in `docs/maintainers/history/refactor-log.hermes-miniapp-v4.md`.
-- Branch: refactor/r73-r74-r77
-- Git status summary: dirty (`git status --short --branch` currently shows `## refactor/r73-r74-r77...origin/main` plus the scoped R73/R74/R77 edits in 7 tracked files).
-- Analysis mode: execution pass for requested backlog items R73 + R74 + R77 on a clean non-live worktree branched from `origin/main`.
+- Branch: refactor/r73-r75-integration
+- Git status summary: clean (`git status --short --branch` shows `## refactor/r73-r75-integration...origin/main [ahead 2]` after stitching the completed slices).
+- Analysis mode: integration pass that stitched completed backlog items R73, R74, R75, and R77 onto a fresh non-live worktree branched from `origin/main`.
 - Validation snapshot:
-  - `git status --short --branch` → dirty on `refactor/r73-r74-r77` with scoped edits in `job_runtime_chat_job.py`, `job_runtime_worker_launcher.py`, `job_runtime_worker_launcher_subprocess.py`, `static/chat_admin_helpers.js`, `tests/chat_admin_helpers.test.mjs`, `tests/test_job_runtime_chat_job.py`, and `tests/test_job_runtime_worker_launcher.py`.
-  - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "register_failed or subprocess"` → `26 passed, 4 deselected`.
-  - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py` → `30 passed`.
-  - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"` → `5 passed, 20 deselected`.
-  - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py` → `25 passed`.
-  - `node --test tests/chat_admin_helpers.test.mjs` → `38 passed`.
-  - Independent review gate over the completed branch passed for R73, R74, and R77 after rework for completion-order and duplicate-tab-render concerns.
+  - `/home/hermes-agent/workspace/active/hermes_miniapp_v4/.venv/bin/python -m py_compile job_runtime_worker_launcher.py job_runtime_chat_job.py job_runtime_worker_launcher_subprocess.py hermes_client.py tests/test_job_runtime_worker_launcher.py tests/test_job_runtime_chat_job.py tests/test_hermes_client.py` → passed.
+  - `/home/hermes-agent/workspace/active/hermes_miniapp_v4/.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "register_failed or memory_sample or descendant or subprocess"` → `27 passed, 4 deselected`.
+  - `/home/hermes-agent/workspace/active/hermes_miniapp_v4/.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"` → `5 passed, 20 deselected`.
+  - `/home/hermes-agent/workspace/active/hermes_miniapp_v4/.venv/bin/python -m pytest -q tests/test_hermes_client.py -k "child_spawn or descendant or recall_health"` → `9 passed, 108 deselected`.
+  - `node --check static/chat_admin_helpers.js && node --check tests/chat_admin_helpers.test.mjs && node --test tests/chat_admin_helpers.test.mjs` → `38 passed`.
+  - Independent review gates previously passed on the source branches for R73, R74, R75, and R77; the stitched branch now also has combined scoped validation.
 
 ## Progress metrics
 
 - Total items: 79
-- Done: 75
+- Done: 76
 - In progress: 0
 - Blocked: 0
-- Todo: 4
-- % complete: 95%
-- Last completed item: R77 (Harden `removeActiveChat(...)` optimistic close / rollback tab-strip reconciliation)
-- Last updated: 2026-04-23T15:20:04Z
+- Todo: 3
+- % complete: 96%
+- Last completed item: R75 (Fail-open child memory/descendant diagnostics and shrink spawn-tracker lock scope)
+- Last updated: 2026-04-23T16:47:24Z
 
 ## Next up
 
-- R75: Fail-open child memory/descendant diagnostics and shrink spawn-tracker lock scope
 - R76: Isolate or gate optional `visual_dev_*` schema from core store startup
 - R78: Add direct persistence/normalization coverage for ordered tab state and isolate open-request authority from `static/app.js`
+- R79: Guarantee a final visible render/reset when `suppressColdOpenRender` meets an uncached empty hydrate
 
 Note: “Next up” is only a prioritized subset, not the full backlog.
 
 ## Recently completed
 
+- R75 (2026-04-23): Hardened child-process telemetry so subprocess memory sampling is strictly best-effort and child/descendant diagnostics stop doing procfs/host-memory reads while holding `_spawn_tracker_lock`. `SubprocessStreamLifecycle.maybe_emit_memory_sample(...)` now swallows telemetry-sampling failures after debug logging, while `HermesClient.observe_child_process_sample(...)` and `observe_descendant_finish(...)` snapshot counts/records under lock, release the lock for `/proc` + host-memory reads, and only reacquire it to append the final event payload. Added regression coverage proving failed memory sampling no longer breaks the stream and that both snapshot collectors execute outside the tracker lock. Validation: `python3 -m py_compile hermes_client.py job_runtime_worker_launcher_subprocess.py tests/test_hermes_client.py tests/test_job_runtime_worker_launcher.py`, `python3 -m pytest -q tests/test_job_runtime_worker_launcher.py -k "memory_sample or descendant or subprocess"` (`26 passed, 4 deselected`), and `python3 -m pytest -q tests/test_hermes_client.py -k "child_spawn or descendant or recall_health"` (`9 passed, 108 deselected`).
 - R77 (2026-04-23): Hardened `removeActiveChat(...)` reconciliation by centralizing post-remove UI refresh through `reconcilePostRemoveRender(...)`, so optimistic close, rollback, explicit no-active-chat, lightweight reopen, and authoritative server-active paths all refresh tab-strip, pinned list, and transcript state coherently without duplicate production tab renders. Updated the chat-admin harness to mirror runtime meta-render behavior and added direct assertions for rollback, no-active-chat, and lightweight-response reopen tab-strip refresh. Validation: `node --test tests/chat_admin_helpers.test.mjs` (`38 passed`).
 - R74 (2026-04-23): Made post-`done` chat-job completion resilient to session-eviction failures without opening a same-chat claim race by keeping eviction ahead of `complete_job(...)` but guarding it with best-effort failure handling and a `finally` completion path. Added regression coverage proving `done` still persists/completes when eviction raises while preserving warm-detached owner semantics. Validation: `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"` (`5 passed, 20 deselected`) and `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py` (`25 passed`).
 - R73 (2026-04-23): Hardened subprocess register-failure cleanup by keeping `register_child_spawn(...)` failures inside the shared lifecycle/finalize contract, extracting `mark_subprocess_setup_failure(...)`, and adding regression coverage proving the orphaned child is SIGKILLed/reaped, stderr is captured/closed, and launcher diagnostics are updated consistently when registration raises. Validation: `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "register_failed or subprocess"` (`26 passed, 4 deselected`) and `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py` (`30 passed`).
@@ -49,7 +49,7 @@ Note: “Next up” is only a prioritized subset, not the full backlog.
 - R71 (2026-04-12): Continued decomposing `static/stream_controller.js` by extracting event-specific helper bands (`createStreamMetaEventController(...)`, `createToolTraceEventController(...)`, `createAssistantChunkEventController(...)`, `createStreamErrorEventController(...)`) plus direct consume/read-loop helpers (`createTranscriptBufferController(...)`, `createTranscriptReadLoopController(...)`). This leaves `createStreamNonTerminalEventController(...)` and `createTranscriptConsumeController(...)` as orchestration glue over smaller session/consume ownership seams. Validated with `node --check static/stream_controller.js tests/stream_controller_policy_session.test.mjs tests/stream_controller_response.test.mjs tests/stream_controller_resume_finalize.test.mjs tests/frontend_runtime_stream_activity.test.mjs tests/stream_controller_app_delegation.test.mjs` and `node --test tests/stream_controller_policy_session.test.mjs tests/stream_controller_response.test.mjs tests/stream_controller_resume_finalize.test.mjs tests/frontend_runtime_stream_activity.test.mjs tests/stream_controller_app_delegation.test.mjs` (`54 passed` for the stream-focused subset, green in the combined app-shell validation batch).
 - R70 (2026-04-12): Continued shrinking `static/app.js` by splitting large dependency-builders into narrower composition helpers: `createChatTabsControllerStateDeps(...)`, `createChatTabsControllerUiDeps(...)`, `createChatTabsControllerPolicyDeps(...)`, `createBootstrapAuthControllerSessionDeps(...)`, `createBootstrapAuthControllerAppDeps(...)`, `createBootstrapAuthControllerBootstrapDeps(...)`, `createStartupBindingsControllerElementDeps(...)`, `createStartupBindingsControllerInteractionDeps(...)`, and `createStartupBindingsControllerBootstrapDeps(...)`. Kept the existing app-shell wrappers stable and validated with `node --check static/app.js tests/bootstrap_auth_app_delegation.test.mjs tests/chat_tabs_app_delegation.test.mjs tests/interaction_app_delegation.test.mjs tests/render_trace_history_app_delegation.test.mjs tests/template_startup_script_order.test.mjs tests/startup_bindings_app_delegation.test.mjs` and `node --test tests/bootstrap_auth_app_delegation.test.mjs tests/chat_tabs_app_delegation.test.mjs tests/interaction_app_delegation.test.mjs tests/render_trace_history_app_delegation.test.mjs tests/template_startup_script_order.test.mjs tests/startup_bindings_app_delegation.test.mjs` (`17 passed` for the app-shell subset, green in the combined batch).
 ## Backlog summary
-- High: 2
+- High: 1
 - Medium: 2
 - Low: 0
 
@@ -75,8 +75,8 @@ Note: “Next up” is only a prioritized subset, not the full backlog.
     - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"`
     - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py`
   - Notes/dependencies: Closed 2026-04-23 by guarding post-`done` eviction with best-effort failure logging and a `finally` completion path so completion cannot be skipped if eviction raises, while preserving the original eviction-before-completion ordering for non-warm sessions and keeping `attachable_running` warm-owner semantics intact. Validation: `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"` (`5 passed, 20 deselected`) and `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py` (`25 passed`).
-- [ ] R75: Fail-open child memory/descendant diagnostics and shrink spawn-tracker lock scope
-  - Status: todo
+- [x] R75: Fail-open child memory/descendant diagnostics and shrink spawn-tracker lock scope
+  - Status: done
   - Severity: High
   - Scope/files: `job_runtime_worker_launcher_subprocess.py`, `hermes_client.py`, `tests/test_job_runtime_worker_launcher.py`, `tests/test_hermes_client.py`.
   - Why it matters: `maybe_emit_memory_sample(...)` currently lets `observe_child_process_sample(...)` exceptions escape the hot stream loop, and `observe_child_process_sample(...)` / `observe_descendant_finish(...)` still do `/proc` and host-memory reads while holding `_spawn_tracker_lock`.
@@ -84,7 +84,7 @@ Note: “Next up” is only a prioritized subset, not the full backlog.
   - Validation steps:
     - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "memory_sample or descendant or subprocess"`
     - `.venv/bin/python -m pytest -q tests/test_hermes_client.py -k "child_spawn or descendant or recall_health"`
-  - Notes/dependencies: This is the highest-ROI backend extraction candidate inside `hermes_client.py`; add direct failure-path contract tests before further observability growth.
+  - Notes/dependencies: Closed 2026-04-23 by making subprocess memory sampling fail-open in `job_runtime_worker_launcher_subprocess.py` and shrinking `_spawn_tracker_lock` scope in `hermes_client.py` so `/proc` and host-memory reads happen outside the critical section. Added direct regression coverage in `tests/test_job_runtime_worker_launcher.py` and `tests/test_hermes_client.py` for memory-sample failure tolerance plus the lock-scope contract around child/descendant snapshot collection. Validation: `python3 -m py_compile hermes_client.py job_runtime_worker_launcher_subprocess.py tests/test_hermes_client.py tests/test_job_runtime_worker_launcher.py` (passed), `python3 -m pytest -q tests/test_job_runtime_worker_launcher.py -k "memory_sample or descendant or subprocess"` (`26 passed, 4 deselected`), and `python3 -m pytest -q tests/test_hermes_client.py -k "child_spawn or descendant or recall_health"` (`9 passed, 108 deselected`).
 
 - [ ] R76: Isolate or gate optional `visual_dev_*` schema from core store startup
   - Status: todo

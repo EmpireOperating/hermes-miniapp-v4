@@ -894,6 +894,59 @@ def test_subprocess_worker_stream_emits_periodic_memory_samples_while_running() 
     assert samples[0]["session_id"] == "miniapp-123-55"
 
 
+def test_subprocess_worker_stream_continues_when_memory_sampling_fails() -> None:
+    class FakeLineQueue:
+        def __init__(self) -> None:
+            self._items = [queue.Empty(), '{"type":"delta","delta":"still-going"}\n', '{"type":"done","reply":"ok","latency_ms":1}\n', None]
+
+        def get(self, timeout=None):
+            item = self._items.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        def get_nowait(self):
+            item = self._items.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    monotonic_values = iter([0.0, 6.0, 6.1, 6.2, 6.3])
+    lifecycle = job_runtime_worker_launcher_subprocess.SubprocessStreamLifecycle(
+        transport="chat-worker-subprocess",
+        timeout_seconds=30.0,
+        first_event_timeout_seconds=7.5,
+        kill_grace_seconds=0.01,
+        stderr_excerpt_bytes=128,
+        decode_event=lambda raw: json.loads(raw),
+        stdout_line_queue=lambda proc: FakeLineQueue(),
+        read_stderr_excerpt=lambda stderr_file, max_bytes: None,
+        signal_process_tree=lambda proc, sig: None,
+        classify_limit_breach=lambda **kwargs: (None, None),
+        build_timeout_message=lambda **kwargs: "timeout",
+        build_exit_message=lambda **kwargs: "exit",
+        monotonic_now=lambda: next(monotonic_values, 6.3),
+        memory_sample_interval_seconds=5.0,
+    )
+
+    state = job_runtime_worker_launcher_subprocess.SubprocessStreamState()
+    sample_calls: list[dict[str, object]] = []
+
+    def _raise_on_sample(**kwargs):
+        sample_calls.append(dict(kwargs))
+        raise RuntimeError("sample boom")
+
+    runtime = SimpleNamespace(client=SimpleNamespace(observe_child_process_sample=_raise_on_sample))
+    proc = SimpleNamespace(pid=93211, stdout=object(), poll=lambda: None)
+
+    events = list(lifecycle.iter_events(runtime, proc=proc, session_id="miniapp-123-56", state=state))
+
+    assert [event["type"] for event in events] == ["delta", "done"]
+    assert len(sample_calls) == 1
+    assert sample_calls[0]["pid"] == 93211
+    assert state.last_memory_sample_at == 6.0
+
+
 def test_subprocess_worker_times_out_distinctly_before_first_event(monkeypatch, tmp_path) -> None:
     script_path = tmp_path / "chat_worker_subprocess.py"
     script_path.write_text("# synthetic test script placeholder\n", encoding="utf-8")

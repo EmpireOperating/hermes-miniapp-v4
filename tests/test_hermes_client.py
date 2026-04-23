@@ -2346,6 +2346,104 @@ def test_observed_descendant_telemetry_tracks_active_and_recent_events(monkeypat
     client.clear_spawn_trace_context()
 
 
+def test_observe_descendant_finish_collects_snapshots_outside_spawn_tracker_lock(monkeypatch) -> None:
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
+    client.observe_descendant_spawn(
+        transport="cli-stream",
+        pid=53103,
+        command=["python", "cli.py"],
+        session_id="miniapp-123-88",
+        parent_transport="chat-worker-subprocess",
+        parent_pid=43001,
+    )
+
+    base_lock = threading.Lock()
+
+    class AssertingLock:
+        def __init__(self, inner_lock) -> None:
+            self._inner_lock = inner_lock
+            self.held = False
+
+        def __enter__(self):
+            self._inner_lock.acquire()
+            self.held = True
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.held = False
+            self._inner_lock.release()
+            return False
+
+    asserting_lock = AssertingLock(base_lock)
+    client._spawn_tracker_lock = asserting_lock
+
+    monkeypatch.setattr(
+        client,
+        "_child_process_snapshot",
+        lambda pid: ({"rss_kb": 10} if not asserting_lock.held else (_ for _ in ()).throw(AssertionError("snapshot called under lock"))),
+    )
+    monkeypatch.setattr(
+        client,
+        "_host_memory_snapshot",
+        lambda: ({"host_available_kb": 20} if not asserting_lock.held else (_ for _ in ()).throw(AssertionError("host snapshot called under lock"))),
+    )
+
+    client.observe_descendant_finish(pid=53103, outcome="completed", return_code=0, parent_transport="chat-worker-subprocess", parent_pid=43001)
+
+    recent = client.child_spawn_diagnostics().get("recent_descendant_events") or []
+    assert any(event.get("event") == "descendant_finish" and event.get("pid") == 53103 for event in recent)
+    client.clear_spawn_trace_context()
+
+
+def test_observe_child_process_sample_collects_snapshots_outside_spawn_tracker_lock(monkeypatch) -> None:
+    client = hermes_client.HermesClient()
+    client.set_spawn_trace_context(user_id="123", chat_id=88, job_id=9100, session_id="miniapp-123-88")
+    client.register_child_spawn(
+        transport="chat-worker-subprocess",
+        pid=43103,
+        command=["python", "worker.py"],
+        session_id="miniapp-123-88",
+    )
+
+    base_lock = threading.Lock()
+
+    class AssertingLock:
+        def __init__(self, inner_lock) -> None:
+            self._inner_lock = inner_lock
+            self.held = False
+
+        def __enter__(self):
+            self._inner_lock.acquire()
+            self.held = True
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.held = False
+            self._inner_lock.release()
+            return False
+
+    asserting_lock = AssertingLock(base_lock)
+    client._spawn_tracker_lock = asserting_lock
+
+    monkeypatch.setattr(
+        client,
+        "_child_process_snapshot",
+        lambda pid: ({"rss_kb": 10} if not asserting_lock.held else (_ for _ in ()).throw(AssertionError("snapshot called under lock"))),
+    )
+    monkeypatch.setattr(
+        client,
+        "_host_memory_snapshot",
+        lambda: ({"host_available_kb": 20} if not asserting_lock.held else (_ for _ in ()).throw(AssertionError("host snapshot called under lock"))),
+    )
+
+    client.observe_child_process_sample(pid=43103, transport="chat-worker-subprocess", session_id="miniapp-123-88")
+
+    recent = client.child_spawn_diagnostics().get("recent_events") or []
+    assert any(event.get("event") == "sample" and event.get("pid") == 43103 for event in recent)
+    client.clear_spawn_trace_context()
+
+
 def test_child_spawn_timeout_counters_track_by_job_and_chat(monkeypatch) -> None:
     monkeypatch.setenv("MINI_APP_CHILD_SPAWN_CAP_PER_JOB", "3")
 

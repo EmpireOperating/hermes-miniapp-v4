@@ -102,7 +102,10 @@ class SubprocessStreamLifecycle:
         if not callable(observe_child_process_sample):
             state.last_memory_sample_at = now
             return
-        observe_child_process_sample(pid=int(proc.pid), transport=self.transport, session_id=str(session_id or ''))
+        try:
+            observe_child_process_sample(pid=int(proc.pid), transport=self.transport, session_id=str(session_id or ''))
+        except Exception:
+            LOGGER.debug('subprocess_worker_memory_sample_failed', exc_info=True)
         state.last_memory_sample_at = now
 
     def handle_child_spawn_event(
