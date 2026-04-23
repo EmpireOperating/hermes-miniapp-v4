@@ -7,47 +7,126 @@
 ## Project snapshot
 - Project: hermes-miniapp-v4
 - Project slug: hermes-miniapp-v4
-- Generated: 2026-04-12T02:37:44Z
+- Generated: 2026-04-23T15:20:04Z
 - Plan maintenance note: Compacted on 2026-04-11 so this file stays focused on active work; older completed-item detail and refresh evidence live in `docs/maintainers/history/refactor-log.hermes-miniapp-v4.md`.
-- Branch: main
-- Git status summary: dirty (`git status --short --branch` currently shows `## main` plus modified `static/composer_viewport_helpers.js`, `tests/composer_viewport_helpers.test.mjs`, and `tests/test_job_runtime_worker_launcher.py`).
-- Analysis mode: fresh monolith-focused refactor refresh against current repo reality; no production code edits in this pass.
+- Branch: refactor/r73-r74-r77
+- Git status summary: dirty (`git status --short --branch` currently shows `## refactor/r73-r74-r77...origin/main` plus the scoped R73/R74/R77 edits in 7 tracked files).
+- Analysis mode: execution pass for requested backlog items R73 + R74 + R77 on a clean non-live worktree branched from `origin/main`.
 - Validation snapshot:
-  - `git status --short && git rev-parse --abbrev-ref HEAD && git rev-parse --short HEAD` → modified `static/composer_viewport_helpers.js`, `tests/composer_viewport_helpers.test.mjs`, and `tests/test_job_runtime_worker_launcher.py` on `main` at `3bfe434`
-  - `find . -name '*.py' -not -path './.venv/*' -not -path './venv/*' -not -path './node_modules/*' -print0 | xargs -0 wc -l | sort -nr | head -n 25` → current backend hotspots led by `hermes_client.py` (2964), `hermes_client_types.py` (826), `server.py` (682), `job_runtime_worker_launcher.py` (538)
-  - `find static tests -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.ts' -o -name '*.tsx' \) -print0 | xargs -0 wc -l | sort -nr | head -n 35` → current frontend hotspots led by `static/app.js` (3090), `static/stream_controller.js` (2069), `static/chat_history_helpers.js` (1795), `static/chat_tabs_helpers.js` (1102)
-  - Function-span scan across the main hotspots shows the broadest remaining ownership bands in `static/app.js`, `static/stream_controller.js`, and `static/chat_history_helpers.js`.
+  - `git status --short --branch` → dirty on `refactor/r73-r74-r77` with scoped edits in `job_runtime_chat_job.py`, `job_runtime_worker_launcher.py`, `job_runtime_worker_launcher_subprocess.py`, `static/chat_admin_helpers.js`, `tests/chat_admin_helpers.test.mjs`, `tests/test_job_runtime_chat_job.py`, and `tests/test_job_runtime_worker_launcher.py`.
+  - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "register_failed or subprocess"` → `26 passed, 4 deselected`.
+  - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py` → `30 passed`.
+  - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"` → `5 passed, 20 deselected`.
+  - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py` → `25 passed`.
+  - `node --test tests/chat_admin_helpers.test.mjs` → `38 passed`.
+  - Independent review gate over the completed branch passed for R73, R74, and R77 after rework for completion-order and duplicate-tab-render concerns.
 
 ## Progress metrics
-- Total items: 72
-- Done: 72
+
+- Total items: 79
+- Done: 75
 - In progress: 0
 - Blocked: 0
-- Todo: 0
-- % complete: 100%
-- Last completed item: R72 (Continue decomposing `static/chat_history_helpers.js` hydration/open/read-threshold policy)
-- Last updated: 2026-04-12T13:40:00Z
+- Todo: 4
+- % complete: 95%
+- Last completed item: R77 (Harden `removeActiveChat(...)` optimistic close / rollback tab-strip reconciliation)
+- Last updated: 2026-04-23T15:20:04Z
 
 ## Next up
-- None currently. Backlog closed.
+
+- R75: Fail-open child memory/descendant diagnostics and shrink spawn-tracker lock scope
+- R76: Isolate or gate optional `visual_dev_*` schema from core store startup
+- R78: Add direct persistence/normalization coverage for ordered tab state and isolate open-request authority from `static/app.js`
 
 Note: “Next up” is only a prioritized subset, not the full backlog.
 
 ## Recently completed
+
+- R77 (2026-04-23): Hardened `removeActiveChat(...)` reconciliation by centralizing post-remove UI refresh through `reconcilePostRemoveRender(...)`, so optimistic close, rollback, explicit no-active-chat, lightweight reopen, and authoritative server-active paths all refresh tab-strip, pinned list, and transcript state coherently without duplicate production tab renders. Updated the chat-admin harness to mirror runtime meta-render behavior and added direct assertions for rollback, no-active-chat, and lightweight-response reopen tab-strip refresh. Validation: `node --test tests/chat_admin_helpers.test.mjs` (`38 passed`).
+- R74 (2026-04-23): Made post-`done` chat-job completion resilient to session-eviction failures without opening a same-chat claim race by keeping eviction ahead of `complete_job(...)` but guarding it with best-effort failure handling and a `finally` completion path. Added regression coverage proving `done` still persists/completes when eviction raises while preserving warm-detached owner semantics. Validation: `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"` (`5 passed, 20 deselected`) and `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py` (`25 passed`).
+- R73 (2026-04-23): Hardened subprocess register-failure cleanup by keeping `register_child_spawn(...)` failures inside the shared lifecycle/finalize contract, extracting `mark_subprocess_setup_failure(...)`, and adding regression coverage proving the orphaned child is SIGKILLed/reaped, stderr is captured/closed, and launcher diagnostics are updated consistently when registration raises. Validation: `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "register_failed or subprocess"` (`26 passed, 4 deselected`) and `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py` (`30 passed`).
 - R72 (2026-04-12): Continued decomposing `static/chat_history_helpers.js` by extracting unread-preservation shaping (`createUnreadPreservationController(...)`), shared hydrate/apply/retry orchestration (`createHydrationApplyController(...)`), and visibility-resume policy (`createVisibilityResumeController(...)`). Rewired `createReadSyncController(...)` and `createHistoryHydrationController(...)` so read-threshold preservation, unread-retry application, and visibility-driven resume decisions no longer live inline in the larger hydration/open wrappers. Kept the exported facade stable and validated with `node --check static/chat_history_helpers.js tests/chat_history_test_harness.mjs tests/chat_history_open_hydrate.test.mjs tests/chat_history_read_mutation.test.mjs tests/chat_history_visibility_sync.test.mjs tests/chat_history_app_delegation.test.mjs` and `node --test tests/chat_history_open_hydrate.test.mjs tests/chat_history_read_mutation.test.mjs tests/chat_history_visibility_sync.test.mjs tests/chat_history_app_delegation.test.mjs` (`73 passed`).
 - R71 (2026-04-12): Continued decomposing `static/stream_controller.js` by extracting event-specific helper bands (`createStreamMetaEventController(...)`, `createToolTraceEventController(...)`, `createAssistantChunkEventController(...)`, `createStreamErrorEventController(...)`) plus direct consume/read-loop helpers (`createTranscriptBufferController(...)`, `createTranscriptReadLoopController(...)`). This leaves `createStreamNonTerminalEventController(...)` and `createTranscriptConsumeController(...)` as orchestration glue over smaller session/consume ownership seams. Validated with `node --check static/stream_controller.js tests/stream_controller_policy_session.test.mjs tests/stream_controller_response.test.mjs tests/stream_controller_resume_finalize.test.mjs tests/frontend_runtime_stream_activity.test.mjs tests/stream_controller_app_delegation.test.mjs` and `node --test tests/stream_controller_policy_session.test.mjs tests/stream_controller_response.test.mjs tests/stream_controller_resume_finalize.test.mjs tests/frontend_runtime_stream_activity.test.mjs tests/stream_controller_app_delegation.test.mjs` (`54 passed` for the stream-focused subset, green in the combined app-shell validation batch).
 - R70 (2026-04-12): Continued shrinking `static/app.js` by splitting large dependency-builders into narrower composition helpers: `createChatTabsControllerStateDeps(...)`, `createChatTabsControllerUiDeps(...)`, `createChatTabsControllerPolicyDeps(...)`, `createBootstrapAuthControllerSessionDeps(...)`, `createBootstrapAuthControllerAppDeps(...)`, `createBootstrapAuthControllerBootstrapDeps(...)`, `createStartupBindingsControllerElementDeps(...)`, `createStartupBindingsControllerInteractionDeps(...)`, and `createStartupBindingsControllerBootstrapDeps(...)`. Kept the existing app-shell wrappers stable and validated with `node --check static/app.js tests/bootstrap_auth_app_delegation.test.mjs tests/chat_tabs_app_delegation.test.mjs tests/interaction_app_delegation.test.mjs tests/render_trace_history_app_delegation.test.mjs tests/template_startup_script_order.test.mjs tests/startup_bindings_app_delegation.test.mjs` and `node --test tests/bootstrap_auth_app_delegation.test.mjs tests/chat_tabs_app_delegation.test.mjs tests/interaction_app_delegation.test.mjs tests/render_trace_history_app_delegation.test.mjs tests/template_startup_script_order.test.mjs tests/startup_bindings_app_delegation.test.mjs` (`17 passed` for the app-shell subset, green in the combined batch).
-- R69 (2026-04-12): Continued decomposing `job_runtime_worker_launcher.py` by routing subprocess stream lifecycle ownership through new helper module `job_runtime_worker_launcher_subprocess.py`, moving event iteration, timeout/kill handling, attach-ready/descendant telemetry, nonzero-exit mapping, and finalize/limit-breach reporting behind `SubprocessStreamLifecycle` while leaving `SubprocessJobWorkerLauncher` as orchestration glue. Added direct helper-level coverage in `tests/test_job_runtime_worker_launcher.py` for finalize/limit-breach reporting. Validated with `source .venv/bin/activate && python -m py_compile job_runtime_worker_launcher.py job_runtime_worker_launcher_subprocess.py job_runtime_chat_job.py tests/test_job_runtime_worker_launcher.py tests/test_job_runtime_chat_job.py` and `source .venv/bin/activate && python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "subprocess_worker_stream_parses_events_tracks_spawn_and_stderr or subprocess_worker_stream_synthesizes_done_for_detached_warm_handoff or subprocess_worker_stream_detaches_immediately_after_done_when_attach_ready_seen or subprocess_worker_stream_yields_error_when_input_pipe_breaks or subprocess_worker_timeout_forces_termination or subprocess_worker_times_out_distinctly_before_first_event or subprocess_worker_timeout_tracks_inactivity_not_total_elapsed_time or subprocess_worker_classifies_limit_breach_from_stderr or subprocess_worker_stream_reads_worker_terminal_outcome or subprocess_worker_stream_suppresses_late_nonzero_exit_after_done or subprocess_worker_stream_surfaces_stderr_on_nonzero_exit or subprocess_worker_stream_records_descendant_telemetry or stream_lifecycle_finalize_reports_limit_breach_and_terminal_error"` (`13 passed, 13 deselected`).
-- R68 (2026-04-12): Continued decomposing `hermes_client_types.py` by extracting warm-session reuse/report shaping into new helper module `hermes_client_warm_session_helpers.py`, delegating owner-state summary/payload construction, reusable-candidate payload shaping, worker-event detail formatting, and reusable-candidate expiration classification out of `IsolatedWorkerWarmSessionRegistryScaffold` while preserving diagnostics payload shapes and warm-reuse selection semantics. Validated with `source .venv/bin/activate && python -m py_compile hermes_client_types.py hermes_client_warm_session_helpers.py tests/test_hermes_client.py` and `source .venv/bin/activate && python -m pytest -q tests/test_hermes_client.py -k "warm_reuse or attach or recall_health or child_spawn"` (`37 passed, 70 deselected`).
-
 ## Backlog summary
-- High: 0
-- Medium: 0
+- High: 2
+- Medium: 2
 - Low: 0
 
 ## Active backlog
 
-- None. Current pass closed.
+- [x] R73: Harden subprocess register-failure cleanup and finalization in `job_runtime_worker_launcher.py`
+  - Status: done
+  - Severity: High
+  - Scope/files: `job_runtime_worker_launcher.py`, `job_runtime_worker_launcher_subprocess.py`, `tests/test_job_runtime_worker_launcher.py`.
+  - Why it matters: `_stream_events_via_subprocess(...)` still has an early return when `_register_spawn(...)` fails, so the child stderr temp file never enters the normal finalize path and the process is only best-effort killed. This is a live failure-mode gap in a touched launcher seam.
+  - Proposed change: Move process creation/registration under one finalize/cleanup contract or explicitly close/wait/finalize on register failure so error bookkeeping and resource cleanup stay consistent.
+  - Validation steps:
+    - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "register_failed or subprocess"`
+    - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py`
+  - Notes/dependencies: Closed 2026-04-23 by routing register-child failures through the shared subprocess lifecycle/finalize path, adding `mark_subprocess_setup_failure(...)`, and covering the register-failure branch with direct assertions for SIGKILL/reap, stderr closure, and final launcher diagnostics. Validation: `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "register_failed or subprocess"` (`26 passed, 4 deselected`) and `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py` (`30 passed`).
+- [x] R74: Make post-`done` chat-job completion resilient to session-eviction failures
+  - Status: done
+  - Severity: High
+  - Scope/files: `job_runtime_chat_job.py`, `tests/test_job_runtime_chat_job.py`.
+  - Why it matters: after publishing the terminal `done` payload, `execute_chat_job(...)` still calls `runtime.client.evict_session(session_id)` before `runtime.store.complete_job(job_id)`. If eviction raises, the reply is already persisted but the job can stay stuck running.
+  - Proposed change: complete/store terminal job state before best-effort runtime eviction, or protect eviction with a narrow guard/finally path so completion cannot be skipped after reply persistence.
+  - Validation steps:
+    - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"`
+    - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py`
+  - Notes/dependencies: Closed 2026-04-23 by guarding post-`done` eviction with best-effort failure logging and a `finally` completion path so completion cannot be skipped if eviction raises, while preserving the original eviction-before-completion ordering for non-warm sessions and keeping `attachable_running` warm-owner semantics intact. Validation: `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"` (`5 passed, 20 deselected`) and `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py` (`25 passed`).
+- [ ] R75: Fail-open child memory/descendant diagnostics and shrink spawn-tracker lock scope
+  - Status: todo
+  - Severity: High
+  - Scope/files: `job_runtime_worker_launcher_subprocess.py`, `hermes_client.py`, `tests/test_job_runtime_worker_launcher.py`, `tests/test_hermes_client.py`.
+  - Why it matters: `maybe_emit_memory_sample(...)` currently lets `observe_child_process_sample(...)` exceptions escape the hot stream loop, and `observe_child_process_sample(...)` / `observe_descendant_finish(...)` still do `/proc` and host-memory reads while holding `_spawn_tracker_lock`.
+  - Proposed change: make telemetry sampling strictly best-effort, catch/report diagnostics failures without affecting the stream contract, and move procfs/meminfo collection outside the critical lock so spawn bookkeeping remains low-latency.
+  - Validation steps:
+    - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "memory_sample or descendant or subprocess"`
+    - `.venv/bin/python -m pytest -q tests/test_hermes_client.py -k "child_spawn or descendant or recall_health"`
+  - Notes/dependencies: This is the highest-ROI backend extraction candidate inside `hermes_client.py`; add direct failure-path contract tests before further observability growth.
+
+- [ ] R76: Isolate or gate optional `visual_dev_*` schema from core store startup
+  - Status: todo
+  - Severity: High
+  - Scope/files: `store_schema.py`, store/schema tests, and any new visual-dev schema helper/module.
+  - Why it matters: `_init_db()` now always calls `_ensure_visual_dev_schema(...)`, but the current repo scan still shows `visual_dev_*` only in `store_schema.py`. Optional tooling is increasing startup/migration blast radius without a live runtime consumer or dedicated tests.
+  - Proposed change: extract visual-dev DDL into a dedicated helper/module and either gate its startup invocation behind an explicit feature flag or defer creation until the feature actually exists.
+  - Validation steps:
+    - `.venv/bin/python -m pytest -q tests/test_store.py -k "schema or startup"`
+    - `.venv/bin/python -m pytest -q tests/test_routes_meta.py -k "startup or helper"`
+  - Notes/dependencies: If the schema stays enabled, add direct migration/init coverage for table creation, indexes, and missing-session invariants.
+
+- [x] R77: Harden `removeActiveChat(...)` optimistic close / rollback tab-strip reconciliation
+  - Status: done
+  - Severity: High
+  - Scope/files: `static/chat_admin_helpers.js`, `tests/chat_admin_helpers.test.mjs`.
+  - Why it matters: the optimistic next-chat branch calls `renderTabs()`, but rollback and explicit no-active-chat paths currently rerender pinned/messages only. That leaves a stale-tab-strip risk in exactly the edge cases users notice most.
+  - Proposed change: centralize post-remove render reconciliation so success, rollback, and no-active-chat paths all refresh tab-strip, pinned list, and active transcript state coherently.
+  - Validation steps:
+    - `node --test tests/chat_admin_helpers.test.mjs`
+    - Add direct assertions for rollback, no-active-chat, and lightweight-response reopen paths.
+  - Notes/dependencies: Closed 2026-04-23 by centralizing remove-flow UI refresh in `reconcilePostRemoveRender(...)`, using targeted forced tab renders only when `setActiveChatMeta(..., { fullTabRender: false })` needs an explicit tab-strip refresh, and aligning the test harness with real runtime meta-render behavior. Validation: `node --test tests/chat_admin_helpers.test.mjs` (`38 passed`).
+- [ ] R78: Add direct persistence/normalization coverage for ordered tab state and isolate open-request authority from `static/app.js`
+  - Status: todo
+  - Severity: Medium
+  - Scope/files: `static/chat_tabs_helpers.js`, `static/app.js`, `tests/chat_tabs_helpers.test.mjs`, `tests/test_chat_tabs_order_persistence.py` or equivalent JS suite(s).
+  - Why it matters: ordered tab persistence is now durable cross-session UX state, but there is still no direct test coverage for malformed JSON recovery, dedupe/pruning, or storage-write failure behavior. At the same time, `lastOpenChatRequestId` remains a brittle global counter in `static/app.js`.
+  - Proposed change: add direct storage-contract tests for ordered ids and extract a small open-request authority/token helper so optimistic admin flows stop mutating a raw app-global counter.
+  - Validation steps:
+    - `node --test tests/chat_tabs_helpers.test.mjs`
+    - Add a focused suite for ordered-tab persistence / request invalidation wiring, then run it directly.
+  - Notes/dependencies: Preserve existing visual tab order and current optimistic-next-chat winner semantics.
+
+- [ ] R79: Guarantee a final visible render/reset when `suppressColdOpenRender` meets an uncached empty hydrate
+  - Status: todo
+  - Severity: Medium
+  - Scope/files: `static/runtime_open_flow.js`, `static/runtime_hydration_flow.js`, `static/runtime_transcript_authority.js`, `tests/runtime_open_flow.test.mjs`, `tests/runtime_hydration_flow.test.mjs`.
+  - Why it matters: when `openChat(..., { suppressColdOpenRender: true })` targets an uncached empty chat, hydration can settle with `shouldRenderActiveHistory=false`, which risks completing the open without any final render/reset for the newly active chat.
+  - Proposed change: guarantee one final render or equivalent rendered-chat reset for suppressed cold opens whose hydrated transcript is still empty, so stale prior chat content cannot linger visually.
+  - Validation steps:
+    - `node --test tests/runtime_open_flow.test.mjs tests/runtime_hydration_flow.test.mjs tests/runtime_transcript_authority.test.mjs`
+  - Notes/dependencies: This should be a contract clarification, not a regression back to unnecessary rerenders for append-only cached hydrates.
 
 - [x] R64: Extract app-shell dependency assembly and deferred helper ownership out of `static/app.js`
   - Status: done

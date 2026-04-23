@@ -510,6 +510,28 @@
       return fallbackIds[0] || 0;
     }
 
+    function reconcilePostRemoveRender({
+      activeChatId = 0,
+      renderMessagesForChatId = 0,
+      setActiveOptions,
+      forceRenderTabs = false,
+    } = {}) {
+      const nextActiveChatId = Number(activeChatId) || 0;
+      const transcriptChatId = Number(renderMessagesForChatId) || 0;
+      if (nextActiveChatId > 0) {
+        setActiveChatMeta(nextActiveChatId, setActiveOptions);
+      } else {
+        setNoActiveChatMeta();
+      }
+      if (forceRenderTabs) {
+        renderTabs();
+      }
+      renderPinnedChats();
+      if (transcriptChatId > 0) {
+        renderMessages(transcriptChatId);
+      }
+    }
+
     async function removeChatById(chatId) {
       const targetChatId = Number(chatId);
       if (!targetChatId) return;
@@ -592,16 +614,17 @@
 
       let optimisticHydratePromise = null;
       if (optimisticNextChatId > 0) {
-        setActiveChatMeta(optimisticNextChatId, { fullTabRender: false, deferNonCritical: true });
-        renderTabs();
-        renderPinnedChats();
-        if (histories.has(optimisticNextChatId)) {
-          renderMessages(optimisticNextChatId);
-        } else {
+        reconcilePostRemoveRender({
+          activeChatId: optimisticNextChatId,
+          renderMessagesForChatId: histories.has(optimisticNextChatId) ? optimisticNextChatId : 0,
+          setActiveOptions: { fullTabRender: false, deferNonCritical: true },
+          forceRenderTabs: true,
+        });
+        if (!histories.has(optimisticNextChatId)) {
           optimisticHydratePromise = Promise.resolve(openChat(optimisticNextChatId, { suppressColdOpenRender: true }));
         }
       } else {
-        setNoActiveChatMeta();
+        reconcilePostRemoveRender();
       }
 
       let data;
@@ -624,9 +647,10 @@
         restoreMap(streamPhaseByChat, optimisticSnapshot.streamPhaseByChat);
         restoreSet(unseenStreamChats, optimisticSnapshot.unseenStreamChats);
         onLatencyByChatMutated?.(latencyByChat);
-        setActiveChatMeta(activeChatId);
-        renderPinnedChats();
-        renderMessages(activeChatId);
+        reconcilePostRemoveRender({
+          activeChatId,
+          renderMessagesForChatId: activeChatId,
+        });
         throw error;
       }
 
@@ -655,22 +679,34 @@
         if (optimisticHydratePromise) {
           invalidateOpenChatRequests?.();
         }
-        renderPinnedChats();
+        reconcilePostRemoveRender();
         return;
       }
 
       if (!data.active_chat || !Array.isArray(data.history)) {
-        renderPinnedChats();
-        if (nextActiveChatId !== Number(getActiveChatId())) {
+        const currentActiveChatId = Number(getActiveChatId());
+        if (nextActiveChatId !== currentActiveChatId) {
+          reconcilePostRemoveRender({
+            activeChatId: nextActiveChatId,
+            setActiveOptions: { fullTabRender: false, deferNonCritical: true },
+            forceRenderTabs: true,
+          });
           await openChat(nextActiveChatId);
-        } else if (!histories.has(nextActiveChatId)) {
+          return;
+        }
+        if (!histories.has(nextActiveChatId)) {
           if (optimisticHydratePromise) {
             await optimisticHydratePromise;
           }
           if (!histories.has(nextActiveChatId)) {
             await openChat(nextActiveChatId);
+            return;
           }
         }
+        reconcilePostRemoveRender({
+          activeChatId: nextActiveChatId,
+          renderMessagesForChatId: nextActiveChatId,
+        });
         return;
       }
 
@@ -680,9 +716,10 @@
 
       histories.set(nextActiveChatId, data.history || []);
       upsertChat(data.active_chat);
-      setActiveChatMeta(nextActiveChatId);
-      renderPinnedChats();
-      renderMessages(nextActiveChatId);
+      reconcilePostRemoveRender({
+        activeChatId: nextActiveChatId,
+        renderMessagesForChatId: nextActiveChatId,
+      });
     }
 
     async function openPinnedChat(chatId) {
