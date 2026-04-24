@@ -113,8 +113,7 @@ class ChatManagementService:
         store = self._store_getter()
         chat = store.create_chat(user_id=user_id, title=title)
         store.set_active_chat(user_id=user_id, chat_id=chat.id)
-        history = self.chat_history(user_id=user_id, chat_id=chat.id, limit=120)
-        return {"ok": True, "chat": self._serialize_chat_fn(chat), "history": history}, 201
+        return {"ok": True, "chat": self._serialize_chat_fn(chat), "history": []}, 201
 
     def rename_chat_response(self, *, user_id: str, chat_id: int, title: str) -> tuple[dict[str, object], int]:
         chat = self._store_getter().rename_chat(user_id=user_id, chat_id=chat_id, title=title)

@@ -257,7 +257,7 @@ test('describeActiveTranscriptRender forces rerender when cached unread hydrate 
 });
 
 test('describeActiveTranscriptRender does not rerender cached unread hydrate when rendered transcript already matches incoming history', () => {
-  const signature = '0::assistant::same reply::final::::';
+  const signature = '0::assistant::same reply::final::expanded::::';
   const decision = authority.describeActiveTranscriptRender({
     previousHistory: [{ id: 1, role: 'assistant', body: 'same reply', pending: false }],
     incomingHistory: [{ id: 1, role: 'assistant', body: 'same reply', pending: false }],
@@ -278,10 +278,28 @@ test('describeActiveTranscriptRender forces rerender when the visible transcript
   const decision = authority.describeActiveTranscriptRender({
     previousHistory: [{ id: 1, role: 'assistant', body: 'same reply', pending: false }],
     incomingHistory: [{ id: 1, role: 'assistant', body: 'same reply', pending: false }],
-    renderedTranscriptSignature: '0::assistant::older visible reply::final::::',
+    renderedTranscriptSignature: '0::assistant::older visible reply::final::expanded::::',
   });
 
   assert.equal(decision.shouldForceUnreadTranscriptRender, false);
+  assert.equal(decision.shouldForceStaleRenderedTranscriptRender, true);
+  assert.equal(decision.shouldRenderActiveHistory, true);
+});
+
+test('describeActiveTranscriptRender rerenders when finalize only collapses a completed tool trace', () => {
+  const decision = authority.describeActiveTranscriptRender({
+    previousHistory: [
+      { id: 1, role: 'tool', body: 'trace', pending: false, collapsed: false },
+      { id: 2, role: 'assistant', body: 'final answer', pending: false },
+    ],
+    incomingHistory: [
+      { id: 1, role: 'tool', body: 'trace', pending: false, collapsed: true },
+      { id: 2, role: 'assistant', body: 'final answer', pending: false },
+    ],
+    renderedTranscriptSignature: '0::tool::trace::final::expanded::::||1::assistant::final answer::final::expanded::::',
+  });
+
+  assert.notEqual(decision.previousRenderSignature, decision.nextRenderSignature);
   assert.equal(decision.shouldForceStaleRenderedTranscriptRender, true);
   assert.equal(decision.shouldRenderActiveHistory, true);
 });
@@ -293,7 +311,7 @@ test('describeActiveTranscriptRender suppresses rerender for cached virtualized 
       { id: 1, role: 'assistant', body: 'same reply', pending: false },
       { id: 2, role: 'assistant', body: 'new unread reply', pending: false },
     ],
-    renderedTranscriptSignature: '0::assistant::same reply::final::::',
+    renderedTranscriptSignature: '0::assistant::same reply::final::expanded::::',
     hadCachedHistory: true,
     historyChanged: true,
     restoredPendingSnapshot: false,
@@ -314,7 +332,7 @@ test('describeActiveTranscriptRender suppresses rerender for cached non-virtuali
       { id: 1, role: 'assistant', body: 'same reply', pending: false },
       { id: 2, role: 'assistant', body: 'new unread reply', pending: false },
     ],
-    renderedTranscriptSignature: '0::assistant::same reply::final::::',
+    renderedTranscriptSignature: '0::assistant::same reply::final::expanded::::',
     hadCachedHistory: true,
     historyChanged: true,
     restoredPendingSnapshot: false,
@@ -336,7 +354,7 @@ test('describeActiveTranscriptRender does not suppress append-only hydrate reren
       { id: 1, role: 'assistant', body: 'same reply', pending: false },
       { id: 2, role: 'assistant', body: 'new unread reply', pending: false },
     ],
-    renderedTranscriptSignature: '0::assistant::older visible reply::final::::',
+    renderedTranscriptSignature: '0::assistant::older visible reply::final::expanded::::',
     hadCachedHistory: true,
     historyChanged: true,
     restoredPendingSnapshot: false,

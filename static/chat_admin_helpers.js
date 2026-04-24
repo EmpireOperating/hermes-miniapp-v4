@@ -55,6 +55,7 @@
     let chatTitleSelectedTag = 'none';
     let tabContextTargetChatId = null;
     let pinnedContextTargetChatId = null;
+    let nextOptimisticChatId = -1;
 
     function parseTaggedChatTitle(rawTitle) {
       const title = String(rawTitle || '').trim();
@@ -276,12 +277,59 @@
       const title = await askForChatTitle({ mode: 'create', defaultTitle: 'New chat' });
       if (!title) return;
       const cleaned = title.trim() || 'New chat';
-      const data = await apiPost('/api/chats', { title: cleaned });
-      upsertChat(data.chat);
-      histories.set(Number(data.chat.id), data.history || []);
-      setActiveChatMeta(data.chat.id);
-      renderMessages(data.chat.id);
-      focusComposerForNewChat?.(data.chat.id);
+      const previousActiveChatId = Number(getActiveChatId?.() || 0) || null;
+      const optimisticChatId = nextOptimisticChatId;
+      nextOptimisticChatId -= 1;
+      const optimisticChat = {
+        id: optimisticChatId,
+        title: cleaned,
+        is_pinned: false,
+        pending: false,
+        creating: true,
+        unread_count: 0,
+        newest_unread_message_id: null,
+        optimistic: true,
+      };
+      upsertChat(optimisticChat);
+      histories.set(optimisticChatId, []);
+      setActiveChatMeta(optimisticChatId);
+      renderMessages(optimisticChatId);
+      focusComposerForNewChat?.(optimisticChatId);
+
+      try {
+        const data = await apiPost('/api/chats', { title: cleaned });
+        const serverChatId = Number(data?.chat?.id);
+        if (serverChatId && serverChatId !== optimisticChatId) {
+          chats.delete(optimisticChatId);
+          pinnedChats.delete(optimisticChatId);
+          histories.delete(optimisticChatId);
+        }
+        upsertChat(data.chat);
+        histories.set(Number(data.chat.id), data.history || []);
+        if (Number(getActiveChatId?.()) === optimisticChatId) {
+          setActiveChatMeta(data.chat.id);
+          renderMessages(data.chat.id);
+          focusComposerForNewChat?.(data.chat.id);
+        } else {
+          renderTabs();
+        }
+        return data;
+      } catch (error) {
+        chats.delete(optimisticChatId);
+        pinnedChats.delete(optimisticChatId);
+        histories.delete(optimisticChatId);
+        if (Number(getActiveChatId?.()) === optimisticChatId) {
+          if (previousActiveChatId) {
+            setActiveChatMeta(previousActiveChatId);
+            renderMessages(previousActiveChatId);
+          } else {
+            setNoActiveChatMeta();
+          }
+        } else {
+          renderTabs();
+        }
+        throw error;
+      }
     }
 
     function getChatRecord(chatId) {

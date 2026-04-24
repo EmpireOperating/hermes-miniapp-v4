@@ -106,7 +106,7 @@ test('syncVisibleActiveChat retries once when unread advances but first hydrate 
 test('syncVisibleActiveChat skips rerender for append-only unread hydrate when the active viewport is away from bottom', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,
-    getRenderedTranscriptSignature: () => '0::assistant::old reply::final::::',
+    getRenderedTranscriptSignature: () => '0::assistant::old reply::final::expanded::::',
     getRenderedChatId: () => 7,
     isChatStuckToBottom: () => false,
     shouldVirtualizeHistory: () => false,
@@ -466,7 +466,7 @@ test('syncVisibleActiveChat skips rerender when hydrated active history is rende
 test('syncVisibleActiveChat rerenders when rendered active transcript is stale even if hydrated history matches in-memory history', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,
-    getRenderedTranscriptSignature: () => '0::assistant::older visible reply::final::::',
+    getRenderedTranscriptSignature: () => '0::assistant::older visible reply::final::expanded::::',
     apiPost: async (path, payload) => {
       harness.apiCalls.push({ path, payload });
       if (path === '/api/chats/history') {

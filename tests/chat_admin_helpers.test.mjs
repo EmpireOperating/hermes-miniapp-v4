@@ -501,9 +501,54 @@ test('createChat modal applies selected tag and hydrates the new active chat', a
     payload: { title: '[bug]Launch plan' },
   });
   assert.deepEqual(harness.histories.get(13), [{ id: 5, body: 'new history' }]);
-  assert.deepEqual(harness.setActiveCalls, [13]);
-  assert.deepEqual(harness.renderedMessages, [13]);
-  assert.deepEqual(harness.focusComposerCalls, [13]);
+  assert.equal(harness.setActiveCalls[0] < 0, true);
+  assert.deepEqual(harness.setActiveCalls.at(-1), 13);
+  assert.equal(harness.renderedMessages[0] < 0, true);
+  assert.deepEqual(harness.renderedMessages.at(-1), 13);
+  assert.equal(harness.focusComposerCalls[0] < 0, true);
+  assert.deepEqual(harness.focusComposerCalls.at(-1), 13);
+});
+
+test('createChat paints and focuses a local empty chat before the network create returns', async () => {
+  let resolveCreate;
+  const createResponse = new Promise((resolve) => {
+    resolveCreate = resolve;
+  });
+  const apiCalls = [];
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      apiCalls.push({ path, payload });
+      if (path === '/api/chats') {
+        return createResponse;
+      }
+      throw new Error(`unexpected api path ${path}`);
+    },
+  });
+
+  const createPromise = harness.controller.createChat();
+  harness.chatTitleInput.value = 'Fast draft';
+  harness.chatTitleForm.dispatch('submit');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(apiCalls[0], {
+    path: '/api/chats',
+    payload: { title: 'Fast draft' },
+  });
+  assert.equal(harness.setActiveCalls.length >= 1, true);
+  const optimisticChatId = harness.setActiveCalls[0];
+  assert.equal(optimisticChatId < 0, true);
+  assert.deepEqual(harness.histories.get(optimisticChatId), []);
+  assert.deepEqual(harness.renderedMessages[0], optimisticChatId);
+  assert.deepEqual(harness.focusComposerCalls[0], optimisticChatId);
+
+  resolveCreate({ chat: { id: 13, title: 'Fast draft' }, history: [] });
+  await createPromise;
+
+  assert.equal(harness.chats.has(optimisticChatId), false);
+  assert.equal(harness.histories.has(optimisticChatId), false);
+  assert.deepEqual(harness.setActiveCalls.at(-1), 13);
+  assert.deepEqual(harness.renderedMessages.at(-1), 13);
+  assert.deepEqual(harness.focusComposerCalls.at(-1), 13);
 });
 
 test('createChat fallback prompt applies selected tag and hydrates the new active chat', async () => {
@@ -530,9 +575,12 @@ test('createChat fallback prompt applies selected tag and hydrates the new activ
     payload: { title: '[feat]Launch plan' },
   });
   assert.deepEqual(harness.histories.get(13), [{ id: 5, body: 'new history' }]);
-  assert.deepEqual(harness.setActiveCalls, [13]);
-  assert.deepEqual(harness.renderedMessages, [13]);
-  assert.deepEqual(harness.focusComposerCalls, [13]);
+  assert.equal(harness.setActiveCalls[0] < 0, true);
+  assert.deepEqual(harness.setActiveCalls.at(-1), 13);
+  assert.equal(harness.renderedMessages[0] < 0, true);
+  assert.deepEqual(harness.renderedMessages.at(-1), 13);
+  assert.equal(harness.focusComposerCalls[0] < 0, true);
+  assert.deepEqual(harness.focusComposerCalls.at(-1), 13);
 });
 
 test('rename modal confirm click survives mobile dialog-close semantics and still submits the rename', async () => {

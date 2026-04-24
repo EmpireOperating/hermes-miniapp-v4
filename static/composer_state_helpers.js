@@ -1,16 +1,19 @@
 (function initHermesMiniappComposerState(globalScope) {
   function deriveComposerState({ activeChatId, pendingChats, chats, isAuthenticated }) {
     const key = Number(activeChatId);
-    const pending = pendingChats.has(key) || Boolean(chats.get(key)?.pending);
+    const chat = chats.get(key);
+    const pending = pendingChats.has(key) || Boolean(chat?.pending);
+    const creating = Boolean(chat?.creating || chat?.optimistic);
     const hasActiveChat = Boolean(activeChatId);
     return {
       hasActiveChat,
       pending,
+      creating,
       canPrompt: Boolean(isAuthenticated) && hasActiveChat,
-      canSend: hasActiveChat && Boolean(isAuthenticated),
-      sendLabel: pending ? "Interrupt & send" : "Send",
-      canRemove: hasActiveChat && !pending && Boolean(isAuthenticated),
-      canPin: hasActiveChat && Boolean(isAuthenticated),
+      canSend: hasActiveChat && Boolean(isAuthenticated) && !creating,
+      sendLabel: creating ? "Creating…" : pending ? "Interrupt & send" : "Send",
+      canRemove: hasActiveChat && !pending && !creating && Boolean(isAuthenticated),
+      canPin: hasActiveChat && !creating && Boolean(isAuthenticated),
     };
   }
 

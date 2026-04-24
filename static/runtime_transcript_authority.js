@@ -116,6 +116,7 @@
         String(item?.role || ''),
         String(item?.body || ''),
         item?.pending ? 'pending' : 'final',
+        item?.collapsed ? 'collapsed' : 'expanded',
         String(item?.created_at || ''),
         fileRefSignature,
       ].join('::');
