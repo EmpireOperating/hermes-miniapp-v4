@@ -103,10 +103,14 @@ test('syncVisibleActiveChat retries once when unread advances but first hydrate 
   assert.deepEqual(harness.resumedChats, []);
 });
 
-test('syncVisibleActiveChat skips rerender for append-only unread hydrate when the active viewport is away from bottom', async () => {
+test('syncVisibleActiveChat rerenders append-only unread final reply after returning even when viewport was away from bottom', async () => {
+  const previousHistory = [
+    { id: 1, role: 'user', body: 'run tools', created_at: '2026-04-24T01:00:00Z' },
+    { id: 2, role: 'tool', body: 'read_file', pending: false, collapsed: true, created_at: '2026-04-24T01:00:01Z' },
+  ];
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,
-    getRenderedTranscriptSignature: () => '0::assistant::old reply::final::expanded::::',
+    getRenderedTranscriptSignature: () => '0::user::run tools::final::expanded::2026-04-24T01:00:00Z::||1::tool::read_file::final::collapsed::2026-04-24T01:00:01Z::',
     getRenderedChatId: () => 7,
     isChatStuckToBottom: () => false,
     shouldVirtualizeHistory: () => false,
@@ -114,10 +118,10 @@ test('syncVisibleActiveChat skips rerender for append-only unread hydrate when t
       harness.apiCalls.push({ path, payload });
       if (path === '/api/chats/history') {
         return {
-          chat: { id: Number(payload.chat_id), pending: false, unread_count: 1, newest_unread_message_id: 2 },
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 1, newest_unread_message_id: 3 },
           history: [
-            { id: 1, role: 'assistant', body: 'old reply' },
-            { id: 2, role: 'assistant', body: 'fresh final reply' },
+            ...previousHistory,
+            { id: 3, role: 'assistant', body: 'fresh final reply', pending: false, created_at: '2026-04-24T01:00:02Z' },
           ],
         };
       }
@@ -128,8 +132,8 @@ test('syncVisibleActiveChat skips rerender for append-only unread hydrate when t
       throw new Error(`unexpected ${path}`);
     },
   });
-  harness.histories.set(7, [{ id: 1, role: 'assistant', body: 'old reply' }]);
-  harness.chats.set(7, { id: 7, unread_count: 1, newest_unread_message_id: 2, pending: false });
+  harness.histories.set(7, previousHistory);
+  harness.chats.set(7, { id: 7, unread_count: 1, newest_unread_message_id: 3, pending: false });
 
   await harness.controller.syncVisibleActiveChat({
     hidden: false,
@@ -137,10 +141,10 @@ test('syncVisibleActiveChat skips rerender for append-only unread hydrate when t
   });
 
   assert.deepEqual(harness.histories.get(7), [
-    { id: 1, role: 'assistant', body: 'old reply' },
-    { id: 2, role: 'assistant', body: 'fresh final reply' },
+    ...previousHistory,
+    { id: 3, role: 'assistant', body: 'fresh final reply', pending: false, created_at: '2026-04-24T01:00:02Z' },
   ]);
-  assert.deepEqual(harness.renderedMessages, []);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
   assert.equal(harness.markReadCalls.length, 0);
 });
 

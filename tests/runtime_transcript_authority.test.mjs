@@ -304,18 +304,18 @@ test('describeActiveTranscriptRender rerenders when finalize only collapses a co
   assert.equal(decision.shouldRenderActiveHistory, true);
 });
 
-test('describeActiveTranscriptRender suppresses rerender for cached virtualized append-only hydrate when viewport is away from bottom', () => {
+test('describeActiveTranscriptRender suppresses rerender for cached virtualized append-only hydrate with no unread reply when viewport is away from bottom', () => {
   const decision = authority.describeActiveTranscriptRender({
     previousHistory: [{ id: 1, role: 'assistant', body: 'same reply', pending: false }],
     incomingHistory: [
       { id: 1, role: 'assistant', body: 'same reply', pending: false },
-      { id: 2, role: 'assistant', body: 'new unread reply', pending: false },
+      { id: 2, role: 'assistant', body: 'archival sync reply', pending: false },
     ],
     renderedTranscriptSignature: '0::assistant::same reply::final::expanded::::',
     hadCachedHistory: true,
     historyChanged: true,
     restoredPendingSnapshot: false,
-    unreadCount: 1,
+    unreadCount: 0,
     isRenderedChatActiveTarget: true,
     isChatStuckToBottom: false,
     shouldVirtualizeIncomingHistory: true,
@@ -325,18 +325,44 @@ test('describeActiveTranscriptRender suppresses rerender for cached virtualized 
   assert.equal(decision.shouldRenderActiveHistory, false);
 });
 
-test('describeActiveTranscriptRender suppresses rerender for cached non-virtualized append-only hydrate when viewport is away from bottom', () => {
+test('describeActiveTranscriptRender renders cached append-only hydrate when it carries an unread final assistant reply', () => {
+  const previousHistory = [
+    { id: 1, role: 'user', body: 'run tools', pending: false, created_at: '2026-04-24T01:00:00Z' },
+    { id: 2, role: 'tool', body: 'read_file', pending: false, collapsed: true, created_at: '2026-04-24T01:00:01Z' },
+  ];
+  const renderedTranscriptSignature = authority.historyRenderSignature(previousHistory);
+  const decision = authority.describeActiveTranscriptRender({
+    previousHistory,
+    incomingHistory: [
+      ...previousHistory,
+      { id: 3, role: 'assistant', body: 'final answer after tools', pending: false, created_at: '2026-04-24T01:00:02Z' },
+    ],
+    renderedTranscriptSignature,
+    hadCachedHistory: true,
+    historyChanged: true,
+    restoredPendingSnapshot: false,
+    unreadCount: 1,
+    isRenderedChatActiveTarget: true,
+    isChatStuckToBottom: false,
+    shouldVirtualizeIncomingHistory: false,
+  });
+
+  assert.equal(decision.shouldSkipOffscreenAppendOnlyHydrateRender, false);
+  assert.equal(decision.shouldRenderActiveHistory, true);
+});
+
+test('describeActiveTranscriptRender suppresses rerender for cached non-virtualized append-only hydrate with no unread reply when viewport is away from bottom', () => {
   const decision = authority.describeActiveTranscriptRender({
     previousHistory: [{ id: 1, role: 'assistant', body: 'same reply', pending: false }],
     incomingHistory: [
       { id: 1, role: 'assistant', body: 'same reply', pending: false },
-      { id: 2, role: 'assistant', body: 'new unread reply', pending: false },
+      { id: 2, role: 'assistant', body: 'archival sync reply', pending: false },
     ],
     renderedTranscriptSignature: '0::assistant::same reply::final::expanded::::',
     hadCachedHistory: true,
     historyChanged: true,
     restoredPendingSnapshot: false,
-    unreadCount: 1,
+    unreadCount: 0,
     isRenderedChatActiveTarget: true,
     isChatStuckToBottom: false,
     shouldVirtualizeIncomingHistory: false,

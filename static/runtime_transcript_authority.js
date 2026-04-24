@@ -406,12 +406,15 @@
       normalizedRenderedTranscriptSignature
       && normalizedRenderedTranscriptSignature === previousRenderSignature
     );
+    const hasUnreadHydratedReply = Math.max(0, Number(unreadCount || 0)) > 0
+      && hasVisibleAssistantLikeTranscript(incomingHistory);
     const shouldSkipOffscreenAppendOnlyHydrateRender = Boolean(
       hadCachedHistory
       && historyChanged
       && !restoredPendingSnapshot
       && isRenderedChatActiveTarget
       && !isChatStuckToBottom
+      && !hasUnreadHydratedReply
       && canPreserveExistingViewportTranscript
       && isAppendOnlyHistoryExtension(previousHistory, incomingHistory)
     );
