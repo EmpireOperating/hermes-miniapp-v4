@@ -148,6 +148,46 @@ test('syncVisibleActiveChat rerenders append-only unread final reply after retur
   assert.equal(harness.markReadCalls.length, 0);
 });
 
+test('syncVisibleActiveChat rerenders append-only final reply after tool activity even when activation hydrate already cleared unread markers', async () => {
+  const previousHistory = [
+    { id: 1, role: 'user', body: 'run tools', created_at: '2026-04-24T01:00:00Z' },
+    { id: 2, role: 'tool', body: 'read_file', pending: false, collapsed: true, created_at: '2026-04-24T01:00:01Z' },
+  ];
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+    getRenderedTranscriptSignature: () => '0::user::run tools::final::expanded::2026-04-24T01:00:00Z::||1::tool::read_file::final::collapsed::2026-04-24T01:00:01Z::',
+    getRenderedChatId: () => 7,
+    isChatStuckToBottom: () => false,
+    shouldVirtualizeHistory: () => false,
+    apiPost: async (path, payload) => {
+      harness.apiCalls.push({ path, payload });
+      if (path === '/api/chats/history') {
+        return {
+          chat: { id: Number(payload.chat_id), pending: false, unread_count: 0, newest_unread_message_id: 0 },
+          history: [
+            ...previousHistory,
+            { id: 3, role: 'assistant', body: 'fresh final reply', pending: false, created_at: '2026-04-24T01:00:02Z' },
+          ],
+        };
+      }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  harness.histories.set(7, previousHistory);
+  harness.chats.set(7, { id: 7, unread_count: 0, newest_unread_message_id: 0, pending: false });
+
+  await harness.controller.syncVisibleActiveChat({
+    hidden: false,
+    streamAbortControllers: new Map(),
+  });
+
+  assert.deepEqual(harness.histories.get(7), [
+    ...previousHistory,
+    { id: 3, role: 'assistant', body: 'fresh final reply', pending: false, created_at: '2026-04-24T01:00:02Z' },
+  ]);
+  assert.deepEqual(harness.renderedMessages, [{ chatId: 7, options: { preserveViewport: true } }]);
+});
+
 test('syncVisibleActiveChat treats visible resume like an activation fetch so active hidden chats catch up even when unread markers stay zero', async () => {
   let historyCalls = 0;
   const harness = buildHarness({
