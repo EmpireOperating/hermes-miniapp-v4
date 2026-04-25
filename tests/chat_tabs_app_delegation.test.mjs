@@ -43,7 +43,7 @@ test('app.js chat tab wrappers delegate to chatTabsController', async () => {
   );
   assert.match(
     source,
-    /const\s+chatTabsController\s*=\s*createChatTabsController\(\);/m,
+    /(?:const\s+chatTabsController\s*=|chatTabsController\s*=)\s*createChatTabsController\(\);/m,
     'app.js should allocate chatTabsController through the createChatTabsController wrapper',
   );
   assert.match(

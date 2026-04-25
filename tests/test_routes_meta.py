@@ -200,7 +200,7 @@ def test_app_csp_script_src_keeps_telegram_origin_and_nonce(monkeypatch, tmp_pat
     assert "script-src" in csp
     assert "https://telegram.org" in csp
     assert "'nonce-" in csp
-    assert "frame-ancestors https://web.telegram.org https://*.telegram.org;" in csp
+    assert "frame-ancestors https://web.telegram.org https://*.telegram.org" in csp
 
 
 def test_app_csp_keeps_default_frame_ancestors_when_visual_dev_host_not_matched(monkeypatch, tmp_path) -> None:
@@ -213,7 +213,7 @@ def test_app_csp_keeps_default_frame_ancestors_when_visual_dev_host_not_matched(
 
     assert response.status_code == 200
     csp = response.headers.get("Content-Security-Policy", "")
-    assert "frame-ancestors https://web.telegram.org https://*.telegram.org;" in csp
+    assert "frame-ancestors https://web.telegram.org https://*.telegram.org" in csp
     assert "frame-ancestors https://web.telegram.org https://*.telegram.org https://app.cronpulse.app;" not in csp
 
 

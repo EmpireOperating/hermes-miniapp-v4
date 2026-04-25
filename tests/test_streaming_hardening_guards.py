@@ -14,7 +14,9 @@ def test_app_wires_stream_state_helper_before_stream_lifecycle_calls():
     assert "HermesMiniappStreamController is required before app.js" in app_js
     assert "HermesMiniappComposerState is required before app.js" in app_js
     assert "const composerStateController = composerStateHelpers.createController({" in app_js
-    assert "return composerStateController.updateComposerState();" in app_js
+    assert "const result = composerStateController.updateComposerState();" in app_js
+    assert "renderComposerAttachments();" in app_js
+    assert "return result;" in app_js
     assert "const streamPhaseController = streamStateHelpers.createPhaseController({" in app_js
     assert "return streamPhaseController.getStreamPhase(chatId);" in app_js
     assert "return streamPhaseController.setStreamPhase(chatId, phase);" in app_js

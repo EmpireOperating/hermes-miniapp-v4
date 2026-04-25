@@ -20,7 +20,7 @@ test('app delegates updateComposerState ownership to composer_state_helpers cont
 
   assert.match(appJs, /const composerStateController = composerStateHelpers\.createController\(\{/);
   assert.match(appJs, /function updateComposerState\(\) \{/);
-  assert.match(appJs, /return composerStateController\.updateComposerState\(\);/);
+  assert.match(appJs, /const result = composerStateController\.updateComposerState\(\);[\s\S]*?renderComposerAttachments\(\);[\s\S]*?return result;/);
   assert.doesNotMatch(appJs, /composerStateHelpers\.deriveComposerState\(\{/);
   assert.doesNotMatch(appJs, /composerStateHelpers\.applyComposerState\(\{/);
 });

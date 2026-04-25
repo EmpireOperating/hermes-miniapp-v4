@@ -53,7 +53,7 @@ test('app.js startup/bootstrap wrappers keep delegating to startupBindingsContro
   );
   assert.match(
     source,
-    /function\s+createStartupBindingsControllerRuntimeArgs\s*\(\)\s*\{[\s\S]*?isMobileBootstrapPath:\s*\(\)\s*=>\s*mobileQuoteMode,[\s\S]*?getStreamAbortControllers:\s*\(\)\s*=>\s*streamController\.getAbortControllers\(\),[\s\S]*?\}/m,
+    /function\s+createStartupBindingsControllerRuntimeArgs\s*\(\)\s*\{[\s\S]*?isMobileBootstrapPath:\s*\(\)\s*=>\s*mobileQuoteMode(?:\s*\|\|\s*visualDevPreviewMode)?,[\s\S]*?getStreamAbortControllers:\s*\(\)\s*=>\s*streamController\.getAbortControllers\(\),[\s\S]*?\}/m,
     'app.js should isolate startup runtime arg building in createStartupBindingsControllerRuntimeArgs(...)',
   );
   assert.match(
