@@ -1624,10 +1624,28 @@ textarea:disabled {
   .shell {
     width: min(100%, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 20px));
     max-width: calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 20px);
+    overflow-x: hidden;
   }
-  .workspace { grid-template-columns: 1fr; }
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "terminal"
+      "visual"
+      "sidebar";
+    gap: 10px;
+    overflow-x: hidden;
+  }
+  .sidebar {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+    padding: 8px 0 10px;
+  }
   .terminal-panel {
     min-height: auto;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
     grid-template-rows: auto auto auto auto auto auto;
   }
   .chat-tabs {

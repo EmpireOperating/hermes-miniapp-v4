@@ -23,3 +23,12 @@ test('mobile transcript content cannot widen the app shell when a reply contains
   assert.match(cssSource, /\.message__body\s*\{[\s\S]*min-width:\s*0;[\s\S]*overflow-wrap:\s*anywhere;/);
   assert.match(cssSource, /\.code-block\s*\{[\s\S]*max-width:\s*100%;[\s\S]*min-width:\s*0;[\s\S]*overflow-x:\s*auto;[\s\S]*white-space:\s*pre-wrap;[\s\S]*overflow-wrap:\s*anywhere;[\s\S]*word-break:\s*break-word;/);
 });
+
+test('mobile workspace layout puts conversation first and stacks panels in one viewport column', () => {
+  assert.match(
+    cssSource,
+    /@media \(max-width: 860px\) \{[\s\S]*\.workspace\s*\{[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\);[\s\S]*grid-template-areas:\s*"terminal"\s*"visual"\s*"sidebar";[\s\S]*overflow-x:\s*hidden;/,
+  );
+  assert.match(cssSource, /@media \(max-width: 860px\) \{[\s\S]*\.sidebar\s*\{[\s\S]*min-width:\s*0;[\s\S]*max-width:\s*100%;[\s\S]*overflow-x:\s*hidden;/);
+  assert.match(cssSource, /@media \(max-width: 860px\) \{[\s\S]*\.terminal-panel\s*\{[\s\S]*min-width:\s*0;[\s\S]*max-width:\s*100%;[\s\S]*overflow-x:\s*clip;/);
+});
