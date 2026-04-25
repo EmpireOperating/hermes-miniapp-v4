@@ -488,10 +488,10 @@
     function syncActivePendingStatus() {
       const activeKey = normalizeChatId(getActiveChatId?.());
       const chat = activeKey ? chats.get(activeKey) : null;
+      const hasLiveController = activeKey && typeof hasLiveStreamController === 'function'
+        ? Boolean(hasLiveStreamController(activeKey))
+        : false;
       if (chat?.pending) {
-        const hasLiveController = activeKey && typeof hasLiveStreamController === 'function'
-          ? Boolean(hasLiveStreamController(activeKey))
-          : true;
         const preserveLiveLatency = activeKey && !hasLiveController && shouldPreserveLiveLatencyDuringPendingHandoff(activeKey);
         if (activeKey && !hasLiveController && !preserveLiveLatency) {
           clearLiveLatency(activeKey);
@@ -505,11 +505,15 @@
         }
         return;
       }
-      if (activeKey && hasLiveStreamController?.(activeKey)) {
+      if (activeKey && hasLiveController) {
         ensureResumedLiveLatency(activeKey);
         setStreamStatus?.(`Hermes responding in ${chatLabel?.(activeKey) || "Chat"}`);
         setActivityChip?.(streamChip, `stream: active · ${compactChatLabel?.(activeKey) || "Chat"}`);
         syncActiveLatencyChip?.();
+        return;
+      }
+      if (activeKey && liveLatencyStartedAtByChat.has(activeKey)) {
+        markStreamComplete(activeKey, getChatLatencyText?.(activeKey) || '--');
         return;
       }
       if ((streamChip?.textContent || "").startsWith("stream: pending")

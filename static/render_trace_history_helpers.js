@@ -46,6 +46,7 @@
           String(item?.role || ''),
           String(item?.body || ''),
           item?.pending ? 'pending' : 'final',
+          item?.collapsed ? 'collapsed' : 'expanded',
           String(item?.created_at || ''),
           fileRefSignature,
         ].join('::');
@@ -137,7 +138,7 @@
     }
 
     function renderVirtualizedHistory(targetChatId, history, {
-      prevScrollTop,
+      renderScrollTop,
       preserveViewport,
       forceBottom,
       shouldStick,
@@ -146,7 +147,7 @@
       const viewportHeight = Math.max(messagesEl.clientHeight || 0, 320);
       const range = computeVirtualRange({
         total: history.length,
-        scrollTop: forceBottom ? Number.MAX_SAFE_INTEGER : prevScrollTop,
+        scrollTop: forceBottom ? Number.MAX_SAFE_INTEGER : renderScrollTop,
         viewportHeight,
         forceBottom: forceBottom || (!preserveViewport && shouldStick),
         estimatedHeight,
@@ -310,6 +311,11 @@
         restoreViewportSnapshot(prevViewportSnapshot || { scrollTop: prevScrollTop });
       } else if (chatScrollTop.has(targetChatId) && !shouldStick) {
         messagesEl.scrollTop = Math.max(0, chatScrollTop.get(targetChatId));
+      } else if (preserveViewport && !shouldStick) {
+        // Fresh bootstrap / host-recreated unread renders can arrive before we have any
+        // per-chat scroll snapshot. In that case, preserving the current top-of-log viewport
+        // is safer than snapping to bottom and immediately clearing unread state.
+        messagesEl.scrollTop = Math.max(0, Number(prevScrollTop) || 0);
       } else {
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
@@ -351,6 +357,13 @@
       const prevViewportSnapshot = captureViewportSnapshot();
       const wasNearBottom = isNearBottom(messagesEl, 40);
       const shouldStick = Boolean(forceBottom);
+      const hasStoredScrollTop = chatScrollTop.has(targetChatId);
+      const storedTargetScrollTop = hasStoredScrollTop
+        ? Math.max(0, Number(chatScrollTop.get(targetChatId)) || 0)
+        : 0;
+      const renderScrollTop = (!forceBottom && !isSameRenderedChat && hasStoredScrollTop)
+        ? storedTargetScrollTop
+        : prevScrollTop;
 
       const history = histories.get(targetChatId) || [];
       const shouldVirtualize = Boolean(forceVirtualize) || shouldVirtualizeHistory(history.length);
@@ -386,7 +399,7 @@
 
       if (shouldVirtualize) {
         renderVirtualizedHistory(targetChatId, history, {
-          prevScrollTop,
+          renderScrollTop,
           preserveViewport,
           forceBottom,
           shouldStick,

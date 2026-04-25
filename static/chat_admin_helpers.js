@@ -43,6 +43,7 @@
       chatLabel,
       getActiveChatId,
       openChat,
+      invalidateOpenChatRequests = null,
       onLatencyByChatMutated,
       buildChatPreservingUnread,
       chatTabContextMenu,
@@ -54,6 +55,7 @@
     let chatTitleSelectedTag = 'none';
     let tabContextTargetChatId = null;
     let pinnedContextTargetChatId = null;
+    let nextOptimisticChatId = -1;
 
     function parseTaggedChatTitle(rawTitle) {
       const title = String(rawTitle || '').trim();
@@ -275,12 +277,59 @@
       const title = await askForChatTitle({ mode: 'create', defaultTitle: 'New chat' });
       if (!title) return;
       const cleaned = title.trim() || 'New chat';
-      const data = await apiPost('/api/chats', { title: cleaned });
-      upsertChat(data.chat);
-      histories.set(Number(data.chat.id), data.history || []);
-      setActiveChatMeta(data.chat.id);
-      renderMessages(data.chat.id);
-      focusComposerForNewChat?.(data.chat.id);
+      const previousActiveChatId = Number(getActiveChatId?.() || 0) || null;
+      const optimisticChatId = nextOptimisticChatId;
+      nextOptimisticChatId -= 1;
+      const optimisticChat = {
+        id: optimisticChatId,
+        title: cleaned,
+        is_pinned: false,
+        pending: false,
+        creating: true,
+        unread_count: 0,
+        newest_unread_message_id: null,
+        optimistic: true,
+      };
+      upsertChat(optimisticChat);
+      histories.set(optimisticChatId, []);
+      setActiveChatMeta(optimisticChatId);
+      renderMessages(optimisticChatId);
+      focusComposerForNewChat?.(optimisticChatId);
+
+      try {
+        const data = await apiPost('/api/chats', { title: cleaned });
+        const serverChatId = Number(data?.chat?.id);
+        if (serverChatId && serverChatId !== optimisticChatId) {
+          chats.delete(optimisticChatId);
+          pinnedChats.delete(optimisticChatId);
+          histories.delete(optimisticChatId);
+        }
+        upsertChat(data.chat);
+        histories.set(Number(data.chat.id), data.history || []);
+        if (Number(getActiveChatId?.()) === optimisticChatId) {
+          setActiveChatMeta(data.chat.id);
+          renderMessages(data.chat.id);
+          focusComposerForNewChat?.(data.chat.id);
+        } else {
+          renderTabs();
+        }
+        return data;
+      } catch (error) {
+        chats.delete(optimisticChatId);
+        pinnedChats.delete(optimisticChatId);
+        histories.delete(optimisticChatId);
+        if (Number(getActiveChatId?.()) === optimisticChatId) {
+          if (previousActiveChatId) {
+            setActiveChatMeta(previousActiveChatId);
+            renderMessages(previousActiveChatId);
+          } else {
+            setNoActiveChatMeta();
+          }
+        } else {
+          renderTabs();
+        }
+        throw error;
+      }
     }
 
     function getChatRecord(chatId) {
@@ -509,6 +558,28 @@
       return fallbackIds[0] || 0;
     }
 
+    function reconcilePostRemoveRender({
+      activeChatId = 0,
+      renderMessagesForChatId = 0,
+      setActiveOptions,
+      forceRenderTabs = false,
+    } = {}) {
+      const nextActiveChatId = Number(activeChatId) || 0;
+      const transcriptChatId = Number(renderMessagesForChatId) || 0;
+      if (nextActiveChatId > 0) {
+        setActiveChatMeta(nextActiveChatId, setActiveOptions);
+      } else {
+        setNoActiveChatMeta();
+      }
+      if (forceRenderTabs) {
+        renderTabs();
+      }
+      renderPinnedChats();
+      if (transcriptChatId > 0) {
+        renderMessages(transcriptChatId);
+      }
+    }
+
     async function removeChatById(chatId) {
       const targetChatId = Number(chatId);
       if (!targetChatId) return;
@@ -589,13 +660,19 @@
       latencyByChat.delete(activeChatId);
       onLatencyByChatMutated?.(latencyByChat);
 
+      let optimisticHydratePromise = null;
       if (optimisticNextChatId > 0) {
-        setActiveChatMeta(optimisticNextChatId, { fullTabRender: false, deferNonCritical: true });
-        renderTabs();
-        renderPinnedChats();
-        renderMessages(optimisticNextChatId);
+        reconcilePostRemoveRender({
+          activeChatId: optimisticNextChatId,
+          renderMessagesForChatId: histories.has(optimisticNextChatId) ? optimisticNextChatId : 0,
+          setActiveOptions: { fullTabRender: false, deferNonCritical: true },
+          forceRenderTabs: true,
+        });
+        if (!histories.has(optimisticNextChatId)) {
+          optimisticHydratePromise = Promise.resolve(openChat(optimisticNextChatId, { suppressColdOpenRender: true }));
+        }
       } else {
-        setNoActiveChatMeta();
+        reconcilePostRemoveRender();
       }
 
       let data;
@@ -607,6 +684,9 @@
           ...(optimisticNextChatId > 0 ? { preferred_chat_id: optimisticNextChatId } : {}),
         });
       } catch (error) {
+        if (optimisticHydratePromise) {
+          invalidateOpenChatRequests?.();
+        }
         restoreMap(chats, optimisticSnapshot.chats);
         restoreMap(pinnedChats, optimisticSnapshot.pinnedChats);
         restoreMap(histories, optimisticSnapshot.histories);
@@ -615,9 +695,10 @@
         restoreMap(streamPhaseByChat, optimisticSnapshot.streamPhaseByChat);
         restoreSet(unseenStreamChats, optimisticSnapshot.unseenStreamChats);
         onLatencyByChatMutated?.(latencyByChat);
-        setActiveChatMeta(activeChatId);
-        renderPinnedChats();
-        renderMessages(activeChatId);
+        reconcilePostRemoveRender({
+          activeChatId,
+          renderMessagesForChatId: activeChatId,
+        });
         throw error;
       }
 
@@ -643,25 +724,50 @@
 
       const nextActiveChatId = Number(data.active_chat_id || 0);
       if (!nextActiveChatId) {
-        renderPinnedChats();
+        if (optimisticHydratePromise) {
+          invalidateOpenChatRequests?.();
+        }
+        reconcilePostRemoveRender();
         return;
       }
 
       if (!data.active_chat || !Array.isArray(data.history)) {
-        renderPinnedChats();
-        if (nextActiveChatId !== Number(getActiveChatId())) {
+        const currentActiveChatId = Number(getActiveChatId());
+        if (nextActiveChatId !== currentActiveChatId) {
+          reconcilePostRemoveRender({
+            activeChatId: nextActiveChatId,
+            setActiveOptions: { fullTabRender: false, deferNonCritical: true },
+            forceRenderTabs: true,
+          });
           await openChat(nextActiveChatId);
-        } else if (!histories.has(nextActiveChatId)) {
-          await openChat(nextActiveChatId);
+          return;
         }
+        if (!histories.has(nextActiveChatId)) {
+          if (optimisticHydratePromise) {
+            await optimisticHydratePromise;
+          }
+          if (!histories.has(nextActiveChatId)) {
+            await openChat(nextActiveChatId);
+            return;
+          }
+        }
+        reconcilePostRemoveRender({
+          activeChatId: nextActiveChatId,
+          renderMessagesForChatId: nextActiveChatId,
+        });
         return;
+      }
+
+      if (optimisticHydratePromise && nextActiveChatId !== optimisticNextChatId) {
+        invalidateOpenChatRequests?.();
       }
 
       histories.set(nextActiveChatId, data.history || []);
       upsertChat(data.active_chat);
-      setActiveChatMeta(nextActiveChatId);
-      renderPinnedChats();
-      renderMessages(nextActiveChatId);
+      reconcilePostRemoveRender({
+        activeChatId: nextActiveChatId,
+        renderMessagesForChatId: nextActiveChatId,
+      });
     }
 
     async function openPinnedChat(chatId) {

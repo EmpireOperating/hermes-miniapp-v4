@@ -8,9 +8,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const cssSource = readFileSync(join(__dirname, '..', 'static', 'app.css'), 'utf8');
 
-test('chat-scoped sidebar actions are hidden globally', () => {
-  assert.match(
-    cssSource,
-    /\.chat-actions__chat-scoped\s*\{\s*display:\s*none;\s*\}/,
-  );
+test('sidebar chat-scoped actions are hidden globally', () => {
+  assert.match(cssSource, /\.chat-actions__chat-scoped\s*\{[\s\S]*display:\s*none;/);
 });

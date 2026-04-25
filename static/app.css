@@ -1596,6 +1596,11 @@ textarea:disabled {
 #send-button:disabled {
   opacity: 0.65;
 }
+
+.chat-actions__chat-scoped {
+  display: none;
+}
+
 @media (max-width: 860px) {
   body[data-tab-actions-menu="true"] .chat-actions__chat-scoped {
     display: none;

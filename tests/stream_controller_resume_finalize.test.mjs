@@ -133,7 +133,7 @@ test('hydrateChatAfterGracefulResumeCompletion rerenders when rendered active tr
     setChatLatency: () => {},
     incrementUnread: () => {},
     getActiveChatId: () => 9,
-    getRenderedTranscriptSignature: () => '0::assistant::older visible reply::final::::',
+    getRenderedTranscriptSignature: () => '0::assistant::older visible reply::final::expanded::::',
     triggerIncomingMessageHaptic: () => {},
     messagesEl: null,
     promptEl: { focus: () => {} },

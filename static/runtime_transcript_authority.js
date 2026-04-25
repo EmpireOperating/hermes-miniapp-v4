@@ -116,6 +116,7 @@
         String(item?.role || ''),
         String(item?.body || ''),
         item?.pending ? 'pending' : 'final',
+        item?.collapsed ? 'collapsed' : 'expanded',
         String(item?.created_at || ''),
         fileRefSignature,
       ].join('::');
@@ -377,6 +378,46 @@
     return transcriptRenderSignature(previousHistory) !== transcriptRenderSignature(incomingHistory);
   }
 
+  function isAppendOnlyHistoryExtension(previousHistory, incomingHistory) {
+    const previous = Array.isArray(previousHistory) ? previousHistory : [];
+    const incoming = Array.isArray(incomingHistory) ? incomingHistory : [];
+    if (!previous.length || incoming.length <= previous.length) {
+      return false;
+    }
+    return !historiesDiffer(previous, incoming.slice(0, previous.length));
+  }
+
+  function roleOf(item) {
+    return String(item?.role || '').toLowerCase();
+  }
+
+  function isVisibleAssistantLikeMessage(item) {
+    const role = roleOf(item);
+    if (role !== 'assistant' && role !== 'hermes') return false;
+    return String(item?.body || '').trim().length > 0;
+  }
+
+  function appendedAssistantCompletesToolActivity(previousHistory, incomingHistory) {
+    const previous = Array.isArray(previousHistory) ? previousHistory : [];
+    const incoming = Array.isArray(incomingHistory) ? incomingHistory : [];
+    if (!previous.length || incoming.length <= previous.length) {
+      return false;
+    }
+    const appended = incoming.slice(previous.length);
+    if (!appended.some((item) => isVisibleAssistantLikeMessage(item) && !Boolean(item?.pending))) {
+      return false;
+    }
+    let lastUserIndex = -1;
+    for (let index = previous.length - 1; index >= 0; index -= 1) {
+      if (roleOf(previous[index]) === 'user') {
+        lastUserIndex = index;
+        break;
+      }
+    }
+    const priorTurnTail = previous.slice(Math.max(0, lastUserIndex + 1));
+    return priorTurnTail.some((item) => roleOf(item) === 'tool');
+  }
+
   function describeActiveTranscriptRender({
     previousHistory = [],
     incomingHistory = [],
@@ -385,11 +426,34 @@
     historyChanged = false,
     hadCachedHistory = false,
     unreadCount = 0,
+    isRenderedChatActiveTarget = false,
+    isChatStuckToBottom = true,
+    shouldVirtualizeIncomingHistory = false,
   } = {}) {
     const previousRenderSignature = historyRenderSignature(previousHistory);
     const nextRenderSignature = historyRenderSignature(incomingHistory);
     const normalizedRenderedTranscriptSignature = String(renderedTranscriptSignature || '');
+    const canPreserveExistingViewportTranscript = Boolean(
+      normalizedRenderedTranscriptSignature
+      && normalizedRenderedTranscriptSignature === previousRenderSignature
+    );
+    const hasUnreadHydratedReply = Math.max(0, Number(unreadCount || 0)) > 0
+      && hasVisibleAssistantLikeTranscript(incomingHistory);
+    const appendCompletesToolActivity = appendedAssistantCompletesToolActivity(previousHistory, incomingHistory);
+    const shouldSkipOffscreenAppendOnlyHydrateRender = Boolean(
+      hadCachedHistory
+      && historyChanged
+      && !restoredPendingSnapshot
+      && isRenderedChatActiveTarget
+      && !isChatStuckToBottom
+      && !hasUnreadHydratedReply
+      && !appendCompletesToolActivity
+      && canPreserveExistingViewportTranscript
+      && isAppendOnlyHistoryExtension(previousHistory, incomingHistory)
+    );
     const shouldForceStaleRenderedTranscriptRender = Boolean(
+      !shouldSkipOffscreenAppendOnlyHydrateRender
+      &&
       normalizedRenderedTranscriptSignature
       && normalizedRenderedTranscriptSignature !== nextRenderSignature
     );
@@ -399,15 +463,22 @@
       && !restoredPendingSnapshot
       && Math.max(0, Number(unreadCount || 0)) > 0
       && hasVisibleAssistantLikeTranscript(incomingHistory)
+      && (
+        !normalizedRenderedTranscriptSignature
+        || normalizedRenderedTranscriptSignature !== nextRenderSignature
+      )
     );
-    const shouldRenderActiveHistory = previousRenderSignature !== nextRenderSignature
+    const shouldRenderActiveHistory = !shouldSkipOffscreenAppendOnlyHydrateRender && (
+      previousRenderSignature !== nextRenderSignature
       || Boolean(restoredPendingSnapshot)
       || shouldForceUnreadTranscriptRender
-      || shouldForceStaleRenderedTranscriptRender;
+      || shouldForceStaleRenderedTranscriptRender
+    );
     return {
       previousRenderSignature,
       nextRenderSignature,
       renderedTranscriptSignature: normalizedRenderedTranscriptSignature,
+      shouldSkipOffscreenAppendOnlyHydrateRender,
       shouldForceUnreadTranscriptRender,
       shouldForceStaleRenderedTranscriptRender,
       shouldRenderActiveHistory,
@@ -453,7 +524,15 @@
 
     if (source === 'prefetch') {
       reasons.laggingMetadata = isLaggingChatMetadata(currentChat, incomingChat);
-      const commit = !reasons.activeNow && !reasons.cacheFilledElsewhere && !reasons.laggingMetadata;
+      reasons.transcriptAdvancedWhileLaggingMetadata = Boolean(
+        reasons.laggingMetadata
+        && Array.isArray(currentHistory)
+        && currentHistory.length > 0
+        && didTranscriptMateriallyAdvance(currentHistory, incomingHistory)
+      );
+      const commit = !reasons.activeNow
+        && !reasons.cacheFilledElsewhere
+        && (!reasons.laggingMetadata || reasons.transcriptAdvancedWhileLaggingMetadata);
       return { commit, reasons };
     }
 
@@ -492,6 +571,7 @@
     preserveLatestCompletedAssistantMessage,
     reconcilePendingAssistantUpdate,
     didTranscriptMateriallyAdvance,
+    isAppendOnlyHistoryExtension,
     describeActiveTranscriptRender,
     isLaggingChatMetadata,
     describeSpeculativeHistoryCommit,

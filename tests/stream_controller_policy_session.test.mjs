@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sharedUtils, streamState, streamController } from './stream_controller_test_harness.mjs';
+import { sharedUtils, streamState, streamController, buildControllerHarness } from './stream_controller_test_harness.mjs';
 
 test('createResumeRecoveryPolicy exposes reconnect defaults and transient error detection', async () => {
   const timeoutCalls = [];
@@ -142,6 +142,8 @@ test('stream controller exports transcript and lifecycle subcontrollers with sta
   assert.equal(typeof streamController.createSseStreamReadController, 'function');
   assert.equal(typeof streamController.createVisibleTranscriptFallbackController, 'function');
   assert.equal(typeof streamController.createStreamTerminalEventController, 'function');
+  const terminalControllerExport = streamController.createStreamTerminalEventController;
+  assert.equal(typeof terminalControllerExport, 'function');
   assert.equal(typeof streamController.createStreamMetaEventController, 'function');
   assert.equal(typeof streamController.createToolTraceEventController, 'function');
   assert.equal(typeof streamController.createAssistantChunkEventController, 'function');
@@ -218,6 +220,9 @@ test('stream controller exports transcript and lifecycle subcontrollers with sta
   });
 
   terminalController.applyDonePayload(9, { reply: 'done', latency_ms: 42 }, { value: '' });
+  assert.equal(typeof terminalController.executeTerminalTransition, 'function');
+  assert.equal(typeof terminalController.buildDoneTransition, 'function');
+  assert.equal(typeof terminalController.buildEarlyCloseTransition, 'function');
   assert.deepEqual(finalizedToolTraces, [9]);
   assert.deepEqual(pendingAssistantUpdates, [{ chatId: 9, text: 'done', isStreaming: false }]);
   assert.deepEqual(patchedAssistantCalls, [{ chatId: 9, text: 'done', isStreaming: false }]);
@@ -228,6 +233,23 @@ test('stream controller exports transcript and lifecycle subcontrollers with sta
   assert.deepEqual(latencyUpdates, [{ chatId: 9, text: '1s' }]);
   assert.deepEqual(streamStatuses, [{ chatId: 9, text: 'Reply received in chat-9' }]);
   assert.deepEqual(streamChips, [{ chatId: 9, text: 'stream: complete · #9' }]);
+});
+
+test('createStreamNonTerminalEventController accepts canonical tool event names and preserves phase metadata', () => {
+  const harness = buildControllerHarness();
+  const builtReplyRef = { value: '' };
+
+  const handled = harness.controller.handleStreamEvent(9, 'tool.completed', {
+    tool_name: 'read_file',
+    preview: 'done',
+    args: { path: '/tmp/x' },
+    tool_call_id: 'call-1',
+    message_id: 44,
+  }, builtReplyRef);
+
+  assert.equal(handled, false);
+  assert.deepEqual(harness.markToolActivityCalls, [9]);
+  assert.deepEqual(harness.toolTraceLines, [{ chatId: 9, text: 'done' }]);
 });
 
 test('stream session helper bands expose replay-cursor, abort-registry, and first-assistant notification ownership directly', () => {

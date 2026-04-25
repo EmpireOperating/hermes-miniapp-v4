@@ -47,6 +47,24 @@ def test_create_chat_response_sets_active_chat_and_returns_serialized_history(mo
     assert server.store.get_active_chat("123") == payload["chat"]["id"]
 
 
+def test_create_chat_response_does_not_hydrate_empty_history(monkeypatch, tmp_path) -> None:
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    def fail_if_history_requested(*args, **kwargs):
+        raise AssertionError("new empty chat creation should not fetch history")
+
+    monkeypatch.setattr(service, "chat_history", fail_if_history_requested)
+
+    payload, status = service.create_chat_response(user_id="123", title="Feature")
+
+    assert status == 201
+    assert payload["ok"] is True
+    assert payload["chat"]["title"] == "Feature"
+    assert payload["history"] == []
+    assert server.store.get_active_chat("123") == payload["chat"]["id"]
+
+
 
 def test_branch_chat_response_allows_open_job_and_cuts_branch_at_last_assistant_message(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)

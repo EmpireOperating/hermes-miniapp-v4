@@ -369,6 +369,7 @@ const jumpLastStartButton = document.getElementById("jump-last-start");
 const body = document.body;
 const SKIN_STORAGE_KEY = "hermes_skin";
 const PINNED_CHATS_COLLAPSED_STORAGE_KEY = "hermes_pinned_chats_collapsed";
+const CHAT_TAB_ORDER_STORAGE_KEY = "hermes_chat_tab_order";
 const DEV_AUTH_SESSION_STORAGE_KEY = "hermes_dev_auth_defaults";
 const PINNED_CHATS_AUTO_COLLAPSE_THRESHOLD = 8;
 const ALLOWED_SKINS = new Set(["terminal", "oracle", "obsidian"]);
@@ -725,6 +726,7 @@ function applyStoredPinnedChatsCollapsePreference({
 function createChatTabsController() {
   return chatTabsHelpers.createController(createChatTabsControllerDeps({
   localStorageRef: localStorage,
+  orderedChatIdsStorageKey: CHAT_TAB_ORDER_STORAGE_KEY,
   pinnedChatsCollapsedStorageKey: PINNED_CHATS_COLLAPSED_STORAGE_KEY,
   pinnedChatsAutoCollapseThreshold: PINNED_CHATS_AUTO_COLLAPSE_THRESHOLD,
   chats,
@@ -752,7 +754,7 @@ function createChatTabsController() {
   getForceOverviewRail: () => workspacePanelOpen,
   getForceMobileCarousel: () => workspacePanelOpen,
   getCurrentUnreadCount,
-  openChat: (chatId) => openChat(chatId),
+  openChat: (chatId, options) => openChat(chatId, options),
   clearChatStreamState,
   chatUiHelpers,
   pinnedChatsWrap,
@@ -2549,6 +2551,9 @@ chatHistoryController = chatHistoryHelpers.createController({
     if (!key || key !== Number(renderedChatId)) return '';
     return String(renderedTranscriptSignatureByChat.get(key) || '');
   },
+  getRenderedChatId: () => Number(renderedChatId) || 0,
+  isChatStuckToBottom: (chatId) => Boolean(chatStickToBottom.get(Number(chatId))),
+  shouldVirtualizeHistory,
   renderTraceLog,
   nowMs: () => (typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
@@ -2600,6 +2605,9 @@ const chatAdminController = chatAdminHelpers.createController({
   chatLabel,
   getActiveChatId: () => Number(activeChatId),
   openChat,
+  invalidateOpenChatRequests: () => {
+    lastOpenChatRequestId += 1;
+  },
   onLatencyByChatMutated: persistLatencyByChatToStorage,
   buildChatPreservingUnread: (chat, options = {}) => chatHistoryController.buildChatPreservingUnread(chat, options),
   focusComposerForNewChat,
@@ -2948,6 +2956,7 @@ function createVisibilitySkinControllerRuntimeDeps() {
     getActiveChatId: () => Number(activeChatId),
     getPresenceInstanceId,
     refreshChats,
+    warmChatHistoryCache,
     syncVisibleActiveChat,
     syncActiveMessageView,
     getStreamAbortControllers,
@@ -3179,8 +3188,8 @@ async function hydrateChatFromServer(targetChatId, requestId, hadCachedHistory) 
   return chatHistoryController.hydrateChatFromServer(targetChatId, requestId, hadCachedHistory);
 }
 
-async function openChat(chatId) {
-  return chatHistoryController.openChat(chatId);
+async function openChat(chatId, options) {
+  return chatHistoryController.openChat(chatId, options);
 }
 
 async function markRead(chatId) {

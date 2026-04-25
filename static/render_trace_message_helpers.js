@@ -86,7 +86,8 @@
     const details = documentObject.createElement("details");
     details.className = "tool-trace";
     const collapsed = typeof message?.collapsed === "boolean" ? message.collapsed : !message?.pending;
-    const effectiveCollapsed = previousDetails ? !previousDetailsOpen : collapsed;
+    const shouldPreserveLiveDetailsOpenState = Boolean(previousDetails && message?.pending);
+    const effectiveCollapsed = shouldPreserveLiveDetailsOpenState ? !previousDetailsOpen : collapsed;
     if (message && typeof message === "object") {
       message.collapsed = effectiveCollapsed;
     }

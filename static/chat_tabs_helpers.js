@@ -119,6 +119,8 @@
     clearChatStreamState,
     applyResumeCooldownPendingSuppression,
     reapplyResumeCooldownPendingSuppression,
+    localStorageRef,
+    orderedChatIdsStorageKey = '',
   }) {
     function normalizeChat(chat, { forcePinned = null } = {}) {
       return {
@@ -130,7 +132,43 @@
       };
     }
 
-    let orderedChatIds = [];
+    function normalizeOrderedChatIds(rawChatIds) {
+      if (!Array.isArray(rawChatIds)) {
+        return [];
+      }
+      const seenChatIds = new Set();
+      return rawChatIds
+        .map((chatId) => Number(chatId || 0))
+        .filter((chatId) => {
+          if (!chatId || seenChatIds.has(chatId)) {
+            return false;
+          }
+          seenChatIds.add(chatId);
+          return true;
+        });
+    }
+
+    function readStoredOrderedChatIds() {
+      if (!orderedChatIdsStorageKey || !localStorageRef?.getItem) {
+        return [];
+      }
+      try {
+        return normalizeOrderedChatIds(JSON.parse(localStorageRef.getItem(orderedChatIdsStorageKey) || '[]'));
+      } catch {
+        return [];
+      }
+    }
+
+    function persistOrderedChatIds(nextOrderedChatIds) {
+      if (!orderedChatIdsStorageKey || !localStorageRef?.setItem) {
+        return;
+      }
+      try {
+        localStorageRef.setItem(orderedChatIdsStorageKey, JSON.stringify(normalizeOrderedChatIds(nextOrderedChatIds)));
+      } catch {}
+    }
+
+    let orderedChatIds = readStoredOrderedChatIds();
 
     function syncOrderedChatIds({ prependChatIds = [], appendChatIds = [] } = {}) {
       const nextOrderedChatIds = [];
@@ -150,7 +188,7 @@
 
       prependChatIds.forEach(pushChatId);
       orderedChatIds.forEach(pushChatId);
-      openChatIds.sort((a, b) => a - b).forEach(pushChatId);
+      openChatIds.forEach(pushChatId);
       appendChatIds.forEach((chatId) => {
         const normalizedId = Number(chatId || 0);
         if (!normalizedId || !seenChatIds.has(normalizedId)) {
@@ -164,6 +202,7 @@
         nextOrderedChatIds.push(normalizedId);
       });
       orderedChatIds = nextOrderedChatIds;
+      persistOrderedChatIds(orderedChatIds);
       return orderedChatIds.slice();
     }
 
@@ -175,7 +214,7 @@
       return syncOrderedChatIds();
     }
 
-    function upsertChat(chat) {
+    function upsertChat(chat, { syncOrder = true } = {}) {
       const normalized = normalizeChat(chat);
       chats.set(Number(normalized.id), normalized);
       if (normalized.is_pinned) {
@@ -183,7 +222,9 @@
       } else {
         pinnedChats.delete(Number(normalized.id));
       }
-      syncOrderedChatIds();
+      if (syncOrder) {
+        syncOrderedChatIds();
+      }
       applyResumeCooldownPendingSuppression(normalized.id);
       return normalized;
     }
@@ -226,7 +267,7 @@
           tabNodes.delete(Number(chatId));
         }
       });
-      const nextChats = (chatList || []).map(upsertChat);
+      const nextChats = (chatList || []).map((chat) => upsertChat(chat, { syncOrder: false }));
       syncOrderedChatIds();
       reapplyResumeCooldownPendingSuppression();
       return nextChats;
@@ -844,6 +885,7 @@
   function createController(deps) {
     const {
       localStorageRef,
+      orderedChatIdsStorageKey = '',
       pinnedChatsCollapsedStorageKey,
       pinnedChatsAutoCollapseThreshold,
       chats,
@@ -932,6 +974,8 @@
       clearChatStreamState,
       applyResumeCooldownPendingSuppression,
       reapplyResumeCooldownPendingSuppression,
+      localStorageRef,
+      orderedChatIdsStorageKey,
     });
     const {
       normalizeChat,

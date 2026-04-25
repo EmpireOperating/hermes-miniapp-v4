@@ -627,6 +627,7 @@ class StoreSchemaMixin:
             "CREATE INDEX IF NOT EXISTS idx_media_project_export_jobs_project_created ON media_project_export_jobs(project_id, created_at DESC, export_job_id DESC)"
         )
 
+
     def _ensure_visual_dev_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(
             """

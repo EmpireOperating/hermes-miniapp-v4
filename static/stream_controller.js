@@ -38,6 +38,7 @@
   }
 
   const createFirstAssistantNotificationController = attentionEffects.createFirstAssistantNotificationController;
+  const createAttentionStateController = attentionEffects.createAttentionStateController || null;
   const describeDoneAttentionEffect = attentionEffects.describeDoneAttentionEffect;
   const describeEarlyCloseAttentionEffect = attentionEffects.describeEarlyCloseAttentionEffect;
   const describeResumeCompletionAttentionEffect = attentionEffects.describeResumeCompletionAttentionEffect;
@@ -87,8 +88,72 @@
       return;
     }
 
+    function mergeToolTraceBodies(primaryBody, candidateBody) {
+      const primaryText = String(primaryBody || "").trim();
+      const candidateText = String(candidateBody || "").trim();
+      if (!primaryText) return candidateText;
+      if (!candidateText) return primaryText;
+      if (primaryText === candidateText) return primaryText;
+      if (primaryText.includes(candidateText)) return primaryText;
+      if (candidateText.includes(primaryText)) return candidateText;
+      return candidateText.length >= primaryText.length
+        ? candidateText
+        : primaryText;
+    }
+
+    function collapsePendingToolTraceMessages(chatId) {
+      const key = Number(chatId);
+      const history = Array.isArray(histories.get(key)) ? histories.get(key) : [];
+      const pendingToolIndexes = [];
+      for (let index = 0; index < history.length; index += 1) {
+        const item = history[index];
+        if (item?.role === "tool" && item?.pending) {
+          pendingToolIndexes.push(index);
+        }
+      }
+      if (!pendingToolIndexes.length) {
+        return null;
+      }
+      if (pendingToolIndexes.length === 1) {
+        return history[pendingToolIndexes[0]] || null;
+      }
+
+      const preferredIndex = pendingToolIndexes[pendingToolIndexes.length - 1];
+      const preferredItem = history[preferredIndex] || {};
+      const mergedTool = { ...preferredItem };
+      for (const index of pendingToolIndexes) {
+        if (index === preferredIndex) continue;
+        const candidate = history[index] || {};
+        mergedTool.body = mergeToolTraceBodies(mergedTool.body, candidate.body);
+        if (!String(mergedTool.created_at || "") && String(candidate.created_at || "")) {
+          mergedTool.created_at = candidate.created_at;
+        }
+        if (typeof preferredItem?.collapsed !== "boolean" && typeof candidate?.collapsed === "boolean") {
+          mergedTool.collapsed = candidate.collapsed;
+        }
+      }
+      mergedTool.pending = true;
+
+      const nextHistory = history.filter((item, index) => !pendingToolIndexes.includes(index));
+      const assistantInsertIndex = nextHistory.findIndex((item) => {
+        if (!item?.pending) return false;
+        const role = String(item?.role || "").toLowerCase();
+        return role === "hermes" || role === "assistant";
+      });
+      if (assistantInsertIndex >= 0) {
+        nextHistory.splice(assistantInsertIndex, 0, mergedTool);
+      } else {
+        nextHistory.push(mergedTool);
+      }
+      histories.set(key, nextHistory);
+      persistPendingStreamSnapshot?.(key);
+      return mergedTool;
+    }
+
     function findPendingToolTraceMessage(chatId) {
       const key = Number(chatId);
+      const collapsed = collapsePendingToolTraceMessages(key);
+      if (collapsed) return collapsed;
       const history = histories.get(key) || [];
       for (let index = history.length - 1; index >= 0; index -= 1) {
         const item = history[index];
@@ -101,7 +166,7 @@
 
     function ensurePendingToolTraceMessage(chatId) {
       const key = Number(chatId);
-      const history = histories.get(key) || [];
+      const history = Array.isArray(histories.get(key)) ? histories.get(key) : [];
       const existing = findPendingToolTraceMessage(key);
       if (existing) return existing;
 
@@ -284,6 +349,7 @@
 
     function finalizeInlineToolTrace(chatId) {
       const key = Number(chatId);
+      collapsePendingToolTraceMessages(key);
       const history = histories.get(key) || [];
       let changed = false;
 
@@ -494,13 +560,21 @@
     });
     const replayCursorController = createReplayCursorController({ persistStreamCursor });
     const abortRegistry = createStreamAbortRegistry();
-    const notificationController = createFirstAssistantNotificationController({
-      getActiveChatId,
-      isDocumentHidden: () => (typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false),
-      triggerIncomingMessageHaptic,
-      incrementUnread,
-      renderTabs,
-    });
+    const notificationController = createAttentionStateController
+      ? createAttentionStateController({
+        getActiveChatId,
+        isDocumentHidden: () => (typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false),
+        triggerIncomingMessageHaptic,
+        incrementUnread,
+        renderTabs,
+      })
+      : createFirstAssistantNotificationController({
+        getActiveChatId,
+        isDocumentHidden: () => (typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false),
+        triggerIncomingMessageHaptic,
+        incrementUnread,
+        renderTabs,
+      });
     const terminalHydrationPromisesByChat = new Map();
 
     function registerTerminalHydrationPromise(chatId, promise) {
@@ -724,14 +798,14 @@
       renderTraceLog,
       syncActiveMessageView,
       setChatLatency,
-      incrementUnread,
-      triggerIncomingMessageHaptic,
-      renderTabs,
       finalizeStreamPendingState,
     } = deps;
     const {
       immediateFinalizedChats,
       consumeFirstAssistantNotification,
+      applyDoneAttention,
+      applyEarlyCloseAttention,
+      applyResumeCompletionAttention,
       setStreamStatusForVisibleChat,
       setStreamChipForVisibleChat,
       registerTerminalHydrationPromise,
@@ -743,119 +817,223 @@
       reconcileVisibleTranscriptFallback,
     } = fallbackController;
 
-    function applyDonePayload(chatId, payload, builtReplyRef, { updateUnread = true } = {}) {
-      builtReplyRef.value = payload.reply || builtReplyRef.value;
-      finalizeInlineToolTrace(chatId);
-      deps.clearStreamCursor?.(chatId);
-      updatePendingAssistant(chatId, builtReplyRef.value, false);
-      deps.clearPendingStreamSnapshot?.(chatId);
-      const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
-      const doneTurnCount = Number(payload?.turn_count || 0);
-      const doneActiveChatId = Number(getActiveChatId());
-      const doneHidden = typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false;
-      const doneAttention = describeDoneAttentionEffect({
-        chatId,
-        activeChatId: doneActiveChatId,
-        hidden: doneHidden,
-        updateUnread,
-        earlyAssistantNotification,
-        doneTurnCount,
-      });
-      executeAttentionEffect({
-        chatId,
-        effect: doneAttention,
-        triggerIncomingMessageHaptic,
-        incrementUnread,
-        renderTabs,
-      });
-      markStreamUpdate(chatId);
-      const patchedAssistant = patchVisiblePendingAssistant(chatId, builtReplyRef.value, false);
-      const patchedToolTrace = patchVisibleToolTrace(chatId);
+    function executeTerminalTransition(chatId, transition) {
+      const key = Number(chatId);
+      const replyText = String(transition.replyText || '');
+      if (transition.clearStreamCursor) {
+        deps.clearStreamCursor?.(key);
+      }
+      if (transition.clearPendingSnapshot) {
+        deps.clearPendingStreamSnapshot?.(key);
+      }
+      const skipAssistantUpdate = transition.skipAssistantUpdate === true;
+      const skipToolPatch = transition.skipToolPatch === true;
+      if (!skipAssistantUpdate) {
+        updatePendingAssistant(key, replyText, false);
+        markStreamUpdate(key);
+      }
+
+      const patchedAssistant = skipAssistantUpdate
+        ? false
+        : patchVisiblePendingAssistant(key, replyText, false);
+      const patchedToolTrace = skipToolPatch ? false : patchVisibleToolTrace(key);
       const fallbackRender = !patchedAssistant || !patchedToolTrace;
-      renderTraceLog('stream-done-patch', {
-        chatId: Number(chatId),
+      renderTraceLog(transition.patchTraceEvent, {
+        chatId: key,
         patchedAssistant,
         patchedToolTrace,
         fallbackRender,
       });
-      if (fallbackRender || doneActiveChatId === Number(chatId)) {
-        reconcileVisibleTranscriptFallback(chatId);
+      if (transition.forceVisibleFallback || fallbackRender) {
+        if (transition.useTranscriptFallback) {
+          reconcileVisibleTranscriptFallback(key);
+        } else {
+          syncActiveMessageView(key, { preserveViewport: true });
+        }
       }
-      registerTerminalHydrationPromise?.(
-        chatId,
-        hydrateChatAfterGracefulResumeCompletion(chatId, { forceCompleted: true }),
-      );
-      const deliveredLatency = formatLatency(payload.latency_ms);
-      if (typeof deps.markStreamComplete === "function") {
-        deps.markStreamComplete(chatId, deliveredLatency);
+
+      if (transition.hydrationOptions) {
+        registerTerminalHydrationPromise?.(
+          key,
+          hydrateChatAfterGracefulResumeCompletion(key, transition.hydrationOptions),
+        );
+      }
+
+      if (transition.statusKind === 'complete') {
+        if (typeof deps.markStreamComplete === 'function') {
+          deps.markStreamComplete(key, transition.latencyText);
+        } else {
+          setChatLatency?.(key, transition.latencyText);
+          setStreamStatusForVisibleChat?.(key, `Reply received in ${chatLabel(key)}`);
+          setStreamChipForVisibleChat?.(key, `stream: complete · ${compactChatLabel(key)}`);
+        }
+      } else if (transition.statusKind === 'closed_early') {
+        if (typeof deps.markStreamClosedEarly === 'function') {
+          deps.markStreamClosedEarly(key);
+        } else {
+          setChatLatency?.(key, '--');
+          setStreamStatusForVisibleChat?.(key, 'Stream closed early');
+          setStreamChipForVisibleChat?.(key, 'stream: closed early');
+        }
+      } else if (transition.statusKind === 'resume_complete') {
+        deps.markResumeAlreadyComplete?.(key);
+      }
+
+      if (transition.traceStateEvent) {
+        renderTraceLog(transition.traceStateEvent, {
+          chatId: key,
+          activeChatId: Number(getActiveChatId()),
+          hidden: typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false,
+          replyLength: replyText.length,
+          ...transition.traceStateDetails,
+        });
+      }
+
+      if (transition.immediateFinalize) {
+        immediateFinalizedChats.add(key);
+        finalizeStreamPendingState(key, false);
+      }
+    }
+
+    function buildDoneTransition(chatId, payload, builtReplyRef, { updateUnread = true } = {}) {
+      builtReplyRef.value = payload.reply || builtReplyRef.value;
+      finalizeInlineToolTrace(chatId);
+      const doneTurnCount = Number(payload?.turn_count || 0);
+      const doneResult = typeof applyDoneAttention === 'function'
+        ? applyDoneAttention(chatId, { updateUnread, doneTurnCount })
+        : (() => {
+          const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
+          const effect = describeDoneAttentionEffect({
+            chatId,
+            activeChatId: Number(getActiveChatId()),
+            hidden: typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false,
+            updateUnread,
+            earlyAssistantNotification,
+            doneTurnCount,
+          });
+          return {
+            effect,
+            execution: executeAttentionEffect({
+              chatId,
+              effect,
+              triggerIncomingMessageHaptic: deps.triggerIncomingMessageHaptic,
+              incrementUnread: deps.incrementUnread,
+              renderTabs: deps.renderTabs,
+            }),
+          };
+        })();
+      return {
+        replyText: builtReplyRef.value,
+        clearStreamCursor: true,
+        clearPendingSnapshot: true,
+        patchTraceEvent: 'stream-done-patch',
+        forceVisibleFallback: Number(getActiveChatId()) === Number(chatId),
+        useTranscriptFallback: true,
+        hydrationOptions: { forceCompleted: true },
+        statusKind: 'complete',
+        latencyText: formatLatency(payload.latency_ms),
+        traceStateEvent: 'stream-done-state',
+        traceStateDetails: {
+          updateUnread: Boolean(updateUnread),
+          hadEarlyAssistantHaptic: doneResult.effect?.hadEarlyAssistantHaptic,
+          hadEarlyAssistantUnread: doneResult.effect?.hadEarlyAssistantUnread,
+          shouldTriggerHapticOnDone: doneResult.effect?.shouldTriggerHaptic,
+          shouldIncrementUnreadOnDone: doneResult.effect?.shouldIncrementUnread,
+          doneTurnCount,
+          doneMessageKey: doneResult.effect?.messageKey,
+          latencyMs: Number(payload?.latency_ms || 0),
+        },
+        immediateFinalize: true,
+      };
+    }
+
+    function applyDonePayload(chatId, payload, builtReplyRef, options = {}) {
+      executeTerminalTransition(chatId, buildDoneTransition(chatId, payload, builtReplyRef, options));
+    }
+
+    function buildEarlyCloseTransition(chatId, builtReplyRef, fallbackTraceEvent) {
+      const fallbackReply = builtReplyRef.value || 'The response ended before completion.';
+      finalizeInlineToolTrace(chatId);
+      if (typeof applyEarlyCloseAttention === 'function') {
+        applyEarlyCloseAttention(chatId);
       } else {
-        setChatLatency(chatId, deliveredLatency);
-        setStreamStatusForVisibleChat(chatId, `Reply received in ${chatLabel(chatId)}`);
-        setStreamChipForVisibleChat(chatId, `stream: complete · ${compactChatLabel(chatId)}`);
+        const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
+        executeAttentionEffect({
+          chatId,
+          effect: describeEarlyCloseAttentionEffect({
+            chatId,
+            activeChatId: getActiveChatId(),
+            hidden: typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false,
+            earlyAssistantNotification,
+          }),
+          triggerIncomingMessageHaptic: deps.triggerIncomingMessageHaptic,
+          incrementUnread: deps.incrementUnread,
+          renderTabs: deps.renderTabs,
+        });
       }
-      renderTraceLog("stream-done-state", {
-        chatId: Number(chatId),
-        activeChatId: doneActiveChatId,
-        hidden: doneHidden,
-        updateUnread: Boolean(updateUnread),
-        hadEarlyAssistantHaptic: doneAttention.hadEarlyAssistantHaptic,
-        hadEarlyAssistantUnread: doneAttention.hadEarlyAssistantUnread,
-        shouldTriggerHapticOnDone: doneAttention.shouldTriggerHaptic,
-        shouldIncrementUnreadOnDone: doneAttention.shouldIncrementUnread,
-        doneTurnCount,
-        doneMessageKey: doneAttention.messageKey,
-        latencyMs: Number(payload?.latency_ms || 0),
-        replyLength: builtReplyRef.value.length,
-      });
-      immediateFinalizedChats.add(Number(chatId));
-      finalizeStreamPendingState(chatId, false);
-      
+      return {
+        replyText: fallbackReply,
+        clearStreamCursor: false,
+        clearPendingSnapshot: false,
+        patchTraceEvent: fallbackTraceEvent,
+        forceVisibleFallback: false,
+        useTranscriptFallback: false,
+        hydrationOptions: null,
+        statusKind: 'closed_early',
+        traceStateEvent: null,
+        traceStateDetails: null,
+        immediateFinalize: false,
+      };
     }
 
     function applyEarlyStreamCloseFallback(chatId, builtReplyRef, fallbackTraceEvent) {
-      const fallbackReply = builtReplyRef.value || 'The response ended before completion.';
-      finalizeInlineToolTrace(chatId);
-      const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
-      const earlyCloseHidden = typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false;
-      updatePendingAssistant(chatId, fallbackReply, false);
-      const earlyCloseAttention = describeEarlyCloseAttentionEffect({
-        chatId,
-        activeChatId: getActiveChatId(),
-        hidden: earlyCloseHidden,
-        earlyAssistantNotification,
-      });
-      executeAttentionEffect({
-        chatId,
-        effect: earlyCloseAttention,
-        triggerIncomingMessageHaptic,
-        incrementUnread,
-        renderTabs,
-      });
-      markStreamUpdate(chatId);
-      const patchedAssistant = patchVisiblePendingAssistant(chatId, fallbackReply, false);
-      const patchedToolTrace = patchVisibleToolTrace(chatId);
-      renderTraceLog(fallbackTraceEvent, {
-        chatId: Number(chatId),
-        patchedAssistant,
-        patchedToolTrace,
-        fallbackRender: !patchedAssistant || !patchedToolTrace,
-      });
-      if (!patchedAssistant || !patchedToolTrace) {
-        syncActiveMessageView(chatId, { preserveViewport: true });
-      }
-      if (typeof deps.markStreamClosedEarly === 'function') {
-        deps.markStreamClosedEarly(chatId);
+      executeTerminalTransition(chatId, buildEarlyCloseTransition(chatId, builtReplyRef, fallbackTraceEvent));
+    }
+
+    function buildResumeCompleteTransition(chatId, {
+      clearPendingSnapshot = false,
+      clearStreamCursor = false,
+    } = {}) {
+      if (typeof applyResumeCompletionAttention === 'function') {
+        applyResumeCompletionAttention(chatId);
       } else {
-        setChatLatency(chatId, '--');
-        setStreamStatusForVisibleChat(chatId, 'Stream closed early');
-        setStreamChipForVisibleChat(chatId, 'stream: closed early');
+        executeAttentionEffect({
+          chatId,
+          effect: describeResumeCompletionAttentionEffect({ chatId }),
+          triggerIncomingMessageHaptic: deps.triggerIncomingMessageHaptic,
+          incrementUnread: deps.incrementUnread,
+          renderTabs: deps.renderTabs,
+        });
       }
-      
+      return {
+        replyText: '',
+        clearStreamCursor,
+        clearPendingSnapshot,
+        skipAssistantUpdate: true,
+        skipToolPatch: true,
+        patchTraceEvent: 'stream-resume-complete-patch',
+        forceVisibleFallback: Number(getActiveChatId()) === Number(chatId),
+        useTranscriptFallback: true,
+        hydrationOptions: { forceCompleted: true },
+        statusKind: 'resume_complete',
+        traceStateEvent: 'stream-resume-complete-state',
+        traceStateDetails: {},
+        immediateFinalize: true,
+      };
+    }
+
+    function applyResumeCompletionTransition(chatId, options = {}) {
+      executeTerminalTransition(chatId, buildResumeCompleteTransition(chatId, options));
     }
 
     return {
+      executeTerminalTransition,
+      buildDoneTransition,
+      buildEarlyCloseTransition,
+      buildResumeCompleteTransition,
       applyDonePayload,
       applyEarlyStreamCloseFallback,
+      applyResumeCompletionTransition,
     };
   }
 
@@ -948,30 +1126,50 @@
       reconcileVisibleTranscriptFallback,
     } = fallbackController;
 
-    function handleToolEvent(chatId, payload) {
+    function normalizeToolPayload(eventName, payload) {
+      const canonicalEventName = String(eventName || payload?.event_type || 'tool').trim().toLowerCase();
+      const normalizedPhase = String(
+        payload?.phase
+        || payload?.status
+        || (canonicalEventName.startsWith('tool.') ? canonicalEventName.slice('tool.'.length) : 'started')
+        || 'started'
+      ).trim().toLowerCase();
+      const display = payload?.display || payload?.preview || payload?.tool_name || 'Tool running';
+      return {
+        ...payload,
+        event_type: canonicalEventName.startsWith('tool.') ? canonicalEventName : `tool.${normalizedPhase}`,
+        phase: normalizedPhase,
+        display,
+      };
+    }
+
+    function handleToolEvent(chatId, payload, { eventName = 'tool' } = {}) {
       setStreamPhase(chatId, STREAM_PHASES.STREAMING_TOOL);
-      const display = payload.display || payload.preview || payload.tool_name || 'Tool running';
-      deps.appendInlineToolTrace(chatId, display, payload);
+      const normalizedPayload = normalizeToolPayload(eventName, payload || {});
+      deps.appendInlineToolTrace(chatId, normalizedPayload.display, normalizedPayload);
       const patchedToolTrace = patchVisibleToolTrace(chatId);
       renderTraceLog('stream-tool-patch', {
         chatId: Number(chatId),
         phase: deps.getStreamPhase(chatId),
+        toolPhase: normalizedPayload.phase,
+        toolEventType: normalizedPayload.event_type,
         patchedToolTrace,
         fallbackRender: !patchedToolTrace,
       });
       if (!patchedToolTrace) {
         reconcileVisibleTranscriptFallback(chatId);
       }
-      if (typeof deps.markToolActivity === "function") {
+      if (typeof deps.markToolActivity === 'function') {
         deps.markToolActivity(chatId);
       } else {
-        setStreamStatusForVisibleChat(chatId, `Using tools in ${chatLabel(chatId)}`);
-        setStreamChipForVisibleChat(chatId, `stream: tools active · ${compactChatLabel(chatId)}`);
+        setStreamStatusForVisibleChat?.(chatId, `Using tools in ${chatLabel(chatId)}`);
+        setStreamChipForVisibleChat?.(chatId, `stream: tools active · ${compactChatLabel(chatId)}`);
       }
       return false;
     }
 
     return {
+      normalizeToolPayload,
       handleToolEvent,
     };
   }
@@ -1151,16 +1349,16 @@
       if (eventName === 'meta') {
         return metaController.handleMetaEvent(chatId, payload);
       }
-      if (eventName === 'tool') {
-        return toolController.handleToolEvent(chatId, payload);
+      if (eventName === 'tool' || eventName.startsWith('tool.')) {
+        return toolController.handleToolEvent(chatId, payload, { eventName });
       }
-      if (eventName === 'chunk') {
+      if (eventName === 'chunk' || eventName === 'assistant.delta') {
         return chunkController.handleChunkEvent(chatId, payload, builtReplyRef);
       }
-      if (eventName === 'error') {
+      if (eventName === 'error' || eventName === 'terminal.error') {
         return errorController.handleErrorEvent(chatId, payload);
       }
-      if (eventName === 'done') {
+      if (eventName === 'done' || eventName === 'terminal.done') {
         setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
         applyDonePayload(chatId, payload, builtReplyRef);
         return true;
@@ -1629,6 +1827,7 @@
     const {
       hydrateChatAfterGracefulResumeCompletion,
       consumeStreamWithReconnect,
+      applyResumeCompletionTransition,
     } = transcriptController;
 
     function _normalizeScreenshotContentType(screenshot = {}) {
@@ -1845,11 +2044,7 @@
           const stillPending = Boolean(chats.get(chatId)?.pending) || pendingChats.has(chatId);
           if (!stillPending) {
             setStreamPhase(chatId, STREAM_PHASES.FINALIZED);
-            executeAttentionEffect({
-              chatId,
-              effect: describeResumeCompletionAttentionEffect({ chatId }),
-              triggerIncomingMessageHaptic,
-            });
+            applyResumeCompletionTransition?.(chatId, { clearStreamCursor: false, clearPendingSnapshot: false });
             return { wasAborted, shouldResumeAfterFinally, sent };
           }
           wasAborted = true;
@@ -2052,6 +2247,7 @@
     const {
       hydrateChatAfterGracefulResumeCompletion,
       consumeStreamWithReconnect,
+      applyResumeCompletionTransition,
     } = transcriptController;
 
     async function executeResumeAttempt({
@@ -2083,14 +2279,7 @@
           if (noActiveJob) {
             deps.resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
             setStreamPhase(key, STREAM_PHASES.FINALIZED);
-            clearPendingStreamSnapshot?.(key);
-            await hydrateChatAfterGracefulResumeCompletion(key, { forceCompleted: true });
-            executeAttentionEffect({
-              chatId: key,
-              effect: describeResumeCompletionAttentionEffect({ chatId: key }),
-              triggerIncomingMessageHaptic,
-            });
-            deps.markResumeAlreadyComplete?.(key);
+            applyResumeCompletionTransition?.(key, { clearStreamCursor: false, clearPendingSnapshot: true });
             return { wasAborted, completed: true, shouldContinue: false };
           }
           throw new Error(sanitizedResumeFailure);
@@ -2139,12 +2328,7 @@
           if (!stillPending) {
             deps.resumeCooldownUntilByChat?.set?.(key, Date.now() + RESUME_COMPLETE_SETTLE_MS);
             setStreamPhase(key, STREAM_PHASES.FINALIZED);
-            executeAttentionEffect({
-              chatId: key,
-              effect: describeResumeCompletionAttentionEffect({ chatId: key }),
-              triggerIncomingMessageHaptic,
-            });
-            deps.markResumeAlreadyComplete?.(key);
+            applyResumeCompletionTransition?.(key, { clearStreamCursor: false, clearPendingSnapshot: false });
             return { wasAborted, completed: true, shouldContinue: false };
           }
         }

@@ -532,11 +532,14 @@
       getStreamAbortControllers,
     } = deps;
 
+    let watchdogPassInFlight = null;
+
     function installPendingCompletionWatchdog() {
       const intervalMs = 8000;
       windowObject.setInterval(() => {
         if (!getIsAuthenticated() || pendingChats.size === 0) return;
-        void (async () => {
+        if (watchdogPassInFlight) return watchdogPassInFlight;
+        watchdogPassInFlight = (async () => {
           try {
             await refreshChats();
             if (Number(getActiveChatId()) > 0 && pendingChats.has(Number(getActiveChatId()))) {
@@ -547,8 +550,11 @@
             }
           } catch {
             // Best-effort watchdog: healthy streams still finalize through normal SSE handling.
+          } finally {
+            watchdogPassInFlight = null;
           }
         })();
+        return watchdogPassInFlight;
       }, intervalMs);
     }
 

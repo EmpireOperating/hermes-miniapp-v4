@@ -1298,6 +1298,9 @@ def test_pinned_chat_mvp_ui_wiring_present_in_client_script() -> None:
     assert "function syncChats" in chat_tabs_script
     assert "function syncOrderedChatIds" in chat_tabs_script
     assert "function moveChatToEnd" in chat_tabs_script
+    assert "function readStoredOrderedChatIds" in chat_tabs_script
+    assert "function persistOrderedChatIds" in chat_tabs_script
+    assert "orderedChatIdsStorageKey: CHAT_TAB_ORDER_STORAGE_KEY," in script
     assert "function syncPinnedChatsCollapseUi" in chat_tabs_script
     assert "HermesMiniappChatAdmin" in chat_admin_script
     assert "function syncPinnedChats" in script

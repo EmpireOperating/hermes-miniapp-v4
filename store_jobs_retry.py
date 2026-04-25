@@ -36,6 +36,21 @@ def _sanitize_failure_metadata(failure_metadata: FailureMetadata | None) -> Fail
     }
 
 
+def _row_failure_metadata(row: Any) -> FailureMetadata:
+    return _sanitize_failure_metadata(
+        {
+            "child_pid": row["child_pid"] if row is not None else None,
+            "child_transport": row["child_transport"] if row is not None else None,
+            "terminal_return_code": row["terminal_return_code"] if row is not None else None,
+            "terminal_failure_kind": row["terminal_failure_kind"] if row is not None else None,
+            "terminal_outcome": row["terminal_outcome"] if row is not None else None,
+            "terminal_error": row["terminal_error"] if row is not None else None,
+            "limit_breach": row["limit_breach"] if row is not None else None,
+            "limit_breach_detail": row["limit_breach_detail"] if row is not None else None,
+        }
+    )
+
+
 def retry_or_dead_letter_job(
     conn: Connection,
     *,
@@ -207,7 +222,9 @@ def dead_letter_stale_open_job_for_chat(
     error_text = str(error or "Stale open job")[:1000]
     row = conn.execute(
         f"""
-        SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts, status, error
+        SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts, status, error,
+               child_pid, child_transport, terminal_return_code, terminal_failure_kind,
+               terminal_outcome, terminal_error, limit_breach, limit_breach_detail
         FROM chat_jobs
         WHERE user_id = ?
           AND chat_id = ?
@@ -239,6 +256,7 @@ def dead_letter_stale_open_job_for_chat(
         return None
 
     job_id = int(row["id"])
+    metadata = _row_failure_metadata(row)
     updated = conn.execute(
         f"""
         UPDATE chat_jobs
@@ -256,7 +274,19 @@ def dead_letter_stale_open_job_for_chat(
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND status IN {SQL_JOB_STATUS_OPEN}
         """,
-        (JOB_STATUS_DEAD, error_text, None, None, None, None, None, None, None, None, job_id),
+        (
+            JOB_STATUS_DEAD,
+            error_text,
+            metadata.get("child_pid"),
+            metadata.get("child_transport"),
+            metadata.get("terminal_return_code"),
+            metadata.get("terminal_failure_kind"),
+            metadata.get("terminal_outcome"),
+            metadata.get("terminal_error"),
+            metadata.get("limit_breach"),
+            metadata.get("limit_breach_detail"),
+            job_id,
+        ),
     )
     if updated.rowcount == 0:
         return None
@@ -272,6 +302,7 @@ def dead_letter_stale_open_job_for_chat(
         attempts=attempts,
         max_attempts=max_attempts,
         error=error_text,
+        failure_metadata=metadata,
     )
     return {
         "id": job_id,
@@ -294,7 +325,9 @@ def dead_letter_stale_running_jobs(
     error_text = str(error or "Job timed out")[:1000]
     stale_rows = conn.execute(
         """
-        SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts, status, error
+        SELECT id, user_id, chat_id, operator_message_id, attempts, max_attempts, status, error,
+               child_pid, child_transport, terminal_return_code, terminal_failure_kind,
+               terminal_outcome, terminal_error, limit_breach, limit_breach_detail
         FROM chat_jobs
         WHERE status = ?
           AND COALESCE(updated_at, started_at, created_at) <= datetime('now', ?)
@@ -305,13 +338,38 @@ def dead_letter_stale_running_jobs(
     results: list[dict[str, Any]] = []
     for row in stale_rows:
         job_id = int(row["id"])
+        metadata = _row_failure_metadata(row)
         updated = conn.execute(
             """
             UPDATE chat_jobs
-            SET status = ?, error = ?, finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            SET status = ?,
+                error = ?,
+                child_pid = ?,
+                child_transport = ?,
+                terminal_return_code = ?,
+                terminal_failure_kind = ?,
+                terminal_outcome = ?,
+                terminal_error = ?,
+                limit_breach = ?,
+                limit_breach_detail = ?,
+                finished_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND status = ?
             """,
-            (JOB_STATUS_DEAD, error_text, job_id, JOB_STATUS_RUNNING),
+            (
+                JOB_STATUS_DEAD,
+                error_text,
+                metadata.get("child_pid"),
+                metadata.get("child_transport"),
+                metadata.get("terminal_return_code"),
+                metadata.get("terminal_failure_kind"),
+                metadata.get("terminal_outcome"),
+                metadata.get("terminal_error"),
+                metadata.get("limit_breach"),
+                metadata.get("limit_breach_detail"),
+                job_id,
+                JOB_STATUS_RUNNING,
+            ),
         )
         if updated.rowcount == 0:
             continue
@@ -325,6 +383,7 @@ def dead_letter_stale_running_jobs(
             attempts=int(row["attempts"] or 0),
             max_attempts=int(row["max_attempts"] or 0),
             error=error_text,
+            failure_metadata=metadata,
         )
         results.append(
             {

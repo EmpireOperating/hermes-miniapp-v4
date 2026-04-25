@@ -100,7 +100,20 @@ def select_chat_rows(
             ft.is_pinned,
             COALESCE(us.unread_count, 0) AS unread_count,
             COALESCE(us.newest_unread_message_id, 0) AS newest_unread_message_id,
-            CASE WHEN lm_row.role = 'operator' THEN 1 ELSE 0 END AS pending
+            CASE
+                WHEN lm_row.role = 'operator'
+                 AND NOT EXISTS (
+                    SELECT 1
+                    FROM chat_jobs cj
+                    WHERE cj.user_id = ft.user_id
+                      AND cj.chat_id = ft.id
+                      AND cj.operator_message_id = lm.last_message_id
+                      AND cj.status = 'dead'
+                    LIMIT 1
+                 )
+                THEN 1
+                ELSE 0
+            END AS pending
         FROM filtered_threads ft
         LEFT JOIN unread_stats us ON us.user_id = ft.user_id AND us.chat_id = ft.id
         LEFT JOIN latest_messages lm ON lm.user_id = ft.user_id AND lm.chat_id = ft.id

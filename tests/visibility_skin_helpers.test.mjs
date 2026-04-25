@@ -25,7 +25,15 @@ function createEventTarget(initial = {}) {
   };
 }
 
-function buildHarness({ visibilityState = 'visible', authenticated = true, pendingChatsSize = 0, apiPostImpl = null, shouldDeferImmediateActiveMessageView = null, suppressDevAutoRefresh = false } = {}) {
+function buildHarness({
+  visibilityState = 'visible',
+  authenticated = true,
+  pendingChatsSize = 0,
+  apiPostImpl = null,
+  shouldDeferImmediateActiveMessageView = null,
+  syncVisibleActiveChatImpl = null,
+  suppressDevAutoRefresh = false,
+} = {}) {
   let currentSkin = 'terminal';
   const skinCalls = [];
   const reloadCalls = [];
@@ -34,6 +42,7 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
   const syncActiveMessageViewCalls = [];
   const syncVisibleActiveChatCalls = [];
   const refreshChatsCalls = [];
+  const warmChatHistoryCacheCalls = [];
   const apiPostCalls = [];
   const bootstrapRefreshCalls = [];
   const lifecycleMarks = [];
@@ -143,9 +152,16 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
       callOrder.push('refreshChats');
       refreshChatsCalls.push('refresh');
     },
+    warmChatHistoryCache: () => {
+      callOrder.push('warmChatHistoryCache');
+      warmChatHistoryCacheCalls.push('warm');
+    },
     syncVisibleActiveChat: async (options = {}) => {
       callOrder.push('syncVisibleActiveChat');
       syncVisibleActiveChatCalls.push(options);
+      if (typeof syncVisibleActiveChatImpl === 'function') {
+        return syncVisibleActiveChatImpl(options);
+      }
     },
     syncActiveMessageView: (chatId, options) => {
       callOrder.push('syncActiveMessageView');
@@ -178,6 +194,7 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
     syncActiveMessageViewCalls,
     syncVisibleActiveChatCalls,
     refreshChatsCalls,
+    warmChatHistoryCacheCalls,
     apiPostCalls,
     bootstrapRefreshCalls,
     lifecycleMarks,
@@ -259,6 +276,7 @@ test('focus resumes visibility sync only after the app backgrounded without a vi
   assert.equal(harness.visibilityResumes[0].trigger, 'focus');
   assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
   assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
+  assert.deepEqual(harness.warmChatHistoryCacheCalls, ['warm']);
   assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
     hidden: false,
     streamAbortControllers: harness.streamAbortControllers,
@@ -268,6 +286,7 @@ test('focus resumes visibility sync only after the app backgrounded without a vi
     'syncActiveMessageView',
     'syncVisibleActiveChat',
   ]);
+  assert.equal(harness.callOrder.indexOf('refreshChats') < harness.callOrder.indexOf('warmChatHistoryCache'), true);
 });
 
 test('focus does not duplicate a visibility-driven resume after returning to the app', async () => {
@@ -301,6 +320,7 @@ test('handleVisibilityChange refreshes lifecycle and delegates active-chat recon
   assert.equal(harness.visibilityResumes[0].pendingChatCount, 0);
   assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
   assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
+  assert.deepEqual(harness.warmChatHistoryCacheCalls, ['warm']);
   assert.equal(harness.syncVisibleActiveChatCalls.length, 1);
   assert.deepEqual(harness.syncVisibleActiveChatCalls[0], {
     hidden: false,
@@ -312,6 +332,7 @@ test('handleVisibilityChange refreshes lifecycle and delegates active-chat recon
     'syncVisibleActiveChat',
   ]);
   assert.equal(harness.callOrder.indexOf('syncVisibleActiveChat') < harness.callOrder.indexOf('refreshChats'), true);
+  assert.equal(harness.callOrder.indexOf('refreshChats') < harness.callOrder.indexOf('warmChatHistoryCache'), true);
 });
 
 test('handleVisibilityChange defers eager active transcript repaint when the active chat has unread anchor metadata that local history still lacks', async () => {
@@ -387,6 +408,36 @@ test('resumeVisibleApp does not let visible presence sync block active chat hydr
 
   resolvePresence();
   await resumePromise;
+});
+
+test('handleVisibilityChange coalesces overlapping visible resumes into one active sync pass', async () => {
+  let resolveVisibleSync;
+  const harness = buildHarness({
+    visibilityState: 'visible',
+    authenticated: true,
+    syncVisibleActiveChatImpl: async () => new Promise((resolve) => {
+      resolveVisibleSync = resolve;
+    }),
+  });
+
+  const firstResume = harness.controller.handleVisibilityChange();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const secondResume = harness.controller.handleVisibilityChange();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
+    hidden: false,
+    streamAbortControllers: harness.streamAbortControllers,
+  }]);
+  assert.deepEqual(harness.refreshChatsCalls, []);
+  assert.equal(harness.visibilityResumes.length, 1);
+
+  resolveVisibleSync();
+  await firstResume;
+
+  assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
+  assert.deepEqual(harness.warmChatHistoryCacheCalls, ['warm']);
 });
 
 test('handleVisibilityChange ignores bootstrap refresh callbacks and continues normal sync', async () => {

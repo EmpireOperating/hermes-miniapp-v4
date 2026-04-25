@@ -8,6 +8,12 @@ import threading
 import time
 from typing import Any, Iterator
 
+from hermes_client_tool_progress import (
+    build_tool_progress_item,
+    normalize_tool_progress_callback_args,
+    stream_event_from_tool_item,
+    tool_progress_dedupe_key,
+)
 from hermes_client_types import HermesClientError
 
 
@@ -99,45 +105,31 @@ class HermesClientPersistentAgentMixin:
         initial_bootstrapped = runtime.bootstrapped
         event_queue: queue.Queue[dict[str, Any]] = queue.Queue()
         request_started = time.perf_counter()
-        last_tool_name = {"value": None}
+        last_tool_key = {"value": None}
 
         def progress_callback(*callback_args):
             if self.tool_progress_mode == "off":
                 return
-            if not callback_args:
+            normalized = normalize_tool_progress_callback_args(callback_args)
+            if not normalized:
                 return
-
-            event_type = "tool.started"
-            tool_name = None
-            preview = None
-            args = None
-            if len(callback_args) >= 4 and str(callback_args[0] or "").strip():
-                event_type = str(callback_args[0] or "").strip()
-                tool_name = callback_args[1]
-                preview = callback_args[2]
-                args = callback_args[3]
-            else:
-                tool_name = callback_args[0]
-                preview = callback_args[1] if len(callback_args) >= 2 else None
-                args = callback_args[2] if len(callback_args) >= 3 else None
-
-            if event_type != "tool.started":
+            dedupe_key = tool_progress_dedupe_key(normalized, mode=self.tool_progress_mode)
+            if dedupe_key and dedupe_key == last_tool_key["value"]:
                 return
-            tool_name = str(tool_name or "").strip()
-            if not tool_name:
-                return
-            if self.tool_progress_mode == "new" and tool_name == last_tool_name["value"]:
-                return
-            last_tool_name["value"] = tool_name
-            normalized_args = args if isinstance(args, dict) else {}
+            last_tool_key["value"] = dedupe_key
             event_queue.put(
-                {
-                    "kind": "tool",
-                    "tool_name": tool_name,
-                    "preview": preview or "",
-                    "args": normalized_args,
-                    "display": self._format_tool_progress(tool_name, preview=preview, args=normalized_args),
-                }
+                build_tool_progress_item(
+                    event_type=normalized["event_type"],
+                    tool_name=normalized["tool_name"],
+                    preview=normalized.get("preview"),
+                    args=normalized.get("args"),
+                    metadata=normalized.get("metadata"),
+                    display=self._format_tool_progress(
+                        normalized["tool_name"],
+                        preview=normalized.get("preview"),
+                        args=normalized.get("args"),
+                    ),
+                )
             )
 
         def worker() -> None:
@@ -244,13 +236,7 @@ class HermesClientPersistentAgentMixin:
             last_event_at = time.monotonic()
             kind = item.get("kind")
             if kind == "tool":
-                yield {
-                    "type": "tool",
-                    "tool_name": item.get("tool_name"),
-                    "preview": item.get("preview"),
-                    "args": item.get("args"),
-                    "display": item.get("display"),
-                }
+                yield stream_event_from_tool_item(item, display_formatter=self._format_tool_progress)
             elif kind == "done":
                 reply = str(item.get("reply") or "")
                 for index in range(0, len(reply), chunk_size):

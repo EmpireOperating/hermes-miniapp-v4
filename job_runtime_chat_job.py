@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import asdict
@@ -10,6 +11,9 @@ from visual_dev_context import build_visual_context_message_block
 
 if TYPE_CHECKING:
     from job_runtime import JobRuntime
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 _TOOL_DEMO_REQUEST_RE = re.compile(r"\btool\b.*\b(demo|activity|call)\b|\b(demo|activity|call)\b.*\btool\b", re.IGNORECASE)
@@ -570,6 +574,23 @@ def execute_chat_job(
     if media_project_suggestion_batch:
         done_payload["media_project_suggestion_batch_id"] = str(media_project_suggestion_batch.get("batch_id") or "")
     runtime.publish_job_event(job_id, "done", done_payload)
-    if not preserve_warm_owner:
-        runtime.client.evict_session(session_id)
-    runtime.store.complete_job(job_id)
+    try:
+        if not preserve_warm_owner:
+            runtime.client.evict_session(session_id)
+    except Exception as exc:  # noqa: BLE001 - broad-except-policy: post-done session cleanup must not block terminal job completion
+        record_best_effort_failure = getattr(runtime, "_record_best_effort_failure", None)
+        if callable(record_best_effort_failure):
+            record_best_effort_failure(
+                "chat_job_session_eviction",
+                job_id=job_id,
+                session_id=session_id,
+                error=type(exc).__name__,
+            )
+        LOGGER.debug(
+            "chat_job_session_eviction_exception job_id=%s session_id=%s",
+            job_id,
+            session_id,
+            exc_info=exc,
+        )
+    finally:
+        runtime.store.complete_job(job_id)

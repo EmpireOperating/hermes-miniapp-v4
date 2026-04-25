@@ -185,6 +185,9 @@
     const {
       chats,
       getRenderedTranscriptSignature = null,
+      getRenderedChatId = null,
+      isChatStuckToBottom = null,
+      shouldVirtualizeHistory = null,
       describeActiveTranscriptRender,
     } = deps;
 
@@ -196,17 +199,27 @@
       historyChanged,
       restoredPendingSnapshot,
     }) {
-      const currentUnread = Math.max(0, Number(chats.get(targetChatId)?.unread_count || 0));
+      const normalizedTargetChatId = Number(targetChatId) || 0;
+      const currentUnread = Math.max(0, Number(chats.get(normalizedTargetChatId)?.unread_count || 0));
       const renderDecision = describeActiveTranscriptRender({
         previousHistory,
         incomingHistory: finalHistory,
         renderedTranscriptSignature: typeof getRenderedTranscriptSignature === 'function'
-          ? String(getRenderedTranscriptSignature(targetChatId) || '')
+          ? String(getRenderedTranscriptSignature(normalizedTargetChatId) || '')
           : '',
         restoredPendingSnapshot,
         historyChanged,
         hadCachedHistory,
         unreadCount: currentUnread,
+        isRenderedChatActiveTarget: typeof getRenderedChatId === 'function'
+          && normalizedTargetChatId > 0
+          && normalizedTargetChatId === (Number(getRenderedChatId()) || 0),
+        isChatStuckToBottom: typeof isChatStuckToBottom === 'function'
+          ? Boolean(isChatStuckToBottom(normalizedTargetChatId))
+          : true,
+        shouldVirtualizeIncomingHistory: typeof shouldVirtualizeHistory === 'function'
+          ? Boolean(shouldVirtualizeHistory(Array.isArray(finalHistory) ? finalHistory.length : 0))
+          : false,
       });
       return {
         currentUnread,

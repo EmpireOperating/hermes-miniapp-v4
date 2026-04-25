@@ -16,6 +16,43 @@ Use this path unless you already know you want something else:
 - Portable Python fallback: `python3 scripts/setup_bootstrap.py --write-env-if-missing` then `python3 scripts/setup_doctor.py`
 - HTTP-backed Hermes mode unless you already have local Hermes running on Linux/macOS or under WSL2
 
+## Fast newcomer decision guide
+
+If you are unsure where to start, use this default map:
+
+- I want to know whether the repo basically works.
+  - run bootstrap
+  - run doctor
+  - start the app
+  - hit `/health`
+  - optionally run `scripts/test.sh`
+- I want the simplest real deployment.
+  - choose `HERMES_API_URL` or `HERMES_STREAM_URL`
+  - use a real HTTPS `MINI_APP_URL`
+  - leave local-agent mode for later unless you truly need it
+- I want to use the Mini App against a local Hermes install on the same machine.
+  - use local agent/runtime variables
+  - expect more environment-specific setup than the HTTP-backed path
+
+Recommended default for most new operators:
+- local proof first
+- HTTP-backed Hermes second
+- Telegram finalize only after DNS + HTTPS are ready
+
+## What you can verify before Telegram
+
+You do not need to finish Telegram setup to answer the question "does this repo basically work?"
+
+Before doing DNS or bot-menu work, you can already verify:
+- dependencies install into `.venv`
+- `.env` is created and validated
+- the app starts locally
+- `curl http://127.0.0.1:8080/health` succeeds
+- the Python and Node test suites run
+- the clean-install smoke harness works in Docker via `scripts/install_smoke.sh`
+
+This is the safest first pass for both humans and agents evaluating the repo.
+
 ## Platform support
 
 - Linux

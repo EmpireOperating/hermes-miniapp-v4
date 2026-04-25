@@ -445,6 +445,58 @@ test('createHistoryRenderController renderMessages delegates at-bottom unseen cl
   assert.deepEqual(refreshed, [7]);
 });
 
+test('createHistoryRenderController preserveViewport keeps a fresh unread bootstrap render at the top when no prior scroll snapshot exists', () => {
+  const histories = new Map([[7, [
+    { id: 1, role: 'operator', body: 'prompt', created_at: '2026-04-08T08:00:00Z' },
+    { id: 2, role: 'assistant', body: 'reply', created_at: '2026-04-08T08:00:01Z' },
+  ]]]);
+  const delegated = [];
+  const messagesEl = {
+    scrollHeight: 1200,
+    clientHeight: 400,
+    scrollTop: 0,
+    innerHTML: '',
+    appendChild(node) {
+      return node;
+    },
+    querySelectorAll() {
+      return [];
+    },
+  };
+  const controller = renderTraceHistoryHelpers.createHistoryRenderController({
+    messagesEl,
+    jumpLatestButton: { hidden: true },
+    jumpLastStartButton: { hidden: true },
+    histories,
+    virtualizationRanges: new Map(),
+    virtualMetrics: new Map(),
+    renderedHistoryLength: new Map(),
+    renderedHistoryVirtualized: new Map(),
+    unseenStreamChats: new Set(),
+    chatScrollTop: new Map(),
+    chatStickToBottom: new Map(),
+    getActiveChatId: () => 7,
+    getRenderedChatId: () => 0,
+    setRenderedChatId: () => {},
+    refreshTabNode: () => {},
+    syncActiveViewportReadState: (chatId, options = {}) => {
+      delegated.push([Number(chatId), { atBottom: options.atBottom }]);
+      return true;
+    },
+    clearSelectionQuoteStateFn: () => {},
+    syncLiveToolStreamForChatFn: () => {},
+    appendMessagesFn: () => {},
+    shouldUseAppendOnlyRenderFn: () => false,
+    renderTraceLogFn: () => {},
+    createFragmentFn: () => ({ children: [] }),
+  });
+
+  controller.renderMessages(7, { preserveViewport: true });
+
+  assert.equal(messagesEl.scrollTop, 0);
+  assert.deepEqual(delegated, []);
+});
+
 function createAnchoredMessageNode(messageKey, offsetTop, offsetHeight = 100) {
   return { dataset: { messageKey }, offsetTop, offsetHeight };
 }
@@ -541,4 +593,86 @@ test('createHistoryRenderController preserves anchored viewport when rerender sh
   controller.renderMessages(7, { preserveViewport: true });
 
   assert.equal(messagesEl.scrollTop, 200);
+});
+
+test('createHistoryRenderController virtualizes a switched chat around its stored viewport instead of the previously rendered chat', () => {
+  const histories = new Map([[
+    7,
+    Array.from({ length: 40 }, (_value, index) => ({
+      id: index + 1,
+      role: index % 2 === 0 ? 'operator' : 'assistant',
+      body: `message-${index + 1}`,
+    })),
+  ]]);
+  const virtualizationRanges = new Map();
+  const renderedNodes = [];
+  const messagesEl = {
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 200,
+    appendChild(node) {
+      if (node && Array.isArray(node.children)) {
+        renderedNodes.push(...node.children);
+      }
+      return node;
+    },
+    querySelectorAll(selector) {
+      if (selector === '.message') return renderedNodes;
+      return [];
+    },
+    querySelector(selector) {
+      const keyMatch = /\.message\[data-message-key="([^"]+)"\]/.exec(selector);
+      if (!keyMatch) return null;
+      return renderedNodes.find((node) => String(node?.dataset?.messageKey || '') === keyMatch[1]) || null;
+    },
+  };
+
+  const controller = renderTraceHistoryHelpers.createHistoryRenderController({
+    messagesEl,
+    jumpLatestButton: { hidden: true },
+    jumpLastStartButton: { hidden: true },
+    histories,
+    virtualizationRanges,
+    virtualMetrics: new Map(),
+    renderedHistoryLength: new Map(),
+    renderedHistoryVirtualized: new Map(),
+    unseenStreamChats: new Set(),
+    chatScrollTop: new Map([[7, 1500]]),
+    chatStickToBottom: new Map([[7, false]]),
+    historyCountEl: { textContent: '' },
+    virtualizeThreshold: 5,
+    estimatedMessageHeight: 100,
+    virtualOverscan: 1,
+    getActiveChatId: () => 7,
+    getRenderedChatId: () => 3,
+    setRenderedChatId: () => {},
+    refreshTabNode: () => {},
+    clearSelectionQuoteStateFn: () => {},
+    syncLiveToolStreamForChatFn: () => {},
+    appendMessagesFn: (fragment, history, options = {}) => {
+      history.forEach((message, offset) => {
+        const absoluteIndex = Number(options.startIndex || 0) + offset;
+        fragment.children.push({
+          dataset: { messageKey: renderTraceMessageHelpers.messageStableKey(message, absoluteIndex) },
+          offsetTop: absoluteIndex * 100,
+          offsetHeight: 100,
+        });
+      });
+      messagesEl.scrollHeight = histories.get(7).length * 100;
+    },
+    shouldUseAppendOnlyRenderFn: () => false,
+    renderTraceLogFn: () => {},
+    createFragmentFn: () => ({ children: [] }),
+    createSpacerElementFn: () => ({ className: '', style: {} }),
+  });
+
+  controller.renderMessages(7, {});
+
+  assert.deepEqual(virtualizationRanges.get(7), {
+    start: 14,
+    end: 20,
+    total: 40,
+    estimatedHeight: 100,
+  });
+  assert.equal(messagesEl.scrollTop, 1500);
 });

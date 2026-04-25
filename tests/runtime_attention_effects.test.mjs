@@ -199,6 +199,35 @@ test('hidden active chat does not increment unread on first assistant chunk', ()
   });
 });
 
+test('createAttentionStateController owns first-chunk and terminal attention transitions in one place', () => {
+  const unread = [];
+  const haptics = [];
+  const controller = attentionEffects.createAttentionStateController({
+    getActiveChatId: () => 4,
+    isDocumentHidden: () => false,
+    triggerIncomingMessageHaptic: (chatId, { messageKey }) => haptics.push({ chatId: Number(chatId), messageKey }),
+    incrementUnread: (chatId) => unread.push(Number(chatId)),
+    renderTabs: () => unread.push('render'),
+  });
+
+  assert.equal(controller.notifyFirstAssistantChunk(8), true);
+  const doneResult = controller.applyDoneAttention(8, { updateUnread: true, doneTurnCount: 3 });
+  const earlyCloseResult = controller.applyEarlyCloseAttention(4, {});
+  const resumeResult = controller.applyResumeCompletionAttention(4);
+
+  assert.deepEqual(unread, [8, 'render']);
+  assert.deepEqual(haptics, [
+    { chatId: 8, messageKey: 'chat:8:assistant-stream:1' },
+    { chatId: 4, messageKey: '' },
+  ]);
+  assert.equal(doneResult.effect.shouldIncrementUnread, false);
+  assert.equal(doneResult.effect.hadEarlyAssistantUnread, true);
+  assert.equal(doneResult.execution.incrementedUnread, false);
+  assert.equal(earlyCloseResult.effect.shouldTriggerHaptic, false);
+  assert.equal(resumeResult.effect.shouldTriggerHaptic, true);
+  assert.equal(controller.consumeFirstAssistantNotification(8), null);
+});
+
 test('describeHydrationAttentionEffect captures visible hydration haptic decision and keys', () => {
   const previousHistory = [
     { role: 'assistant', body: 'Older', pending: false, id: 30 },
