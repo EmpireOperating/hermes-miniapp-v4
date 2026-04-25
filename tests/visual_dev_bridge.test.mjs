@@ -31,6 +31,8 @@ function buildHarness(overrides = {}) {
     removeEventListener(type) {
       listeners.delete(type);
     },
+    setInterval: overrides.setInterval || (() => 0),
+    clearInterval: overrides.clearInterval || (() => {}),
     ...overrides.windowObject,
   };
   const documentObject = {
@@ -85,6 +87,41 @@ test('handleConnect stores session metadata and posts ready handshake', () => {
     },
     targetOrigin: 'https://miniapp.example.com',
   }]);
+});
+
+test('handleConnect starts heartbeat and dispose clears it', () => {
+  const intervals = [];
+  const cleared = [];
+  const harness = buildHarness({
+    setInterval(handler, delayMs) {
+      intervals.push({ handler, delayMs });
+      return `interval-${intervals.length}`;
+    },
+    clearInterval(intervalId) {
+      cleared.push(intervalId);
+    },
+  });
+
+  harness.controller.handleConnect({
+    sessionId: 'session-1',
+    parentOrigin: 'https://miniapp.example.com',
+  });
+
+  assert.equal(intervals.length, 1);
+  assert.equal(intervals[0].delayMs, 5000);
+  intervals[0].handler();
+  assert.deepEqual(harness.posted.at(-1), {
+    payload: {
+      type: 'hermes-visual-dev:runtime',
+      sessionId: 'session-1',
+      runtime: { state: 'live' },
+    },
+    targetOrigin: 'https://miniapp.example.com',
+  });
+
+  harness.controller.dispose();
+
+  assert.deepEqual(cleared, ['interval-1']);
 });
 
 test('reportSelection and reportConsole forward typed payloads after connect', () => {

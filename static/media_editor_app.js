@@ -1017,8 +1017,10 @@
         return handle;
       }
 
-      clipNode.appendChild(createTrimHandle('left'));
-      clipNode.appendChild(createTrimHandle('right'));
+      return {
+        leftHandle: createTrimHandle('left'),
+        rightHandle: createTrimHandle('right'),
+      };
     }
 
     function appendClip(trackNode, clip) {
@@ -1031,8 +1033,14 @@
       const labelNode = doc.createElement('span');
       labelNode.className = 'media-editor__clip-label';
       setClipNodeTimingLabel(clipNode, labelNode, clip);
+      const trimHandles = installClipTrimHandlers(clipNode, labelNode, clip) || {};
+      if (trimHandles.leftHandle) {
+        clipNode.appendChild(trimHandles.leftHandle);
+      }
       clipNode.appendChild(labelNode);
-      installClipTrimHandlers(clipNode, labelNode, clip);
+      if (trimHandles.rightHandle) {
+        clipNode.appendChild(trimHandles.rightHandle);
+      }
       installClipDragHandlers(clipNode, clip, labelNode);
       trackNode.appendChild(clipNode);
     }

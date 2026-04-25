@@ -134,6 +134,40 @@ test('createController renders selectable clips and inspector fields', () => {
 });
 
 
+test('timeline clips render left trim handle before label and right trim handle after label', () => {
+  const trackListNode = createElement('section');
+  const controller = mediaEditor.createController({
+    documentObject: { createElement, addEventListener() {}, removeEventListener() {} },
+    titleNode: createElement('h1'),
+    trackListNode,
+    emptyStateNode: createElement('p'),
+  });
+
+  controller.loadProject({
+    project: { project_id: 'proj_1', title: 'Video editor draft' },
+    tracks: [{ track_id: 'track_text', kind: 'text', label: 'Text' }],
+    clips: [
+      {
+        clip_id: 'clip_1',
+        track_id: 'track_text',
+        kind: 'text',
+        start_ms: 250,
+        duration_ms: 1750,
+        params: { text: 'Opening title' },
+      },
+    ],
+  });
+
+  const clip = trackListNode.children[0].children[1];
+  assert.deepEqual(
+    clip.children.map((child) => child.dataset?.trimEdge || child.className),
+    ['left', 'media-editor__clip-label', 'right'],
+  );
+  assert.match(clip.children[0].className, /media-editor__trim-handle--left/);
+  assert.match(clip.children[2].className, /media-editor__trim-handle--right/);
+});
+
+
 test('inspector save includes source trim and preserves non-text clip params', async () => {
   const submittedOperations = [];
   const trackListNode = createElement('section');

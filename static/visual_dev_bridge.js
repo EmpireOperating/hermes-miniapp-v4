@@ -403,6 +403,8 @@
     const screenshotCapture = typeof captureScreenshot === 'function'
       ? captureScreenshot
       : createDomScreenshotCapture(windowObject, documentObject);
+    const heartbeatIntervalMs = 5000;
+    let heartbeatIntervalId = null;
 
     function post(type, body) {
       if (!activeSessionId || !activeParentOrigin) {
@@ -423,6 +425,30 @@
       inspectHandler = null;
     }
 
+    function clearHeartbeat() {
+      if (heartbeatIntervalId === null || typeof windowObject?.clearInterval !== 'function') {
+        heartbeatIntervalId = null;
+        return;
+      }
+      windowObject.clearInterval(heartbeatIntervalId);
+      heartbeatIntervalId = null;
+    }
+
+    function postHeartbeat() {
+      post('hermes-visual-dev:runtime', {
+        runtime: { state: 'live' },
+      });
+    }
+
+    function startHeartbeat() {
+      clearHeartbeat();
+      if (typeof windowObject?.setInterval !== 'function') {
+        return;
+      }
+      heartbeatIntervalId = windowObject.setInterval(postHeartbeat, heartbeatIntervalMs);
+      heartbeatIntervalId?.unref?.();
+    }
+
     function handleConnect(payload = {}) {
       activeSessionId = String(payload?.sessionId || '');
       activeParentOrigin = String(payload?.parentOrigin || '');
@@ -433,6 +459,7 @@
         previewUrl: String(windowObject?.location?.href || ''),
         previewTitle: String(documentObject?.title || ''),
       });
+      startHeartbeat();
     }
 
     function reportSelection(selection = {}) {
@@ -546,6 +573,7 @@
 
     function dispose() {
       clearInspectMode();
+      clearHeartbeat();
       if (!messageHandler || !windowObject?.removeEventListener) {
         return;
       }

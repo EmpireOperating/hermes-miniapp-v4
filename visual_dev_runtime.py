@@ -68,7 +68,9 @@ class VisualDevRuntime:
             if state.get("state") != "restart_required":
                 state["state"] = "live"
         elif event_type == "bridge-ready":
-            state["state"] = "connecting"
+            state["state"] = "live"
+            state["last_heartbeat_at"] = now
+            state["last_error"] = ""
         elif event_type == "build-state":
             next_state = str(payload.get("state") or "").strip()
             if next_state in _RUNTIME_STATES:

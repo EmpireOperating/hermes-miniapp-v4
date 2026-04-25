@@ -21,3 +21,13 @@ test('media editor uses a blue-toned Hermes palette instead of default GitHub ed
   assert.doesNotMatch(templateSource, /#d2a8ff/);
   assert.doesNotMatch(templateSource, /#3fb950/);
 });
+
+
+test('media editor trim handles are large obvious edge controls', () => {
+  assert.match(templateSource, /\.media-editor__clip\s*\{[\s\S]*?position:\s*relative;/);
+  assert.match(templateSource, /\.media-editor__trim-handle\s*\{[\s\S]*?width:\s*14px;/);
+  assert.match(templateSource, /\.media-editor__trim-handle\s*\{[\s\S]*?min-height:\s*24px;/);
+  assert.match(templateSource, /\.media-editor__trim-handle::after\s*\{/);
+  assert.match(templateSource, /\.media-editor__trim-handle--left\s*\{[\s\S]*?margin-left:\s*-2px;/);
+  assert.match(templateSource, /\.media-editor__trim-handle--right\s*\{[\s\S]*?margin-right:\s*-2px;/);
+});

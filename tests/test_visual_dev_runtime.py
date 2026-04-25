@@ -38,6 +38,23 @@ def test_visual_dev_runtime_tracks_attach_heartbeat_and_stale_disconnect() -> No
 
 
 
+def test_visual_dev_runtime_marks_bridge_ready_preview_live() -> None:
+    clock = _Clock()
+    runtime = VisualDevRuntime(now_fn=clock.now, heartbeat_timeout_seconds=10.0)
+
+    runtime.attach_session(session_id="session-a", user_id="u1", chat_id=7, preview_url="https://preview.example.com/app")
+    ready = runtime.record_event(
+        "session-a",
+        "bridge-ready",
+        {"preview_url": "https://preview.example.com/app", "preview_title": "Workspace media editor"},
+    )
+
+    assert ready["state"] == "live"
+    assert ready["stale"] is False
+    assert runtime.get_session_state("session-a")["state"] == "live"
+
+
+
 def test_visual_dev_runtime_reduces_build_and_runtime_error_states_deterministically() -> None:
     clock = _Clock()
     runtime = VisualDevRuntime(now_fn=clock.now, heartbeat_timeout_seconds=10.0)
