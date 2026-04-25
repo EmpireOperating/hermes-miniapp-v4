@@ -1629,9 +1629,9 @@ textarea:disabled {
   .workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
+      "sidebar"
       "terminal"
-      "visual"
-      "sidebar";
+      "visual";
     gap: 10px;
     overflow-x: hidden;
   }
