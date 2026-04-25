@@ -3494,9 +3494,15 @@ async function submitPromptFromComposer() {
   const attachments = activeComposerChatId > 0 && Number(composerAttachmentChatId || 0) === activeComposerChatId
     ? composerAttachments.slice()
     : [];
-  const sendSucceeded = await sendPrompt(promptEl.value, { attachments });
-  if (sendSucceeded) {
-    clearComposerAttachments();
+  const clearSubmittedAttachments = attachments.length
+    ? () => clearComposerAttachmentsIfStillSubmitted(attachments, activeComposerChatId)
+    : null;
+  const sendSucceeded = await sendPrompt(promptEl.value, {
+    attachments,
+    onSendAccepted: clearSubmittedAttachments,
+  });
+  if (sendSucceeded && clearSubmittedAttachments) {
+    clearSubmittedAttachments();
   }
 }
 
@@ -3683,6 +3689,18 @@ function clearComposerAttachments() {
   composerAttachments = [];
   composerAttachmentChatId = null;
   renderComposerAttachments();
+}
+
+function clearComposerAttachmentsIfStillSubmitted(submittedAttachments, submittedChatId) {
+  if (!Array.isArray(submittedAttachments) || !submittedAttachments.length) return;
+  if (Number(composerAttachmentChatId || 0) !== Number(submittedChatId || 0)) return;
+  const submittedIds = submittedAttachments.map((attachment) => String(attachment?.id || "").trim()).filter(Boolean);
+  const currentIds = composerAttachments.map((attachment) => String(attachment?.id || "").trim()).filter(Boolean);
+  if (!submittedIds.length || submittedIds.length !== currentIds.length) return;
+  const currentIdSet = new Set(currentIds);
+  const stillShowingSubmittedAttachments = submittedIds.every((attachmentId) => currentIdSet.has(attachmentId));
+  if (!stillShowingSubmittedAttachments) return;
+  clearComposerAttachments();
 }
 
 function removeComposerAttachment(attachmentId) {

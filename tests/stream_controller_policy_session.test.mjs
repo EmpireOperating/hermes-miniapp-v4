@@ -520,8 +520,9 @@ test('createStreamLifecycleController owns sendPrompt auth guard', async () => {
   assert.deepEqual(messages, ['Still signing you in. Try again in a moment.']);
 });
 
-test('createStreamLifecycleController marks replacement sends with interrupt when chat is already pending', async () => {
+test('createStreamLifecycleController marks replacement sends with interrupt and notifies after backend accepts attachments', async () => {
   const fetchBodies = [];
+  const lifecycleEvents = [];
   const previousDocument = globalThis.document;
   globalThis.document = { visibilityState: 'visible', activeElement: null };
   const sessionController = streamController.createStreamSessionController({
@@ -537,7 +538,10 @@ test('createStreamLifecycleController marks replacement sends with interrupt whe
   });
   const transcriptController = {
     hydrateChatAfterGracefulResumeCompletion: async () => {},
-    consumeStreamWithReconnect: async () => false,
+    consumeStreamWithReconnect: async () => {
+      lifecycleEvents.push('consume');
+      return false;
+    },
   };
   const lifecycleController = streamController.createStreamLifecycleController({
     STREAM_PHASES: streamState.STREAM_PHASES,
@@ -599,9 +603,20 @@ test('createStreamLifecycleController marks replacement sends with interrupt whe
   }, sessionController, transcriptController);
 
   try {
-    await lifecycleController.sendPrompt('replacement');
+    await lifecycleController.sendPrompt('replacement', {
+      attachments: [{ id: 'att_photo_1', filename: 'photo.jpg' }],
+      onSendAccepted: ({ chatId, attachmentIds }) => {
+        lifecycleEvents.push({ chatId, attachmentIds });
+      },
+    });
 
-    assert.deepEqual(fetchBodies, [{ chat_id: 7, message: 'replacement', interrupt: true }]);
+    assert.deepEqual(fetchBodies, [{
+      chat_id: 7,
+      message: 'replacement',
+      interrupt: true,
+      attachment_ids: ['att_photo_1'],
+    }]);
+    assert.deepEqual(lifecycleEvents, [{ chatId: 7, attachmentIds: ['att_photo_1'] }, 'consume']);
   } finally {
     globalThis.document = previousDocument;
   }

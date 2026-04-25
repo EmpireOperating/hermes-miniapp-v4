@@ -77,9 +77,11 @@ test('app.js wires generic composer attachments through upload, chips, and send 
     'app.js should guard attach clicks until a chat is open and react to file selection changes',
   );
   assert.ok(
-    source.includes('const sendSucceeded = await sendPrompt(promptEl.value, { attachments });')
-      && source.includes('if (sendSucceeded) {')
-      && source.includes('clearComposerAttachments();'),
-    'composer submit should pass attachment metadata into sendPrompt and clear it only after a successful send',
+    source.includes('const clearSubmittedAttachments = attachments.length')
+      && source.includes('clearComposerAttachmentsIfStillSubmitted(attachments, activeComposerChatId)')
+      && source.includes('onSendAccepted: clearSubmittedAttachments')
+      && source.includes('if (sendSucceeded && clearSubmittedAttachments) {')
+      && source.includes('function clearComposerAttachmentsIfStillSubmitted(submittedAttachments, submittedChatId) {'),
+    'composer submit should pass attachment metadata into sendPrompt and clear the submitted preview after backend acceptance without clearing newer attachments',
   );
 });

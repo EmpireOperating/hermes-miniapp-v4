@@ -1946,6 +1946,7 @@
       interruptRequested,
       streamController,
       builtReplyRef,
+      options = {},
     }) {
       let wasAborted = false;
       let shouldResumeAfterFinally = false;
@@ -2022,6 +2023,9 @@
           return { wasAborted, shouldResumeAfterFinally, sent };
         }
         sent = true;
+        if (typeof options?.onSendAccepted === "function") {
+          options.onSendAccepted({ chatId, attachmentIds: attachmentIds.slice() });
+        }
 
         const resumed = await consumeStreamWithReconnect(chatId, response, builtReplyRef, {
           fallbackTraceEvent: "stream-fallback-patch",
@@ -2218,6 +2222,7 @@
           interruptRequested,
           streamController,
           builtReplyRef,
+          options,
         });
       } finally {
         await finalizeStreamLifecycle(chatId, streamController, { wasAborted: sendState.wasAborted });
