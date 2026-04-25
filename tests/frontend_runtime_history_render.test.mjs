@@ -309,6 +309,33 @@ test('mergeHydratedHistory collapses duplicate hydrated pending tool rows before
 });
 
 
+test('mergeHydratedHistory does not keep a local pending tool row when hydrate has the completed copy', () => {
+  const previousHistory = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    { role: 'tool', body: 'read_file\nsearch_files\nwrite_file', created_at: '2026-04-09T20:40:05Z', pending: true, collapsed: false, tool_call_count: 3 },
+  ];
+  const hydrated = [
+    { id: 1, role: 'operator', body: 'run this', created_at: '2026-04-09T20:40:00Z' },
+    { id: 2, role: 'tool', body: 'read_file\nsearch_files', created_at: '2026-04-09 20:40:08', pending: false },
+    { id: 3, role: 'hermes', body: 'done', created_at: '2026-04-09 20:40:09', pending: false },
+  ];
+
+  const merged = runtime.mergeHydratedHistory({
+    previousHistory,
+    nextHistory: hydrated,
+    serverPending: true,
+    preserveLocalPending: true,
+  });
+
+  const toolRows = merged.filter((item) => item.role === 'tool');
+  assert.equal(toolRows.length, 1);
+  assert.equal(toolRows[0].id, 2);
+  assert.equal(toolRows[0].pending, false);
+  assert.equal(toolRows[0].body, 'read_file\nsearch_files\nwrite_file');
+  assert.equal(toolRows[0].tool_call_count, 3);
+});
+
+
 test('shouldUseAppendOnlyRender returns false when new history inserts before current tail', () => {
   const previousTail = {
     role: 'hermes',

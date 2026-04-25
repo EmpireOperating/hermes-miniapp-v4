@@ -259,6 +259,30 @@
       return -1;
     }
 
+    function findCompletedToolMatchIndex(localItem) {
+      if (String(localItem?.role || '').toLowerCase() !== 'tool') {
+        return -1;
+      }
+      const candidateIndexes = [];
+      for (let index = 0; index < incoming.length; index += 1) {
+        const candidate = incoming[index];
+        if (String(candidate?.role || '').toLowerCase() !== 'tool') {
+          continue;
+        }
+        if (Boolean(candidate?.pending)) {
+          continue;
+        }
+        if (!bodiesSharePendingToolContinuation(localItem, candidate)) {
+          continue;
+        }
+        candidateIndexes.push(index);
+      }
+      if (candidateIndexes.length === 1) {
+        return candidateIndexes[0];
+      }
+      return -1;
+    }
+
     for (const item of localPending) {
       const key = messageFingerprint(item);
       const indexes = existingIndexes.get(key) || [];
@@ -270,6 +294,11 @@
       const relaxedMatchIndex = findRelaxedPendingMatchIndex(item);
       if (relaxedMatchIndex >= 0) {
         incoming[relaxedMatchIndex] = applyPendingLocalUiState(incoming[relaxedMatchIndex], item);
+        continue;
+      }
+      const completedToolMatchIndex = findCompletedToolMatchIndex(item);
+      if (completedToolMatchIndex >= 0) {
+        incoming[completedToolMatchIndex] = applyPendingLocalUiState(incoming[completedToolMatchIndex], item);
         continue;
       }
       incoming.push({ ...item });
