@@ -126,6 +126,7 @@ class VisualDevService:
         normalized_message = str(message or "").strip()
         if not normalized_message:
             raise ValueError("Missing console message")
+        self._ensure_runtime_session(session)
         runtime_state = self._runtime_getter().record_event(
             session["session_id"],
             "console",
@@ -189,6 +190,7 @@ class VisualDevService:
         normalized_command = str(command or "").strip().lower()
         if normalized_command not in {"heartbeat", "bridge-ready", "disconnect", "restart-required", "build-state"}:
             raise ValueError("Unsupported visual dev command")
+        self._ensure_runtime_session(session)
         return self._runtime_getter().record_event(session["session_id"], normalized_command, self._normalize_dict(payload))
 
     def get_session_by_id(self, *, user_id: str, session_id: str) -> dict[str, Any]:
@@ -205,6 +207,19 @@ class VisualDevService:
             if int(session.get("chat_id") or 0) == int(chat_id):
                 return session
         raise KeyError("Visual dev session not found")
+
+    def _ensure_runtime_session(self, session: dict[str, Any]) -> None:
+        session_id = str(session.get("session_id") or "").strip()
+        if not session_id or self._runtime_getter().get_session_state(session_id):
+            return
+        if str(session.get("status") or "").strip().lower() == "detached":
+            return
+        self._runtime_getter().attach_session(
+            session_id=session_id,
+            user_id=str(session.get("user_id") or ""),
+            chat_id=int(session.get("chat_id") or 0),
+            preview_url=str(session.get("preview_url") or ""),
+        )
 
     def _merge_runtime(self, session: dict[str, Any]) -> dict[str, Any]:
         merged = dict(session or {})

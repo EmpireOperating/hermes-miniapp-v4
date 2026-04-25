@@ -225,6 +225,56 @@ def test_visual_dev_command_updates_runtime_state(monkeypatch, tmp_path) -> None
     assert server.visual_dev_runtime.get_session_state("session-1")["state"] == "reloading"
 
 
+def test_visual_dev_command_rehydrates_runtime_after_process_restart(monkeypatch, tmp_path) -> None:
+    server, client = _visual_dev_client(monkeypatch, tmp_path)
+    chat_id = server.store.ensure_default_chat("123")
+    attach_response = _attach_visual_dev_session(client, chat_id)
+    assert attach_response.status_code == 200
+    server.visual_dev_runtime.detach_session("session-1")
+    assert server.store.get_visual_dev_session("session-1")["status"] == "attached"
+
+    response = client.post(
+        "/api/visual-dev/session/command",
+        json=_visual_dev_body(
+            session_id="session-1",
+            command="bridge-ready",
+            payload={"preview_url": "https://preview.example.com/app"},
+        ),
+        headers=_operator_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["runtime"]["state"] == "live"
+    assert server.visual_dev_runtime.get_session_state("session-1")["state"] == "live"
+
+
+def test_visual_dev_console_rehydrates_runtime_after_process_restart(monkeypatch, tmp_path) -> None:
+    server, client = _visual_dev_client(monkeypatch, tmp_path)
+    chat_id = server.store.ensure_default_chat("123")
+    attach_response = _attach_visual_dev_session(client, chat_id)
+    assert attach_response.status_code == 200
+    server.visual_dev_runtime.detach_session("session-1")
+
+    response = client.post(
+        "/api/visual-dev/session/console",
+        json=_visual_dev_body(
+            session_id="session-1",
+            event_type="console",
+            level="error",
+            message="After restart console event",
+        ),
+        headers=_operator_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["runtime"]["state"] == "runtime_error"
+    assert server.visual_dev_runtime.get_session_state("session-1")["state"] == "runtime_error"
+
+
 def test_visual_dev_routes_allow_authenticated_miniapp_requests_without_operator_token(monkeypatch, tmp_path) -> None:
     server, client = _visual_dev_client(monkeypatch, tmp_path)
     chat_id = server.store.ensure_default_chat("123")
