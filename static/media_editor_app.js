@@ -22,6 +22,7 @@
     addImageButton,
     addAudioButton,
     addVideoButton,
+    importMediaButton,
     submitOperation,
     submitSuggestionAction,
     submitImageUpload,
@@ -36,6 +37,8 @@
     imageFileInput = null,
     audioFileInput = null,
     videoFileInput = null,
+    mediaFileInput = null,
+    folderFileInput = null,
     visualDevBridge = null,
     nowFn = () => Date.now(),
     setIntervalFn = (handler, intervalMs) => setInterval(handler, intervalMs),
@@ -1268,6 +1271,63 @@
       return responsePayload;
     }
 
+    function mediaKindForFile(file) {
+      const type = String(file?.type || '').toLowerCase();
+      if (type.startsWith('image/')) return 'image';
+      if (type.startsWith('video/')) return 'video';
+      if (type.startsWith('audio/')) return 'audio';
+      const name = String(file?.name || '').toLowerCase();
+      if (/\.(png|jpe?g|gif|webp|bmp|avif|heic|heif)$/.test(name)) return 'image';
+      if (/\.(mp4|m4v|mov|webm|mkv|avi)$/.test(name)) return 'video';
+      if (/\.(mp3|wav|wave|ogg|oga|m4a|aac|flac)$/.test(name)) return 'audio';
+      return '';
+    }
+
+    async function importMediaFiles(filesInput) {
+      const files = Array.from(filesInput || []).filter(Boolean);
+      if (!files.length) {
+        throw new Error('choose one or more image, video, or audio files');
+      }
+      const visualTrack = state.tracks.find((track) => String(track.kind) === 'visual') || state.tracks[0];
+      const audioTrack = state.tracks.find((track) => String(track.kind) === 'audio') || state.tracks[0];
+      const imported = [];
+      const skipped = [];
+      for (const file of files) {
+        const kind = mediaKindForFile(file);
+        if (kind === 'image') {
+          if (!visualTrack) throw new Error('visual track is unavailable');
+          await uploadImageClip(file, visualTrack);
+          imported.push(file);
+        } else if (kind === 'video') {
+          if (!visualTrack) throw new Error('visual track is unavailable');
+          await uploadVideoClip(file, visualTrack);
+          imported.push(file);
+        } else if (kind === 'audio') {
+          if (!audioTrack) throw new Error('audio track is unavailable');
+          await uploadAudioClip(file, audioTrack);
+          imported.push(file);
+        } else {
+          skipped.push(file);
+        }
+      }
+      if (mediaFileInput) {
+        mediaFileInput.value = '';
+      }
+      if (folderFileInput) {
+        folderFileInput.value = '';
+      }
+      if (emptyStateNode) {
+        const importedLabel = imported.length === 1 ? '1 media file imported.' : `${imported.length} media files imported.`;
+        emptyStateNode.textContent = skipped.length
+          ? `${importedLabel} Skipped ${skipped.length} unsupported file${skipped.length === 1 ? '' : 's'}.`
+          : importedLabel;
+      }
+      if (!imported.length && skipped.length) {
+        throw new Error('no supported media files found');
+      }
+      return { imported, skipped };
+    }
+
     async function defaultSubmitHistoryAction(action) {
       if (!request) {
         throw new Error('fetch is unavailable');
@@ -1674,6 +1734,25 @@
       }
     }
 
+    if (importMediaButton) {
+      importMediaButton.textContent = 'Import media';
+      if (typeof importMediaButton.addEventListener === 'function') {
+        importMediaButton.addEventListener('click', (event) => {
+          const wantsFolder = Boolean(event && (event.shiftKey || event.altKey));
+          const picker = wantsFolder && folderFileInput ? folderFileInput : mediaFileInput;
+          if (picker && typeof picker.click === 'function') {
+            picker.click();
+            return;
+          }
+          importMediaFiles([]).catch((error) => {
+            if (emptyStateNode) {
+              emptyStateNode.textContent = error && error.message ? error.message : 'Could not import media.';
+            }
+          });
+        });
+      }
+    }
+
     if (addImageButton) {
       addImageButton.textContent = 'Add image clip';
       if (typeof addImageButton.addEventListener === 'function') {
@@ -1723,6 +1802,26 @@
           });
         });
       }
+    }
+
+    if (mediaFileInput && typeof mediaFileInput.addEventListener === 'function') {
+      mediaFileInput.addEventListener('change', () => {
+        importMediaFiles(mediaFileInput.files).catch((error) => {
+          if (emptyStateNode) {
+            emptyStateNode.textContent = error && error.message ? error.message : 'Could not import media.';
+          }
+        });
+      });
+    }
+
+    if (folderFileInput && typeof folderFileInput.addEventListener === 'function') {
+      folderFileInput.addEventListener('change', () => {
+        importMediaFiles(folderFileInput.files).catch((error) => {
+          if (emptyStateNode) {
+            emptyStateNode.textContent = error && error.message ? error.message : 'Could not import media folder.';
+          }
+        });
+      });
     }
 
     if (imageFileInput && typeof imageFileInput.addEventListener === 'function') {
@@ -1786,6 +1885,7 @@
       addImageClip,
       addAudioClip,
       addVideoClip,
+      importMediaFiles,
       updateSelectedClip,
       deleteSelectedClip,
       duplicateSelectedClip,
@@ -1826,9 +1926,12 @@
     const addImageButton = document.getElementById('media-editor-add-image');
     const addAudioButton = document.getElementById('media-editor-add-audio');
     const addVideoButton = document.getElementById('media-editor-add-video');
+    const importMediaButton = document.getElementById('media-editor-import-media');
     const imageFileInput = document.getElementById('media-editor-image-file');
     const audioFileInput = document.getElementById('media-editor-audio-file');
     const videoFileInput = document.getElementById('media-editor-video-file');
+    const mediaFileInput = document.getElementById('media-editor-media-file');
+    const folderFileInput = document.getElementById('media-editor-folder-file');
     const bridgeFactory = globalThis.HermesMiniappVisualDevBridge;
     const visualDevBridge = bridgeFactory?.createController
       ? bridgeFactory.createController({ windowObject: globalThis, documentObject: document })
@@ -1851,9 +1954,12 @@
       addImageButton,
       addAudioButton,
       addVideoButton,
+      importMediaButton,
       imageFileInput,
       audioFileInput,
       videoFileInput,
+      mediaFileInput,
+      folderFileInput,
       initData: globalThis.__HERMES_MEDIA_EDITOR_INIT_DATA__ || '',
       chatId: globalThis.__HERMES_MEDIA_EDITOR_CHAT_ID__ || '',
       visualDevBridge,

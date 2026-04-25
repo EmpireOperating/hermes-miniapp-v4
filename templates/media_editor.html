@@ -116,6 +116,36 @@
         color: var(--media-editor-ink);
         padding: 8px 12px;
       }
+      .media-editor__toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        margin: 4px 0 0;
+      }
+      .media-editor__button--primary {
+        min-width: min(100%, 176px);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent),
+          color-mix(in srgb, var(--media-editor-accent) 34%, rgba(15, 23, 42, 0.78));
+        border-color: color-mix(in srgb, var(--media-editor-accent-soft) 52%, var(--media-editor-line-strong));
+        box-shadow: 0 8px 24px rgba(36, 124, 207, 0.16);
+      }
+      .media-editor__import-hint {
+        flex: 1 1 180px;
+        min-width: 0;
+        font-size: 12px;
+      }
+      @media (max-width: 520px) {
+        .media-editor__toolbar {
+          display: grid;
+          grid-template-columns: 1fr;
+        }
+        .media-editor__button--primary,
+        .media-editor__toolbar .media-editor__button {
+          width: 100%;
+        }
+      }
       .media-editor__file-input {
         position: absolute;
         width: 1px;
@@ -273,13 +303,13 @@
       </section>
       <section class="media-editor__panel">
         <h1 id="media-editor-title">Loading project…</h1>
-        <button class="media-editor__button" id="media-editor-add-text" type="button">Add text clip</button>
-        <button class="media-editor__button" id="media-editor-add-image" type="button">Add image clip</button>
-        <button class="media-editor__button" id="media-editor-add-video" type="button">Add video clip</button>
-        <button class="media-editor__button" id="media-editor-add-audio" type="button">Add audio clip</button>
-        <input class="media-editor__file-input" id="media-editor-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="Upload image clip">
-        <input class="media-editor__file-input" id="media-editor-audio-file" type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/ogg" aria-label="Upload audio clip">
-        <input class="media-editor__file-input" id="media-editor-video-file" type="file" accept="video/mp4,video/webm,video/quicktime,video/x-msvideo" aria-label="Upload video clip">
+        <div class="media-editor__toolbar" aria-label="Media editor import controls">
+          <button class="media-editor__button" id="media-editor-add-text" type="button">Add text clip</button>
+          <button class="media-editor__button media-editor__button--primary" id="media-editor-import-media" type="button" title="Select multiple files. Shift-click or Alt-click to choose a folder where supported.">Import media</button>
+          <span class="media-editor__muted media-editor__import-hint">Images, videos, and audio files are sorted into the asset bin automatically.</span>
+        </div>
+        <input class="media-editor__file-input" id="media-editor-media-file" type="file" accept="image/*,video/*,audio/*" multiple aria-label="Import media files">
+        <input class="media-editor__file-input" id="media-editor-folder-file" type="file" accept="image/*,video/*,audio/*" multiple webkitdirectory directory aria-label="Import media folder">
         <div class="media-editor__preview-stage" id="media-editor-preview-stage" aria-live="polite"></div>
         <div class="media-editor__transport">
           <button class="media-editor__button" id="media-editor-play" type="button">Play</button>

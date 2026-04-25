@@ -31,3 +31,13 @@ test('media editor trim handles are large obvious edge controls', () => {
   assert.match(templateSource, /\.media-editor__trim-handle--left\s*\{[\s\S]*?margin-left:\s*-2px;/);
   assert.match(templateSource, /\.media-editor__trim-handle--right\s*\{[\s\S]*?margin-right:\s*-2px;/);
 });
+
+
+test('media editor consolidates file media import controls into one primary button', () => {
+  assert.match(templateSource, /id="media-editor-import-media"[^>]*>Import media<\/button>/);
+  assert.match(templateSource, /id="media-editor-media-file"[^>]*accept="image\/\*,video\/\*,audio\/\*"[^>]*multiple/);
+  assert.match(templateSource, /id="media-editor-folder-file"[^>]*webkitdirectory[^>]*aria-label="Import media folder"/);
+  assert.doesNotMatch(templateSource, />Add image clip<\/button>/);
+  assert.doesNotMatch(templateSource, />Add video clip<\/button>/);
+  assert.doesNotMatch(templateSource, />Add audio clip<\/button>/);
+});

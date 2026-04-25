@@ -324,6 +324,99 @@ test('addImageClip uploads a selected file onto the visual rail', async () => {
 });
 
 
+test('importMediaFiles uploads mixed image video and audio selections', async () => {
+  const emptyStateNode = createElement('p');
+  const mediaFileInput = createElement('input');
+  const files = [
+    { name: 'opening.png', type: 'image/png' },
+    { name: 'cutaway.mp4', type: 'video/mp4' },
+    { name: 'bed.wav', type: 'audio/wav' },
+    { name: 'notes.txt', type: 'text/plain' },
+  ];
+  mediaFileInput.files = files;
+  mediaFileInput.value = 'selected';
+  const uploads = [];
+  const payloadFor = (assetId, kind, label) => ({
+    ok: true,
+    project: { project_id: 'proj_1', title: 'Video editor draft', duration_ms: 3000 },
+    tracks: [
+      { track_id: 'track_visual', kind: 'visual', label: 'Visual' },
+      { track_id: 'track_audio', kind: 'audio', label: 'Audio' },
+    ],
+    assets: [{ asset_id: assetId, kind, storage_path: `/api/media-projects/proj_1/uploaded-assets/${label}`, label }],
+    clips: [{ clip_id: `clip_${assetId}`, track_id: kind === 'audio' ? 'track_audio' : 'track_visual', asset_id: assetId, kind, start_ms: 0, duration_ms: 3000, params: {} }],
+  });
+  const controller = mediaEditor.createController({
+    documentObject: { createElement },
+    titleNode: createElement('h1'),
+    trackListNode: createElement('section'),
+    emptyStateNode,
+    mediaFileInput,
+    submitImageUpload: async ({ file, trackId }) => {
+      uploads.push({ kind: 'image', file, trackId });
+      return payloadFor('asset_image', 'image', file.name);
+    },
+    submitVideoUpload: async ({ file, trackId }) => {
+      uploads.push({ kind: 'video', file, trackId });
+      return payloadFor('asset_video', 'video', file.name);
+    },
+    submitAudioUpload: async ({ file, trackId }) => {
+      uploads.push({ kind: 'audio', file, trackId });
+      return payloadFor('asset_audio', 'audio', file.name);
+    },
+  });
+  controller.loadProject({
+    project: { project_id: 'proj_1', title: 'Video editor draft' },
+    tracks: [
+      { track_id: 'track_visual', kind: 'visual', label: 'Visual' },
+      { track_id: 'track_audio', kind: 'audio', label: 'Audio' },
+    ],
+    clips: [],
+  });
+
+  const result = await controller.importMediaFiles(mediaFileInput.files);
+
+  assert.deepEqual(uploads.map((upload) => [upload.kind, upload.file.name, upload.trackId]), [
+    ['image', 'opening.png', 'track_visual'],
+    ['video', 'cutaway.mp4', 'track_visual'],
+    ['audio', 'bed.wav', 'track_audio'],
+  ]);
+  assert.equal(result.imported.length, 3);
+  assert.equal(result.skipped.length, 1);
+  assert.equal(mediaFileInput.value, '');
+  assert.match(emptyStateNode.textContent, /3 media files imported/);
+  assert.match(emptyStateNode.textContent, /Skipped 1 unsupported file/);
+});
+
+
+test('import media button opens the multi-file picker by default and folder picker with shift', () => {
+  const importMediaButton = createElement('button');
+  const mediaFileInput = createElement('input');
+  const folderFileInput = createElement('input');
+  let mediaClicks = 0;
+  let folderClicks = 0;
+  mediaFileInput.click = () => { mediaClicks += 1; };
+  folderFileInput.click = () => { folderClicks += 1; };
+
+  mediaEditor.createController({
+    documentObject: { createElement },
+    titleNode: createElement('h1'),
+    trackListNode: createElement('section'),
+    emptyStateNode: createElement('p'),
+    importMediaButton,
+    mediaFileInput,
+    folderFileInput,
+  });
+
+  importMediaButton.click();
+  importMediaButton.listeners.click({ currentTarget: importMediaButton, shiftKey: true, preventDefault() {} });
+
+  assert.equal(importMediaButton.textContent, 'Import media');
+  assert.equal(mediaClicks, 1);
+  assert.equal(folderClicks, 1);
+});
+
+
 test('addTextClip submits create_text_clip operation for text rail', async () => {
   const addTextButton = createElement('button');
   const controller = mediaEditor.createController({
