@@ -194,7 +194,7 @@ def _parse_allowed_origins(raw: str, *, env_name: str = "MINI_APP_ALLOWED_ORIGIN
 
 
 def _parse_max_content_length() -> int:
-    max_content_length = _as_int("MAX_CONTENT_LENGTH", 1048576)
+    max_content_length = _as_int("MAX_CONTENT_LENGTH", 104857600)
     if max_content_length <= 0:
         raise ValueError("MAX_CONTENT_LENGTH must be > 0")
     return max_content_length

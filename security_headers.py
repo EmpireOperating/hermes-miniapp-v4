@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import os
-
 from flask import Response
 
 from miniapp_config import normalize_origin
@@ -64,6 +63,7 @@ def apply_security_headers(
         f"{script_src}; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: https:; "
+        "media-src 'self' data: blob: https:; "
         "connect-src 'self'; "
         f"frame-ancestors {frame_ancestors}; "
         "base-uri 'self'; "

@@ -27,6 +27,7 @@ class StoreSchemaMixin:
             self._ensure_chat_job_schema(conn)
             self._ensure_runtime_checkpoint_schema(conn)
             self._ensure_auth_session_schema(conn)
+            self._ensure_media_project_schema(conn)
             self._ensure_visual_dev_schema(conn)
             self._migrate_legacy_history(conn)
 
@@ -387,6 +388,244 @@ class StoreSchemaMixin:
             conn.execute("ALTER TABLE auth_sessions ADD COLUMN display_name TEXT")
         if "username" not in auth_session_columns:
             conn.execute("ALTER TABLE auth_sessions ADD COLUMN username TEXT")
+
+    def _ensure_media_project_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_projects (
+                project_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                aspect_ratio TEXT NOT NULL DEFAULT '9:16',
+                resolution_json TEXT NOT NULL DEFAULT '{}',
+                fps INTEGER NOT NULL DEFAULT 30,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'draft',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_project_tracks (
+                track_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                label TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_id) REFERENCES media_projects(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_project_assets (
+                asset_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                storage_path TEXT NOT NULL DEFAULT '',
+                content_type TEXT NOT NULL DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_id) REFERENCES media_projects(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_project_clips (
+                clip_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                track_id TEXT NOT NULL,
+                asset_id TEXT,
+                kind TEXT NOT NULL DEFAULT 'asset',
+                start_ms INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                source_in_ms INTEGER NOT NULL DEFAULT 0,
+                source_out_ms INTEGER NOT NULL DEFAULT 0,
+                z_index INTEGER NOT NULL DEFAULT 0,
+                params_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_id) REFERENCES media_projects(project_id) ON DELETE CASCADE,
+                FOREIGN KEY(track_id) REFERENCES media_project_tracks(track_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_project_operations (
+                operation_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                batch_id TEXT,
+                author TEXT NOT NULL DEFAULT 'user',
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'applied',
+                before_state_json TEXT NOT NULL DEFAULT '{}',
+                after_state_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_id) REFERENCES media_projects(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_project_suggestion_batches (
+                batch_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                author TEXT NOT NULL DEFAULT 'hermes',
+                status TEXT NOT NULL DEFAULT 'pending',
+                summary TEXT NOT NULL DEFAULT '',
+                operations_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_id) REFERENCES media_projects(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_project_export_jobs (
+                export_job_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                output_path TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_id) REFERENCES media_projects(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        media_project_column_defaults = {
+            "media_projects": {
+                "title": "TEXT NOT NULL DEFAULT ''",
+                "aspect_ratio": "TEXT NOT NULL DEFAULT '9:16'",
+                "resolution_json": "TEXT NOT NULL DEFAULT '{}'",
+                "fps": "INTEGER NOT NULL DEFAULT 30",
+                "duration_ms": "INTEGER NOT NULL DEFAULT 0",
+                "status": "TEXT NOT NULL DEFAULT 'draft'",
+                "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+                "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            },
+            "media_project_tracks": {
+                "kind": "TEXT NOT NULL DEFAULT ''",
+                "position": "INTEGER NOT NULL DEFAULT 0",
+                "label": "TEXT NOT NULL DEFAULT ''",
+                "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            },
+            "media_project_assets": {
+                "kind": "TEXT NOT NULL DEFAULT ''",
+                "storage_path": "TEXT NOT NULL DEFAULT ''",
+                "content_type": "TEXT NOT NULL DEFAULT ''",
+                "label": "TEXT NOT NULL DEFAULT ''",
+                "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+                "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            },
+            "media_project_clips": {
+                "asset_id": "TEXT",
+                "kind": "TEXT NOT NULL DEFAULT 'asset'",
+                "start_ms": "INTEGER NOT NULL DEFAULT 0",
+                "duration_ms": "INTEGER NOT NULL DEFAULT 0",
+                "source_in_ms": "INTEGER NOT NULL DEFAULT 0",
+                "source_out_ms": "INTEGER NOT NULL DEFAULT 0",
+                "z_index": "INTEGER NOT NULL DEFAULT 0",
+                "params_json": "TEXT NOT NULL DEFAULT '{}'",
+                "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            },
+            "media_project_operations": {
+                "batch_id": "TEXT",
+                "author": "TEXT NOT NULL DEFAULT 'user'",
+                "kind": "TEXT NOT NULL DEFAULT ''",
+                "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+                "status": "TEXT NOT NULL DEFAULT 'applied'",
+                "before_state_json": "TEXT NOT NULL DEFAULT '{}'",
+                "after_state_json": "TEXT NOT NULL DEFAULT '{}'",
+                "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            },
+            "media_project_suggestion_batches": {
+                "author": "TEXT NOT NULL DEFAULT 'hermes'",
+                "status": "TEXT NOT NULL DEFAULT 'pending'",
+                "summary": "TEXT NOT NULL DEFAULT ''",
+                "operations_json": "TEXT NOT NULL DEFAULT '[]'",
+                "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            },
+            "media_project_export_jobs": {
+                "status": "TEXT NOT NULL DEFAULT 'queued'",
+                "output_path": "TEXT NOT NULL DEFAULT ''",
+                "metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+                "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            },
+        }
+        for table_name, default_columns in media_project_column_defaults.items():
+            existing_columns = self._table_columns(conn, table_name)
+            for column_name, column_spec in default_columns.items():
+                if column_name not in existing_columns:
+                    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_spec}")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_project_suggestion_batches (
+                batch_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                author TEXT NOT NULL DEFAULT 'hermes',
+                status TEXT NOT NULL DEFAULT 'pending',
+                summary TEXT NOT NULL DEFAULT '',
+                operations_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_id) REFERENCES media_projects(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_project_export_jobs (
+                export_job_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                output_path TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(project_id) REFERENCES media_projects(project_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_media_projects_user_chat ON media_projects(user_id, chat_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_project_tracks_project_position ON media_project_tracks(project_id, position, track_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_project_assets_project_created ON media_project_assets(project_id, created_at DESC, asset_id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_project_clips_project_start ON media_project_clips(project_id, start_ms, clip_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_project_operations_project_created ON media_project_operations(project_id, created_at DESC, operation_id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_project_suggestion_batches_project_created ON media_project_suggestion_batches(project_id, created_at DESC, batch_id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_project_export_jobs_project_created ON media_project_export_jobs(project_id, created_at DESC, export_job_id DESC)"
+        )
 
     def _ensure_visual_dev_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(

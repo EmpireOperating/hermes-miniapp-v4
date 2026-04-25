@@ -40,7 +40,12 @@ def enforce_api_request_guards(
     relaxed_path = path in relaxed_paths
 
     if path.startswith("/api") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-        if not relaxed_path and request.mimetype != "application/json":
+        accepts_media_upload = (
+            path.startswith("/api/media-projects/")
+            and (path.endswith("/image-assets") or path.endswith("/audio-assets") or path.endswith("/video-assets"))
+            and request.mimetype == "multipart/form-data"
+        )
+        if not relaxed_path and request.mimetype != "application/json" and not accepts_media_upload:
             return jsonify({"ok": False, "error": "Content-Type must be application/json."}), 415
         if not relaxed_path and not origin_allowed_fn():
             return jsonify({"ok": False, "error": "Origin not allowed."}), 403

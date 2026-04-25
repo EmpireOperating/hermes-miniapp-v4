@@ -119,6 +119,22 @@ def register_public_routes(
         response.headers["Cache-Control"] = "no-store, max-age=0"
         return response
 
+    @public_bp.get("/workspace/media-editor")
+    def workspace_media_editor() -> Response:
+        response = make_response(
+            render_template(
+                "media_editor.html",
+                media_editor_app_version=asset_version_fn("media_editor_app.js"),
+                visual_dev_bridge_version=asset_version_fn("visual_dev_bridge.js"),
+                initial_payload={},
+                init_data=str(request.args.get("init_data", "")),
+                chat_id=str(request.args.get("chat_id", "")),
+                csp_nonce=ensure_csp_nonce_fn(),
+            )
+        )
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
+
     @public_bp.get("/health")
     def health() -> tuple[dict[str, str], int]:
         return {"status": "ok"}, 200

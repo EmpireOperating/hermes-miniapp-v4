@@ -50,6 +50,7 @@ from routes_auth import register_auth_routes
 from routes_chat import register_chat_routes
 from routes_chat_context import ChatRouteContext
 from routes_jobs_runtime import register_jobs_runtime_routes
+from routes_media_projects import register_media_project_routes
 from routes_meta import register_meta_routes
 from routes_visual_dev import register_visual_dev_routes
 from security_headers import apply_security_headers, generate_csp_nonce
@@ -179,6 +180,7 @@ STATIC_NO_STORE_FILENAMES = {
     "visual_dev_attach_helpers.js",
     "visual_dev_prompt_context_helpers.js",
     "visual_dev_bridge.js",
+    "media_editor_app.js",
 }
 STATIC_NO_STORE_PATHS = {f"/static/{name}" for name in STATIC_NO_STORE_FILENAMES}
 
@@ -642,6 +644,15 @@ register_jobs_runtime_routes(
     json_user_id_or_error_fn=_json_user_id_or_error,
     verify_for_json_fn=_verify_for_json,
     operator_token=str(os.environ.get("MINI_APP_OPERATOR_API_TOKEN") or "").strip(),
+)
+
+
+register_media_project_routes(
+    api_bp,
+    store_getter=_RUNTIME_DEPS.store_getter,
+    request_payload_fn=_request_payload,
+    json_user_id_or_error_fn=_json_user_id_or_error,
+    json_error_fn=_json_error,
 )
 
 
