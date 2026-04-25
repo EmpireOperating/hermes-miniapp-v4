@@ -327,6 +327,29 @@ test('applySessionState syncs preview src ownership and status text', () => {
   assert.equal(harness.statusLabel.textContent, 'live');
 });
 
+test('attached preview keeps low-value URL and connected chips out of the composer activity rail', () => {
+  const harness = buildHarness();
+
+  harness.controller.applySessionState({
+    enabled: true,
+    chatId: 73,
+    chatLabel: '[feat]Super app',
+    sessionId: 'session-1',
+    previewTitle: 'Test miniapp',
+    previewUrl: 'https://miniapp-test.cronpulse.app/app',
+    runtime: { state: 'connected' },
+  });
+  harness.controller.applySessionDetails({
+    session: { runtime: { state: 'connected' } },
+    console_events: [],
+  });
+
+  assert.equal(harness.composerPreviewChip.textContent, 'Preview URL: Test miniapp');
+  assert.equal(harness.composerPreviewChip.hidden, true);
+  assert.equal(harness.composerConsoleChip.textContent, 'connected: connected');
+  assert.equal(harness.composerConsoleChip.hidden, true);
+});
+
 test('getActivePreviewRegion returns the visible bounds of the active preview frame', () => {
   const harness = buildHarness();
 
@@ -420,8 +443,8 @@ test('applySelectionSummary and applyScreenshotSummary populate workspace and co
 
   assert.equal(harness.selectionChip.textContent, 'Selected: Play button');
   assert.equal(harness.screenshotChip.textContent, 'Screenshot: viewport capture • screenshot 66c1c292');
-  assert.equal(harness.composerSelectionChip.textContent, 'UI context: Play button');
-  assert.equal(harness.composerScreenshotChip.textContent, 'Screenshot context: viewport capture • screenshot 66c1c292');
+  assert.equal(harness.composerSelectionChip.textContent, 'UI: Play button');
+  assert.equal(harness.composerScreenshotChip.textContent, 'Shot: 66c1c292');
   assert.equal(harness.composerSelectionChip.hidden, false);
   assert.equal(harness.composerScreenshotChip.hidden, false);
 });
@@ -853,8 +876,8 @@ test('clearSessionState resets preview frame, summaries, and drawer state', () =
   assert.equal(harness.statusLabel.textContent, 'idle');
   assert.equal(harness.selectionChip.textContent, 'Selected: none');
   assert.equal(harness.screenshotChip.textContent, 'Screenshot: none');
-  assert.equal(harness.composerSelectionChip.textContent, 'UI context: none');
-  assert.equal(harness.composerScreenshotChip.textContent, 'Screenshot context: none');
+  assert.equal(harness.composerSelectionChip.textContent, 'UI: none');
+  assert.equal(harness.composerScreenshotChip.textContent, 'Shot: none');
   assert.equal(harness.composerSelectionChip.hidden, true);
   assert.equal(harness.composerScreenshotChip.hidden, true);
   assert.equal(harness.composerPreviewChip.textContent, 'Preview URL: none');

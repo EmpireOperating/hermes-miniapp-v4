@@ -563,15 +563,26 @@
       const label = String(selection?.label || selection?.selector || selection?.selectionType || selection?.selection_type || 'none');
       const hasSelection = label !== 'none';
       setText(selectionChip, `Selected: ${label}`);
-      setText(composerSelectionChip, `UI context: ${label}`);
+      setText(composerSelectionChip, `UI: ${label}`);
       setHidden(composerSelectionChip, !hasSelection);
+    }
+
+    function screenshotBasename(screenshot = {}) {
+      const storagePath = String(screenshot?.storage_path || screenshot?.artifact_path || screenshot?.artifactPath || '').trim();
+      return storagePath ? storagePath.split(/[\\/]/).filter(Boolean).pop() || '' : '';
+    }
+
+    function screenshotHashFromBasename(basename = '') {
+      const normalized = String(basename || '').trim();
+      const match = normalized.match(/^screenshot-\d+-([a-f0-9]{6,12})\.(png|jpe?g|webp)$/i);
+      return match ? match[1] : '';
     }
 
     function compactScreenshotBasename(basename = '') {
       const normalized = String(basename || '').trim();
-      const match = normalized.match(/^screenshot-\d+-([a-f0-9]{6,12})\.(png|jpe?g|webp)$/i);
-      if (match) {
-        return `screenshot ${match[1]}`;
+      const screenshotHash = screenshotHashFromBasename(normalized);
+      if (screenshotHash) {
+        return `screenshot ${screenshotHash}`;
       }
       if (normalized.length > 28) {
         return `${normalized.slice(0, 12)}…${normalized.slice(-10)}`;
@@ -581,28 +592,37 @@
 
     function screenshotSummaryLabel(screenshot = {}) {
       const metadataLabel = String(screenshot?.label || screenshot?.metadata?.label || '').trim();
-      const storagePath = String(screenshot?.storage_path || screenshot?.artifact_path || screenshot?.artifactPath || '').trim();
-      const basename = storagePath ? storagePath.split(/[\\/]/).filter(Boolean).pop() || '' : '';
-      const compactName = compactScreenshotBasename(basename);
+      const compactName = compactScreenshotBasename(screenshotBasename(screenshot));
       if (metadataLabel && compactName) {
         return `${metadataLabel} • ${compactName}`;
       }
       return metadataLabel || compactName || 'none';
     }
 
+    function composerScreenshotLabel(screenshot = {}) {
+      const basename = screenshotBasename(screenshot);
+      const screenshotHash = screenshotHashFromBasename(basename);
+      if (screenshotHash) {
+        return screenshotHash;
+      }
+      return compactScreenshotBasename(basename) || String(screenshot?.label || screenshot?.metadata?.label || '').trim() || 'none';
+    }
+
     function applyScreenshotSummary(screenshot = {}) {
       const label = screenshotSummaryLabel(screenshot);
+      const composerLabel = composerScreenshotLabel(screenshot);
       const hasScreenshot = label !== 'none';
       setText(screenshotChip, `Screenshot: ${label}`);
-      setText(composerScreenshotChip, `Screenshot context: ${label}`);
+      setText(composerScreenshotChip, `Shot: ${composerLabel}`);
       setHidden(composerScreenshotChip, !hasScreenshot);
     }
 
     function applyPreviewSummary(session = {}) {
       const label = String(session?.preview_title || session?.previewTitle || session?.preview_url || session?.previewUrl || 'none');
-      const hasPreview = label !== 'none';
       setText(composerPreviewChip, `Preview URL: ${label}`);
-      setHidden(composerPreviewChip, !hasPreview);
+      // The attached URL is already obvious in the workspace preview. Keeping this hidden
+      // prevents the composer activity rail from being crowded by a long low-value URL pill.
+      setHidden(composerPreviewChip, true);
     }
 
     function applyConsoleSummary(runtime = {}, events = []) {
@@ -613,9 +633,17 @@
       const latestMessage = String(latestEvent?.message || '').trim();
       const label = runtimeMessage || latestMessage || state || latestLevel || 'none';
       const prefix = state || latestLevel || 'Console';
+      const normalizedLabel = label.toLowerCase();
       const hasConsole = label !== 'none';
+      const isLowValueConnectionState = !runtimeMessage && !latestMessage && [
+        'connected',
+        'connecting',
+        'disconnected',
+        'idle',
+        'live',
+      ].includes(normalizedLabel);
       setText(composerConsoleChip, `${prefix}: ${label}`);
-      setHidden(composerConsoleChip, !hasConsole);
+      setHidden(composerConsoleChip, !hasConsole || isLowValueConnectionState);
     }
 
     function setConsoleEvents(events = []) {
@@ -669,8 +697,8 @@
       applyRuntimeSummary({ state: 'idle' });
       setText(selectionChip, 'Selected: none');
       setText(screenshotChip, 'Screenshot: none');
-      setText(composerSelectionChip, 'UI context: none');
-      setText(composerScreenshotChip, 'Screenshot context: none');
+      setText(composerSelectionChip, 'UI: none');
+      setText(composerScreenshotChip, 'Shot: none');
       setText(composerPreviewChip, 'Preview URL: none');
       setText(composerConsoleChip, 'Console: none');
       setHidden(composerSelectionChip, true);
