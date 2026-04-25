@@ -71,6 +71,31 @@ def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) ->
     # Simulate stale open job by archiving the chat directly (legacy state).
     conn = sqlite3.connect(server.store.db_path)
     conn.execute("UPDATE chat_threads SET is_archived = 1 WHERE user_id = ? AND id = ?", ("123", stale_chat.id))
+    conn.execute(
+        """
+        UPDATE chat_jobs
+        SET child_pid = ?,
+            child_transport = ?,
+            terminal_return_code = ?,
+            terminal_failure_kind = ?,
+            terminal_outcome = ?,
+            terminal_error = ?,
+            limit_breach = ?,
+            limit_breach_detail = ?
+        WHERE id = ?
+        """,
+        (
+            424242,
+            "subprocess",
+            -9,
+            "failed",
+            "retryable_failure",
+            "Subprocess worker exited rc=-9",
+            "memory",
+            "signal_kill_suspected_oom",
+            job_id,
+        ),
+    )
     conn.commit()
     conn.close()
 
