@@ -5,6 +5,28 @@
 > The active backlog now lives in `docs/maintainers/history/refactor-plan.hermes-miniapp-v4.md`.
 
 
+## Execution 2026-04-23 16:30Z
+- Ran `refactor-execute-pass` for R75 on a clean non-live worktree (`refactor/r75-fail-open-telemetry`) based on `origin/main`.
+- R75: Hardened child-process telemetry so subprocess memory sampling is fail-open and spawn-tracker bookkeeping no longer holds `_spawn_tracker_lock` across `/proc` and host-memory reads. `SubprocessStreamLifecycle.maybe_emit_memory_sample(...)` now logs and suppresses telemetry-sampling failures, while `HermesClient.observe_child_process_sample(...)` and `observe_descendant_finish(...)` gather process snapshots outside the critical section and only reacquire the lock to append finalized event payloads.
+- Added targeted regressions in `tests/test_job_runtime_worker_launcher.py` for failed memory sampling and in `tests/test_hermes_client.py` for the lock-scope contract around child/descendant snapshot collection.
+- Validation evidence:
+  - `python3 -m py_compile hermes_client.py job_runtime_worker_launcher_subprocess.py tests/test_hermes_client.py tests/test_job_runtime_worker_launcher.py` → passed
+  - `python3 -m pytest -q tests/test_job_runtime_worker_launcher.py -k "memory_sample or descendant or subprocess"` → `26 passed, 4 deselected`
+  - `python3 -m pytest -q tests/test_hermes_client.py -k "child_spawn or descendant or recall_health"` → `9 passed, 108 deselected`
+
+## Execution 2026-04-23 15:20Z
+- Ran `refactor-execute-pass` for R73, R74, and R77 on a clean non-live worktree (`refactor/r73-r74-r77`) based on `origin/main` because the live worktree was dirty with unrelated clusters.
+- R73: Hardened subprocess register-failure cleanup in `job_runtime_worker_launcher.py` / `job_runtime_worker_launcher_subprocess.py` so `register_child_spawn(...)` failures stay inside the normal finalize path. Added direct regression coverage in `tests/test_job_runtime_worker_launcher.py` for SIGKILL/reap, stderr handle closure, and launcher diagnostic updates on register failure.
+- R74: Hardened `job_runtime_chat_job.py` so post-`done` session eviction failures cannot skip `complete_job(...)`, while keeping eviction ahead of completion for non-warm sessions to avoid reopening a same-chat claim race. Added regression coverage in `tests/test_job_runtime_chat_job.py` for eviction failure after terminal `done` publication.
+- R77: Centralized `removeActiveChat(...)` reconciliation in `static/chat_admin_helpers.js` with `reconcilePostRemoveRender(...)`, covering optimistic close, rollback, explicit no-active-chat, lightweight reopen, and authoritative server-active responses without duplicate production tab renders. Expanded `tests/chat_admin_helpers.test.mjs` coverage and aligned the harness with runtime meta-render behavior.
+- Validation evidence:
+  - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py -k "register_failed or subprocess"` → `26 passed, 4 deselected`
+  - `.venv/bin/python -m pytest -q tests/test_job_runtime_worker_launcher.py` → `30 passed`
+  - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py -k "evict_session or done"` → `5 passed, 20 deselected`
+  - `.venv/bin/python -m pytest -q tests/test_job_runtime_chat_job.py` → `25 passed`
+  - `node --test tests/chat_admin_helpers.test.mjs` → `38 passed`
+- Mandatory review gate: independent review over the actual branch contents passed for R73, R74, and R77 after rework for the same-chat completion-order race and duplicate-tab-render concern.
+
 ## Refresh 2026-04-12 01:11Z
 - Ran a fresh refactor-pass refresh against the active dirty worktree after closing R56-R57.
 - Current git status at refresh time: `## main...origin/main` plus modified `docs/maintainers/history/refactor-plan.hermes-miniapp-v4.md`, `hermes_client_types.py`, `job_runtime_chat_job.py`, `job_runtime_worker_launcher.py`, `miniapp_config.py`, `routes_auth_service.py`, `routes_chat_management_service.py`, `server.py`, `static/app.js`, `static/chat_history_helpers.js`, `static/chat_tabs_helpers.js`, `static/composer_viewport_helpers.js`, `static/interaction_helpers.js`, `static/stream_controller.js`, `store_chat_queries.py`, `store_models.py`, `store_schema.py`, `templates/app.html`, `tests/bootstrap_auth_app_delegation.test.mjs`, `tests/chat_history_open_hydrate.test.mjs`, `tests/chat_history_read_mutation.test.mjs`, `tests/chat_history_test_harness.mjs`, `tests/chat_history_visibility_sync.test.mjs`, `tests/chat_tabs_app_delegation.test.mjs`, `tests/composer_viewport_helpers.test.mjs`, `tests/frontend_runtime.test.mjs`, `tests/interaction_app_delegation.test.mjs`, `tests/interaction_helpers.test.mjs`, `tests/stream_controller_policy_session.test.mjs`, `tests/template_startup_script_order.test.mjs`, `tests/test_job_runtime_chat_job.py`, `tests/test_job_runtime_worker_launcher.py`, `tests/test_routes_auth_service.py`, `tests/test_routes_chat.py`, `tests/test_routes_chat_management_service.py`, `tests/test_routes_meta.py`, plus untracked `tests/frontend_runtime_chat_tab_cycle.test.mjs`, `tests/frontend_runtime_history_render.test.mjs`, `tests/frontend_runtime_stream_activity.test.mjs`, `tests/frontend_runtime_test_harness.mjs`, `tests/frontend_runtime_unread_latency.test.mjs`, `tests/frontend_runtime_viewport_bootstrap.test.mjs`, and `tests/render_trace_history_app_delegation.test.mjs`.

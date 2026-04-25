@@ -36,6 +36,20 @@ class SubprocessStreamState:
     last_memory_sample_at: float | None = None
 
 
+def mark_subprocess_setup_failure(
+    state: SubprocessStreamState,
+    *,
+    failure_kind: str,
+    terminal_outcome: str,
+    terminal_error: str,
+    saw_error_event: bool = True,
+) -> None:
+    state.saw_error_event = bool(saw_error_event)
+    state.failure_kind = str(failure_kind)
+    state.terminal_outcome = str(terminal_outcome)
+    state.terminal_error = str(terminal_error)
+
+
 class SubprocessStreamLifecycle:
     def __init__(
         self,
@@ -88,7 +102,10 @@ class SubprocessStreamLifecycle:
         if not callable(observe_child_process_sample):
             state.last_memory_sample_at = now
             return
-        observe_child_process_sample(pid=int(proc.pid), transport=self.transport, session_id=str(session_id or ''))
+        try:
+            observe_child_process_sample(pid=int(proc.pid), transport=self.transport, session_id=str(session_id or ''))
+        except Exception:
+            LOGGER.debug('subprocess_worker_memory_sample_failed', exc_info=True)
         state.last_memory_sample_at = now
 
     def handle_child_spawn_event(

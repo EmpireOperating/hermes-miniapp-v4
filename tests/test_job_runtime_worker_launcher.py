@@ -583,6 +583,94 @@ def test_subprocess_worker_stream_blocks_before_spawn_when_child_cap_reached(mon
     assert info["last_terminal_outcome"] == "retryable_failure"
 
 
+def test_subprocess_worker_stream_reaps_child_and_closes_stderr_when_register_fails(monkeypatch, tmp_path) -> None:
+    script_path = tmp_path / "chat_worker_subprocess.py"
+    script_path.write_text("# synthetic test script placeholder\n", encoding="utf-8")
+
+    launcher = SubprocessJobWorkerLauncher(script_path=script_path, python_executable="python3")
+
+    class FakeStderrFile:
+        def __init__(self) -> None:
+            self.closed = False
+            self._buffer = io.StringIO("register failure stderr trail")
+
+        def seek(self, offset, whence=0):
+            return self._buffer.seek(offset, whence)
+
+        def read(self):
+            return self._buffer.read()
+
+        def close(self):
+            self.closed = True
+            return None
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.pid = 97731
+            self.stdin = io.StringIO()
+            self.stdout = io.StringIO("")
+            self.returncode = None
+            self.wait_calls: list[float | int | None] = []
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None) -> int:
+            self.wait_calls.append(timeout)
+            self.returncode = -9
+            return -9
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    fake_proc = FakeProcess()
+    fake_stderr = FakeStderrFile()
+    signaled: list[tuple[int, int]] = []
+    deregisters: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        SubprocessJobWorkerLauncher,
+        "_spawn_subprocess",
+        lambda self, command, *, child_env: (fake_proc, fake_stderr),
+    )
+    monkeypatch.setattr(
+        "job_runtime_worker_launcher._signal_process_tree",
+        lambda proc, sig: signaled.append((int(proc.pid), int(sig))),
+    )
+
+    runtime = SimpleNamespace(
+        client=SimpleNamespace(
+            register_child_spawn=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("register boom")),
+            deregister_child_spawn=lambda **kwargs: deregisters.append(dict(kwargs)),
+        )
+    )
+
+    events = list(
+        launcher._stream_events_via_subprocess(
+            runtime=runtime,
+            user_id="123",
+            message="hello",
+            conversation_history=[],
+            session_id="miniapp-123-55",
+        )
+    )
+
+    assert events == [{"type": "error", "error": "register boom"}]
+    assert fake_stderr.closed is True
+    assert fake_proc.wait_calls == [1]
+    assert signaled == [(97731, int(signal.SIGKILL))]
+    assert deregisters == []
+    info = launcher.describe()
+    assert info["last_failure_kind"] == "register_failed"
+    assert info["last_return_code"] == -9
+    assert info["last_stderr_excerpt"] == "register failure stderr trail"
+    assert info["last_terminal_outcome"] == "retryable_failure"
+    assert info["last_terminal_error"] == "register boom"
+
+
 def test_subprocess_worker_stream_yields_error_when_input_pipe_breaks(monkeypatch, tmp_path) -> None:
     script_path = tmp_path / "chat_worker_subprocess.py"
     script_path.write_text("# synthetic test script placeholder\n", encoding="utf-8")
@@ -804,6 +892,59 @@ def test_subprocess_worker_stream_emits_periodic_memory_samples_while_running() 
     assert samples[0]["pid"] == 93210
     assert samples[0]["transport"] == "chat-worker-subprocess"
     assert samples[0]["session_id"] == "miniapp-123-55"
+
+
+def test_subprocess_worker_stream_continues_when_memory_sampling_fails() -> None:
+    class FakeLineQueue:
+        def __init__(self) -> None:
+            self._items = [queue.Empty(), '{"type":"delta","delta":"still-going"}\n', '{"type":"done","reply":"ok","latency_ms":1}\n', None]
+
+        def get(self, timeout=None):
+            item = self._items.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        def get_nowait(self):
+            item = self._items.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    monotonic_values = iter([0.0, 6.0, 6.1, 6.2, 6.3])
+    lifecycle = job_runtime_worker_launcher_subprocess.SubprocessStreamLifecycle(
+        transport="chat-worker-subprocess",
+        timeout_seconds=30.0,
+        first_event_timeout_seconds=7.5,
+        kill_grace_seconds=0.01,
+        stderr_excerpt_bytes=128,
+        decode_event=lambda raw: json.loads(raw),
+        stdout_line_queue=lambda proc: FakeLineQueue(),
+        read_stderr_excerpt=lambda stderr_file, max_bytes: None,
+        signal_process_tree=lambda proc, sig: None,
+        classify_limit_breach=lambda **kwargs: (None, None),
+        build_timeout_message=lambda **kwargs: "timeout",
+        build_exit_message=lambda **kwargs: "exit",
+        monotonic_now=lambda: next(monotonic_values, 6.3),
+        memory_sample_interval_seconds=5.0,
+    )
+
+    state = job_runtime_worker_launcher_subprocess.SubprocessStreamState()
+    sample_calls: list[dict[str, object]] = []
+
+    def _raise_on_sample(**kwargs):
+        sample_calls.append(dict(kwargs))
+        raise RuntimeError("sample boom")
+
+    runtime = SimpleNamespace(client=SimpleNamespace(observe_child_process_sample=_raise_on_sample))
+    proc = SimpleNamespace(pid=93211, stdout=object(), poll=lambda: None)
+
+    events = list(lifecycle.iter_events(runtime, proc=proc, session_id="miniapp-123-56", state=state))
+
+    assert [event["type"] for event in events] == ["delta", "done"]
+    assert len(sample_calls) == 1
+    assert sample_calls[0]["pid"] == 93211
+    assert state.last_memory_sample_at == 6.0
 
 
 def test_subprocess_worker_times_out_distinctly_before_first_event(monkeypatch, tmp_path) -> None:

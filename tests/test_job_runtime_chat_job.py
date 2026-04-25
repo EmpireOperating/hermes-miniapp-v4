@@ -91,10 +91,17 @@ class _FakeStore:
 
 
 class _FakeClient:
-    def __init__(self, events: list[dict[str, object]], *, warm_owner_state: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        events: list[dict[str, object]],
+        *,
+        warm_owner_state: dict[str, object] | None = None,
+        evict_exception: Exception | None = None,
+    ) -> None:
         self._events = events
         self.evicted_sessions: list[str] = []
         self._warm_owner_state = warm_owner_state or {"owner_records": []}
+        self._evict_exception = evict_exception
         self.stream_calls: list[dict[str, object]] = []
 
     def should_include_conversation_history(self, *, session_id: str) -> bool:
@@ -105,6 +112,8 @@ class _FakeClient:
 
     def evict_session(self, session_id: str) -> bool:
         self.evicted_sessions.append(str(session_id))
+        if self._evict_exception is not None:
+            raise self._evict_exception
         return True
 
     def warm_session_owner_state(self) -> dict[str, object]:
@@ -116,15 +125,26 @@ class _FakeClient:
 
 
 class _FakeRuntime:
-    def __init__(self, events: list[dict[str, object]], *, warm_owner_state: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        events: list[dict[str, object]],
+        *,
+        warm_owner_state: dict[str, object] | None = None,
+        evict_exception: Exception | None = None,
+    ) -> None:
         self.store = _FakeStore()
-        self.client = _FakeClient(events, warm_owner_state=warm_owner_state)
+        self.client = _FakeClient(
+            events,
+            warm_owner_state=warm_owner_state,
+            evict_exception=evict_exception,
+        )
         self.session_id_builder = lambda user_id, chat_id: f"miniapp-{user_id}-{chat_id}"
         self.job_keepalive_interval_seconds = 10
         self.assistant_hard_limit = 5000
         self.assistant_chunk_len = 4096
         self.touch_cleared: list[int] = []
         self.published: list[tuple[int, str, dict[str, object]]] = []
+        self.best_effort_failures: list[tuple[str, dict[str, object]]] = []
 
     def _clear_touch_tracking(self, job_id: int) -> None:
         self.touch_cleared.append(job_id)
@@ -134,6 +154,10 @@ class _FakeRuntime:
 
     def _touch_job_best_effort(self, _job_id: int, *, force: bool = False) -> None:
         return None
+
+    def _record_best_effort_failure(self, kind: str, **context: object) -> int:
+        self.best_effort_failures.append((kind, dict(context)))
+        return len(self.best_effort_failures)
 
     def publish_job_event(self, job_id: int, event_name: str, payload: dict[str, object]) -> None:
         self.published.append((job_id, event_name, payload))
@@ -193,6 +217,37 @@ def test_execute_chat_job_completes_and_publishes_done_event() -> None:
     assert runtime.store.completed == [3]
     assert any(role == "hermes" and body == "hello world" for _, _, role, body in runtime.store.messages)
     assert any(name == "done" and payload.get("reply") == "hello world" for _, name, payload in runtime.published)
+
+
+def test_execute_chat_job_completes_even_when_post_done_session_eviction_fails() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "meta", "source": "agent"},
+            {"type": "chunk", "text": "hello world"},
+            {"type": "done", "reply": "hello world", "latency_ms": 5},
+        ],
+        evict_exception=RuntimeError("eviction failed"),
+    )
+    job = {"id": 35, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert runtime.client.evicted_sessions == ["miniapp-u-9"]
+    assert runtime.store.completed == [35]
+    assert any(role == "hermes" and body == "hello world" for _, _, role, body in runtime.store.messages)
+    assert any(name == "done" and payload.get("reply") == "hello world" for _, name, payload in runtime.published)
+    assert runtime.best_effort_failures == [
+        (
+            "chat_job_session_eviction",
+            {"job_id": 35, "session_id": "miniapp-u-9", "error": "RuntimeError"},
+        )
+    ]
 
 
 def test_execute_chat_job_persists_live_pending_tool_and_assistant_checkpoint_state() -> None:

@@ -291,6 +291,26 @@ def test_pending_flag_reflects_latest_operator_turn(tmp_path) -> None:
     assert resolved_chat.pending is False
 
 
+def test_pending_flag_ignores_interrupted_dead_operator_turn(tmp_path) -> None:
+    store = _store(tmp_path)
+    user_id = "u7-interrupted"
+    chat_id = store.ensure_default_chat(user_id)
+    operator_message_id = store.add_message(user_id, chat_id, "operator", "resume should not spin")
+    job_id = store.enqueue_chat_job(user_id, chat_id, operator_message_id, max_attempts=3)
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == job_id
+
+    recovered_store = SessionStore(store.db_path)
+
+    state = recovered_store.get_job_state(job_id)
+    assert state is not None
+    assert state["status"] == "dead"
+    assert state["error"] == "interrupted_by_runtime_recovery"
+    assert recovered_store.get_chat(user_id, chat_id).pending is False
+    assert recovered_store.list_recoverable_pending_turns(user_id) == []
+
+
 def test_list_chats_preserves_pending_and_unread_derivations(tmp_path) -> None:
     store = _store(tmp_path)
     user_id = "u7b"

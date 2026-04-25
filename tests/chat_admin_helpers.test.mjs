@@ -240,13 +240,17 @@ function buildHarness(overrides = {}) {
     upsertChat: (chat) => upsertedChats.push(chat),
     syncChats: (list) => syncedChats.push(list),
     syncPinnedChats: (list) => syncedPinnedChats.push(list),
-    setActiveChatMeta: (chatId) => {
+    setActiveChatMeta: (chatId, { fullTabRender = true } = {}) => {
       activeChatId = Number(chatId);
       setActiveCalls.push(Number(chatId));
+      if (fullTabRender) {
+        renderedTabs.push('tabs');
+      }
     },
     setNoActiveChatMeta: () => {
       activeChatId = null;
       setNoActiveCalls.push('none');
+      renderedTabs.push('tabs');
     },
     renderMessages: (chatId) => renderedMessages.push(Number(chatId)),
     renderTabs: () => renderedTabs.push('tabs'),
@@ -497,9 +501,54 @@ test('createChat modal applies selected tag and hydrates the new active chat', a
     payload: { title: '[bug]Launch plan' },
   });
   assert.deepEqual(harness.histories.get(13), [{ id: 5, body: 'new history' }]);
-  assert.deepEqual(harness.setActiveCalls, [13]);
-  assert.deepEqual(harness.renderedMessages, [13]);
-  assert.deepEqual(harness.focusComposerCalls, [13]);
+  assert.equal(harness.setActiveCalls[0] < 0, true);
+  assert.deepEqual(harness.setActiveCalls.at(-1), 13);
+  assert.equal(harness.renderedMessages[0] < 0, true);
+  assert.deepEqual(harness.renderedMessages.at(-1), 13);
+  assert.equal(harness.focusComposerCalls[0] < 0, true);
+  assert.deepEqual(harness.focusComposerCalls.at(-1), 13);
+});
+
+test('createChat paints and focuses a local empty chat before the network create returns', async () => {
+  let resolveCreate;
+  const createResponse = new Promise((resolve) => {
+    resolveCreate = resolve;
+  });
+  const apiCalls = [];
+  const harness = buildHarness({
+    apiPost: async (path, payload) => {
+      apiCalls.push({ path, payload });
+      if (path === '/api/chats') {
+        return createResponse;
+      }
+      throw new Error(`unexpected api path ${path}`);
+    },
+  });
+
+  const createPromise = harness.controller.createChat();
+  harness.chatTitleInput.value = 'Fast draft';
+  harness.chatTitleForm.dispatch('submit');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(apiCalls[0], {
+    path: '/api/chats',
+    payload: { title: 'Fast draft' },
+  });
+  assert.equal(harness.setActiveCalls.length >= 1, true);
+  const optimisticChatId = harness.setActiveCalls[0];
+  assert.equal(optimisticChatId < 0, true);
+  assert.deepEqual(harness.histories.get(optimisticChatId), []);
+  assert.deepEqual(harness.renderedMessages[0], optimisticChatId);
+  assert.deepEqual(harness.focusComposerCalls[0], optimisticChatId);
+
+  resolveCreate({ chat: { id: 13, title: 'Fast draft' }, history: [] });
+  await createPromise;
+
+  assert.equal(harness.chats.has(optimisticChatId), false);
+  assert.equal(harness.histories.has(optimisticChatId), false);
+  assert.deepEqual(harness.setActiveCalls.at(-1), 13);
+  assert.deepEqual(harness.renderedMessages.at(-1), 13);
+  assert.deepEqual(harness.focusComposerCalls.at(-1), 13);
 });
 
 test('createChat fallback prompt applies selected tag and hydrates the new active chat', async () => {
@@ -526,9 +575,12 @@ test('createChat fallback prompt applies selected tag and hydrates the new activ
     payload: { title: '[feat]Launch plan' },
   });
   assert.deepEqual(harness.histories.get(13), [{ id: 5, body: 'new history' }]);
-  assert.deepEqual(harness.setActiveCalls, [13]);
-  assert.deepEqual(harness.renderedMessages, [13]);
-  assert.deepEqual(harness.focusComposerCalls, [13]);
+  assert.equal(harness.setActiveCalls[0] < 0, true);
+  assert.deepEqual(harness.setActiveCalls.at(-1), 13);
+  assert.equal(harness.renderedMessages[0] < 0, true);
+  assert.deepEqual(harness.renderedMessages.at(-1), 13);
+  assert.equal(harness.focusComposerCalls[0] < 0, true);
+  assert.deepEqual(harness.focusComposerCalls.at(-1), 13);
 });
 
 test('rename modal confirm click survives mobile dialog-close semantics and still submits the rename', async () => {
@@ -861,8 +913,10 @@ test('removeActiveChat keeps silent-close semantics and preserves removed pinned
   assert.equal(harness.latencyByChat.has(7), false);
   assert.equal(harness.latencyMutationCalls.length, 1);
   assert.equal(harness.latencyMutationCalls[0].has(7), false);
+  assert.deepEqual(harness.setNoActiveCalls, ['none']);
   assert.deepEqual(harness.setActiveCalls, [9]);
-  assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
+  assert.deepEqual(harness.renderedTabs, ['tabs', 'tabs']);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned', 'pinned']);
   assert.deepEqual(harness.renderedMessages, [9]);
 });
 
@@ -892,8 +946,10 @@ test('removeActiveChat restores removed pinned snapshot when backend payload omi
     payload: { chat_id: 7, allow_empty: true, include_full_state: false },
   });
   assert.equal(harness.pinnedChats.has(7), true);
+  assert.deepEqual(harness.setNoActiveCalls, ['none']);
   assert.deepEqual(harness.setActiveCalls, [9]);
-  assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
+  assert.deepEqual(harness.renderedTabs, ['tabs', 'tabs']);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned', 'pinned']);
   assert.deepEqual(harness.renderedMessages, [9]);
 });
 
@@ -1154,6 +1210,8 @@ test('removeActiveChat rolls back the optimistic close if the backend request fa
   assert.equal(harness.chats.has(7), true);
   assert.equal(harness.activeChatId, 7);
   assert.deepEqual(harness.setActiveCalls, [9, 7]);
+  assert.deepEqual(harness.renderedTabs, ['tabs', 'tabs']);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned', 'pinned']);
   assert.deepEqual(harness.renderedMessages, [9, 7]);
   assert.equal(harness.histories.has(7), true);
 });
@@ -1183,10 +1241,11 @@ test('removeActiveChat can transition to explicit no-active-chat state', async (
     path: '/api/chats/remove',
     payload: { chat_id: 7, allow_empty: true, include_full_state: false },
   });
-  assert.deepEqual(harness.setNoActiveCalls, ['none']);
+  assert.deepEqual(harness.setNoActiveCalls, ['none', 'none']);
   assert.deepEqual(harness.setActiveCalls, []);
+  assert.deepEqual(harness.renderedTabs, ['tabs', 'tabs']);
   assert.deepEqual(harness.renderedMessages, []);
-  assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
+  assert.deepEqual(harness.renderedPinnedChats, ['pinned', 'pinned']);
 });
 
 test('removeActiveChat reopens the server-selected next chat when the remove response is lightweight', async () => {
@@ -1217,7 +1276,9 @@ test('removeActiveChat reopens the server-selected next chat when the remove res
   await harness.controller.removeActiveChat();
 
   assert.deepEqual(harness.openChatCalls, [9]);
+  assert.deepEqual(harness.renderedTabs, ['tabs', 'tabs']);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned', 'pinned']);
+  assert.deepEqual(harness.renderedMessages, [9]);
 });
 
 test('forkChatFrom clones chat history into a new active branch', async () => {
@@ -1231,7 +1292,7 @@ test('forkChatFrom clones chat history into a new active branch', async () => {
   });
   assert.deepEqual(harness.histories.get(19), [{ id: 200, body: 'old' }]);
   assert.deepEqual(harness.setActiveCalls, [19]);
-  assert.deepEqual(harness.renderedTabs, ['tabs']);
+  assert.deepEqual(harness.renderedTabs, ['tabs', 'tabs']);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
   assert.deepEqual(harness.renderedMessages, [19]);
   assert.deepEqual(harness.focusComposerCalls, [19]);
@@ -1314,7 +1375,7 @@ test('forkChatFrom clones selected chat into a new active tab and hydrates histo
   assert.deepEqual(harness.histories.get(19), [{ id: 200, body: 'old' }]);
   assert.deepEqual(harness.setActiveCalls, [19]);
   assert.deepEqual(harness.renderedMessages, [19]);
-  assert.deepEqual(harness.renderedTabs, ['tabs']);
+  assert.deepEqual(harness.renderedTabs, ['tabs', 'tabs']);
   assert.deepEqual(harness.renderedPinnedChats, ['pinned']);
 });
 

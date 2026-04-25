@@ -678,35 +678,36 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             record = self._observed_descendant_spawns.pop(int(pid), None)
             active_total = len(self._observed_descendant_spawns)
 
-            finish_snapshot = self._child_process_snapshot(int(pid))
-            host_memory_snapshot = self._host_memory_snapshot()
-            payload = {
-                "pid": int(pid),
-                "outcome": str(outcome or "unknown"),
-                "return_code": return_code,
-                "signal": signal,
-                "transport": str(transport or (record or {}).get("transport") or "unknown"),
-                "parent_transport": str(parent_transport or (record or {}).get("parent_transport") or "chat-worker-subprocess"),
-                "parent_pid": int(parent_pid) if parent_pid not in {None, ""} else (record or {}).get("parent_pid"),
-                "job_id": (record or {}).get("job_id"),
-                "chat_id": (record or {}).get("chat_id"),
-                "session_id": (record or {}).get("session_id"),
-                "user_id": (record or {}).get("user_id"),
-                "active_total": int(active_total),
-                "monotonic_ms": int(time.monotonic() * 1000),
-            }
-            if record:
-                start_snapshot = dict(record.get("spawn_snapshot") or {})
-                payload["lifetime_ms"] = int((time.monotonic() - float(record.get("started_monotonic") or time.monotonic())) * 1000)
-                payload["command_preview"] = record.get("command_preview")
-                payload["start_rss_kb"] = start_snapshot.get("rss_kb")
-                payload["start_vm_hwm_kb"] = start_snapshot.get("vm_hwm_kb")
-                payload["start_vm_peak_kb"] = start_snapshot.get("vm_peak_kb")
-                payload["start_thread_count"] = start_snapshot.get("thread_count")
-                payload["start_process_state"] = start_snapshot.get("process_state")
-                payload["start_process_state_code"] = start_snapshot.get("process_state_code")
-            payload.update(dict(finish_snapshot or {}))
-            payload.update(dict(host_memory_snapshot or {}))
+        finish_snapshot = self._child_process_snapshot(int(pid))
+        host_memory_snapshot = self._host_memory_snapshot()
+        payload = {
+            "pid": int(pid),
+            "outcome": str(outcome or "unknown"),
+            "return_code": return_code,
+            "signal": signal,
+            "transport": str(transport or (record or {}).get("transport") or "unknown"),
+            "parent_transport": str(parent_transport or (record or {}).get("parent_transport") or "chat-worker-subprocess"),
+            "parent_pid": int(parent_pid) if parent_pid not in {None, ""} else (record or {}).get("parent_pid"),
+            "job_id": (record or {}).get("job_id"),
+            "chat_id": (record or {}).get("chat_id"),
+            "session_id": (record or {}).get("session_id"),
+            "user_id": (record or {}).get("user_id"),
+            "active_total": int(active_total),
+            "monotonic_ms": int(time.monotonic() * 1000),
+        }
+        if record:
+            start_snapshot = dict(record.get("spawn_snapshot") or {})
+            payload["lifetime_ms"] = int((time.monotonic() - float(record.get("started_monotonic") or time.monotonic())) * 1000)
+            payload["command_preview"] = record.get("command_preview")
+            payload["start_rss_kb"] = start_snapshot.get("rss_kb")
+            payload["start_vm_hwm_kb"] = start_snapshot.get("vm_hwm_kb")
+            payload["start_vm_peak_kb"] = start_snapshot.get("vm_peak_kb")
+            payload["start_thread_count"] = start_snapshot.get("thread_count")
+            payload["start_process_state"] = start_snapshot.get("process_state")
+            payload["start_process_state_code"] = start_snapshot.get("process_state_code")
+        payload.update(dict(finish_snapshot or {}))
+        payload.update(dict(host_memory_snapshot or {}))
+        with self._spawn_tracker_lock:
             self._observed_descendant_events.append({"event": "descendant_finish", **payload})
 
     def observe_child_process_sample(self, *, pid: int, transport: str | None = None, session_id: str | None = None) -> None:
@@ -714,8 +715,17 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             record = self._active_child_spawns.get(int(pid))
             if not isinstance(record, dict):
                 return
-            snapshot = self._child_process_snapshot(int(pid))
-            host_memory_snapshot = self._host_memory_snapshot()
+            active_total = len(self._active_child_spawns)
+            active_for_job = self._count_active_children_by("job_id", record.get("job_id"))
+            active_for_chat = self._count_active_children_by("chat_id", record.get("chat_id"))
+            active_for_session = self._count_active_children_by("session_id", record.get("session_id"))
+
+        snapshot = self._child_process_snapshot(int(pid))
+        host_memory_snapshot = self._host_memory_snapshot()
+        with self._spawn_tracker_lock:
+            record = self._active_child_spawns.get(int(pid))
+            if not isinstance(record, dict):
+                return
             self._child_spawn_events.append(
                 {
                     "event": "sample",
@@ -729,10 +739,10 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                     "command_preview": record.get("command_preview"),
                     **dict(snapshot or {}),
                     **dict(host_memory_snapshot or {}),
-                    "active_total": len(self._active_child_spawns),
-                    "active_for_job": self._count_active_children_by("job_id", record.get("job_id")),
-                    "active_for_chat": self._count_active_children_by("chat_id", record.get("chat_id")),
-                    "active_for_session": self._count_active_children_by("session_id", record.get("session_id")),
+                    "active_total": int(active_total),
+                    "active_for_job": int(active_for_job),
+                    "active_for_chat": int(active_for_chat),
+                    "active_for_session": int(active_for_session),
                     "monotonic_ms": int(time.monotonic() * 1000),
                 }
             )

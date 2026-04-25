@@ -254,6 +254,42 @@ test('renderToolTraceBody preserves a collapsed tool trace across rerenders even
   assert.equal(message.collapsed, true);
 });
 
+test('renderToolTraceBody lets terminal completed tool collapse override the live open state', () => {
+  const documentObject = {
+    createElement(tagName) {
+      return createToolTraceNode(tagName);
+    },
+  };
+  const windowObject = {
+    scrollY: 0,
+    scrollTo() {},
+    requestAnimationFrame(cb) {
+      cb();
+    },
+  };
+  const container = createToolTraceNode('div');
+
+  const message = { body: 'step 1\nstep 2', pending: true, collapsed: false };
+  renderTraceMessageHelpers.renderToolTraceBody(container, message, {
+    cleanDisplayTextFn: (value) => String(value || ''),
+    documentObject,
+    windowObject,
+  });
+  assert.equal(container.children[0].open, true);
+
+  message.pending = false;
+  message.collapsed = true;
+  renderTraceMessageHelpers.renderToolTraceBody(container, message, {
+    cleanDisplayTextFn: (value) => String(value || ''),
+    documentObject,
+    windowObject,
+  });
+
+  const rerenderedDetails = container.children[container.children.length - 1];
+  assert.equal(rerenderedDetails.open, false);
+  assert.equal(message.collapsed, true);
+});
+
 test('roleLabelForMessage maps role variants and honors operator display name', () => {
   assert.equal(renderTraceMessageHelpers.roleLabelForMessage({ role: 'operator' }, { operatorDisplayName: 'Lemon' }), 'Lemon');
   assert.equal(renderTraceMessageHelpers.roleLabelForMessage({ role: 'assistant' }), 'Hermes');

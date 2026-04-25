@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any, Iterable, Protocol, TYPE_CHECKING
 
 import chat_worker_runner
-from job_runtime_worker_launcher_subprocess import SubprocessStreamLifecycle, SubprocessStreamState
+from job_runtime_worker_launcher_subprocess import (
+    SubprocessStreamLifecycle,
+    SubprocessStreamState,
+    mark_subprocess_setup_failure,
+)
 
 if TYPE_CHECKING:
     from job_runtime import JobRuntime
@@ -377,32 +381,32 @@ class SubprocessJobWorkerLauncher:
             yield self._apply_spawn_blocked_error(spawn_blocked_message)
             return
 
-        command = [self.python_executable, str(self.script_path)]
-        proc, stderr_file = self._spawn_subprocess(command, child_env=self._child_env())
-        deregister_child_spawn = getattr(runtime.client, "deregister_child_spawn", None)
-        register_error = self._register_spawn(runtime, proc=proc, command=command, session_id=session_id)
-        if register_error:
-            self._last_failure_kind = "register_failed"
-            self._last_return_code = None
-            self._last_stderr_excerpt = None
-            self._last_terminal_outcome = "retryable_failure"
-            self._last_terminal_error = register_error
-            try:
-                _signal_process_tree(proc, signal.SIGKILL)
-            except Exception:
-                LOGGER.debug("subprocess_worker_register_failed_kill", exc_info=True)
-            yield {"type": "error", "error": register_error}
-            return
-
         lifecycle = self._subprocess_lifecycle()
         state = SubprocessStreamState()
+        command = [self.python_executable, str(self.script_path)]
+        proc, stderr_file = self._spawn_subprocess(command, child_env=self._child_env())
+        deregister_child_spawn = None
         try:
+            register_error = self._register_spawn(runtime, proc=proc, command=command, session_id=session_id)
+            if register_error:
+                mark_subprocess_setup_failure(
+                    state,
+                    failure_kind="register_failed",
+                    terminal_outcome="retryable_failure",
+                    terminal_error=register_error,
+                )
+                yield {"type": "error", "error": register_error}
+                return
+            deregister_child_spawn = getattr(runtime.client, "deregister_child_spawn", None)
+
             payload_error = self._write_payload(proc, payload)
             if payload_error:
-                state.saw_error_event = True
-                state.failure_kind = "stdin_write_failed"
-                state.terminal_outcome = "retryable_failure"
-                state.terminal_error = payload_error
+                mark_subprocess_setup_failure(
+                    state,
+                    failure_kind="stdin_write_failed",
+                    terminal_outcome="retryable_failure",
+                    terminal_error=payload_error,
+                )
                 yield {"type": "error", "error": payload_error}
                 return
 

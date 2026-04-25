@@ -29,6 +29,22 @@ test('deriveComposerState reflects pending/auth combinations', () => {
   assert.equal(idleState.sendLabel, 'Send');
 });
 
+test('deriveComposerState keeps prompt enabled but send disabled while a chat is still being created', () => {
+  const creatingState = composerStateHelpers.deriveComposerState({
+    activeChatId: -1,
+    pendingChats: new Set(),
+    chats: new Map([[-1, { creating: true }]]),
+    isAuthenticated: true,
+  });
+
+  assert.equal(creatingState.creating, true);
+  assert.equal(creatingState.canPrompt, true);
+  assert.equal(creatingState.canSend, false);
+  assert.equal(creatingState.canRemove, false);
+  assert.equal(creatingState.canPin, false);
+  assert.equal(creatingState.sendLabel, 'Creating…');
+});
+
 test('applyComposerState updates control disabled flags and button labels', () => {
   const sendButton = { disabled: false, textContent: '' };
   const promptEl = { disabled: false };
