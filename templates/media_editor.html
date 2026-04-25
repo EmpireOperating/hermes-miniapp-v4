@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+    <title>Workspace media editor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #0d1117;
+        color: #e6edf3;
+      }
+      .media-editor {
+        display: grid;
+        grid-template-rows: auto auto 1fr auto;
+        min-height: 100vh;
+        gap: 12px;
+        padding: 16px;
+        box-sizing: border-box;
+      }
+      .media-editor__panel {
+        border: 1px solid rgba(230, 237, 243, 0.16);
+        border-radius: 12px;
+        background: rgba(22, 27, 34, 0.96);
+        padding: 12px;
+      }
+      .media-editor__track { margin-top: 8px; }
+      .media-editor__track[data-kind="visual"] { border-left: 4px solid #58a6ff; padding-left: 8px; }
+      .media-editor__track[data-kind="text"] { border-left: 4px solid #d2a8ff; padding-left: 8px; }
+      .media-editor__track[data-kind="audio"] { border-left: 4px solid #3fb950; padding-left: 8px; }
+      .media-editor__clip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 8px 8px 0 0;
+        border: 1px solid rgba(210, 168, 255, 0.5);
+        border-radius: 999px;
+        background: rgba(210, 168, 255, 0.14);
+        color: #e6edf3;
+        padding: 6px 8px;
+        cursor: grab;
+        touch-action: none;
+      }
+      .media-editor__clip-label { pointer-events: none; }
+      .media-editor__trim-handle {
+        display: inline-flex;
+        width: 8px;
+        align-self: stretch;
+        min-height: 16px;
+        border-radius: 999px;
+        background: rgba(230, 237, 243, 0.32);
+        cursor: ew-resize;
+      }
+      .media-editor__trim-handle:hover,
+      .media-editor__clip[data-trimming] .media-editor__trim-handle {
+        background: rgba(88, 166, 255, 0.8);
+      }
+      .media-editor__clip[data-dragging="true"] {
+        cursor: grabbing;
+        border-color: rgba(88, 166, 255, 0.9);
+        background: rgba(88, 166, 255, 0.22);
+      }
+      .media-editor__button {
+        border: 1px solid rgba(88, 166, 255, 0.55);
+        border-radius: 10px;
+        background: rgba(88, 166, 255, 0.16);
+        color: #e6edf3;
+        padding: 8px 12px;
+      }
+      .media-editor__file-input {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .media-editor__preview-stage {
+        display: grid;
+        place-items: center;
+        position: relative;
+        min-height: 220px;
+        margin-top: 12px;
+        border: 1px solid rgba(230, 237, 243, 0.12);
+        border-radius: 16px;
+        background:
+          radial-gradient(circle at 50% 35%, rgba(88, 166, 255, 0.18), transparent 42%),
+          #05070a;
+        overflow: hidden;
+      }
+      .media-editor__preview-video,
+      .media-editor__preview-image {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .media-editor__preview-text {
+        position: relative;
+        z-index: 2;
+        max-width: 80%;
+        text-align: center;
+        font-size: clamp(24px, 6vw, 56px);
+        font-weight: 800;
+        line-height: 1.05;
+        text-shadow: 0 3px 20px rgba(0, 0, 0, 0.75);
+      }
+      .media-editor__transport {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .media-editor__scrubber {
+        flex: 1;
+        min-width: 120px;
+      }
+      .media-editor__input {
+        display: inline-flex;
+        margin: 8px 8px 0 0;
+        border: 1px solid rgba(230, 237, 243, 0.18);
+        border-radius: 8px;
+        background: rgba(13, 17, 23, 0.88);
+        color: #e6edf3;
+        padding: 7px 9px;
+      }
+      .media-editor__suggestion {
+        display: grid;
+        gap: 8px;
+      }
+      .media-editor__suggestion-inspector {
+        display: grid;
+        gap: 6px;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(230, 237, 243, 0.12);
+      }
+      .media-editor__suggestion-operation {
+        border: 1px solid rgba(230, 237, 243, 0.14);
+        border-radius: 10px;
+        background: rgba(13, 17, 23, 0.62);
+        color: #c9d1d9;
+        padding: 8px 10px;
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .media-editor__asset-bin {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        align-items: stretch;
+      }
+      .media-editor__asset-card {
+        display: grid;
+        gap: 6px;
+        width: 104px;
+        border: 1px solid rgba(230, 237, 243, 0.14);
+        border-radius: 12px;
+        background: rgba(13, 17, 23, 0.72);
+        color: #e6edf3;
+        padding: 8px;
+        text-align: left;
+      }
+      .media-editor__asset-thumb {
+        width: 88px;
+        height: 88px;
+        border-radius: 8px;
+        object-fit: cover;
+        background: #05070a;
+      }
+      .media-editor__asset-thumb--video,
+      .media-editor__asset-thumb--audio {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #a5d6ff;
+        font-weight: 700;
+      }
+      .media-editor__asset-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+      .media-editor__export-list {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .media-editor__export-job {
+        border: 1px solid rgba(230, 237, 243, 0.14);
+        border-radius: 10px;
+        background: rgba(13, 17, 23, 0.62);
+        color: #c9d1d9;
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+      .media-editor__export-job--rendering,
+      .media-editor__export-job--queued {
+        border-color: rgba(88, 166, 255, 0.45);
+        color: #a5d6ff;
+      }
+      .media-editor__export-job--failed {
+        border-color: rgba(248, 81, 73, 0.45);
+        color: #ffb4ad;
+      }
+      .media-editor__export-link {
+        display: inline-flex;
+        margin-top: 10px;
+        color: #a5d6ff;
+      }
+      .media-editor__button:disabled {
+        cursor: wait;
+        opacity: 0.64;
+      }
+      .media-editor__muted { color: #8b949e; }
+    </style>
+  </head>
+  <body>
+    <main class="media-editor" data-media-editor-root>
+      <section class="media-editor__panel">
+        <strong>Workspace media editor scaffold</strong>
+        <div class="media-editor__muted">Timeline shell for project-attached editing in the workspace.</div>
+      </section>
+      <section class="media-editor__panel">
+        <h1 id="media-editor-title">Loading project…</h1>
+        <button class="media-editor__button" id="media-editor-add-text" type="button">Add text clip</button>
+        <button class="media-editor__button" id="media-editor-add-image" type="button">Add image clip</button>
+        <button class="media-editor__button" id="media-editor-add-video" type="button">Add video clip</button>
+        <button class="media-editor__button" id="media-editor-add-audio" type="button">Add audio clip</button>
+        <input class="media-editor__file-input" id="media-editor-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="Upload image clip">
+        <input class="media-editor__file-input" id="media-editor-audio-file" type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/ogg" aria-label="Upload audio clip">
+        <input class="media-editor__file-input" id="media-editor-video-file" type="file" accept="video/mp4,video/webm,video/quicktime,video/x-msvideo" aria-label="Upload video clip">
+        <div class="media-editor__preview-stage" id="media-editor-preview-stage" aria-live="polite"></div>
+        <div class="media-editor__transport">
+          <button class="media-editor__button" id="media-editor-play" type="button">Play</button>
+          <input class="media-editor__scrubber" id="media-editor-scrubber" type="range" min="0" max="1" value="0" step="50" aria-label="Timeline playhead">
+          <output class="media-editor__muted" id="media-editor-playhead-time">0.00s / 0.00s</output>
+        </div>
+      </section>
+      <section class="media-editor__panel" id="media-editor-suggestions">No pending Hermes timeline suggestions.</section>
+      <section class="media-editor__panel" id="media-editor-exports">No exports yet.</section>
+      <section class="media-editor__panel">
+        <strong>Asset bin</strong>
+        <div class="media-editor__muted">Click an image, video, or audio asset to place it at the current playhead.</div>
+        <div class="media-editor__asset-bin" id="media-editor-asset-bin">No media assets yet.</div>
+      </section>
+      <section class="media-editor__panel">
+        <div id="media-editor-track-list"></div>
+      </section>
+      <section class="media-editor__panel" id="media-editor-inspector">Select a clip to inspect timing and text.</section>
+      <section class="media-editor__panel media-editor__muted" id="media-editor-empty-state">No clips yet.</section>
+    </main>
+    <script nonce="{{ csp_nonce }}">
+      window.__HERMES_MEDIA_EDITOR_BOOT__ = {{ initial_payload|tojson }};
+      window.__HERMES_MEDIA_EDITOR_INIT_DATA__ = {{ init_data|tojson }};
+      window.__HERMES_MEDIA_EDITOR_CHAT_ID__ = {{ chat_id|tojson }};
+    </script>
+    <script src="/static/visual_dev_bridge.js?v={{ visual_dev_bridge_version }}"></script>
+    <script src="/static/media_editor_app.js?v={{ media_editor_app_version }}"></script>
+  </body>
+</html>

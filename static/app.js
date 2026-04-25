@@ -483,6 +483,7 @@ const visualDevPreviewResizeHandle = document.getElementById("visual-dev-preview
 const visualDevPreviewFrame = document.getElementById("visual-dev-preview-frame");
 const visualDevSettingsOpen = document.getElementById("visual-dev-settings-open");
 const visualDevAttachButton = document.getElementById("visual-dev-attach-button");
+const visualDevMediaEditorButton = document.getElementById("visual-dev-media-editor-button");
 const visualDevRefreshButton = document.getElementById("visual-dev-refresh-button");
 const visualDevInspectButton = document.getElementById("visual-dev-inspect-button");
 const visualDevScreenshotButton = document.getElementById("visual-dev-screenshot-button");
@@ -2625,6 +2626,25 @@ function createShellUiController() {
 
 const shellUiController = createShellUiController();
 
+function buildMediaEditorUrlForChat(chatId, { includeInitData = false } = {}) {
+  const url = new URL('/workspace/media-editor', window.location.origin);
+  url.searchParams.set('chat_id', String(Number(chatId || 0)));
+  if (includeInitData && initData) {
+    url.searchParams.set('init_data', initData);
+  }
+  return url.toString();
+}
+
+function visualDevPreviewUrlForSession(session = {}) {
+  const metadata = session?.metadata && typeof session.metadata === 'object' ? session.metadata : {};
+  const isMediaEditor = String(metadata.workspace_kind || metadata.workspaceKind || '').trim() === 'media_editor';
+  if (!isMediaEditor) {
+    return session?.previewUrl || session?.preview_url || 'about:blank';
+  }
+  const chatId = Number(session?.chat_id || session?.chatId || activeChatId || 0);
+  return buildMediaEditorUrlForChat(chatId, { includeInitData: true });
+}
+
 function createVisualDevFeatureConfig() {
   return {
     ...visualDevConfig,
@@ -2665,6 +2685,8 @@ function createVisualDevControllerRuntimeDeps() {
     chatLabelForId: (chatId) => compactChatLabel(chatId, 36),
     apiGetJson: (url) => apiGetJson(url),
     apiPost,
+    mediaEditorUrlForChat: (chatId) => buildMediaEditorUrlForChat(chatId, { includeInitData: false }),
+    previewUrlForSession: visualDevPreviewUrlForSession,
     onUiError: reportUiError,
     onWorkspaceOpenChange: (open) => {
       workspacePanelOpen = Boolean(open);
@@ -2713,6 +2735,7 @@ function createVisualDevAttachControllerUiDeps() {
     attachHintLabel: visualDevAttachHint,
     settingsOpenButton: visualDevSettingsOpen,
     attachButton: visualDevAttachButton,
+    mediaEditorButton: visualDevMediaEditorButton,
     refreshButton: visualDevRefreshButton,
     inspectButton: visualDevInspectButton,
     screenshotButton: visualDevScreenshotButton,
