@@ -55,7 +55,10 @@ test('app.js wires generic composer attachments through upload, chips, and send 
   );
   assert.ok(
     source.includes('async function prepareComposerAttachmentForUpload(file) {')
-      && source.includes('function shouldCompressComposerImage(file) {')
+      && source.includes('const COMPOSER_IMAGE_TARGET_BYTES = 850 * 1024;')
+      && source.includes('const COMPOSER_IMAGE_COMPRESSION_THRESHOLD_BYTES = COMPOSER_IMAGE_TARGET_BYTES;')
+      && source.includes('for (const step of COMPOSER_IMAGE_COMPRESSION_STEPS)')
+      && source.includes('compressedBlob.size <= COMPOSER_IMAGE_TARGET_BYTES')
       && source.includes('await prepareComposerAttachmentForUpload(file)')
       && source.includes('canvas.toBlob')
       && source.includes('image/jpeg'),

@@ -3578,9 +3578,14 @@ function formatAttachmentSize(sizeBytes) {
   return `${size} B`;
 }
 
-const COMPOSER_IMAGE_COMPRESSION_THRESHOLD_BYTES = 7 * 1024 * 1024;
-const COMPOSER_IMAGE_MAX_DIMENSION = 2048;
-const COMPOSER_IMAGE_JPEG_QUALITY = 0.82;
+const COMPOSER_IMAGE_TARGET_BYTES = 850 * 1024;
+const COMPOSER_IMAGE_COMPRESSION_THRESHOLD_BYTES = COMPOSER_IMAGE_TARGET_BYTES;
+const COMPOSER_IMAGE_COMPRESSION_STEPS = [
+  { maxDimension: 2048, quality: 0.82 },
+  { maxDimension: 1600, quality: 0.72 },
+  { maxDimension: 1280, quality: 0.64 },
+  { maxDimension: 1024, quality: 0.58 },
+];
 
 function shouldCompressComposerImage(file) {
   if (!file || typeof file !== "object") return false;
@@ -3618,9 +3623,9 @@ function loadComposerImageBitmap(file) {
   });
 }
 
-function canvasToComposerJpegBlob(canvas) {
+function canvasToComposerJpegBlob(canvas, quality) {
   return new Promise((resolve) => {
-    canvas.toBlob(resolve, "image/jpeg", COMPOSER_IMAGE_JPEG_QUALITY);
+    canvas.toBlob(resolve, "image/jpeg", quality);
   });
 }
 
@@ -3632,32 +3637,43 @@ async function prepareComposerAttachmentForUpload(file) {
     const sourceWidth = Number(bitmap?.width || 0);
     const sourceHeight = Number(bitmap?.height || 0);
     if (!sourceWidth || !sourceHeight) return file;
-    const scale = Math.min(1, COMPOSER_IMAGE_MAX_DIMENSION / Math.max(sourceWidth, sourceHeight));
-    const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
-    const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
-    const canvas = document.createElement("canvas");
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-    const context = canvas.getContext("2d");
-    if (!context) return file;
-    context.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
-    const compressedBlob = await canvasToComposerJpegBlob(canvas);
+    let bestBlob = null;
+    for (const step of COMPOSER_IMAGE_COMPRESSION_STEPS) {
+      const maxDimension = Number(step?.maxDimension || 0) || 1024;
+      const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+      const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
+      const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const context = canvas.getContext("2d");
+      if (!context) return file;
+      context.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
+      const compressedBlob = await canvasToComposerJpegBlob(canvas, Number(step?.quality || 0.7));
+      if (compressedBlob && compressedBlob.size && (!bestBlob || compressedBlob.size < bestBlob.size)) {
+        bestBlob = compressedBlob;
+      }
+      if (compressedBlob && compressedBlob.size && compressedBlob.size <= COMPOSER_IMAGE_TARGET_BYTES) {
+        bestBlob = compressedBlob;
+        break;
+      }
+    }
     if (typeof bitmap.close === "function") {
       bitmap.close();
     }
-    if (!compressedBlob || !compressedBlob.size || compressedBlob.size >= Number(file.size || 0)) {
+    if (!bestBlob || !bestBlob.size || bestBlob.size >= Number(file.size || 0)) {
       return file;
     }
     const filename = composerCompressedImageFilename(file.name);
     if (typeof File === "function") {
-      return new File([compressedBlob], filename, {
+      return new File([bestBlob], filename, {
         type: "image/jpeg",
         lastModified: Number(file.lastModified || Date.now()),
       });
     }
-    compressedBlob.name = filename;
-    compressedBlob.lastModified = Number(file.lastModified || Date.now());
-    return compressedBlob;
+    bestBlob.name = filename;
+    bestBlob.lastModified = Number(file.lastModified || Date.now());
+    return bestBlob;
   } catch {
     return file;
   }
