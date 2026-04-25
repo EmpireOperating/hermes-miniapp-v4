@@ -86,7 +86,7 @@
     <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body data-skin="{{ boot_skin }}" data-tab-actions-menu="{{ 'true' if tab_actions_menu_enabled else 'false' }}">
-    <div class="shell">
+    <div id="app-shell" class="shell">
       <header class="masthead panel">
         <div class="app-window-controls app-window-controls--top-right" aria-label="Window controls">
           <button type="button" id="fullscreen-app-top" class="terminal-control" title="Toggle fullscreen">⛶</button>
@@ -112,7 +112,7 @@
         </div>
       </header>
 
-      <main class="workspace">
+      <main id="app-workspace" class="workspace" data-workspace-open="false">
         <aside class="sidebar panel">
           <div class="panel__header">Chats</div>
           <div class="kv"><span>Operator</span><strong id="operator-name">Unknown</strong></div>
@@ -142,16 +142,22 @@
             </div>
           </div>
 
+          <div class="sidebar__chat-overview-wrap">
+            <div id="chat-tabs-overview" class="chat-tabs__overview" role="toolbar" aria-label="Chat overview" hidden></div>
+          </div>
+
         </aside>
 
-        <section class="panel terminal-panel">
+        <section id="chat-terminal-panel" class="panel terminal-panel">
           <div class="panel__header panel__header--terminal">
             <span id="panel-title">Conversation</span>
-            <span class="panel__hint" id="panel-hint"></span>
+            <div class="panel__header-actions">
+              <span class="panel__hint" id="panel-hint"></span>
+              <button type="button" id="visual-dev-workspace-toggle" class="action-button action-button--subtle" hidden>Workspace</button>
+            </div>
           </div>
 
           <div class="tabs-wrap">
-            <div id="chat-tabs-overview" class="chat-tabs__overview" role="toolbar" aria-label="Chat overview" hidden></div>
             <div id="chat-tabs-hidden-left" class="chat-tabs__edge-unread chat-tabs__edge-unread--left" aria-hidden="true" hidden></div>
             <div id="chat-tabs-hidden-right" class="chat-tabs__edge-unread chat-tabs__edge-unread--right" aria-hidden="true" hidden></div>
             <div id="chat-tabs" class="chat-tabs" role="tablist" aria-label="Chat tabs"></div>
@@ -181,7 +187,9 @@
 
           <form id="chat-form" class="composer">
             <label class="composer__label" for="prompt">Message</label>
+            <div id="composer-attachments" class="composer-attachments" hidden></div>
             <textarea id="prompt" name="prompt" rows="4" placeholder="Type a message…" maxlength="{{ max_message_len }}" enterkeyhint="send" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea>
+            <input id="attachment-input" name="attachment" type="file" hidden>
             <div class="composer__context-row" id="visual-dev-attached-context-row">
               <span id="visual-dev-attached-selection-chip" class="activity-chip activity-chip--context" hidden>Next send UI: none</span>
               <button type="button" id="visual-dev-attached-selection-clear" class="activity-chip activity-chip--context activity-chip--clear" hidden>Clear UI</button>
@@ -194,14 +202,19 @@
             </div>
             <div class="composer__actions">
               <div class="composer__hint">Enter to send • Shift+Enter for new line</div>
-              <button id="send-button" type="submit">Send</button>
+              <div class="composer__action-buttons">
+                <button id="attachment-button" type="button" class="action-button action-button--subtle">Attach</button>
+                <button id="send-button" type="submit">Send</button>
+              </div>
             </div>
           </form>
         </section>
 
+        <button type="button" id="visual-dev-sidebar-resize-handle" class="workspace__sidebar-resize-handle" aria-label="Resize workspace sidebar"></button>
+
         <section id="visual-dev-workspace" class="panel visual-dev-workspace" data-visual-dev-enabled="false" hidden>
           <div class="panel__header panel__header--terminal visual-dev-workspace__header">
-            <span>Visual dev preview</span>
+            <span>Workspace preview</span>
             <div class="visual-dev-workspace__actions">
               <button type="button" id="visual-dev-attach-button" class="action-button action-button--subtle">Attach</button>
               <button type="button" id="visual-dev-refresh-button" class="action-button action-button--subtle">Refresh</button>
@@ -218,8 +231,9 @@
             <span id="visual-dev-selection-chip" class="activity-chip">Selected: none</span>
             <span id="visual-dev-screenshot-chip" class="activity-chip">Screenshot: none</span>
           </div>
-          <div class="visual-dev-workspace__preview-wrap">
+          <div id="visual-dev-preview-wrap" class="visual-dev-workspace__preview-wrap">
             <iframe id="visual-dev-preview-frame" class="visual-dev-workspace__preview" title="Visual dev preview" src="about:blank" loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+            <button type="button" id="visual-dev-preview-resize-handle" class="visual-dev-workspace__preview-resize-handle" aria-label="Resize workspace preview"></button>
           </div>
           <div id="visual-dev-console-drawer" class="visual-dev-workspace__drawer" data-open="false" hidden>
             <div id="visual-dev-runtime-summary" class="visual-dev-workspace__runtime-summary">Runtime: idle</div>
@@ -330,6 +344,8 @@
         <p class="modal__hint">Attach a trusted preview URL to the active chat. This enables split-view dev mode on the isolated instance.</p>
         <p class="modal__hint" id="visual-dev-current-chat-label">No chat selected</p>
         <p class="modal__hint" id="visual-dev-current-session-label">No preview attached</p>
+        <p class="modal__hint" id="visual-dev-attach-hint">Trusted preview origins are not configured on this instance yet.</p>
+        <p class="modal__hint modal__error" id="visual-dev-attach-error" hidden></p>
         <label for="visual-dev-preview-url" class="modal__label">Preview URL</label>
         <input id="visual-dev-preview-url" class="modal__input" type="url" inputmode="url" autocomplete="off" placeholder="https://preview.example.com/app" required>
         <label for="visual-dev-preview-title" class="modal__label">Preview title</label>

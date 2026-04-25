@@ -84,6 +84,7 @@ if callable(_previous_runtime_atexit):
         pass
 
 CONFIG = MiniAppConfig.from_env()
+MINI_APP_PUBLIC_ORIGIN = normalize_origin(os.environ.get("MINI_APP_URL"))
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 PORT = CONFIG.port
 DEBUG = CONFIG.debug
@@ -509,16 +510,28 @@ def enforce_request_guards() -> Response | None:
         now_ms_fn=now_ms,
         auth_cookie_name=AUTH_COOKIE_NAME,
         verify_auth_session_token_fn=_verify_auth_session_token,
-        relaxed_paths={"/api/telemetry/boot"},
+        relaxed_paths={"/api/telemetry/boot", "/api/chats/upload"},
     )
 
 
 @app.after_request
 def add_security_headers(response: Response) -> Response:
+    request_origin = normalize_origin(request.host_url)
+    if (
+        VISUAL_DEV_ENABLED
+        and MINI_APP_PUBLIC_ORIGIN
+        and request_origin not in CONFIG.visual_dev_allowed_preview_origins
+        and MINI_APP_PUBLIC_ORIGIN in CONFIG.visual_dev_allowed_preview_origins
+    ):
+        request_origin = MINI_APP_PUBLIC_ORIGIN
     response = apply_security_headers(
         response,
         csp_nonce=str(getattr(g, "csp_nonce", "") or ""),
         enable_hsts=ENABLE_HSTS,
+        request_origin=request_origin,
+        visual_dev_enabled=VISUAL_DEV_ENABLED,
+        visual_dev_allowed_preview_origins=CONFIG.visual_dev_allowed_preview_origins,
+        visual_dev_allowed_parent_origins=CONFIG.visual_dev_bridge_allowed_parents,
     )
 
     request_started_ms = float(getattr(g, "request_started_ms", now_ms()))

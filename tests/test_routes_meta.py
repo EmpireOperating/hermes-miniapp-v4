@@ -200,6 +200,49 @@ def test_app_csp_script_src_keeps_telegram_origin_and_nonce(monkeypatch, tmp_pat
     assert "script-src" in csp
     assert "https://telegram.org" in csp
     assert "'nonce-" in csp
+    assert "frame-ancestors https://web.telegram.org https://*.telegram.org;" in csp
+
+
+def test_app_csp_keeps_default_frame_ancestors_when_visual_dev_host_not_matched(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_ENABLED", "1")
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_ALLOWED_PREVIEW_ORIGINS", "https://miniapp-test.cronpulse.app")
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_BRIDGE_ALLOWED_PARENTS", "https://app.cronpulse.app")
+    _, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/app", base_url="https://app.cronpulse.app")
+
+    assert response.status_code == 200
+    csp = response.headers.get("Content-Security-Policy", "")
+    assert "frame-ancestors https://web.telegram.org https://*.telegram.org;" in csp
+    assert "frame-ancestors https://web.telegram.org https://*.telegram.org https://app.cronpulse.app;" not in csp
+
+
+def test_app_csp_allows_visual_dev_parent_for_allowed_preview_origin(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_ENABLED", "1")
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_ALLOWED_PREVIEW_ORIGINS", "https://miniapp-test.cronpulse.app")
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_BRIDGE_ALLOWED_PARENTS", "https://app.cronpulse.app")
+    _, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/app", base_url="https://miniapp-test.cronpulse.app")
+
+    assert response.status_code == 200
+    csp = response.headers.get("Content-Security-Policy", "")
+    assert "frame-ancestors https://web.telegram.org https://*.telegram.org https://app.cronpulse.app;" in csp
+
+
+def test_app_csp_allows_visual_dev_parent_when_public_origin_matches_preview(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_URL", "https://miniapp-test.cronpulse.app/app")
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_ENABLED", "1")
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_ALLOWED_PREVIEW_ORIGINS", "https://miniapp-test.cronpulse.app")
+    monkeypatch.setenv("MINI_APP_VISUAL_DEV_BRIDGE_ALLOWED_PARENTS", "https://app.cronpulse.app")
+    _, client = _client(monkeypatch, tmp_path)
+
+    response = client.get("/app", base_url="http://127.0.0.1:8790")
+
+    assert response.status_code == 200
+    csp = response.headers.get("Content-Security-Policy", "")
+    assert "frame-ancestors https://web.telegram.org https://*.telegram.org https://app.cronpulse.app;" in csp
+
 
 def test_app_template_uses_server_message_length_limit(monkeypatch, tmp_path) -> None:
     _, client = _client(monkeypatch, tmp_path, max_message_len=123)

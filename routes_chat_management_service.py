@@ -15,6 +15,7 @@ from file_preview_eligibility import (
     previewable_file_refs,
     resolve_preview_path,
 )
+from miniapp_attachments import normalize_attachment_list
 
 
 class ChatManagementService:
@@ -37,6 +38,7 @@ class ChatManagementService:
 
     def serialize_turn(self, turn: Any) -> dict[str, object]:
         payload = asdict(turn)
+        payload["attachments"] = normalize_attachment_list(payload.get("attachments") or [])
         allowed_roots = self._file_preview_allowed_roots()
         preferred_roots = self._file_preview_context_roots(allowed_roots)
         refs = previewable_file_refs(

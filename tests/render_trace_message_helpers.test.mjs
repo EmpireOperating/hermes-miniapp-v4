@@ -213,6 +213,45 @@ test('renderToolTraceBody keeps following the bottom across rerenders when alrea
   assert.equal(rerenderedList.scrollTop, 400);
 });
 
+test('shouldSkipMessageRender keeps attachment-only non-tool messages visible', () => {
+  assert.equal(
+    renderTraceMessageHelpers.shouldSkipMessageRender({
+      role: 'assistant',
+      renderedBody: '',
+      pending: false,
+      attachments: [{ id: 'att_1' }],
+    }),
+    false,
+  );
+});
+
+test('renderMessageContent passes attachments through to body rendering', () => {
+  const bodyNode = createToolTraceNode('div');
+  const node = {
+    querySelector(selector) {
+      return selector === '.message__body' ? bodyNode : null;
+    },
+  };
+  const calls = [];
+  renderTraceMessageHelpers.renderMessageContent(node, {
+    role: 'assistant',
+    body: '',
+    attachments: [{ id: 'att_1', filename: 'screen.png' }],
+  }, '', {
+    renderToolTraceBodyFn() {
+      throw new Error('tool trace renderer should not be called');
+    },
+    renderBodyFn(container, renderedBody, options) {
+      calls.push({ container, renderedBody, options });
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].container, bodyNode);
+  assert.equal(calls[0].renderedBody, '');
+  assert.deepEqual(calls[0].options.attachments, [{ id: 'att_1', filename: 'screen.png' }]);
+});
+
 test('renderToolTraceBody preserves a collapsed tool trace across rerenders even if incoming state resets open', () => {
   const documentObject = {
     createElement(tagName) {
@@ -324,7 +363,7 @@ test('renderMessageContent dispatches tool vs regular body renderers', () => {
 
   assert.deepEqual(calls, [
     ['tool', bodyNode, 'tool'],
-    ['body', bodyNode, 'hello', { fileRefs: [{ ref_id: 'fr_1' }] }],
+    ['body', bodyNode, 'hello', { fileRefs: [{ ref_id: 'fr_1' }], attachments: [] }],
   ]);
 });
 

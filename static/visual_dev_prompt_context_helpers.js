@@ -25,8 +25,44 @@
     ]);
   }
 
+  function screenshotBasename(screenshot = {}) {
+    const path = normalizeText(screenshot?.storage_path || screenshot?.artifact_path || screenshot?.artifactPath || '');
+    return path ? path.split(/[\\/]/).filter(Boolean).pop() || '' : '';
+  }
+
+  function compactScreenshotBasename(basename = '') {
+    const normalized = normalizeText(basename);
+    const match = normalized.match(/^screenshot-\d+-([a-f0-9]{6,12})\.(png|jpe?g|webp)$/i);
+    if (match) {
+      return `screenshot ${match[1]}`;
+    }
+    if (normalized.length > 28) {
+      return `${normalized.slice(0, 12)}…${normalized.slice(-10)}`;
+    }
+    return normalized;
+  }
+
+  function screenshotLabel(screenshot = {}) {
+    const metadataLabel = normalizeText(screenshot?.label || screenshot?.metadata?.label || '');
+    const basename = screenshotBasename(screenshot);
+    if (metadataLabel && basename) {
+      return metadataLabel.includes(basename) ? metadataLabel : `${metadataLabel} • ${basename}`;
+    }
+    return metadataLabel || basename || normalizeText(screenshot?.storage_path || screenshot?.artifact_path || screenshot?.artifactPath || '');
+  }
+
+  function screenshotChipLabel(screenshot = {}) {
+    const metadataLabel = normalizeText(screenshot?.label || screenshot?.metadata?.label || '');
+    const basename = screenshotBasename(screenshot);
+    const compactName = compactScreenshotBasename(basename);
+    if (metadataLabel && compactName) {
+      return `${metadataLabel} • ${compactName}`;
+    }
+    return metadataLabel || compactName || '';
+  }
+
   function buildScreenshotSnippet(screenshot = {}) {
-    const label = normalizeText(screenshot?.label || screenshot?.storage_path || screenshot?.artifact_path || screenshot?.artifactPath || 'latest screenshot');
+    const label = screenshotLabel(screenshot) || 'latest screenshot';
     const path = normalizeText(screenshot?.storage_path || screenshot?.artifact_path || screenshot?.artifactPath || '');
     return joinSnippetLines([
       '[Visual screenshot context]',
@@ -138,17 +174,17 @@
 
     function renderAttachedRequestContext() {
       const selectionLabel = normalizeText(attachedSelection?.label || attachedSelection?.selector || attachedSelection?.tagName || '');
-      const screenshotLabel = normalizeText(attachedScreenshot?.label || attachedScreenshot?.storage_path || attachedScreenshot?.artifact_path || attachedScreenshot?.artifactPath || '');
+      const screenshotLabelText = screenshotChipLabel(attachedScreenshot);
       const nextPreviewLabel = previewLabel(attachedPreview);
       const nextConsoleLabel = consoleLabel(attachedConsole);
       setText(attachedSelectionChip, `Next send UI: ${selectionLabel || 'none'}`);
-      setText(attachedScreenshotChip, `Next send screenshot: ${screenshotLabel || 'none'}`);
+      setText(attachedScreenshotChip, `Next send screenshot: ${screenshotLabelText || 'none'}`);
       setText(attachedPreviewChip, `Next send preview: ${nextPreviewLabel || 'none'}`);
       setText(attachedConsoleChip, `Next send console: ${nextConsoleLabel || 'none'}`);
       setHidden(attachedSelectionChip, !selectionLabel);
       setHidden(attachedSelectionClearButton, !selectionLabel);
-      setHidden(attachedScreenshotChip, !screenshotLabel);
-      setHidden(attachedScreenshotClearButton, !screenshotLabel);
+      setHidden(attachedScreenshotChip, !screenshotLabelText);
+      setHidden(attachedScreenshotClearButton, !screenshotLabelText);
       setHidden(attachedPreviewChip, !nextPreviewLabel);
       setHidden(attachedPreviewClearButton, !nextPreviewLabel);
       setHidden(attachedConsoleChip, !nextConsoleLabel);

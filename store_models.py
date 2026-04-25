@@ -41,3 +41,4 @@ class ChatTurn:
     body: str
     created_at: str
     file_refs: list[dict[str, Any]] = field(default_factory=list)
+    attachments: list[dict[str, Any]] = field(default_factory=list)

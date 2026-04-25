@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from file_preview_eligibility import file_preview_allowed_roots, file_preview_context_roots, previewable_file_refs
+from miniapp_attachments import normalize_attachment_list
 
 
 _AUTH_PRUNE_INTERVAL_SECONDS = 300
@@ -30,6 +31,7 @@ class AuthBootstrapService:
 
     def serialize_turn(self, turn: Any) -> dict[str, object]:
         payload = asdict(turn)
+        payload["attachments"] = normalize_attachment_list(payload.get("attachments") or [])
         allowed_roots = file_preview_allowed_roots()
         preferred_roots = file_preview_context_roots(allowed_roots)
         refs = previewable_file_refs(

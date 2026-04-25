@@ -13,6 +13,7 @@ import uuid
 import queue
 from pathlib import Path
 from typing import Any, Callable
+import os
 
 from hermes_client import HermesClient
 
@@ -192,6 +193,8 @@ def _warm_attach_runtime_supported(*, platform_name: str | None = None) -> bool:
 
 
 def _warm_attach_enabled(client: HermesClient) -> bool:
+    if str(os.environ.get("MINI_APP_SUBPROCESS_WARM_ATTACH", "0") or "0").strip().lower() not in {"1", "true", "yes", "on"}:
+        return False
     if not _warm_attach_runtime_supported():
         return False
     contract_fn = getattr(client, "warm_session_contract", None)

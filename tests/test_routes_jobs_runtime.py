@@ -85,6 +85,12 @@ def test_jobs_cleanup_endpoint_dead_letters_stale_jobs(monkeypatch, tmp_path) ->
     state = server.store.get_job_state(job_id)
     assert state is not None
     assert state["status"] == "dead"
+    assert state["child_pid"] == 424242
+    assert state["terminal_return_code"] == -9
+    assert state["terminal_failure_kind"] == "failed"
+    assert state["terminal_outcome"] == "retryable_failure"
+    assert state["limit_breach"] == "memory"
+    assert state["limit_breach_detail"] == "signal_kill_suspected_oom"
 
 def test_jobs_status_endpoint_rejects_non_integer_limit(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
@@ -1192,6 +1198,39 @@ def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_pa
     def force_retry_exhausted(job: dict[str, object]) -> None:
         raise JobRetryableError("boom")
 
+    class _SyntheticLauncher:
+        def describe(self) -> dict[str, object]:
+            return {
+                "name": "subprocess",
+                "transport": "chat-worker-subprocess",
+                "last_child_pid": 424242,
+                "last_return_code": -9,
+                "last_failure_kind": "failed",
+                "last_terminal_outcome": "retryable_failure",
+                "last_terminal_error": "boom",
+                "last_limit_breach": "memory",
+                "last_limit_breach_detail": "signal_kill_suspected_oom",
+            }
+
+    runtime.worker_launcher = _SyntheticLauncher()
+    monkeypatch.setattr(
+        runtime.client,
+        "child_spawn_diagnostics",
+        lambda: {
+            "recent_events": [
+                {
+                    "event": "finish",
+                    "job_id": job_id,
+                    "chat_id": chat_id,
+                    "pid": 111111,
+                    "transport": "chat-worker-subprocess",
+                    "outcome": "chat-worker-subprocess:failed:failed",
+                    "return_code": -9,
+                    "monotonic_ms": 123456,
+                }
+            ]
+        },
+    )
     monkeypatch.setattr(runtime, "run_chat_job", force_retry_exhausted)
     monkeypatch.setattr(runtime, "_fd_metrics", lambda: (77, 4096))
 
@@ -1220,10 +1259,10 @@ def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_pa
     assert incident["generated_at"] >= 1
     assert incident["workers"]["configured"] >= 1
     assert incident["workers"]["alive"] >= 0
-    assert runtime["isolation_boundary"]["active"] is False
-    assert incident["workers"]["isolation_boundary_active"] is False
+    assert runtime["isolation_boundary"]["active"] is True
+    assert incident["workers"]["isolation_boundary_active"] is True
     assert incident["workers"]["isolation_boundary_enforced"] is False
-    assert incident["workers"]["isolation_boundary"]["reason"] == "in_process_launcher"
+    assert incident["workers"]["isolation_boundary"]["reason"] == "process_boundary_missing_limits"
     terminal_events = incident["terminal_events"]
     assert terminal_events["terminal_counts"]["done"] >= 0
     assert terminal_events["terminal_counts"]["error"] >= 1
@@ -1245,3 +1284,11 @@ def test_runtime_status_endpoint_exposes_runtime_diagnostics(monkeypatch, tmp_pa
     state = server.store.get_job_state(job_id)
     assert state is not None
     assert state["status"] == "dead"
+    assert state["child_pid"] == 111111
+    assert state["child_transport"] == "chat-worker-subprocess"
+    assert state["terminal_return_code"] == -9
+    assert state["terminal_failure_kind"] == "failed"
+    assert state["terminal_outcome"] == "retryable_failure"
+    assert state["terminal_error"] == "boom"
+    assert state["limit_breach"] == "memory"
+    assert state["limit_breach_detail"] == "signal_kill_suspected_oom"

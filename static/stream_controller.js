@@ -1620,6 +1620,8 @@
       authStatusEl,
       authPayload,
       fetchImpl = (...args) => fetch(...args),
+      formDataFactory = () => new FormData(),
+      blobFactory = (parts, options = {}) => new Blob(parts, options),
       triggerIncomingMessageHaptic,
       getVisualDevRequestContext = () => null,
       clearVisualDevRequestContext = () => {},
@@ -1629,30 +1631,145 @@
       consumeStreamWithReconnect,
     } = transcriptController;
 
+    function _normalizeScreenshotContentType(screenshot = {}) {
+      return String(screenshot?.content_type || screenshot?.contentType || '').trim().toLowerCase();
+    }
+
+    function _screenshotBytesBase64(screenshot = {}) {
+      return String(screenshot?.bytes_b64 || screenshot?.bytesB64 || '').trim();
+    }
+
+    function _screenshotFilename(screenshot = {}) {
+      const contentType = _normalizeScreenshotContentType(screenshot);
+      if (contentType === 'image/jpeg') return 'visual-dev-screenshot.jpg';
+      if (contentType === 'image/webp') return 'visual-dev-screenshot.webp';
+      if (contentType === 'image/gif') return 'visual-dev-screenshot.gif';
+      return 'visual-dev-screenshot.png';
+    }
+
+    function _decodeBase64Bytes(base64Text) {
+      const normalized = String(base64Text || '').trim();
+      if (!normalized) return new Uint8Array();
+      if (typeof Buffer !== 'undefined') {
+        return Uint8Array.from(Buffer.from(normalized, 'base64'));
+      }
+      const binary = atob(normalized);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    }
+
+    function _screenshotCachedAttachmentId(screenshot = {}) {
+      return String(
+        screenshot?.uploaded_attachment_id
+        || screenshot?.uploadedAttachmentId
+        || screenshot?.attachment_id
+        || screenshot?.attachmentId
+        || ''
+      ).trim();
+    }
+
+    function _setScreenshotCachedAttachmentId(screenshot, attachmentId) {
+      if (!screenshot || typeof screenshot !== 'object') return;
+      const normalizedAttachmentId = String(attachmentId || '').trim();
+      if (!normalizedAttachmentId) return;
+      screenshot.uploaded_attachment_id = normalizedAttachmentId;
+    }
+
+    function _sanitizeScreenshotContext(screenshot = null) {
+      if (!screenshot || typeof screenshot !== 'object') return null;
+      const sanitized = { ...screenshot };
+      delete sanitized.bytes_b64;
+      delete sanitized.bytesB64;
+      delete sanitized.uploaded_attachment_id;
+      delete sanitized.uploadedAttachmentId;
+      return sanitized;
+    }
+
+    async function _uploadVisualDevScreenshotAttachment({ chatId, screenshot, signal }) {
+      const cachedAttachmentId = _screenshotCachedAttachmentId(screenshot);
+      if (cachedAttachmentId) {
+        return cachedAttachmentId;
+      }
+      const bytesB64 = _screenshotBytesBase64(screenshot);
+      if (!bytesB64) return null;
+      const contentType = _normalizeScreenshotContentType(screenshot) || 'image/png';
+      const fileBytes = _decodeBase64Bytes(bytesB64);
+      const fileBlob = blobFactory([fileBytes], { type: contentType });
+      const formData = formDataFactory();
+      const payload = authPayload({ chat_id: chatId });
+      Object.entries(payload || {}).forEach(([key, value]) => {
+        if (key === 'file' || value == null) return;
+        formData.append(key, String(value));
+      });
+      formData.append('file', fileBlob, _screenshotFilename(screenshot));
+      const response = await fetchImpl('/api/chats/upload', {
+        method: 'POST',
+        body: formData,
+        signal,
+      });
+      let responsePayload = {};
+      if (typeof response?.json === 'function') {
+        responsePayload = await response.json();
+      } else if (typeof response?.text === 'function') {
+        const text = await response.text();
+        responsePayload = text ? JSON.parse(text) : {};
+      }
+      if (!response?.ok) {
+        const uploadError = String(responsePayload?.error || 'Visual screenshot upload failed.').trim() || 'Visual screenshot upload failed.';
+        throw new Error(uploadError);
+      }
+      const attachmentId = String(responsePayload?.attachment?.id || '').trim();
+      if (!attachmentId) {
+        throw new Error('Visual screenshot upload returned no attachment id.');
+      }
+      _setScreenshotCachedAttachmentId(screenshot, attachmentId);
+      return attachmentId;
+    }
+
     async function executeSendStreamRequest({
       chatId,
       cleaned,
+      attachmentIds = [],
       interruptRequested,
       streamController,
       builtReplyRef,
     }) {
       let wasAborted = false;
       let shouldResumeAfterFinally = false;
+      let sent = false;
       try {
         const resumePendingChatStream = getResumePendingChatStream();
         const visualContext = getVisualDevRequestContext?.();
+        const screenshotAttachmentIds = [];
+        const screenshotAttachmentId = await _uploadVisualDevScreenshotAttachment({
+          chatId,
+          screenshot: visualContext?.screenshot,
+          signal: streamController.signal,
+        });
+        if (screenshotAttachmentId) {
+          screenshotAttachmentIds.push(screenshotAttachmentId);
+        }
         const requestPayload = {
           chat_id: chatId,
           message: cleaned,
           interrupt: interruptRequested,
         };
+        if (attachmentIds.length) {
+          requestPayload.attachment_ids = attachmentIds.slice();
+        }
+        if (screenshotAttachmentIds.length) {
+          requestPayload.attachment_ids = [...(requestPayload.attachment_ids || []), ...screenshotAttachmentIds];
+        }
         if ((visualContext?.selection && typeof visualContext.selection === "object")
           || (visualContext?.screenshot && typeof visualContext.screenshot === "object")
           || (visualContext?.preview && typeof visualContext.preview === "object")
           || (visualContext?.console && typeof visualContext.console === "object")) {
           requestPayload.visual_context = {
             selection: visualContext?.selection || null,
-            screenshot: visualContext?.screenshot || null,
+            screenshot: _sanitizeScreenshotContext(visualContext?.screenshot),
             preview: visualContext?.preview || null,
             console: visualContext?.console || null,
           };
@@ -1677,7 +1794,7 @@
           });
           if (alreadyWorking) {
             await resumePendingChatStream(chatId, { force: true });
-            return { wasAborted, shouldResumeAfterFinally };
+            return { wasAborted, shouldResumeAfterFinally, sent };
           }
 
           setStreamPhase(chatId, STREAM_PHASES.ERROR);
@@ -1692,8 +1809,9 @@
           }
           syncActiveMessageView(chatId, { preserveViewport: true });
           deps.markStreamError?.(chatId);
-          return { wasAborted, shouldResumeAfterFinally };
+          return { wasAborted, shouldResumeAfterFinally, sent };
         }
+        sent = true;
 
         const resumed = await consumeStreamWithReconnect(chatId, response, builtReplyRef, {
           fallbackTraceEvent: "stream-fallback-patch",
@@ -1709,16 +1827,16 @@
           },
         });
         if (resumed) {
-          return { wasAborted, shouldResumeAfterFinally };
+          return { wasAborted, shouldResumeAfterFinally, sent };
         }
       } catch (error) {
         if (error?.name === "AbortError") {
           wasAborted = true;
-          return { wasAborted, shouldResumeAfterFinally };
+          return { wasAborted, shouldResumeAfterFinally, sent };
         }
 
         if (shouldResumeAfterFinally) {
-          return { wasAborted, shouldResumeAfterFinally };
+          return { wasAborted, shouldResumeAfterFinally, sent };
         }
 
         const transientNetworkFailure = deps.isTransientResumeRecoveryError?.(error);
@@ -1732,11 +1850,11 @@
               effect: describeResumeCompletionAttentionEffect({ chatId }),
               triggerIncomingMessageHaptic,
             });
-            return { wasAborted, shouldResumeAfterFinally };
+            return { wasAborted, shouldResumeAfterFinally, sent };
           }
           wasAborted = true;
           shouldResumeAfterFinally = true;
-          return { wasAborted, shouldResumeAfterFinally };
+          return { wasAborted, shouldResumeAfterFinally, sent };
         }
 
         setStreamPhase(chatId, STREAM_PHASES.ERROR);
@@ -1747,7 +1865,7 @@
         deps.markNetworkFailure?.(chatId);
       }
 
-      return { wasAborted, shouldResumeAfterFinally };
+      return { wasAborted, shouldResumeAfterFinally, sent };
     }
 
     return {
@@ -1813,14 +1931,28 @@
     } = finalizeController;
     const requestController = createStreamSendRequestController(deps, transcriptController, getResumePendingChatStream);
 
-    async function sendPrompt(message) {
+    async function sendPrompt(message, options = {}) {
       if (!getIsAuthenticated?.() || !getActiveChatId?.()) {
         appendSystemMessage("Still signing you in. Try again in a moment.");
-        return;
+        return false;
       }
 
       const cleaned = String(message || "").trim();
-      if (!cleaned) return;
+      const rawAttachments = Array.isArray(options?.attachments) ? options.attachments : [];
+      const attachments = rawAttachments
+        .filter((attachment) => attachment && typeof attachment === "object")
+        .map((attachment) => ({
+          ...attachment,
+          id: String(attachment.id || "").trim(),
+          filename: String(attachment.filename || "").trim(),
+        }))
+        .filter((attachment) => attachment.id && attachment.filename);
+      const attachmentIds = attachments.map((attachment) => attachment.id);
+      if (!cleaned && attachmentIds.length) {
+        appendSystemMessage("Add a short message to describe the attachment before sending.");
+        return false;
+      }
+      if (!cleaned && !attachmentIds.length) return false;
 
       const chatId = Number(getActiveChatId());
       if (isReconnectResumeBlocked?.(chatId)) {
@@ -1842,7 +1974,12 @@
       updateComposerState();
 
       dropPendingToolTraceMessages?.(chatId);
-      addLocalMessage?.(chatId, { role: "operator", body: cleaned, created_at: new Date().toISOString() });
+      addLocalMessage?.(chatId, {
+        role: "operator",
+        body: cleaned,
+        attachments,
+        created_at: new Date().toISOString(),
+      });
       if (chatId === Number(getActiveChatId())) {
         if (promptEl) {
           promptEl.value = "";
@@ -1865,11 +2002,13 @@
       let sendState = {
         wasAborted: false,
         shouldResumeAfterFinally: false,
+        sent: false,
       };
       try {
         sendState = await requestController.executeSendStreamRequest({
           chatId,
           cleaned,
+          attachmentIds,
           interruptRequested,
           streamController,
           builtReplyRef,
@@ -1882,6 +2021,7 @@
           }, 0);
         }
       }
+      return Boolean(sendState.sent);
     }
 
     return {

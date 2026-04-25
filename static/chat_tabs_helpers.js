@@ -253,6 +253,8 @@
     chatUiHelpers,
     mobileTabCarouselEnabled,
     getIsMobileCarouselViewport,
+    getForceOverviewRail = () => false,
+    getForceMobileCarousel = () => false,
     tabOverviewEl,
     documentObject,
     getActiveChatId,
@@ -271,7 +273,14 @@
     tabNodes,
   }) {
     function isMobileTabCarouselActive() {
-      return Boolean(mobileTabCarouselEnabled && getIsMobileCarouselViewport?.());
+      return Boolean(
+        (mobileTabCarouselEnabled && getIsMobileCarouselViewport?.())
+        || getForceMobileCarousel?.()
+      );
+    }
+
+    function isOverviewRailActive() {
+      return Boolean(isMobileTabCarouselActive() || getForceOverviewRail?.());
     }
 
     function hiddenUnreadSummaryText(count) {
@@ -386,7 +395,7 @@
 
     function renderMobileTabOverview() {
       if (!tabOverviewEl) return;
-      const enabled = isMobileTabCarouselActive();
+      const enabled = isOverviewRailActive();
       const orderedChats = getOrderedChats();
       tabOverviewEl.hidden = !enabled || orderedChats.length === 0;
       if (tabOverviewEl.hidden) {
@@ -417,6 +426,12 @@
         } else {
           marker.textContent = getOverviewMarkerText(chat, state);
         }
+        const titleEl = documentObject?.createElement?.('span');
+        if (titleEl) {
+          titleEl.className = 'chat-tabs__overview-title';
+          titleEl.textContent = String(chat?.title || `Chat ${chatId}`);
+          marker.appendChild(titleEl);
+        }
         marker.addEventListener?.('click', () => {
           if (!chatId || chatId === Number(getActiveChatId())) return;
           void openChat(chatId);
@@ -441,6 +456,7 @@
 
     return {
       isMobileTabCarouselActive,
+      isOverviewRailActive,
       hiddenUnreadSummaryText,
       hasUnreadBadge,
       countHiddenUnreadChats,
@@ -852,6 +868,8 @@
       tabOverviewEl,
       mobileTabCarouselEnabled = false,
       getIsMobileCarouselViewport = () => false,
+      getForceOverviewRail = () => false,
+      getForceMobileCarousel = () => false,
       mobileTabCarouselInteractionGraceMs = 1200,
       getCurrentUnreadCount = null,
       openChat = async () => {},
@@ -947,6 +965,8 @@
       chatUiHelpers,
       mobileTabCarouselEnabled,
       getIsMobileCarouselViewport,
+      getForceOverviewRail,
+      getForceMobileCarousel,
       tabOverviewEl,
       documentObject,
       getActiveChatId,
@@ -966,6 +986,7 @@
     });
     const {
       isMobileTabCarouselActive,
+      isOverviewRailActive,
       hiddenUnreadSummaryText,
       hasUnreadBadge,
       countHiddenUnreadChats,
@@ -1073,6 +1094,7 @@
       applyTabNodeState,
       removeMissingTabNodes,
       isMobileTabCarouselActive,
+      isOverviewRailActive,
       hiddenUnreadSummaryText,
       hasUnreadBadge,
       countHiddenUnreadChats,

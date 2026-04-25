@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from flask import request, send_file
+
+from miniapp_attachments import normalize_attachment_record, save_upload
 from routes_chat_context import ChatRouteContext
 from routes_chat_management_service import build_chat_management_service
 from routes_chat_resolution import (
@@ -191,6 +194,50 @@ def register_chat_management_routes(
             window_start=window_start,
             window_end=window_end,
             full_file=bool(full_file),
+        )
+
+    @api_bp.post("/chats/upload")
+    def upload_chat_attachment() -> tuple[dict[str, object], int]:
+        form_payload = {key: request.form.get(key) for key in request.form.keys()}
+        user_id, auth_error = _require_json_user_id(form_payload)
+        if auth_error:
+            return auth_error
+        chat_id, chat_error = chat_id_from_payload_or_error_fn(form_payload, user_id=user_id)
+        if chat_error:
+            return chat_error
+        try:
+            record = save_upload(
+                file_storage=request.files.get("file"),
+                user_id=user_id,
+                chat_id=int(chat_id),
+            )
+            created = context.store_getter().create_attachment(user_id=user_id, chat_id=int(chat_id), record=record)
+        except ValueError as exc:
+            return json_error_fn(str(exc), 400)
+        except KeyError as exc:
+            return _json_not_found(exc)
+        attachment = normalize_attachment_record(created)
+        assert attachment is not None
+        return {"ok": True, "attachment": attachment}, 201
+
+    @api_bp.get("/chats/attachments/<attachment_id>/content")
+    def download_chat_attachment(attachment_id: str):
+        auth_payload = dict(request.args)
+        user_id, auth_error = _require_json_user_id(auth_payload)
+        if auth_error:
+            return auth_error
+        try:
+            attachment = context.store_getter().get_attachment(user_id=user_id, attachment_id=attachment_id)
+        except KeyError as exc:
+            return _json_not_found(exc)
+        except FileNotFoundError:
+            return json_error_fn("Attachment content not found.", 404)
+        return send_file(
+            str(attachment["storage_path"]),
+            mimetype=str(attachment.get("content_type") or "application/octet-stream"),
+            as_attachment=False,
+            download_name=str(attachment.get("filename") or "attachment"),
+            conditional=True,
         )
 
     @api_bp.post("/chats/mark-read")

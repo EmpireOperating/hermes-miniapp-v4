@@ -233,3 +233,29 @@ function createToolTraceNode(tagName) {
   };
 }
 
+
+
+test('renderBody applies buildAttachmentUrlFn to attachment thumbnails and links', () => {
+  const container = { innerHTML: '' };
+  const cleanDisplayTextFn = (value) => String(value || '').trim();
+  const escapeHtmlFn = (value) => String(value || '').replace(/[<>&]/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[char]));
+
+  renderTraceTextHelpers.renderBody(container, 'see attached', {
+    cleanDisplayTextFn,
+    escapeHtmlFn,
+    buildAttachmentUrlFn: (url) => `${url}?chat_id=123&init_data=auth`,
+    attachments: [
+      {
+        id: 'att_img',
+        filename: 'screen.png',
+        kind: 'image',
+        content_type: 'image/png',
+        size_bytes: 2048,
+        preview_url: '/api/chats/attachments/att_img/content',
+      },
+    ],
+  });
+
+  assert.match(container.innerHTML, /href="\/api\/chats\/attachments\/att_img\/content\?chat_id=123&amp;init_data=auth"/);
+  assert.match(container.innerHTML, /src="\/api\/chats\/attachments\/att_img\/content\?chat_id=123&amp;init_data=auth"/);
+});

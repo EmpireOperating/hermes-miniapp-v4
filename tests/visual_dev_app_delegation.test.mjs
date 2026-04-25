@@ -14,10 +14,26 @@ test('app.js wires visual dev mode through a dedicated controller wrapper and bo
     'app.js should register HermesMiniappVisualDevMode, HermesMiniappVisualDevAttach, and HermesMiniappVisualDevPromptContext in the deferred helper registry',
   );
   assert.ok(
+    source.includes('function createVisualDevFeatureConfig() {')
+      && source.includes('config: createVisualDevFeatureConfig(),'),
+    'app.js should isolate the visual-dev feature/config shaping behind createVisualDevFeatureConfig(...)',
+  );
+  assert.ok(
     source.includes('function createVisualDevControllerDeps() {')
-      && source.includes('getIsAuthenticated: () => isAuthenticated,')
-      && source.includes("apiGetJson: (url) => apiGetJson(url)"),
-    'app.js should isolate visual dev wiring in createVisualDevControllerDeps(...)',
+      && source.includes('function createVisualDevControllerUiDeps() {')
+      && source.includes('function createVisualDevControllerRuntimeDeps() {')
+      && source.includes('...createVisualDevControllerUiDeps(),')
+      && source.includes('...createVisualDevControllerRuntimeDeps(),'),
+    'app.js should isolate visual dev wiring in createVisualDevControllerDeps(...) via narrower UI/runtime composition helpers',
+  );
+  assert.ok(
+    source.includes('const visualDevPreviewMode = (() => {')
+      && source.includes("new URLSearchParams(window.location.search).get('__hermes_visual_dev_preview') === '1';")
+      && source.includes('const visualDevFeatureEnabled = Boolean(visualDevConfig.enabled) && !visualDevPreviewMode;')
+      && source.includes('suppressDevAutoRefresh: visualDevPreviewMode,')
+      && source.includes('isMobileBootstrapPath: () => mobileQuoteMode || visualDevPreviewMode,')
+      && source.includes('skipTelegramWebappSetup: visualDevPreviewMode,'),
+    'app.js should disable visual-dev chrome and preview-hosted reload/Telegram WebApp setup when running inside an embedded visual-dev preview instance',
   );
   assert.ok(
     source.includes('function createVisualDevController() {')
@@ -26,18 +42,29 @@ test('app.js wires visual dev mode through a dedicated controller wrapper and bo
   );
   assert.ok(
     source.includes('function createVisualDevPromptContextControllerDeps() {')
+      && source.includes('function createVisualDevPromptContextControllerUiDeps() {')
+      && source.includes('function createVisualDevPromptContextControllerRuntimeDeps() {')
+      && source.includes('...createVisualDevPromptContextControllerUiDeps(),')
+      && source.includes('...createVisualDevPromptContextControllerRuntimeDeps(),')
       && source.includes('getSelectionContext: () => visualDevController.getActiveContext?.().selection || null,')
       && source.includes('getScreenshotContext: () => visualDevController.getActiveContext?.().screenshot || null,')
       && source.includes('getPreviewContext: () => visualDevController.getActiveContext?.().preview || null,')
       && source.includes('getConsoleContext: () => visualDevController.getActiveContext?.().console || null,')
       && source.includes('notifyInput: (value) => {')
       && source.includes("setDraft(activeChatId, value || '');"),
-    'app.js should expose a prompt-context controller that can pull visual-dev context into the composer draft',
+    'app.js should expose a prompt-context controller that can pull visual-dev context into the composer draft through narrower UI/runtime helpers',
   );
   assert.ok(
     source.includes('getVisualDevRequestContext: () => visualDevPromptContextController.getRequestContext?.() || null,')
       && source.includes('clearVisualDevRequestContext: () => visualDevPromptContextController.clearRequestContext?.(),'),
     'app.js should pass explicit visual-dev request context into the stream controller deps',
+  );
+  assert.ok(
+    source.includes('const appShell = document.getElementById("app-shell");')
+      && source.includes('const visualDevSidebarResizeHandle = document.getElementById("visual-dev-sidebar-resize-handle");')
+      && source.includes('appShell,')
+      && source.includes('sidebarResizeHandle: visualDevSidebarResizeHandle,'),
+    'app.js should wire the app shell and workspace sidebar resize handle into the visual-dev controller deps',
   );
   assert.ok(
     source.includes('const visualDevComposerSelectionChip = document.getElementById("visual-dev-composer-selection-chip");')
@@ -52,6 +79,10 @@ test('app.js wires visual dev mode through a dedicated controller wrapper and bo
       && source.includes('const visualDevAttachedPreviewClearButton = document.getElementById("visual-dev-attached-preview-clear");')
       && source.includes('const visualDevAttachedConsoleChip = document.getElementById("visual-dev-attached-console-chip");')
       && source.includes('const visualDevAttachedConsoleClearButton = document.getElementById("visual-dev-attached-console-clear");')
+      && source.includes('const visualDevPreviewWrap = document.getElementById("visual-dev-preview-wrap");')
+      && source.includes('const visualDevPreviewResizeHandle = document.getElementById("visual-dev-preview-resize-handle");')
+      && source.includes('previewWrap: visualDevPreviewWrap,')
+      && source.includes('previewResizeHandle: visualDevPreviewResizeHandle,')
       && source.includes('inspectButton: visualDevInspectButton,')
       && source.includes('screenshotButton: visualDevScreenshotButton,')
       && source.includes('logsButton: visualDevLogsButton,')
@@ -60,6 +91,15 @@ test('app.js wires visual dev mode through a dedicated controller wrapper and bo
       && source.includes('composerPreviewChip: visualDevComposerPreviewChip,')
       && source.includes('composerConsoleChip: visualDevComposerConsoleChip,'),
     'app.js should wire inspect/screenshot/log toolbar controls and composer context chips into the visual-dev controller deps',
+  );
+  assert.ok(
+    source.includes('function createVisualDevAttachControllerPolicyDeps() {')
+      && source.includes('function createVisualDevAttachControllerUiDeps() {')
+      && source.includes('function createVisualDevAttachControllerRuntimeDeps() {')
+      && source.includes('...createVisualDevAttachControllerPolicyDeps(),')
+      && source.includes('...createVisualDevAttachControllerUiDeps(),')
+      && source.includes('...createVisualDevAttachControllerRuntimeDeps(),'),
+    'app.js should compose visual-dev attach wiring from separate policy, UI, and runtime dependency helpers',
   );
   assert.ok(
     source.includes('visualDevAttachController.bind();')

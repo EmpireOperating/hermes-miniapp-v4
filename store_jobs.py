@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Any
 
+FailureMetadata = dict[str, Any]
+
 from job_status import (
     JOB_STATUS_DONE,
     JOB_STATUS_ERROR,
@@ -88,6 +90,7 @@ class StoreJobsMixin:
         message: str,
         max_attempts: int = 4,
         visual_context: dict[str, Any] | None = None,
+        attachment_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         cleaned_message = str(message or "").strip()
         serialized_visual_context = serialize_visual_context(visual_context)
@@ -121,6 +124,14 @@ class StoreJobsMixin:
                         (user_id, chat_id),
                     )
                     operator_message_id = int(message_cursor.lastrowid)
+                    if attachment_ids:
+                        self._bind_attachment_ids_to_message(
+                            conn,
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            message_id=operator_message_id,
+                            attachment_ids=attachment_ids,
+                        )
                     job_cursor = conn.execute(
                         """
                         INSERT INTO chat_jobs (
@@ -243,16 +254,27 @@ class StoreJobsMixin:
         attempts: int,
         max_attempts: int,
         error: str,
+        failure_metadata: FailureMetadata | None = None,
     ) -> None:
+        failure_metadata = dict(failure_metadata or {})
         conn.execute(
             """
             INSERT INTO chat_job_dead_letters (
-                job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error
+                job_id, user_id, chat_id, operator_message_id, attempts, max_attempts, error,
+                child_pid, child_transport, terminal_return_code, terminal_failure_kind,
+                terminal_outcome, terminal_error, limit_breach, limit_breach_detail
             )
-            SELECT ?, ?, ?, ?, ?, ?, ?
-            WHERE NOT EXISTS (
-                SELECT 1 FROM chat_job_dead_letters WHERE job_id = ?
-            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                error = excluded.error,
+                child_pid = excluded.child_pid,
+                child_transport = excluded.child_transport,
+                terminal_return_code = excluded.terminal_return_code,
+                terminal_failure_kind = excluded.terminal_failure_kind,
+                terminal_outcome = excluded.terminal_outcome,
+                terminal_error = excluded.terminal_error,
+                limit_breach = excluded.limit_breach,
+                limit_breach_detail = excluded.limit_breach_detail
             """,
             (
                 int(job_id),
@@ -262,11 +284,25 @@ class StoreJobsMixin:
                 int(attempts),
                 int(max_attempts),
                 str(error)[:1000],
-                int(job_id),
+                failure_metadata.get("child_pid"),
+                failure_metadata.get("child_transport"),
+                failure_metadata.get("terminal_return_code"),
+                failure_metadata.get("terminal_failure_kind"),
+                failure_metadata.get("terminal_outcome"),
+                failure_metadata.get("terminal_error"),
+                failure_metadata.get("limit_breach"),
+                failure_metadata.get("limit_breach_detail"),
             ),
         )
 
-    def retry_or_dead_letter_job(self, job_id: int, error: str, retry_base_seconds: int = 2) -> bool:
+    def retry_or_dead_letter_job(
+        self,
+        job_id: int,
+        error: str,
+        retry_base_seconds: int = 2,
+        *,
+        failure_metadata: FailureMetadata | None = None,
+    ) -> bool:
         with self._connect() as conn:
             return retry_or_dead_letter_job(
                 conn,
@@ -274,6 +310,7 @@ class StoreJobsMixin:
                 error=error,
                 retry_base_seconds=retry_base_seconds,
                 insert_dead_letter_if_missing=self._insert_dead_letter_if_missing,
+                failure_metadata=failure_metadata,
             )
 
     def dead_letter_stale_running_jobs(self, timeout_seconds: int, error: str) -> list[dict[str, Any]]:

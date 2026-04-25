@@ -3505,3 +3505,71 @@ def test_stream_via_agent_surfaces_stderr_on_nonzero_exit(monkeypatch) -> None:
     assert process.stdin.close_calls == 1
     assert process.stdout.close_calls == 1
     assert process.stderr.close_calls == 1
+
+
+def test_direct_agent_history_normalization_preserves_attachment_context() -> None:
+    class _Client(hermes_client_agent.HermesClientDirectAgentMixin):
+        pass
+
+    client = _Client()
+
+    normalized = client._normalize_conversation_history(
+        [
+            {
+                "role": "operator",
+                "body": "Can you inspect this image?",
+                "attachments": [
+                    {
+                        "filename": "screen.png",
+                        "kind": "image",
+                        "content_type": "image/png",
+                        "size_bytes": 2048,
+                        "storage_path": "/tmp/miniapp-attachments/att_1-screen.png",
+                        "preview_url": "/api/chats/attachments/att_1/content",
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert normalized == [
+        {
+            "role": "user",
+            "content": (
+                "Can you inspect this image?\n\n"
+                "Attached files:\n"
+                "- screen.png (image, image/png, 2048 bytes)\n"
+                "  local file path: /tmp/miniapp-attachments/att_1-screen.png"
+            ),
+        }
+    ]
+
+
+def test_direct_agent_history_normalization_uses_preview_url_when_storage_path_is_unavailable() -> None:
+    class _Client(hermes_client_agent.HermesClientDirectAgentMixin):
+        pass
+
+    client = _Client()
+
+    normalized = client._normalize_conversation_history(
+        [
+            {
+                "role": "operator",
+                "body": "Can you inspect this file?",
+                "attachments": [
+                    {
+                        "filename": "notes.txt",
+                        "kind": "file",
+                        "content_type": "text/plain",
+                        "size_bytes": 12,
+                        "preview_url": "/api/chats/attachments/att_2/content",
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert normalized[0]["role"] == "user"
+    assert "Attached files:" in normalized[0]["content"]
+    assert "- notes.txt (file, text/plain, 12 bytes)" in normalized[0]["content"]
+    assert "preview url: /api/chats/attachments/att_2/content" in normalized[0]["content"]

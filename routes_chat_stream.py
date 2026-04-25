@@ -45,6 +45,19 @@ def register_stream_routes(
         except ValueError as exc:
             return sse_error_fn(str(exc), 400)
 
+        raw_attachment_ids = payload.get("attachment_ids")
+        if raw_attachment_ids in (None, ""):
+            attachment_ids = None
+        elif not isinstance(raw_attachment_ids, list):
+            return sse_error_fn("Invalid attachment_ids. Expected array.", 400)
+        else:
+            attachment_ids = []
+            for candidate in raw_attachment_ids:
+                attachment_id = str(candidate or "").strip()
+                if not attachment_id:
+                    return sse_error_fn("Invalid attachment_ids. Expected non-empty strings.", 400)
+                attachment_ids.append(attachment_id)
+
         user_id, chat_id, payload_error = service.verified_user_and_chat_id(payload)
         if payload_error:
             return payload_error
@@ -74,6 +87,7 @@ def register_stream_routes(
                 message=message,
                 max_attempts=job_max_attempts,
                 visual_context=normalize_visual_context(payload.get("visual_context")),
+                attachment_ids=attachment_ids,
             )
         )
         if not_found_error:

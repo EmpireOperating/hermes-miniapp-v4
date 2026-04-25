@@ -25,7 +25,7 @@ function createEventTarget(initial = {}) {
   };
 }
 
-function buildHarness({ visibilityState = 'visible', authenticated = true, pendingChatsSize = 0, apiPostImpl = null, shouldDeferImmediateActiveMessageView = null } = {}) {
+function buildHarness({ visibilityState = 'visible', authenticated = true, pendingChatsSize = 0, apiPostImpl = null, shouldDeferImmediateActiveMessageView = null, suppressDevAutoRefresh = false } = {}) {
   let currentSkin = 'terminal';
   const skinCalls = [];
   const reloadCalls = [];
@@ -159,6 +159,7 @@ function buildHarness({ visibilityState = 'visible', authenticated = true, pendi
     getStreamAbortControllers: () => streamAbortControllers,
     markBackgrounded: (marker) => lifecycleMarks.push({ ...marker }),
     markVisibilityResume: (marker) => visibilityResumes.push({ ...marker }),
+    suppressDevAutoRefresh,
   });
 
   return {
@@ -460,4 +461,14 @@ test('startDevAutoRefresh polls and queues reload on version changes', async () 
 
   assert.equal(harness.fetchCalls.length, 1);
   assert.deepEqual(harness.reloadCalls, ['reload']);
+});
+
+test('startDevAutoRefresh stays disabled when embedded preview suppresses dev reloads', async () => {
+  const harness = buildHarness({ visibilityState: 'visible', pendingChatsSize: 0, suppressDevAutoRefresh: true });
+
+  harness.controller.startDevAutoRefresh();
+
+  assert.equal(harness.intervalCallbacks.length, 0);
+  assert.equal(harness.fetchCalls.length, 0);
+  assert.deepEqual(harness.reloadCalls, []);
 });

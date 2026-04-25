@@ -13,6 +13,7 @@ class _Turn:
     role: str
     body: str
     created_at: str
+    attachments: list[dict[str, object]] | None = None
 
 
 class _StoreStub:
@@ -343,6 +344,35 @@ def test_serialize_turn_only_adds_previewable_file_refs_when_present(monkeypatch
     assert [ref["path"] for ref in result["file_refs"]] == [str(previewable)]
 
 
+def test_serialize_turn_normalizes_attachments_without_storage_path() -> None:
+    service = _service()
+
+    result = service.serialize_turn(
+        _Turn(
+            id=11,
+            chat_id=7,
+            role="assistant",
+            body="see image",
+            created_at="2026-04-10T00:00:00Z",
+            attachments=[
+                {
+                    "id": "att_demo_auth",
+                    "filename": "demo.png",
+                    "content_type": "image/png",
+                    "size_bytes": 128,
+                    "storage_path": "/tmp/demo.png",
+                    "kind": "image",
+                }
+            ],
+        )
+    )
+
+    assert result["attachments"][0]["id"] == "att_demo_auth"
+    assert result["attachments"][0]["filename"] == "demo.png"
+    assert result["attachments"][0]["preview_url"].endswith("/api/chats/attachments/att_demo_auth/content")
+    assert "storage_path" not in result["attachments"][0]
+
+
 def test_auth_success_state_prefers_lightweight_pinned_chat_summaries() -> None:
     store = _PinnedSummaryStoreStub()
     service = _service(store=store)
@@ -426,13 +456,13 @@ def test_auth_success_state_includes_bootstrap_histories_for_initial_visible_ina
     assert payload["active_chat_id"] == 7
     assert payload["history"][-1]["body"] == "active history"
     assert payload["bootstrap_histories"] == {
-        "8": [{"id": 80, "chat_id": 8, "role": "hermes", "body": "bootstrap 8", "created_at": "2026-04-10T00:00:00Z"}],
+        "8": [{"id": 80, "chat_id": 8, "role": "hermes", "body": "bootstrap 8", "created_at": "2026-04-10T00:00:00Z", "attachments": []}],
         "9": [
-            {"id": 90, "chat_id": 9, "role": "hermes", "body": "bootstrap 9", "created_at": "2026-04-10T00:00:00Z"},
+            {"id": 90, "chat_id": 9, "role": "hermes", "body": "bootstrap 9", "created_at": "2026-04-10T00:00:00Z", "attachments": []},
             {"id": 0, "chat_id": 9, "role": "tool", "body": "read_file", "created_at": "2026-04-10T00:00:01Z", "pending": True},
             {"id": 0, "chat_id": 9, "role": "assistant", "body": "still working", "created_at": "2026-04-10T00:00:01Z", "pending": True},
         ],
-        "10": [{"id": 100, "chat_id": 10, "role": "hermes", "body": "bootstrap 10", "created_at": "2026-04-10T00:00:00Z"}],
+        "10": [{"id": 100, "chat_id": 10, "role": "hermes", "body": "bootstrap 10", "created_at": "2026-04-10T00:00:00Z", "attachments": []}],
     }
 
 

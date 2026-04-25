@@ -89,6 +89,45 @@ def _build_chat_scoped_message(*, message: str, chat_title: str | None) -> str:
     )
 
 
+def _attachment_value(attachment: dict[str, object], *keys: str) -> str:
+    for key in keys:
+        value = str(attachment.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _build_current_attachment_block(attachments: object) -> str:
+    if not isinstance(attachments, list) or not attachments:
+        return ""
+    lines = [
+        "Attached files for this current operator message:",
+        "Use these files as part of the user's current request. If a local file path is available, inspect that file directly.",
+    ]
+    count = 0
+    for raw_attachment in attachments:
+        if not isinstance(raw_attachment, dict):
+            continue
+        filename = _attachment_value(raw_attachment, "filename", "name") or "attachment"
+        kind = _attachment_value(raw_attachment, "kind") or "file"
+        content_type = _attachment_value(raw_attachment, "content_type", "mime_type") or "application/octet-stream"
+        size_bytes = _attachment_value(raw_attachment, "size_bytes", "size")
+        storage_path = _attachment_value(raw_attachment, "storage_path", "path")
+        preview_url = _attachment_value(raw_attachment, "preview_url", "download_url", "url")
+        count += 1
+        label = f"{count}. {filename} ({kind}, {content_type}"
+        if size_bytes:
+            label += f", {size_bytes} bytes"
+        lines.append(f"{label})")
+        if storage_path:
+            lines.append(f"   local file path: {storage_path}")
+        elif preview_url:
+            lines.append(f"   preview url: {preview_url}")
+    if count <= 0:
+        return ""
+    return "\n".join(lines)
+
+
 def execute_chat_job(
     runtime: "JobRuntime",
     job: dict[str, object],
@@ -121,6 +160,9 @@ def execute_chat_job(
         except Exception:  # noqa: BLE001 - best-effort thread guardrail only
             chat_title = None
     run_message = _build_chat_scoped_message(message=message, chat_title=chat_title)
+    attachment_block = _build_current_attachment_block(getattr(operator_turn, "attachments", None))
+    if attachment_block:
+        run_message = f"{run_message}\n\n{attachment_block}" if run_message else attachment_block
     visual_context_block = build_visual_context_message_block(job.get("visual_context"))
     if visual_context_block:
         run_message = f"{run_message}\n\n{visual_context_block}" if run_message else visual_context_block

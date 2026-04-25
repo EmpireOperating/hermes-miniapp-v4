@@ -46,6 +46,8 @@ test('attach controller opens modal with active session state and submits attach
   const previewTitleInput = { value: '' };
   const currentChatLabel = { textContent: '' };
   const currentSessionLabel = { textContent: '' };
+  const attachErrorLabel = { textContent: '', hidden: true };
+  const attachHintLabel = { textContent: '' };
   const openedUrls = [];
   const attachCalls = [];
   const detachCalls = [];
@@ -84,6 +86,7 @@ test('attach controller opens modal with active session state and submits attach
 
   const controller = visualDevAttachHelpers.createController({
     enabled: true,
+    allowedPreviewOrigins: ['https://preview.example.com'],
     getActiveChatId: () => 11,
     getActiveChatLabel: () => 'Chat 11',
     visualDevController,
@@ -93,6 +96,8 @@ test('attach controller opens modal with active session state and submits attach
     previewTitleInput,
     currentChatLabel,
     currentSessionLabel,
+    attachErrorLabel,
+    attachHintLabel,
     settingsOpenButton,
     attachButton,
     refreshButton,
@@ -111,6 +116,7 @@ test('attach controller opens modal with active session state and submits attach
   assert.equal(dialog.open, true);
   assert.equal(currentChatLabel.textContent, 'Chat 11');
   assert.match(currentSessionLabel.textContent, /Live preview/);
+  assert.match(attachHintLabel.textContent, /Trusted preview origins: https:\/\/preview\.example\.com/);
 
   previewUrlInput.value = 'https://preview.example.com/dev';
   previewTitleInput.value = 'Dev preview';
@@ -118,6 +124,7 @@ test('attach controller opens modal with active session state and submits attach
 
   assert.deepEqual(attachCalls, [{ previewUrl: 'https://preview.example.com/dev', previewTitle: 'Dev preview' }]);
   assert.equal(dialog.open, false);
+  assert.equal(attachErrorLabel.hidden, true);
 
   inspectButton.click();
   screenshotButton.listeners.get('click')?.({ preventDefault() {}, shiftKey: false });
@@ -134,4 +141,66 @@ test('attach controller opens modal with active session state and submits attach
   detachButton.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(detachCalls, ['session-11']);
+});
+
+test('attach controller keeps untrusted origin errors in the modal with allowlist guidance', async () => {
+  const settingsOpenButton = createButton();
+  const attachButton = createButton();
+  const dialog = createDialog();
+  const formListeners = new Map();
+  const form = {
+    addEventListener(type, handler) { formListeners.set(type, handler); },
+  };
+  const previewUrlInput = { value: '', focus() {}, select() {} };
+  const previewTitleInput = { value: '' };
+  const currentChatLabel = { textContent: '' };
+  const currentSessionLabel = { textContent: '' };
+  const attachErrorLabel = { textContent: '', hidden: true };
+  const attachHintLabel = { textContent: '' };
+  const seenErrors = [];
+  const visualDevController = {
+    getState() {
+      return { sessions: [] };
+    },
+    async attachSession() {
+      throw new Error('Untrusted preview url origin');
+    },
+  };
+
+  const controller = visualDevAttachHelpers.createController({
+    enabled: true,
+    allowedPreviewOrigins: ['http://127.0.0.1:8790'],
+    getActiveChatId: () => 11,
+    getActiveChatLabel: () => 'Chat 11',
+    visualDevController,
+    dialog,
+    form,
+    previewUrlInput,
+    previewTitleInput,
+    currentChatLabel,
+    currentSessionLabel,
+    attachErrorLabel,
+    attachHintLabel,
+    settingsOpenButton,
+    attachButton,
+    refreshButton: createButton(),
+    inspectButton: createButton(),
+    screenshotButton: createButton(),
+    openExternalButton: createButton(),
+    logsButton: createButton(),
+    detachButton: createButton(),
+    cancelButton: createButton(),
+    onError: (error) => seenErrors.push(String(error?.message || error || '')),
+  });
+
+  controller.bind();
+  settingsOpenButton.click();
+  previewUrlInput.value = 'https://evil.example.com/app';
+  await formListeners.get('submit')({ preventDefault() {} });
+
+  assert.equal(dialog.open, true);
+  assert.equal(attachErrorLabel.hidden, false);
+  assert.match(attachErrorLabel.textContent, /Untrusted preview url origin/);
+  assert.match(attachErrorLabel.textContent, /Trusted preview origins: http:\/\/127\.0\.0\.1:8790/);
+  assert.deepEqual(seenErrors, ['Untrusted preview url origin']);
 });

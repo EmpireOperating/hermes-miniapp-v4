@@ -33,6 +33,14 @@ const visualDevConfig = window.__HERMES_VISUAL_DEV__ || {
   allowedPreviewOrigins: [],
   allowedParentOrigins: [],
 };
+const visualDevPreviewMode = (() => {
+  try {
+    return new URLSearchParams(window.location.search).get('__hermes_visual_dev_preview') === '1';
+  } catch {
+    return false;
+  }
+})();
+const visualDevFeatureEnabled = Boolean(visualDevConfig.enabled) && !visualDevPreviewMode;
 const featureConfig = window.__HERMES_FEATURES__ || { mobileTabCarousel: false, tabActionsMenu: false };
 const mobileTabCarouselFeatureEnabled = Boolean(featureConfig.mobileTabCarousel);
 const tabActionsMenuFeatureEnabled = Boolean(featureConfig.tabActionsMenu);
@@ -389,11 +397,15 @@ if (body) {
 const messagesEl = document.getElementById("messages");
 const tabsEl = document.getElementById("chat-tabs");
 const tabOverviewEl = document.getElementById("chat-tabs-overview");
+const appWorkspace = document.getElementById("app-workspace");
 const hiddenUnreadLeftEl = document.getElementById("chat-tabs-hidden-left");
 const hiddenUnreadRightEl = document.getElementById("chat-tabs-hidden-right");
 const hiddenUnreadSummaryEl = document.getElementById("chat-tabs-hidden-unread");
 const form = document.getElementById("chat-form");
 const promptEl = document.getElementById("prompt");
+const composerAttachmentsEl = document.getElementById("composer-attachments");
+const attachmentInputEl = document.getElementById("attachment-input");
+const attachmentButton = document.getElementById("attachment-button");
 const sendButton = document.getElementById("send-button");
 const removeChatButton = document.getElementById("remove-chat");
 const newChatButton = document.getElementById("new-chat");
@@ -445,7 +457,10 @@ const filePreviewExpandUp = document.getElementById("file-preview-expand-up");
 const filePreviewLoadFull = document.getElementById("file-preview-load-full");
 const filePreviewExpandDown = document.getElementById("file-preview-expand-down");
 const filePreviewClose = document.getElementById("file-preview-close");
+const appShell = document.getElementById("app-shell");
+const chatTerminalPanel = document.getElementById("chat-terminal-panel");
 const visualDevWorkspace = document.getElementById("visual-dev-workspace");
+const visualDevWorkspaceToggleButton = document.getElementById("visual-dev-workspace-toggle");
 const visualDevStatusLabel = document.getElementById("visual-dev-status-label");
 const visualDevOwnershipLabel = document.getElementById("visual-dev-ownership-label");
 const visualDevSelectionChip = document.getElementById("visual-dev-selection-chip");
@@ -462,6 +477,9 @@ const visualDevAttachedPreviewChip = document.getElementById("visual-dev-attache
 const visualDevAttachedPreviewClearButton = document.getElementById("visual-dev-attached-preview-clear");
 const visualDevAttachedConsoleChip = document.getElementById("visual-dev-attached-console-chip");
 const visualDevAttachedConsoleClearButton = document.getElementById("visual-dev-attached-console-clear");
+const visualDevSidebarResizeHandle = document.getElementById("visual-dev-sidebar-resize-handle");
+const visualDevPreviewWrap = document.getElementById("visual-dev-preview-wrap");
+const visualDevPreviewResizeHandle = document.getElementById("visual-dev-preview-resize-handle");
 const visualDevPreviewFrame = document.getElementById("visual-dev-preview-frame");
 const visualDevSettingsOpen = document.getElementById("visual-dev-settings-open");
 const visualDevAttachButton = document.getElementById("visual-dev-attach-button");
@@ -480,6 +498,8 @@ const visualDevPreviewUrlInput = document.getElementById("visual-dev-preview-url
 const visualDevPreviewTitleInput = document.getElementById("visual-dev-preview-title");
 const visualDevCurrentChatLabel = document.getElementById("visual-dev-current-chat-label");
 const visualDevCurrentSessionLabel = document.getElementById("visual-dev-current-session-label");
+const visualDevAttachHint = document.getElementById("visual-dev-attach-hint");
+const visualDevAttachError = document.getElementById("visual-dev-attach-error");
 const visualDevAttachCancel = document.getElementById("visual-dev-attach-cancel");
 const chatTabContextMenu = document.getElementById("chat-tab-context-menu");
 const chatTabContextRename = document.getElementById("chat-tab-context-rename");
@@ -497,6 +517,8 @@ let activeChatId = null;
 let operatorDisplayName = "Operator";
 let currentFilePreviewRequest = null;
 let currentFilePreview = null;
+let composerAttachments = [];
+let composerAttachmentChatId = null;
 const chats = new Map();
 const pinnedChats = new Map();
 const histories = new Map();
@@ -563,7 +585,9 @@ const {
   clearChatStreamState,
 } = streamStateHelpers;
 
+let workspacePanelOpen = false;
 let chatHistoryController = null;
+let chatTabsController = null;
 
 function createChatTabsControllerStateDeps({
   localStorageRef,
@@ -614,6 +638,8 @@ function createChatTabsControllerUiDeps({
   tabOverviewEl,
   mobileTabCarouselEnabled,
   getIsMobileCarouselViewport,
+  getForceOverviewRail,
+  getForceMobileCarousel,
   getCurrentUnreadCount,
   openChat,
   clearChatStreamState,
@@ -635,6 +661,8 @@ function createChatTabsControllerUiDeps({
     tabOverviewEl,
     mobileTabCarouselEnabled,
     getIsMobileCarouselViewport,
+    getForceOverviewRail,
+    getForceMobileCarousel,
     getCurrentUnreadCount,
     openChat,
     clearChatStreamState,
@@ -720,6 +748,8 @@ function createChatTabsController() {
   tabOverviewEl,
   mobileTabCarouselEnabled: mobileTabCarouselFeatureEnabled,
   getIsMobileCarouselViewport: () => isCoarsePointer(),
+  getForceOverviewRail: () => workspacePanelOpen,
+  getForceMobileCarousel: () => workspacePanelOpen,
   getCurrentUnreadCount,
   openChat: (chatId) => openChat(chatId),
   clearChatStreamState,
@@ -748,7 +778,7 @@ function createChatTabsController() {
 }));
 }
 
-const chatTabsController = createChatTabsController();
+chatTabsController = createChatTabsController();
 
 applyStoredPinnedChatsCollapsePreference({
   chatTabsController,
@@ -969,6 +999,7 @@ function createMessageRenderControllerDeps() {
   return {
     cleanDisplayTextFn: cleanDisplayText,
     escapeHtmlFn: escapeHtml,
+    buildAttachmentUrlFn: buildAttachmentUrl,
     getAllowedRoots: () => filePreviewAllowedRoots,
     documentObject: document,
     windowObject: window,
@@ -1321,10 +1352,27 @@ async function apiGetJson(url) {
     },
   });
   const data = await safeReadJson(response);
-  if (!response.ok || data?.ok === false) {
-    throw new Error(String(data?.error || `Request failed (${response.status || 0})`));
+  if (!response.ok) {
+    const message = String(data?.error || `Request failed (${response.status})`).trim() || `Request failed (${response.status})`;
+    throw new Error(message);
   }
   return data;
+}
+
+function buildAttachmentUrl(rawUrl) {
+  const trimmed = String(rawUrl || '').trim();
+  if (!trimmed) return '';
+  try {
+    const resolved = new URL(trimmed, window.location.origin);
+    const authQuery = new URLSearchParams(authPayload());
+    authQuery.forEach((value, key) => {
+      if (value == null || value === '') return;
+      resolved.searchParams.set(key, String(value));
+    });
+    return resolved.toString();
+  } catch {
+    return trimmed;
+  }
 }
 
 function cloneFilePreviewRequest(previewRequest = {}) {
@@ -2405,7 +2453,9 @@ const composerStateController = composerStateHelpers.createController({
 });
 
 function updateComposerState() {
-  return composerStateController.updateComposerState();
+  const result = composerStateController.updateComposerState();
+  renderComposerAttachments();
+  return result;
 }
 
 function setStreamAbortController(chatId, controller) {
@@ -2575,12 +2625,23 @@ function createShellUiController() {
 
 const shellUiController = createShellUiController();
 
-function createVisualDevControllerDeps() {
+function createVisualDevFeatureConfig() {
   return {
-    config: visualDevConfig,
-    shellHelpers: window.HermesMiniappVisualDevShell || createDeferredControllerHelper('HermesMiniappVisualDevShell'),
-    previewHelpers: window.HermesMiniappVisualDevPreview || createDeferredControllerHelper('HermesMiniappVisualDevPreview'),
+    ...visualDevConfig,
+    enabled: visualDevFeatureEnabled,
+  };
+}
+
+function createVisualDevControllerUiDeps() {
+  return {
+    appShell,
+    workspaceRoot: appWorkspace,
+    terminalPanel: chatTerminalPanel,
     shellRoot: visualDevWorkspace,
+    toggleButton: visualDevWorkspaceToggleButton,
+    previewWrap: visualDevPreviewWrap,
+    sidebarResizeHandle: visualDevSidebarResizeHandle,
+    previewResizeHandle: visualDevPreviewResizeHandle,
     previewFrame: visualDevPreviewFrame,
     ownershipLabel: visualDevOwnershipLabel,
     statusLabel: visualDevStatusLabel,
@@ -2593,6 +2654,11 @@ function createVisualDevControllerDeps() {
     consoleDrawer: visualDevConsoleDrawer,
     runtimeSummary: visualDevRuntimeSummary,
     consoleList: visualDevConsoleList,
+  };
+}
+
+function createVisualDevControllerRuntimeDeps() {
+  return {
     getIsAuthenticated: () => isAuthenticated,
     getActiveChatId: () => Number(activeChatId),
     getParentOrigin: () => window.location.origin,
@@ -2600,6 +2666,20 @@ function createVisualDevControllerDeps() {
     apiGetJson: (url) => apiGetJson(url),
     apiPost,
     onUiError: reportUiError,
+    onWorkspaceOpenChange: (open) => {
+      workspacePanelOpen = Boolean(open);
+      chatTabsController?.renderTabs?.();
+    },
+  };
+}
+
+function createVisualDevControllerDeps() {
+  return {
+    config: createVisualDevFeatureConfig(),
+    shellHelpers: window.HermesMiniappVisualDevShell || createDeferredControllerHelper('HermesMiniappVisualDevShell'),
+    previewHelpers: window.HermesMiniappVisualDevPreview || createDeferredControllerHelper('HermesMiniappVisualDevPreview'),
+    ...createVisualDevControllerUiDeps(),
+    ...createVisualDevControllerRuntimeDeps(),
   };
 }
 
@@ -2609,18 +2689,28 @@ function createVisualDevController() {
 
 const visualDevController = createVisualDevController();
 
-function createVisualDevAttachControllerDeps() {
+function createVisualDevAttachControllerPolicyDeps() {
   return {
-    enabled: Boolean(visualDevConfig.enabled),
+    enabled: visualDevFeatureEnabled,
+    allowedPreviewOrigins: Array.isArray(visualDevConfig.allowedPreviewOrigins)
+      ? visualDevConfig.allowedPreviewOrigins
+      : [],
     getActiveChatId: () => Number(activeChatId),
     getActiveChatLabel: () => compactChatLabel(activeChatId, 36),
     visualDevController,
+  };
+}
+
+function createVisualDevAttachControllerUiDeps() {
+  return {
     dialog: visualDevAttachModal,
     form: visualDevAttachForm,
     previewUrlInput: visualDevPreviewUrlInput,
     previewTitleInput: visualDevPreviewTitleInput,
     currentChatLabel: visualDevCurrentChatLabel,
     currentSessionLabel: visualDevCurrentSessionLabel,
+    attachErrorLabel: visualDevAttachError,
+    attachHintLabel: visualDevAttachHint,
     settingsOpenButton: visualDevSettingsOpen,
     attachButton: visualDevAttachButton,
     refreshButton: visualDevRefreshButton,
@@ -2630,6 +2720,11 @@ function createVisualDevAttachControllerDeps() {
     logsButton: visualDevLogsButton,
     detachButton: visualDevDetachButton,
     cancelButton: visualDevAttachCancel,
+  };
+}
+
+function createVisualDevAttachControllerRuntimeDeps() {
+  return {
     openExternalUrl: (url) => window.open(url, '_blank', 'noopener'),
     reloadPreview: () => {
       if (!visualDevPreviewFrame) return;
@@ -2639,15 +2734,22 @@ function createVisualDevAttachControllerDeps() {
   };
 }
 
+function createVisualDevAttachControllerDeps() {
+  return {
+    ...createVisualDevAttachControllerPolicyDeps(),
+    ...createVisualDevAttachControllerUiDeps(),
+    ...createVisualDevAttachControllerRuntimeDeps(),
+  };
+}
+
 function createVisualDevAttachController() {
   return visualDevAttachHelpers.createController(createVisualDevAttachControllerDeps());
 }
 
 const visualDevAttachController = createVisualDevAttachController();
 
-function createVisualDevPromptContextControllerDeps() {
+function createVisualDevPromptContextControllerUiDeps() {
   return {
-    enabled: Boolean(visualDevConfig.enabled),
     promptEl,
     selectionChip: visualDevComposerSelectionChip,
     screenshotChip: visualDevComposerScreenshotChip,
@@ -2661,6 +2763,11 @@ function createVisualDevPromptContextControllerDeps() {
     attachedPreviewClearButton: visualDevAttachedPreviewClearButton,
     attachedConsoleChip: visualDevAttachedConsoleChip,
     attachedConsoleClearButton: visualDevAttachedConsoleClearButton,
+  };
+}
+
+function createVisualDevPromptContextControllerRuntimeDeps() {
+  return {
     getSelectionContext: () => visualDevController.getActiveContext?.().selection || null,
     getScreenshotContext: () => visualDevController.getActiveContext?.().screenshot || null,
     getPreviewContext: () => visualDevController.getActiveContext?.().preview || null,
@@ -2671,6 +2778,14 @@ function createVisualDevPromptContextControllerDeps() {
       if (!activeChatId) return;
       setDraft(activeChatId, value || '');
     },
+  };
+}
+
+function createVisualDevPromptContextControllerDeps() {
+  return {
+    enabled: visualDevFeatureEnabled,
+    ...createVisualDevPromptContextControllerUiDeps(),
+    ...createVisualDevPromptContextControllerRuntimeDeps(),
   };
 }
 
@@ -2805,6 +2920,7 @@ function createVisibilitySkinControllerRuntimeDeps() {
   return {
     apiPost,
     syncTelegramChromeForSkin,
+    suppressDevAutoRefresh: visualDevPreviewMode,
     getIsAuthenticated: () => isAuthenticated,
     getActiveChatId: () => Number(activeChatId),
     getPresenceInstanceId,
@@ -3011,7 +3127,8 @@ function createStartupBindingsControllerStateArgs() {
 
 function createStartupBindingsControllerRuntimeArgs() {
   return {
-    isMobileBootstrapPath: () => mobileQuoteMode,
+    isMobileBootstrapPath: () => mobileQuoteMode || visualDevPreviewMode,
+    skipTelegramWebappSetup: visualDevPreviewMode,
     getChatsSize: () => chats.size,
     isActiveChatPending: () => Boolean(activeChatId && chats.get(Number(activeChatId))?.pending),
     getStreamAbortControllers: () => streamController.getAbortControllers(),
@@ -3327,8 +3444,8 @@ function focusMessagesPaneIfActiveChat(chatId) {
   }
 }
 
-async function sendPrompt(message) {
-  return streamController.sendPrompt(message);
+async function sendPrompt(message, options = {}) {
+  return streamController.sendPrompt(message, options);
 }
 
 async function resumePendingChatStream(chatId, options = {}) {
@@ -3340,7 +3457,14 @@ function reportUiError(error) {
 }
 
 async function submitPromptFromComposer() {
-  await sendPrompt(promptEl.value);
+  const activeComposerChatId = Number(activeChatId || 0);
+  const attachments = activeComposerChatId > 0 && Number(composerAttachmentChatId || 0) === activeComposerChatId
+    ? composerAttachments.slice()
+    : [];
+  const sendSucceeded = await sendPrompt(promptEl.value, { attachments });
+  if (sendSucceeded) {
+    clearComposerAttachments();
+  }
 }
 
 const submitPromptWithUiError = async () => {
@@ -3396,6 +3520,131 @@ promptEl.addEventListener("input", () => {
   if (!activeChatId) return;
   setDraft(activeChatId, promptEl.value || "");
 });
+
+function normalizeComposerAttachmentRecord(record) {
+  if (!record || typeof record !== "object") return null;
+  const id = String(record.id || "").trim();
+  const filename = String(record.filename || "").trim();
+  if (!id || !filename) return null;
+  return {
+    id,
+    kind: String(record.kind || "file").trim() || "file",
+    filename,
+    content_type: String(record.content_type || "application/octet-stream").trim() || "application/octet-stream",
+    size_bytes: Number(record.size_bytes || 0),
+    preview_url: String(record.preview_url || record.download_url || "").trim(),
+    download_url: String(record.download_url || record.preview_url || "").trim(),
+  };
+}
+
+function formatAttachmentSize(sizeBytes) {
+  const size = Number(sizeBytes || 0);
+  if (!Number.isFinite(size) || size <= 0) return "";
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 102.4) / 10} KB`;
+  return `${size} B`;
+}
+
+function clearComposerAttachments() {
+  composerAttachments = [];
+  composerAttachmentChatId = null;
+  renderComposerAttachments();
+}
+
+function removeComposerAttachment(attachmentId) {
+  const targetId = String(attachmentId || "").trim();
+  if (!targetId) return;
+  composerAttachments = composerAttachments.filter((attachment) => String(attachment?.id || "") !== targetId);
+  if (!composerAttachments.length) {
+    composerAttachmentChatId = null;
+  }
+  renderComposerAttachments();
+}
+
+function renderComposerAttachments() {
+  if (!composerAttachmentsEl) return;
+  const activeComposerChatId = Number(activeChatId || 0);
+  const attachments = activeComposerChatId > 0 && Number(composerAttachmentChatId || 0) === activeComposerChatId
+    ? composerAttachments
+    : [];
+  composerAttachmentsEl.innerHTML = "";
+  composerAttachmentsEl.hidden = !attachments.length;
+  attachmentButton?.setAttribute("aria-pressed", attachments.length ? "true" : "false");
+  if (!attachments.length) {
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  attachments.forEach((attachment) => {
+    const chip = document.createElement("div");
+    chip.className = "composer-attachment-chip";
+    const label = document.createElement("span");
+    label.className = "composer-attachment-chip__label";
+    const sizeLabel = formatAttachmentSize(attachment.size_bytes);
+    label.textContent = sizeLabel ? `${attachment.filename} · ${sizeLabel}` : attachment.filename;
+    chip.appendChild(label);
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "composer-attachment-chip__remove";
+    removeButton.textContent = "×";
+    removeButton.setAttribute("aria-label", `Remove attachment ${attachment.filename}`);
+    removeButton.addEventListener("click", () => removeComposerAttachment(attachment.id));
+    chip.appendChild(removeButton);
+    fragment.appendChild(chip);
+  });
+  composerAttachmentsEl.appendChild(fragment);
+}
+
+async function uploadComposerAttachment(file) {
+  const activeComposerChatId = Number(activeChatId || 0);
+  if (!file || activeComposerChatId <= 0) {
+    throw new Error("Open a chat before attaching a file.");
+  }
+  if (!isAuthenticated) {
+    throw new Error("Still signing you in. Try again in a moment.");
+  }
+  const formData = new FormData();
+  const payload = authPayload({ chat_id: activeComposerChatId });
+  Object.entries(payload || {}).forEach(([key, value]) => {
+    if (value == null || value === "") return;
+    formData.append(key, String(value));
+  });
+  formData.append("file", file);
+  const response = await fetch("/api/chats/upload", {
+    method: "POST",
+    body: formData,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(String(data?.error || "Attachment upload failed."));
+  }
+  const attachment = normalizeComposerAttachmentRecord(data?.attachment);
+  if (!attachment) {
+    throw new Error("Attachment upload returned invalid metadata.");
+  }
+  composerAttachments = [attachment];
+  composerAttachmentChatId = activeComposerChatId;
+  renderComposerAttachments();
+}
+
+if (attachmentButton && attachmentInputEl) {
+  attachmentButton.addEventListener("click", () => {
+    if (!activeChatId) {
+      appendSystemMessage("Open a chat before attaching a file.");
+      return;
+    }
+    attachmentInputEl.click();
+  });
+  attachmentInputEl.addEventListener("change", async () => {
+    const file = attachmentInputEl.files && attachmentInputEl.files[0] ? attachmentInputEl.files[0] : null;
+    attachmentInputEl.value = "";
+    if (!file) return;
+    try {
+      await uploadComposerAttachment(file);
+    } catch (error) {
+      reportUiError(error);
+    }
+  });
+}
 
 function installSelectionQuoteBindings() {
   return interactionController.bindSelectionQuoteBindings();
@@ -3661,10 +3910,14 @@ document?.addEventListener?.("keydown", (event) => {
 installCoreEventBindings();
 installActionButtonBindings();
 installShellModalBindings();
-installVisibilitySkinLifecycle();
+if (!visualDevPreviewMode) {
+  installVisibilitySkinLifecycle();
+}
 installPendingCompletionWatchdog();
 startDevAutoRefresh();
-installTapToDismissKeyboard();
-installKeyboardViewportSync();
+if (!visualDevPreviewMode) {
+  installTapToDismissKeyboard();
+  installKeyboardViewportSync();
+}
 syncPinnedChatsCollapseUi();
 void bootstrap();

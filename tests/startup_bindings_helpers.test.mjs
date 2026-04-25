@@ -57,6 +57,7 @@ function buildHarness({
   maybeRefresh = false,
   isNearBottom = true,
   isMobileBootstrapPath = false,
+  skipTelegramWebappSetup = false,
   noteMobileCarouselInteraction = () => {},
   hasMessageSelection = false,
   mobileQuoteMode = false,
@@ -291,6 +292,7 @@ function buildHarness({
       return maybeRefresh;
     },
     isMobileBootstrapPath: () => isMobileBootstrapPath,
+    skipTelegramWebappSetup,
     logBootStage: (eventName, details = null) => logBootStages.push([eventName, details]),
     syncBootLatencyChip: (eventName) => bootLatency.push(eventName),
     fetchAuthBootstrapWithRetry: async () => {
@@ -679,6 +681,35 @@ test('bootstrap skips version-sync refresh entirely on mobile path', async () =>
   assert.equal(harness.authBootstrapCalls.length, 2);
   assert.ok(harness.logBootStages.some(([name]) => name === 'version-check-skipped-mobile'));
   assert.equal(harness.timeoutCallbacks.length, 0);
+});
+
+test('bootstrap skips version-sync refresh entirely on embedded preview path', async () => {
+  const harness = buildHarness({
+    maybeRefresh: true,
+    isMobileBootstrapPath: true,
+  });
+
+  await harness.controller.bootstrap();
+
+  assert.equal(harness.maybeRefreshCalls.length, 0);
+  assert.ok(harness.logBootStages.some(([name]) => name === 'version-check-skipped-mobile'));
+});
+
+test('bootstrap skips Telegram top-level setup and fullscreen event wiring for embedded preview mode', async () => {
+  const harness = buildHarness({
+    skipTelegramWebappSetup: true,
+    isMobileBootstrapPath: true,
+  });
+
+  await harness.controller.bootstrap();
+
+  assert.equal(harness.tg.readyCalls, 0);
+  assert.equal(harness.tg.disableVerticalSwipesCalls, 0);
+  assert.equal(harness.tg.expandCalls, 0);
+  assert.deepEqual(harness.tg.eventRegistrations, []);
+  assert.ok(harness.logBootStages.some(([name]) => name === 'telegram-webapp-skipped-embedded-preview'));
+  assert.equal(harness.initDataValue, 'telegram-init-data');
+  assert.equal(harness.authBootstrapCalls.length, 2);
 });
 
 test('bootstrap surfaces desktop testing ready message when auth bootstrap fails in desktop mode', async () => {

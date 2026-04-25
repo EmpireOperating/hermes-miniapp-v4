@@ -41,12 +41,18 @@ function createHarness({
 } = {}) {
   let currentStatePayload = statePayload;
   const shellCalls = [];
+  const shellCreateDeps = [];
   const previewCreations = [];
   const apiGetCalls = [];
   const apiPostCalls = [];
+  const bridgeCaptureCalls = [];
+  const bridgeCaptureOptions = [];
   const loadHandlers = [];
   let disposedPreviewCount = 0;
+  const previewFramesBySessionId = new Map();
+  let activePreviewFrame = null;
   const previewFrame = {
+    id: 'base-preview-frame',
     addEventListener(type, handler) {
       if (type === 'load') {
         loadHandlers.push(handler);
@@ -55,10 +61,40 @@ function createHarness({
     removeEventListener() {},
     contentWindow: {
       postMessage() {},
+      document: {
+        documentElement: { outerHTML: '<body><main>Base preview</main></body>' },
+      },
+      innerWidth: 640,
+      innerHeight: 360,
     },
   };
+  activePreviewFrame = previewFrame;
+  let workspaceOpen = false;
   const shellController = {
     applySessionState(session) {
+      const sessionId = String(session?.sessionId || session?.session_id || '');
+      if (sessionId) {
+        if (!previewFramesBySessionId.has(sessionId)) {
+          previewFramesBySessionId.set(sessionId, {
+            id: `frame-${sessionId}`,
+            addEventListener(type, handler) {
+              if (type === 'load') {
+                loadHandlers.push(handler);
+              }
+            },
+            removeEventListener() {},
+            contentWindow: {
+              postMessage() {},
+              document: {
+                documentElement: { outerHTML: `<body><main>${sessionId}</main></body>` },
+              },
+              innerWidth: 640,
+              innerHeight: 360,
+            },
+          });
+        }
+        activePreviewFrame = previewFramesBySessionId.get(sessionId);
+      }
       shellCalls.push(['applySessionState', session]);
     },
     applySelectionSummary(selection) {
@@ -76,8 +112,27 @@ function createHarness({
     applyRuntimeSummary(runtime) {
       shellCalls.push(['applyRuntimeSummary', runtime]);
     },
-    clearSessionState() {
-      shellCalls.push(['clearSessionState']);
+    clearSessionState(options = {}) {
+      activePreviewFrame = previewFrame;
+      shellCalls.push(['clearSessionState', options]);
+    },
+    invalidateSessionPreview(sessionId) {
+      previewFramesBySessionId.delete(String(sessionId || ''));
+      shellCalls.push(['invalidateSessionPreview', String(sessionId || '')]);
+    },
+    getActivePreviewFrame() {
+      return activePreviewFrame;
+    },
+    getActivePreviewRegion() {
+      return { left: 24, top: 48, width: 640, height: 360 };
+    },
+    toggleWorkspace(forceOpen = null) {
+      workspaceOpen = forceOpen == null ? !workspaceOpen : Boolean(forceOpen);
+      shellCalls.push(['toggleWorkspace', workspaceOpen]);
+      return workspaceOpen;
+    },
+    isWorkspaceOpen() {
+      return workspaceOpen;
     },
   };
   const previewHelpers = {
@@ -100,6 +155,19 @@ function createHarness({
       };
     },
   };
+  globalThis.HermesMiniappVisualDevBridge = {
+    captureDocumentScreenshot: async (payload, options = {}) => {
+      bridgeCaptureCalls.push(payload);
+      bridgeCaptureOptions.push(options);
+      return {
+        contentType: 'image/png',
+        bytesB64: 'YmFy',
+        width: Number(payload?.region?.width || 0) || Number(options?.windowObject?.innerWidth || 0) || 640,
+        height: Number(payload?.region?.height || 0) || Number(options?.windowObject?.innerHeight || 0) || 360,
+        label: 'workspace preview screenshot',
+      };
+    },
+  };
   const controller = visualDevModeHelpers.createController({
     config: {
       enabled,
@@ -107,17 +175,29 @@ function createHarness({
       allowedParentOrigins: ['https://miniapp.example.com'],
     },
     shellHelpers: {
-      createController() {
+      createController(deps) {
+        shellCreateDeps.push(deps);
         return shellController;
       },
     },
     previewHelpers,
+    appShell: {},
+    workspaceRoot: {},
     shellRoot: {},
+    toggleButton: {},
+    previewWrap: {},
+    sidebarResizeHandle: {},
+    previewResizeHandle: {},
     previewFrame,
     ownershipLabel: {},
     statusLabel: {},
     selectionChip: {},
     screenshotChip: {},
+    composerSelectionChip: {},
+    composerScreenshotChip: {},
+    composerPreviewChip: {},
+    composerConsoleChip: {},
+    onWorkspaceOpenChange() {},
     getIsAuthenticated: () => authenticated,
     getActiveChatId: () => activeChatId,
     getParentOrigin,
@@ -180,13 +260,32 @@ function createHarness({
   return {
     controller,
     shellCalls,
+    shellCreateDeps,
     previewCreations,
     apiGetCalls,
     apiPostCalls,
+    bridgeCaptureCalls,
+    bridgeCaptureOptions,
     loadHandlers,
+    previewFrame,
+    previewFramesBySessionId,
     getDisposedPreviewCount: () => disposedPreviewCount,
   };
 }
+
+test('createController forwards Workspace shell deps to the shell helper', () => {
+  const harness = createHarness();
+
+  assert.equal(harness.shellCreateDeps.length, 1);
+  assert.ok(harness.shellCreateDeps[0].workspaceRoot, 'workspaceRoot should be forwarded to shell helper');
+  assert.ok(harness.shellCreateDeps[0].appShell, 'appShell should be forwarded to shell helper');
+  assert.ok(harness.shellCreateDeps[0].toggleButton, 'toggleButton should be forwarded to shell helper');
+  assert.ok(harness.shellCreateDeps[0].composerSelectionChip, 'composer chips should be forwarded to shell helper');
+  assert.ok(harness.shellCreateDeps[0].previewWrap, 'previewWrap should be forwarded to shell helper');
+  assert.ok(harness.shellCreateDeps[0].sidebarResizeHandle, 'sidebarResizeHandle should be forwarded to shell helper');
+  assert.ok(harness.shellCreateDeps[0].previewResizeHandle, 'previewResizeHandle should be forwarded to shell helper');
+  assert.equal(harness.shellCreateDeps[0].initialEnabled, true);
+});
 
 test('bootstrap fetches visual-dev state, session details, and applies the active chat session', async () => {
   const harness = createHarness();
@@ -197,8 +296,10 @@ test('bootstrap fetches visual-dev state, session details, and applies the activ
   assert.deepEqual(harness.apiGetCalls, ['/api/visual-dev/state', '/api/visual-dev/session/11']);
   assert.equal(harness.previewCreations.length, 1);
   assert.equal(harness.previewCreations[0].sessionId, 'session-11');
+  assert.equal(harness.previewCreations[0].previewFrame.id, 'frame-session-11');
   assert.equal(harness.previewCreations[0].previewOrigin, 'https://preview.example.com');
   assert.equal(harness.previewCreations[0].parentOrigin, 'https://miniapp.example.com');
+  assert.equal(harness.previewCreations[0].__handshakeCount, 1);
   assert.match(
     JSON.stringify(harness.shellCalls),
     /Chat 11/,
@@ -207,6 +308,84 @@ test('bootstrap fetches visual-dev state, session details, and applies the activ
   assert.ok(
     harness.shellCalls.some(([name, payload]) => name === 'applySessionDetails' && payload.console_events?.[0]?.message === 'Preview booting'),
     'bootstrap should hydrate the drawer with recent console events for the active session',
+  );
+});
+
+test('requestScreenshot captures the active preview iframe document and saves that artifact', async () => {
+  const harness = createHarness();
+  await harness.controller.bootstrap();
+
+  await harness.controller.requestScreenshot();
+
+  assert.deepEqual(harness.bridgeCaptureCalls, [{
+    source: 'toolbar',
+    capture: 'full',
+    label: 'workspace preview screenshot',
+  }]);
+  assert.equal(harness.bridgeCaptureOptions.length, 1);
+  assert.equal(harness.bridgeCaptureOptions[0].windowObject, harness.previewCreations[0].previewFrame.contentWindow);
+  assert.equal(harness.bridgeCaptureOptions[0].documentObject, harness.previewCreations[0].previewFrame.contentWindow.document);
+  assert.deepEqual(harness.apiPostCalls.at(-1), [
+    '/api/visual-dev/session/screenshot',
+    {
+      session_id: 'session-11',
+      content_type: 'image/png',
+      bytes_b64: 'YmFy',
+      metadata: {
+        label: 'workspace preview screenshot',
+        capture: 'full',
+      },
+    },
+  ]);
+});
+
+test('requestScreenshot falls back to preview-command capture when the iframe document is not directly accessible', async () => {
+  const harness = createHarness();
+  await harness.controller.bootstrap();
+  const previewDeps = harness.previewCreations[0];
+  previewDeps.previewFrame.contentWindow = {
+    postMessage() {},
+  };
+
+  const response = await harness.controller.requestScreenshot();
+
+  assert.equal(response, null);
+  assert.deepEqual(harness.bridgeCaptureCalls, []);
+  assert.deepEqual(previewDeps.__commands, [[
+    'capture-full',
+    {
+      source: 'toolbar',
+      capture: 'full',
+      label: 'workspace preview screenshot',
+    },
+  ]]);
+});
+
+test('bootstrap marks same-origin /app previews with an embedded-preview query param to avoid recursive self-embedding', async () => {
+  const harness = createHarness({
+    statePayload: {
+      ok: true,
+      enabled: true,
+      sessions: [{
+        session_id: 'session-11',
+        chat_id: 11,
+        preview_url: 'https://miniapp.example.com/app',
+        preview_origin: 'https://miniapp.example.com',
+        bridge_parent_origin: 'https://miniapp.example.com',
+        preview_title: 'Hermes test',
+        runtime: { state: 'connecting' },
+      }],
+    },
+    getParentOrigin: () => 'https://miniapp.example.com',
+  });
+
+  await harness.controller.bootstrap();
+
+  const applySessionStateCall = harness.shellCalls.find(([name]) => name === 'applySessionState');
+  assert.ok(applySessionStateCall, 'bootstrap should still apply the active session');
+  assert.equal(
+    applySessionStateCall[1].preview_frame_url,
+    'https://miniapp.example.com/app?__hermes_visual_dev_preview=1',
   );
 });
 
@@ -309,7 +488,7 @@ test('attachSession posts attach payload for the active chat, refreshes state, a
   assert.equal(harness.previewCreations.at(-1)?.sessionId, harness.apiPostCalls[0][1].session_id);
 });
 
-test('requestInspectMode, requestScreenshot, and requestRegionScreenshot dispatch preview commands for the active session', async () => {
+test('requestInspectMode and requestRegionScreenshot dispatch preview commands, while requestScreenshot captures the active iframe directly', async () => {
   const harness = createHarness({
     sessionDetailsByChatId: {
       11: {
@@ -334,12 +513,12 @@ test('requestInspectMode, requestScreenshot, and requestRegionScreenshot dispatc
   await harness.controller.bootstrap();
 
   harness.controller.requestInspectMode();
-  harness.controller.requestScreenshot();
-  harness.controller.requestRegionScreenshot();
+  await harness.controller.requestScreenshot();
+  await harness.controller.requestRegionScreenshot();
 
-  assert.deepEqual(harness.previewCreations[0].__commands, [
+  const previewDeps = harness.previewCreations[0];
+  assert.deepEqual(previewDeps.__commands, [
     ['inspect-start', { source: 'toolbar' }],
-    ['capture-full', { source: 'toolbar', capture: 'full' }],
     ['capture-region', {
       source: 'toolbar',
       capture: 'region',
@@ -348,9 +527,15 @@ test('requestInspectMode, requestScreenshot, and requestRegionScreenshot dispatc
       region: { left: 10, top: 20, width: 120, height: 48 },
     }],
   ]);
+  assert.deepEqual(harness.bridgeCaptureCalls, [{
+    source: 'toolbar',
+    capture: 'full',
+    label: 'workspace preview screenshot',
+  }]);
+  assert.equal(harness.bridgeCaptureOptions[0].windowObject, previewDeps.previewFrame.contentWindow);
 });
 
-test('syncActiveChatSession swaps preview ownership, reloads drawer details, and clears when the active chat has no attached session', async () => {
+test('syncActiveChatSession reuses cached preview frames when returning to a recently attached workspace chat', async () => {
   const harness = createHarness({
     activeChatId: 11,
     statePayload: {
@@ -396,6 +581,71 @@ test('syncActiveChatSession swaps preview ownership, reloads drawer details, and
   });
 
   await harness.controller.bootstrap();
+  const frame11 = harness.previewCreations[0].previewFrame;
+
+  harness.controller.setActiveChatGetter(() => 22);
+  await harness.controller.syncActiveChatSession();
+  const frame22 = harness.previewCreations[1].previewFrame;
+
+  harness.controller.setActiveChatGetter(() => 11);
+  await harness.controller.syncActiveChatSession();
+  const frame11Return = harness.previewCreations[2].previewFrame;
+
+  assert.notEqual(frame11, frame22);
+  assert.equal(frame11Return, frame11);
+  assert.ok(
+    harness.apiGetCalls.filter((url) => url === '/api/visual-dev/session/11').length >= 2,
+    'switching back should refresh details without rebuilding the underlying iframe',
+  );
+});
+
+test('syncActiveChatSession swaps preview ownership, reloads drawer details, and keeps the workspace shell enabled when the active chat has no attached session', async () => {
+  const harness = createHarness({
+    activeChatId: 11,
+    statePayload: {
+      ok: true,
+      enabled: true,
+      sessions: [
+        {
+          session_id: 'session-11',
+          chat_id: 11,
+          preview_url: 'https://preview.example.com/app-11',
+          preview_origin: 'https://preview.example.com',
+          bridge_parent_origin: 'https://miniapp.example.com',
+          preview_title: 'Preview 11',
+          runtime: { state: 'live' },
+        },
+        {
+          session_id: 'session-22',
+          chat_id: 22,
+          preview_url: 'https://preview.example.com/app-22',
+          preview_origin: 'https://preview.example.com',
+          bridge_parent_origin: 'https://miniapp.example.com',
+          preview_title: 'Preview 22',
+          runtime: { state: 'connecting' },
+        },
+      ],
+    },
+    sessionDetailsByChatId: {
+      11: {
+        ok: true,
+        session: { session_id: 'session-11', chat_id: 11, runtime: { state: 'live', message: 'Ready' } },
+        latest_selection: null,
+        artifacts: [],
+        console_events: [{ level: 'info', message: 'Preview 11 ready' }],
+      },
+      22: {
+        ok: true,
+        session: { session_id: 'session-22', chat_id: 22, runtime: { state: 'connecting', message: 'Booting' } },
+        latest_selection: null,
+        artifacts: [],
+        console_events: [{ level: 'warn', message: 'Preview 22 reconnecting' }],
+      },
+    },
+  });
+
+  await harness.controller.bootstrap();
+  harness.shellCreateDeps[0].onWorkspaceOpenChange(true);
   harness.controller.setActiveChatGetter(() => 22);
   await harness.controller.syncActiveChatSession();
   harness.controller.setActiveChatGetter(() => 999);
@@ -403,6 +653,7 @@ test('syncActiveChatSession swaps preview ownership, reloads drawer details, and
 
   assert.equal(harness.previewCreations.length, 2);
   assert.equal(harness.previewCreations[1].sessionId, 'session-22');
+  assert.equal(harness.previewCreations[1].previewFrame.id, 'frame-session-22');
   assert.ok(
     harness.apiGetCalls.includes('/api/visual-dev/session/22'),
     'switching chats should reload drawer details for the new preview owner',
@@ -413,7 +664,78 @@ test('syncActiveChatSession swaps preview ownership, reloads drawer details, and
   );
   assert.equal(harness.getDisposedPreviewCount(), 2);
   assert.ok(
-    harness.shellCalls.some(([name]) => name === 'clearSessionState'),
-    'controller should clear the shell when no session is attached to the active chat',
+    harness.shellCalls.some(([name, payload]) => name === 'clearSessionState' && payload?.enabled === true),
+    'controller should keep the workspace shell enabled when the active chat has no attachment',
+  );
+});
+
+test('switching to unattached chats keeps the workspace open instead of restoring a per-chat closed state', async () => {
+  const harness = createHarness({
+    activeChatId: 11,
+    statePayload: {
+      ok: true,
+      enabled: true,
+      sessions: [
+        {
+          session_id: 'session-11',
+          chat_id: 11,
+          preview_url: 'https://preview.example.com/app-11',
+          preview_origin: 'https://preview.example.com',
+          bridge_parent_origin: 'https://miniapp.example.com',
+          preview_title: 'Preview 11',
+          runtime: { state: 'live' },
+        },
+        {
+          session_id: 'session-22',
+          chat_id: 22,
+          preview_url: 'https://preview.example.com/app-22',
+          preview_origin: 'https://preview.example.com',
+          bridge_parent_origin: 'https://miniapp.example.com',
+          preview_title: 'Preview 22',
+          runtime: { state: 'connecting' },
+        },
+      ],
+    },
+    sessionDetailsByChatId: {
+      11: {
+        ok: true,
+        session: { session_id: 'session-11', chat_id: 11, runtime: { state: 'live', message: 'Ready' } },
+        latest_selection: null,
+        artifacts: [],
+        console_events: [],
+      },
+      22: {
+        ok: true,
+        session: { session_id: 'session-22', chat_id: 22, runtime: { state: 'connecting', message: 'Booting' } },
+        latest_selection: null,
+        artifacts: [],
+        console_events: [],
+      },
+    },
+  });
+
+  await harness.controller.bootstrap();
+  harness.shellCreateDeps[0].onWorkspaceOpenChange(true);
+  harness.controller.setActiveChatGetter(() => 22);
+  await harness.controller.syncActiveChatSession();
+  harness.controller.setActiveChatGetter(() => 999);
+  await harness.controller.syncActiveChatSession();
+  harness.controller.setActiveChatGetter(() => 11);
+  await harness.controller.syncActiveChatSession();
+
+  assert.equal(harness.previewCreations.length, 3);
+  assert.equal(harness.previewCreations[0].previewFrame.id, 'frame-session-11');
+  assert.equal(harness.previewCreations[2].previewFrame.id, 'frame-session-11');
+  assert.equal(harness.previewCreations[2].sessionId, 'session-11');
+  assert.equal(harness.previewCreations[2].__handshakeCount, 1);
+  assert.equal(harness.getDisposedPreviewCount(), 2);
+  assert.deepEqual(
+    harness.shellCalls.filter(([name]) => name === 'toggleWorkspace').map(([, value]) => value),
+    [],
+    'chat switches should preserve the current workspace open state instead of forcing per-chat open/close toggles',
+  );
+  assert.ok(
+    harness.shellCalls.some(([name, payload]) => name === 'clearSessionState' && payload?.enabled === true),
+    'switching to an unattached chat should clear the preview content but keep the workspace shell enabled',
   );
 });

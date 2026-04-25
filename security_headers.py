@@ -5,12 +5,39 @@ import os
 
 from flask import Response
 
+from miniapp_config import normalize_origin
+
 
 def generate_csp_nonce() -> str:
     return base64.urlsafe_b64encode(os.urandom(18)).decode("ascii").rstrip("=")
 
 
-def apply_security_headers(response: Response, *, csp_nonce: str | None, enable_hsts: bool) -> Response:
+def _frame_ancestors_value(
+    *,
+    request_origin: str | None,
+    visual_dev_enabled: bool,
+    visual_dev_allowed_preview_origins: set[str] | frozenset[str] | tuple[str, ...],
+    visual_dev_allowed_parent_origins: set[str] | frozenset[str] | tuple[str, ...],
+) -> str:
+    ancestors = ["https://web.telegram.org", "https://*.telegram.org"]
+    candidate_origin = normalize_origin(request_origin)
+    allowed_preview_origins = set(visual_dev_allowed_preview_origins or ())
+    allowed_parent_origins = sorted(set(visual_dev_allowed_parent_origins or ()))
+    if visual_dev_enabled and candidate_origin and candidate_origin in allowed_preview_origins:
+        ancestors.extend(allowed_parent_origins)
+    return " ".join(dict.fromkeys(ancestors))
+
+
+def apply_security_headers(
+    response: Response,
+    *,
+    csp_nonce: str | None,
+    enable_hsts: bool,
+    request_origin: str | None = None,
+    visual_dev_enabled: bool = False,
+    visual_dev_allowed_preview_origins: set[str] | frozenset[str] | tuple[str, ...] = (),
+    visual_dev_allowed_parent_origins: set[str] | frozenset[str] | tuple[str, ...] = (),
+) -> Response:
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     # Do NOT send X-Frame-Options for Telegram Mini App pages.
     # Telegram Web can render mini apps inside an iframe, and XFO=DENY blocks
@@ -24,6 +51,13 @@ def apply_security_headers(response: Response, *, csp_nonce: str | None, enable_
     if csp_nonce:
         script_src = f"{script_src} 'nonce-{csp_nonce}'"
 
+    frame_ancestors = _frame_ancestors_value(
+        request_origin=request_origin,
+        visual_dev_enabled=visual_dev_enabled,
+        visual_dev_allowed_preview_origins=visual_dev_allowed_preview_origins,
+        visual_dev_allowed_parent_origins=visual_dev_allowed_parent_origins,
+    )
+
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
@@ -31,7 +65,7 @@ def apply_security_headers(response: Response, *, csp_nonce: str | None, enable_
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: https:; "
         "connect-src 'self'; "
-        "frame-ancestors https://web.telegram.org https://*.telegram.org; "
+        f"frame-ancestors {frame_ancestors}; "
         "base-uri 'self'; "
         "form-action 'self'",
     )

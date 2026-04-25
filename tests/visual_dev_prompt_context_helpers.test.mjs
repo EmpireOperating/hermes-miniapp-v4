@@ -84,7 +84,7 @@ test('controller chip clicks append selection and screenshot context into the co
   screenshotChip.click();
 
   assert.match(promptEl.value, /Selected element: Sidebar toggle/);
-  assert.match(promptEl.value, /Latest screenshot: viewport capture/);
+  assert.match(promptEl.value, /Latest screenshot: viewport capture • capture\.png/);
   assert.match(promptEl.value, /Artifact path: \/tmp\/capture\.png/);
   assert.equal(drafts.length, 2);
 });
@@ -112,7 +112,7 @@ test('controller exposes explicit attached request context only after chip click
   const attachedConsoleClearButton = createElement();
   attachedConsoleClearButton.hidden = true;
   const selection = { label: 'Sidebar toggle', selector: '#sidebar-toggle' };
-  const screenshot = { label: 'viewport capture', storage_path: '/tmp/capture.png' };
+  const screenshot = { label: 'viewport capture', storage_path: '/tmp/screenshot-1776958241575-66c1c292.png' };
   const preview = { preview_url: 'https://preview.example.com/app', preview_title: 'Preview app' };
   const consoleContext = { runtime_state: 'build_failed', runtime_message: 'Vite compile failed', level: 'error', message: 'Build exploded' };
   const controller = promptContextHelpers.createController({
@@ -160,6 +160,8 @@ test('controller exposes explicit attached request context only after chip click
   assert.equal(attachedSelectionClearButton.hidden, false);
 
   screenshotChip.click();
+  assert.match(promptEl.value, /Latest screenshot: viewport capture • screenshot-1776958241575-66c1c292\.png/);
+  assert.match(promptEl.value, /Artifact path: \/tmp\/screenshot-1776958241575-66c1c292\.png/);
   previewChip.click();
   consoleChip.click();
   assert.deepEqual(controller.getRequestContext?.(), {
@@ -169,7 +171,8 @@ test('controller exposes explicit attached request context only after chip click
     console: consoleContext,
   });
   assert.equal(attachedScreenshotChip.hidden, false);
-  assert.match(attachedScreenshotChip.textContent, /Next send screenshot: viewport capture/);
+  assert.match(attachedScreenshotChip.textContent, /Next send screenshot: viewport capture • screenshot 66c1c292/);
+  assert.doesNotMatch(attachedScreenshotChip.textContent, /1776958241575/);
   assert.equal(attachedScreenshotClearButton.hidden, false);
   assert.equal(attachedPreviewChip.hidden, false);
   assert.match(attachedPreviewChip.textContent, /Next send preview: Preview app/);

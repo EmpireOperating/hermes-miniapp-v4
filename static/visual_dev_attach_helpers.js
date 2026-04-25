@@ -12,6 +12,7 @@
   function createController(deps) {
     const {
       enabled = false,
+      allowedPreviewOrigins = [],
       getActiveChatId = () => 0,
       getActiveChatLabel = () => '',
       visualDevController,
@@ -21,6 +22,8 @@
       previewTitleInput,
       currentChatLabel,
       currentSessionLabel,
+      attachErrorLabel,
+      attachHintLabel,
       settingsOpenButton,
       attachButton,
       refreshButton,
@@ -36,6 +39,32 @@
     } = deps || {};
 
     let bound = false;
+
+    function trustedOriginsLabel() {
+      const origins = Array.isArray(allowedPreviewOrigins)
+        ? allowedPreviewOrigins.map((value) => String(value || '').trim()).filter(Boolean)
+        : [];
+      if (!origins.length) {
+        return 'Trusted preview origins are not configured on this instance yet.';
+      }
+      return `Trusted preview origins: ${origins.join(', ')}`;
+    }
+
+    function clearAttachError() {
+      setText(attachErrorLabel, '');
+      if (attachErrorLabel) {
+        attachErrorLabel.hidden = true;
+      }
+    }
+
+    function setAttachError(error) {
+      const message = String(error?.message || error || '').trim() || 'Unable to attach preview';
+      const suffix = /trusted preview origins/i.test(message) ? '' : ` ${trustedOriginsLabel()}`;
+      setText(attachErrorLabel, `${message}${suffix}`.trim());
+      if (attachErrorLabel) {
+        attachErrorLabel.hidden = false;
+      }
+    }
 
     function activeSession() {
       const state = visualDevController?.getState?.() || {};
@@ -59,6 +88,7 @@
       setDisabled(detachButton, sessionDisabled);
       setText(currentChatLabel, getActiveChatLabel?.() || 'No chat selected');
       setText(currentSessionLabel, session?.preview_title || session?.preview_url || 'No preview attached');
+      setText(attachHintLabel, trustedOriginsLabel());
       return { chatId, session };
     }
 
@@ -67,6 +97,7 @@
       if (!enabled || !dialog?.showModal) {
         return;
       }
+      clearAttachError();
       previewUrlInput.value = String(session?.preview_url || '');
       previewTitleInput.value = String(session?.preview_title || '');
       dialog.showModal();
@@ -75,11 +106,13 @@
     }
 
     function closeAttachModal(returnValue = '') {
+      clearAttachError();
       dialog?.close?.(returnValue);
     }
 
     async function handleAttachSubmit(event) {
       event?.preventDefault?.();
+      clearAttachError();
       try {
         await visualDevController?.attachSession?.({
           previewUrl: String(previewUrlInput?.value || '').trim(),
@@ -88,6 +121,7 @@
         refreshUi();
         closeAttachModal('attached');
       } catch (error) {
+        setAttachError(error);
         onError(error);
       }
     }

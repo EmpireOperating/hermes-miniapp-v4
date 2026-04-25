@@ -262,17 +262,61 @@
     return html.replace(/\n/g, "<br>");
   }
 
+  function renderAttachmentsHtml(attachments, escapeHtmlFn, buildAttachmentUrlFn) {
+    if (!Array.isArray(attachments) || !attachments.length) {
+      return "";
+    }
+    const items = [];
+    attachments.forEach((attachment) => {
+      if (!attachment || typeof attachment !== "object") return;
+      const id = String(attachment.id || "").trim();
+      const filename = String(attachment.filename || "").trim() || "attachment";
+      const kind = String(attachment.kind || "file").trim() || "file";
+      const rawHref = String(attachment.preview_url || attachment.download_url || "").trim();
+      const href = typeof buildAttachmentUrlFn === "function" ? buildAttachmentUrlFn(rawHref) : rawHref;
+      if (!id || !href) return;
+      const contentType = String(attachment.content_type || "application/octet-stream").trim() || "application/octet-stream";
+      const sizeBytes = Number(attachment.size_bytes || 0);
+      const sizeLabel = Number.isFinite(sizeBytes) && sizeBytes > 0
+        ? (sizeBytes >= 1024 * 1024 ? `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB` : sizeBytes >= 1024 ? `${Math.round(sizeBytes / 102.4) / 10} KB` : `${sizeBytes} B`)
+        : "";
+      const metaBits = [kind === "image" ? "image" : contentType, sizeLabel].filter(Boolean).join(" · ");
+      if (kind === "image") {
+        items.push(
+          `<a class="message-attachment message-attachment--image" href="${escapeHtmlFn(href)}" target="_blank" rel="noopener noreferrer">`
+          + `<img class="message-attachment__thumb" src="${escapeHtmlFn(href)}" alt="${escapeHtmlFn(filename)}">`
+          + `<span class="message-attachment__label">${escapeHtmlFn(filename)}</span>`
+          + (metaBits ? `<span class="message-attachment__meta">${escapeHtmlFn(metaBits)}</span>` : "")
+          + `</a>`
+        );
+        return;
+      }
+      items.push(
+        `<a class="message-attachment" href="${escapeHtmlFn(href)}" target="_blank" rel="noopener noreferrer">`
+        + `<span class="message-attachment__label">${escapeHtmlFn(filename)}</span>`
+        + (metaBits ? `<span class="message-attachment__meta">${escapeHtmlFn(metaBits)}</span>` : "")
+        + `</a>`
+      );
+    });
+    if (!items.length) return "";
+    return `<div class="message-attachments">${items.join("")}</div>`;
+  }
+
   function renderBody(container, rawText, {
     cleanDisplayTextFn,
     escapeHtmlFn,
     fileRefs = null,
+    attachments = [],
+    buildAttachmentUrlFn = null,
     allowedRoots = [],
   } = {}) {
     if (!container || typeof cleanDisplayTextFn !== "function" || typeof escapeHtmlFn !== "function") return;
     const text = cleanDisplayTextFn(rawText);
     const fenced = text.includes("```");
+    const attachmentsHtml = renderAttachmentsHtml(attachments, escapeHtmlFn, buildAttachmentUrlFn);
     if (!fenced) {
-      container.innerHTML = renderPlainTextWithFileRefs(text, fileRefs, escapeHtmlFn, { allowedRoots });
+      const bodyHtml = renderPlainTextWithFileRefs(text, fileRefs, escapeHtmlFn, { allowedRoots });
+      container.innerHTML = [bodyHtml, attachmentsHtml].filter(Boolean).join("");
       return;
     }
 
@@ -291,6 +335,9 @@
       const renderedCode = renderPlainTextWithFileRefs(code, fileRefs, escapeHtmlFn, { allowedRoots });
       parts.push(`<pre class="code-block" data-lang="${escapeHtmlFn(maybeLang)}"><code>${renderedCode}</code></pre>`);
     });
+    if (attachmentsHtml) {
+      parts.push(attachmentsHtml);
+    }
     container.innerHTML = parts.join("");
   }
 

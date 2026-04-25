@@ -132,9 +132,10 @@ def select_pinned_chat_summary_rows(conn: Connection, *, user_id: str):
     ).fetchall()
 
 
-def hydrate_chat_turns(rows) -> list[ChatTurn]:
+def hydrate_chat_turns(rows, *, attachments_by_message_id: dict[int, list[dict[str, object]]] | None = None) -> list[ChatTurn]:
     ordered = reversed(rows)
     hydrated: list[ChatTurn] = []
+    attachment_map = attachments_by_message_id or {}
     for row in ordered:
         message_id = int(row["id"])
         body = str(row["body"])
@@ -145,6 +146,7 @@ def hydrate_chat_turns(rows) -> list[ChatTurn]:
                 body=body,
                 created_at=str(row["created_at"]),
                 file_refs=extract_file_refs(body, message_id=message_id),
+                attachments=list(attachment_map.get(message_id, [])),
             )
         )
     return hydrated

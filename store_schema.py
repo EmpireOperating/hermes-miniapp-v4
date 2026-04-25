@@ -86,6 +86,32 @@ class StoreSchemaMixin:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_messages_user_chat_role ON chat_messages(user_id, chat_id, role, id)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_message_attachments (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER,
+                filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                storage_path TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'file',
+                width INTEGER,
+                height INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(chat_id) REFERENCES chat_threads(id) ON DELETE CASCADE,
+                FOREIGN KEY(message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_message_attachments_user_chat_message ON chat_message_attachments(user_id, chat_id, message_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_message_attachments_pending ON chat_message_attachments(user_id, chat_id, message_id, created_at)"
+        )
 
     def _ensure_job_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -101,6 +127,14 @@ class StoreSchemaMixin:
                 max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
                 next_attempt_at TEXT,
                 error TEXT,
+                child_pid INTEGER,
+                child_transport TEXT,
+                terminal_return_code INTEGER,
+                terminal_failure_kind TEXT,
+                terminal_outcome TEXT,
+                terminal_error TEXT,
+                limit_breach TEXT,
+                limit_breach_detail TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 finished_at TEXT,
@@ -119,6 +153,14 @@ class StoreSchemaMixin:
                 attempts INTEGER NOT NULL,
                 max_attempts INTEGER NOT NULL,
                 error TEXT,
+                child_pid INTEGER,
+                child_transport TEXT,
+                terminal_return_code INTEGER,
+                terminal_failure_kind TEXT,
+                terminal_outcome TEXT,
+                terminal_error TEXT,
+                limit_breach TEXT,
+                limit_breach_detail TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -133,6 +175,23 @@ class StoreSchemaMixin:
             )
             """
         )
+        dead_letter_columns = self._table_columns(conn, "chat_job_dead_letters")
+        if "child_pid" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN child_pid INTEGER")
+        if "child_transport" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN child_transport TEXT")
+        if "terminal_return_code" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN terminal_return_code INTEGER")
+        if "terminal_failure_kind" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN terminal_failure_kind TEXT")
+        if "terminal_outcome" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN terminal_outcome TEXT")
+        if "terminal_error" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN terminal_error TEXT")
+        if "limit_breach" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN limit_breach TEXT")
+        if "limit_breach_detail" not in dead_letter_columns:
+            conn.execute("ALTER TABLE chat_job_dead_letters ADD COLUMN limit_breach_detail TEXT")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_job_dead_letters_job_id ON chat_job_dead_letters(job_id)"
         )
@@ -266,6 +325,22 @@ class StoreSchemaMixin:
             conn.execute("ALTER TABLE chat_jobs ADD COLUMN next_attempt_at TEXT")
         if "visual_context" not in chat_job_columns:
             conn.execute("ALTER TABLE chat_jobs ADD COLUMN visual_context TEXT")
+        if "child_pid" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN child_pid INTEGER")
+        if "child_transport" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN child_transport TEXT")
+        if "terminal_return_code" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN terminal_return_code INTEGER")
+        if "terminal_failure_kind" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN terminal_failure_kind TEXT")
+        if "terminal_outcome" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN terminal_outcome TEXT")
+        if "terminal_error" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN terminal_error TEXT")
+        if "limit_breach" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN limit_breach TEXT")
+        if "limit_breach_detail" not in chat_job_columns:
+            conn.execute("ALTER TABLE chat_jobs ADD COLUMN limit_breach_detail TEXT")
 
         self._migrate_chat_jobs_invariants(conn)
         conn.execute(
@@ -328,7 +403,8 @@ class StoreSchemaMixin:
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                detached_at TEXT
+                detached_at TEXT,
+                FOREIGN KEY(chat_id) REFERENCES chat_threads(id) ON DELETE CASCADE
             )
             """
         )
@@ -373,53 +449,8 @@ class StoreSchemaMixin:
             )
             """
         )
-        session_columns = self._table_columns(conn, "visual_dev_sessions")
-        if "preview_title" not in session_columns:
-            conn.execute("ALTER TABLE visual_dev_sessions ADD COLUMN preview_title TEXT NOT NULL DEFAULT ''")
-        if "bridge_parent_origin" not in session_columns:
-            conn.execute(
-                "ALTER TABLE visual_dev_sessions ADD COLUMN bridge_parent_origin TEXT NOT NULL DEFAULT ''"
-            )
-        if "status" not in session_columns:
-            conn.execute("ALTER TABLE visual_dev_sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'attached'")
-        if "metadata_json" not in session_columns:
-            conn.execute(
-                "ALTER TABLE visual_dev_sessions ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        if "detached_at" not in session_columns:
-            conn.execute("ALTER TABLE visual_dev_sessions ADD COLUMN detached_at TEXT")
-
-        selection_columns = self._table_columns(conn, "visual_dev_selections")
-        if "payload_json" not in selection_columns:
-            conn.execute(
-                "ALTER TABLE visual_dev_selections ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'"
-            )
-
-        artifact_columns = self._table_columns(conn, "visual_dev_artifacts")
-        if "content_type" not in artifact_columns:
-            conn.execute(
-                "ALTER TABLE visual_dev_artifacts ADD COLUMN content_type TEXT NOT NULL DEFAULT ''"
-            )
-        if "byte_size" not in artifact_columns:
-            conn.execute(
-                "ALTER TABLE visual_dev_artifacts ADD COLUMN byte_size INTEGER NOT NULL DEFAULT 0"
-            )
-        if "metadata_json" not in artifact_columns:
-            conn.execute(
-                "ALTER TABLE visual_dev_artifacts ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
-            )
-
-        console_columns = self._table_columns(conn, "visual_dev_console_events")
-        if "metadata_json" not in console_columns:
-            conn.execute(
-                "ALTER TABLE visual_dev_console_events ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
-            )
-
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_visual_dev_sessions_user_chat_active ON visual_dev_sessions(user_id, chat_id) WHERE detached_at IS NULL"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_visual_dev_sessions_user_updated ON visual_dev_sessions(user_id, updated_at DESC, session_id DESC)"
+            "CREATE INDEX IF NOT EXISTS idx_visual_dev_sessions_user_chat_active ON visual_dev_sessions(user_id, chat_id, detached_at, updated_at DESC)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_visual_dev_selections_session_id ON visual_dev_selections(session_id, id DESC)"
@@ -487,6 +518,14 @@ class StoreSchemaMixin:
                 max_attempts INTEGER NOT NULL DEFAULT 4 CHECK (max_attempts >= 1),
                 next_attempt_at TEXT,
                 error TEXT,
+                child_pid INTEGER,
+                child_transport TEXT,
+                terminal_return_code INTEGER,
+                terminal_failure_kind TEXT,
+                terminal_outcome TEXT,
+                terminal_error TEXT,
+                limit_breach TEXT,
+                limit_breach_detail TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 finished_at TEXT,
@@ -507,6 +546,14 @@ class StoreSchemaMixin:
                 max_attempts,
                 next_attempt_at,
                 error,
+                child_pid,
+                child_transport,
+                terminal_return_code,
+                terminal_failure_kind,
+                terminal_outcome,
+                terminal_error,
+                limit_breach,
+                limit_breach_detail,
                 created_at,
                 started_at,
                 finished_at,
@@ -532,6 +579,14 @@ class StoreSchemaMixin:
                 END,
                 next_attempt_at,
                 error,
+                child_pid,
+                child_transport,
+                terminal_return_code,
+                terminal_failure_kind,
+                terminal_outcome,
+                terminal_error,
+                limit_breach,
+                limit_breach_detail,
                 created_at,
                 started_at,
                 finished_at,
@@ -618,7 +673,7 @@ class StoreSchemaMixin:
 
     def _ensure_visual_dev_session_exists(self, conn: sqlite3.Connection, session_id: str) -> None:
         row = conn.execute(
-            "SELECT session_id FROM visual_dev_sessions WHERE session_id = ?",
+            "SELECT session_id FROM visual_dev_sessions WHERE session_id = ? LIMIT 1",
             (session_id,),
         ).fetchone()
         if not row:

@@ -614,6 +614,7 @@ test('createStreamLifecycleController merges explicit visual-dev request context
     chatLabel: (chatId) => `chat-${chatId}`,
     updatePendingAssistant: () => {},
     markStreamUpdate: () => {},
+    renderTraceLog: () => {},
     syncActiveMessageView: () => {},
     getActiveChatId: () => 7,
     messagesEl: { scrollHeight: 0, clientHeight: 0, scrollTop: 0, focus: () => {} },
@@ -686,6 +687,462 @@ test('createStreamLifecycleController merges explicit visual-dev request context
       },
     }]);
     assert.deepEqual(clearedContexts, ['cleared']);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+function createVisualScreenshotSendHarness(overrides = {}) {
+  const clearedContexts = [];
+  const streamBodies = [];
+  const uploadCalls = [];
+  const pendingAssistantUpdates = [];
+  const markStreamUpdates = [];
+  const syncViewCalls = [];
+  class FakeFormData {
+    constructor() {
+      this._data = new Map();
+    }
+    append(key, value, filename) {
+      if (filename) {
+        this._data.set(String(key), { ...value, name: String(filename) });
+        return;
+      }
+      this._data.set(String(key), value);
+    }
+    get(key) {
+      return this._data.get(String(key));
+    }
+  }
+  const screenshot = overrides.screenshot || {
+    label: 'Current preview',
+    storage_path: '/tmp/capture.png',
+    content_type: 'image/png',
+    bytes_b64: 'ZmFrZSBpbWFnZSBieXRlcw==',
+  };
+  const visualContext = overrides.visualContext || {
+    screenshot,
+    preview: { preview_url: 'https://preview.example.com/app', preview_title: 'Preview app' },
+  };
+  const previousDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'visible' };
+  const sessionController = streamController.createStreamSessionController({
+    getActiveChatId: () => 7,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    persistStreamCursor: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    incrementUnread: () => {},
+    renderTabs: () => {},
+  });
+  const transcriptController = {
+    hydrateChatAfterGracefulResumeCompletion: async () => {},
+    consumeStreamWithReconnect: async () => false,
+    ...(overrides.transcriptController || {}),
+  };
+  const fetchImpl = overrides.fetchImpl || (async (url, options) => {
+    if (url === '/api/chats/upload') {
+      uploadCalls.push({
+        url,
+        hasFormData: options?.body instanceof FakeFormData,
+        chatId: options?.body?.get?.('chat_id'),
+        initData: options?.body?.get?.('init_data'),
+        filename: options?.body?.get?.('file')?.name || null,
+        contentType: options?.body?.get?.('file')?.type || null,
+      });
+      return {
+        ok: true,
+        json: async () => ({ attachment: { id: 'att_visual_1' } }),
+        text: async () => JSON.stringify({ attachment: { id: 'att_visual_1' } }),
+      };
+    }
+    streamBodies.push(JSON.parse(String(options?.body || '{}')));
+    return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => '' };
+  });
+  const lifecycleController = streamController.createStreamLifecycleController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: () => streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: () => {},
+    chats: new Map([[7, { pending: false }]]),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    updatePendingAssistant: (...args) => { pendingAssistantUpdates.push(args); },
+    markStreamUpdate: (...args) => { markStreamUpdates.push(args); },
+    syncActiveMessageView: (...args) => { syncViewCalls.push(args); },
+    getActiveChatId: () => 7,
+    messagesEl: { scrollHeight: 0, clientHeight: 0, scrollTop: 0, focus: () => {} },
+    promptEl: { value: '', selectionStart: 0, selectionEnd: 0 },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    maybeMarkRead: () => {},
+    refreshChats: async () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    appendSystemMessage: () => {},
+    finalizeStreamPendingState: () => {},
+    renderTraceLog: () => {},
+    authPayload: (payload) => ({ ...payload, init_data: 'ok' }),
+    parseStreamErrorPayload: () => ({}),
+    summarizeUiFailure: (_message, { fallback } = {}) => String(fallback || 'failed'),
+    getIsAuthenticated: () => true,
+    setIsAuthenticated: () => {},
+    authStatusEl: { textContent: '' },
+    dropPendingToolTraceMessages: () => {},
+    addLocalMessage: () => {},
+    setDraft: () => {},
+    resetToolStream: () => {},
+    clearReconnectResumeBlock: () => {},
+    resetReconnectResumeBudget: () => {},
+    consumeReconnectResumeBudget: () => ({ allowed: true, attempts: 1, maxAttempts: 6 }),
+    suppressBlockedChatPending: () => {},
+    blockReconnectResume: () => {},
+    isReconnectResumeBlocked: () => false,
+    resumeAttemptedAtByChat: new Map(),
+    resumeCooldownUntilByChat: new Map(),
+    resumeInFlightByChat: new Set(),
+    isTransientResumeRecoveryError: () => false,
+    nextResumeRecoveryDelayMs: () => 0,
+    delayMs: async () => {},
+    markChatStreamPending: () => {},
+    getStoredStreamCursor: () => null,
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    getVisualDevRequestContext: () => visualContext,
+    clearVisualDevRequestContext: () => { clearedContexts.push('cleared'); },
+    isNearBottom: () => true,
+    fetchImpl,
+    formDataFactory: () => new FakeFormData(),
+    blobFactory: (parts, options = {}) => ({ parts, type: String(options?.type || '') }),
+    setTimeoutFn: (fn) => fn(),
+    finalizeInlineToolTrace: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    ...(overrides.deps || {}),
+  }, sessionController, transcriptController);
+
+  return {
+    lifecycleController,
+    clearedContexts,
+    streamBodies,
+    uploadCalls,
+    pendingAssistantUpdates,
+    markStreamUpdates,
+    syncViewCalls,
+    screenshot,
+    visualContext,
+    restore() {
+      globalThis.document = previousDocument;
+    },
+  };
+}
+
+test('createStreamLifecycleController uploads visual-dev screenshot bytes as attachment_ids before stream send', async () => {
+  const harness = createVisualScreenshotSendHarness();
+
+  try {
+    await harness.lifecycleController.sendPrompt('ship it');
+
+    assert.deepEqual(harness.uploadCalls, [{
+      url: '/api/chats/upload',
+      hasFormData: true,
+      chatId: '7',
+      initData: 'ok',
+      filename: 'visual-dev-screenshot.png',
+      contentType: 'image/png',
+    }]);
+    assert.deepEqual(harness.streamBodies, [{
+      chat_id: 7,
+      message: 'ship it',
+      interrupt: false,
+      attachment_ids: ['att_visual_1'],
+      visual_context: {
+        selection: null,
+        screenshot: {
+          label: 'Current preview',
+          storage_path: '/tmp/capture.png',
+          content_type: 'image/png',
+        },
+        preview: { preview_url: 'https://preview.example.com/app', preview_title: 'Preview app' },
+        console: null,
+      },
+      init_data: 'ok',
+    }]);
+    assert.deepEqual(harness.clearedContexts, ['cleared']);
+  } finally {
+    harness.restore();
+  }
+});
+
+test('createStreamLifecycleController preserves visual screenshot context and surfaces upload failures before stream send', async () => {
+  const harness = createVisualScreenshotSendHarness({
+    fetchImpl: async (url, options) => {
+      if (url === '/api/chats/upload') {
+        harness.uploadCalls.push({
+          url,
+          hasFormData: Boolean(options?.body),
+        });
+        return {
+          ok: false,
+          status: 413,
+          json: async () => ({ error: 'Screenshot too large' }),
+          text: async () => JSON.stringify({ error: 'Screenshot too large' }),
+        };
+      }
+      harness.streamBodies.push(JSON.parse(String(options?.body || '{}')));
+      return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => '' };
+    },
+  });
+
+  try {
+    await harness.lifecycleController.sendPrompt('ship it');
+
+    assert.equal(harness.uploadCalls.length, 1);
+    assert.deepEqual(harness.streamBodies, []);
+    assert.deepEqual(harness.clearedContexts, []);
+    assert.deepEqual(harness.pendingAssistantUpdates, [[7, 'Network failure: Screenshot too large', false]]);
+    assert.ok(harness.markStreamUpdates.length >= 1);
+    assert.ok(harness.syncViewCalls.length >= 1);
+  } finally {
+    harness.restore();
+  }
+});
+
+test('createStreamLifecycleController reuses uploaded visual screenshot attachment id on resend after stream request failure', async () => {
+  let streamAttempts = 0;
+  const harness = createVisualScreenshotSendHarness({
+    fetchImpl: async (url, options) => {
+      if (url === '/api/chats/upload') {
+        harness.uploadCalls.push({
+          url,
+          filename: options?.body?.get?.('file')?.name || null,
+        });
+        return {
+          ok: true,
+          json: async () => ({ attachment: { id: 'att_visual_cached' } }),
+          text: async () => JSON.stringify({ attachment: { id: 'att_visual_cached' } }),
+        };
+      }
+      streamAttempts += 1;
+      harness.streamBodies.push(JSON.parse(String(options?.body || '{}')));
+      if (streamAttempts === 1) {
+        throw new Error('stream transport offline');
+      }
+      return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => '' };
+    },
+  });
+
+  try {
+    await harness.lifecycleController.sendPrompt('retry me');
+    await harness.lifecycleController.sendPrompt('retry me again');
+
+    assert.deepEqual(harness.uploadCalls, [{
+      url: '/api/chats/upload',
+      filename: 'visual-dev-screenshot.png',
+    }]);
+    assert.deepEqual(harness.streamBodies, [{
+      chat_id: 7,
+      message: 'retry me',
+      interrupt: false,
+      attachment_ids: ['att_visual_cached'],
+      visual_context: {
+        selection: null,
+        screenshot: {
+          label: 'Current preview',
+          storage_path: '/tmp/capture.png',
+          content_type: 'image/png',
+        },
+        preview: { preview_url: 'https://preview.example.com/app', preview_title: 'Preview app' },
+        console: null,
+      },
+      init_data: 'ok',
+    }, {
+      chat_id: 7,
+      message: 'retry me again',
+      interrupt: false,
+      attachment_ids: ['att_visual_cached'],
+      visual_context: {
+        selection: null,
+        screenshot: {
+          label: 'Current preview',
+          storage_path: '/tmp/capture.png',
+          content_type: 'image/png',
+        },
+        preview: { preview_url: 'https://preview.example.com/app', preview_title: 'Preview app' },
+        console: null,
+      },
+      init_data: 'ok',
+    }]);
+    assert.deepEqual(harness.clearedContexts, ['cleared']);
+  } finally {
+    harness.restore();
+  }
+});
+
+test('createStreamLifecycleController includes generic attachment_ids and local attachment metadata on send', async () => {
+  const fetchBodies = [];
+  const localMessages = [];
+  const previousDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'visible' };
+  const sessionController = streamController.createStreamSessionController({
+    getActiveChatId: () => 7,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    persistStreamCursor: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    incrementUnread: () => {},
+    renderTabs: () => {},
+  });
+  const transcriptController = {
+    hydrateChatAfterGracefulResumeCompletion: async () => {},
+    consumeStreamWithReconnect: async () => false,
+  };
+  const lifecycleController = streamController.createStreamLifecycleController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: () => streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: () => {},
+    chats: new Map([[7, { pending: false }]]),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    renderTraceLog: () => {},
+    syncActiveMessageView: () => {},
+    getActiveChatId: () => 7,
+    messagesEl: { scrollHeight: 0, clientHeight: 0, scrollTop: 0, focus: () => {} },
+    promptEl: { value: '', selectionStart: 0, selectionEnd: 0 },
+    isMobileQuoteMode: () => false,
+    isDesktopViewport: () => true,
+    addLocalMessage: (chatId, message) => localMessages.push({ chatId: Number(chatId), message }),
+    setDraft: () => {},
+    authPayload: (payload) => ({ ...payload, init_data: 'ok' }),
+    getIsAuthenticated: () => true,
+    appendSystemMessage: () => {},
+    dropPendingToolTraceMessages: () => {},
+    setFocusRestoreEligibility: () => {},
+    setStreamAbortController: () => {},
+    finalizeStreamLifecycle: async () => {},
+    focusMessagesPaneIfActiveChat: () => {},
+    shouldRestoreComposerFocus: () => false,
+    clearVisualDevRequestContext: () => {},
+    getVisualDevRequestContext: () => null,
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    resetToolStream: () => {},
+    markStreamActive: () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    finalizeStreamPendingState: () => {},
+    markChatStreamPending: () => {},
+    fetchImpl: async (_url, options) => {
+      fetchBodies.push(JSON.parse(String(options?.body || '{}')));
+      return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => '' };
+    },
+    finalizeInlineToolTrace: () => {},
+    triggerIncomingMessageHaptic: () => {},
+  }, sessionController, transcriptController);
+
+  try {
+    await lifecycleController.sendPrompt('see attached', {
+      attachments: [{ id: 'att_file_1', filename: 'mock.png', content_type: 'image/png', size_bytes: 1234 }],
+    });
+
+    assert.deepEqual(fetchBodies, [{
+      chat_id: 7,
+      message: 'see attached',
+      interrupt: false,
+      attachment_ids: ['att_file_1'],
+      init_data: 'ok',
+    }]);
+    assert.deepEqual(localMessages, [{
+      chatId: 7,
+      message: {
+        role: 'operator',
+        body: 'see attached',
+        attachments: [{ id: 'att_file_1', filename: 'mock.png', content_type: 'image/png', size_bytes: 1234 }],
+        created_at: localMessages[0]?.message?.created_at,
+      },
+    }]);
+    assert.match(String(localMessages[0]?.message?.created_at || ''), /T/);
+  } finally {
+    globalThis.document = previousDocument;
+  }
+});
+
+test('createStreamLifecycleController blocks attachment-only sends until the operator adds a message', async () => {
+  const systemMessages = [];
+  const fetchBodies = [];
+  const previousDocument = globalThis.document;
+  globalThis.document = { visibilityState: 'visible' };
+  const sessionController = streamController.createStreamSessionController({
+    getActiveChatId: () => 7,
+    setStreamStatus: () => {},
+    setActivityChip: () => {},
+    streamChip: 'stream-chip',
+    latencyChip: 'latency-chip',
+    persistStreamCursor: () => {},
+    triggerIncomingMessageHaptic: () => {},
+    incrementUnread: () => {},
+    renderTabs: () => {},
+  });
+  const lifecycleController = streamController.createStreamLifecycleController({
+    STREAM_PHASES: streamState.STREAM_PHASES,
+    getStreamPhase: () => streamState.STREAM_PHASES.IDLE,
+    setStreamPhase: () => {},
+    chats: new Map([[7, { pending: false }]]),
+    pendingChats: new Set(),
+    chatLabel: (chatId) => `chat-${chatId}`,
+    updatePendingAssistant: () => {},
+    markStreamUpdate: () => {},
+    syncActiveMessageView: () => {},
+    getActiveChatId: () => 7,
+    messagesEl: { scrollHeight: 0, clientHeight: 0, scrollTop: 0, focus: () => {} },
+    promptEl: { value: '', selectionStart: 0, selectionEnd: 0 },
+    addLocalMessage: () => { throw new Error('attachment-only send should not add a local message'); },
+    setDraft: () => {},
+    authPayload: (payload) => ({ ...payload, init_data: 'ok' }),
+    getIsAuthenticated: () => true,
+    appendSystemMessage: (message) => systemMessages.push(String(message)),
+    dropPendingToolTraceMessages: () => {},
+    setFocusRestoreEligibility: () => {},
+    setStreamAbortController: () => {},
+    finalizeStreamLifecycle: async () => {},
+    focusMessagesPaneIfActiveChat: () => {},
+    shouldRestoreComposerFocus: () => false,
+    clearVisualDevRequestContext: () => {},
+    getVisualDevRequestContext: () => null,
+    clearStreamCursor: () => {},
+    clearPendingStreamSnapshot: () => {},
+    resetToolStream: () => {},
+    markStreamActive: () => {},
+    renderTabs: () => {},
+    updateComposerState: () => {},
+    syncClosingConfirmation: () => {},
+    finalizeStreamPendingState: () => {},
+    markChatStreamPending: () => {},
+    fetchImpl: async (_url, options) => {
+      fetchBodies.push(JSON.parse(String(options?.body || '{}')));
+      return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => '' };
+    },
+    finalizeInlineToolTrace: () => {},
+    triggerIncomingMessageHaptic: () => {},
+  }, sessionController, {
+    hydrateChatAfterGracefulResumeCompletion: async () => {},
+    consumeStreamWithReconnect: async () => false,
+  });
+
+  try {
+    const sent = await lifecycleController.sendPrompt('   ', {
+      attachments: [{ id: 'att_file_1', filename: 'mock.png' }],
+    });
+
+    assert.equal(sent, false);
+    assert.deepEqual(fetchBodies, []);
+    assert.deepEqual(systemMessages, ['Add a short message to describe the attachment before sending.']);
   } finally {
     globalThis.document = previousDocument;
   }

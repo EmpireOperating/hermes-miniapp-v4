@@ -215,6 +215,39 @@ def test_chat_history_payload_includes_runtime_pending_checkpoint_state(monkeypa
     assert any(item["role"] == "assistant" and item["body"] == "Thinking" for item in pending_entries)
 
 
+def test_chat_history_payload_serializes_attachments_without_storage_path(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_ATTACHMENT_UPLOAD_ROOT", str(tmp_path / "uploads"))
+    server = load_server(monkeypatch, tmp_path)
+    service = _build_service(server)
+
+    chat_id = server.store.ensure_default_chat("123")
+    attachment = server.store.create_attachment(
+        "123",
+        chat_id,
+        {
+            "id": "att_demo_sync",
+            "user_id": "123",
+            "chat_id": chat_id,
+            "message_id": None,
+            "filename": "diagram.png",
+            "content_type": "image/png",
+            "size_bytes": 12,
+            "storage_path": str(tmp_path / "uploads" / "diagram.png"),
+            "kind": "image",
+            "width": None,
+            "height": None,
+        }
+    )
+    server.store.add_message("123", chat_id, "operator", "see attached", attachment_ids=[attachment["id"]])
+
+    payload = service.chat_history_payload(user_id="123", chat_id=chat_id, activate=True)
+
+    turn = payload["history"][0]
+    assert turn["attachments"][0]["id"] == attachment["id"]
+    assert turn["attachments"][0]["filename"] == "diagram.png"
+    assert "storage_path" not in turn["attachments"][0]
+
+
 def test_chat_history_payload_with_activate_true_sets_active_chat_without_consuming_unread(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path)
     service = _build_service(server)

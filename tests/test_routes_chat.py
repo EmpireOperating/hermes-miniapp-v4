@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import queue
+from types import SimpleNamespace
 
 import store as store_mod
 
@@ -37,6 +39,93 @@ def test_chat_rejects_oversized_message_before_auth(monkeypatch, tmp_path) -> No
 
     assert response.status_code == 400
     assert "exceeds" in response.get_json()["error"]
+
+
+def test_upload_route_returns_attachment_metadata(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_ATTACHMENT_UPLOAD_ROOT", str(tmp_path / "uploads"))
+    server, client = _authed_client(monkeypatch, tmp_path)
+    chat_id = server.store.ensure_default_chat("123")
+
+    response = client.post(
+        "/api/chats/upload",
+        data={
+            "init_data": "ok",
+            "chat_id": str(chat_id),
+            "file": (io.BytesIO(b"fake image bytes"), "debug.png"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    attachment = payload["attachment"]
+    assert attachment["id"].startswith("att_")
+    assert attachment["filename"] == "debug.png"
+    assert attachment["kind"] == "image"
+    assert attachment["content_type"] == "image/png"
+    assert attachment["size_bytes"] == len(b"fake image bytes")
+    assert "storage_path" not in attachment
+    assert attachment["preview_url"].endswith(f"/api/chats/attachments/{attachment['id']}/content")
+    assert attachment["download_url"].endswith(f"/api/chats/attachments/{attachment['id']}/content")
+
+
+def test_chat_binds_uploaded_attachment_to_operator_message_and_client_history(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MINI_APP_ATTACHMENT_UPLOAD_ROOT", str(tmp_path / "uploads"))
+    server, client = _authed_client(monkeypatch, tmp_path)
+    chat_id = server.store.ensure_default_chat("123")
+
+    upload_response = client.post(
+        "/api/chats/upload",
+        data={
+            "init_data": "ok",
+            "chat_id": str(chat_id),
+            "file": (io.BytesIO(b"sync screenshot"), "screenshot.png"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert upload_response.status_code == 201
+    attachment = upload_response.get_json()["attachment"]
+
+    captured: dict[str, object] = {}
+
+    def _fake_ask(*, user_id: str, message: str, conversation_history: list[dict[str, object]]):
+        captured["user_id"] = user_id
+        captured["message"] = message
+        captured["conversation_history"] = conversation_history
+        return SimpleNamespace(text="I can inspect that.", source="test", latency_ms=7)
+
+    monkeypatch.setattr(server.client, "ask", _fake_ask)
+
+    chat_response = client.post(
+        "/api/chat",
+        json={
+            "init_data": "ok",
+            "chat_id": chat_id,
+            "message": "Inspect screenshot",
+            "attachment_ids": [attachment["id"]],
+        },
+    )
+
+    assert chat_response.status_code == 200
+    history_response = client.post(
+        "/api/chats/history",
+        json={"init_data": "ok", "chat_id": chat_id},
+    )
+    assert history_response.status_code == 200
+    operator_turn = history_response.get_json()["history"][0]
+    assert operator_turn["body"] == "Inspect screenshot"
+    assert operator_turn["attachments"][0]["id"] == attachment["id"]
+    assert operator_turn["attachments"][0]["filename"] == "screenshot.png"
+    assert "storage_path" not in operator_turn["attachments"][0]
+
+    assert captured["user_id"] == "123"
+    history = captured["conversation_history"]
+    assert isinstance(history, list)
+    assert history[-1]["body"] == "Inspect screenshot"
+    assert history[-1]["attachments"][0]["id"] == attachment["id"]
+    assert history[-1]["attachments"][0]["filename"] == "screenshot.png"
+    assert history[-1]["attachments"][0]["storage_path"]
+    assert captured["message"] == "Inspect screenshot"
 
 def test_create_chat_rejects_oversized_title_before_auth(monkeypatch, tmp_path) -> None:
     server = load_server(monkeypatch, tmp_path, max_title_len=4)
@@ -801,7 +890,7 @@ def test_stream_chat_rejects_when_open_job_exists(monkeypatch, tmp_path) -> None
 
 
 
-def test_stream_chat_passes_visual_context_to_start_chat_job(monkeypatch, tmp_path) -> None:
+def test_stream_chat_passes_visual_context_and_attachment_ids_to_start_chat_job(monkeypatch, tmp_path) -> None:
     server, client = _authed_client(monkeypatch, tmp_path)
     chat_id = server.store.ensure_default_chat("123")
     captured: dict[str, object] = {}
@@ -829,6 +918,7 @@ def test_stream_chat_passes_visual_context_to_start_chat_job(monkeypatch, tmp_pa
             "init_data": "ok",
             "chat_id": chat_id,
             "message": "make this tighter",
+            "attachment_ids": ["att_demo_1", "att_demo_2"],
             "visual_context": visual_context,
         },
     )
@@ -837,6 +927,7 @@ def test_stream_chat_passes_visual_context_to_start_chat_job(monkeypatch, tmp_pa
     assert captured["user_id"] == "123"
     assert captured["chat_id"] == chat_id
     assert captured["message"] == "make this tighter"
+    assert captured["attachment_ids"] == ["att_demo_1", "att_demo_2"]
     assert captured["visual_context"] == visual_context
 
 

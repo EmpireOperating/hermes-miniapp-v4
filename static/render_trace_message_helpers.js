@@ -170,8 +170,8 @@
     return "system";
   }
 
-  function shouldSkipMessageRender({ role, renderedBody, pending }) {
-    return !renderedBody && !pending && role !== "tool";
+  function shouldSkipMessageRender({ role, renderedBody, pending, attachments = [] }) {
+    return !renderedBody && !pending && role !== "tool" && (!Array.isArray(attachments) || !attachments.length);
   }
 
   function applyMessageMeta(node, message, {
@@ -200,7 +200,10 @@
       renderToolTraceBodyFn(bodyNode, message);
       return;
     }
-    renderBodyFn(bodyNode, renderedBody, { fileRefs: message?.file_refs || null });
+    renderBodyFn(bodyNode, renderedBody, {
+      fileRefs: message?.file_refs || null,
+      attachments: Array.isArray(message?.attachments) ? message.attachments : [],
+    });
   }
 
   function messageStableKey(message, index = 0) {
@@ -247,7 +250,8 @@
 
     const role = String(message?.role || "").toLowerCase();
     const renderedBody = cleanDisplayTextFn(message?.body || (message?.pending ? "…" : ""));
-    if (shouldSkipMessageRenderFn({ role, renderedBody, pending: Boolean(message?.pending) })) {
+    const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+    if (shouldSkipMessageRenderFn({ role, renderedBody, pending: Boolean(message?.pending), attachments })) {
       return false;
     }
 
@@ -546,6 +550,7 @@
   function createController({
     cleanDisplayTextFn,
     escapeHtmlFn,
+    buildAttachmentUrlFn,
     getAllowedRoots,
     documentObject = (typeof document !== "undefined" ? document : null),
     windowObject = (typeof window !== "undefined" ? window : null),
@@ -560,11 +565,13 @@
     renderTraceLogFn,
     preserveViewportDuringUiMutationFn,
   } = {}) {
-    function renderBodyForMessage(container, rawText, { fileRefs = null } = {}) {
+    function renderBodyForMessage(container, rawText, { fileRefs = null, attachments = [] } = {}) {
       return global.HermesMiniappRenderTraceText?.renderBody(container, rawText, {
         cleanDisplayTextFn,
         escapeHtmlFn,
+        buildAttachmentUrlFn,
         fileRefs,
+        attachments,
         allowedRoots: typeof getAllowedRoots === "function" ? getAllowedRoots() : [],
       });
     }

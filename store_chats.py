@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 
 from store_chat_mutations import cancel_open_jobs_for_chat, clear_chat as clear_chat_rows, remove_chat as remove_chat_row
@@ -24,6 +25,180 @@ from store_models import (
 
 
 class StoreChatsMixin:
+    def _attachment_row_to_dict(self, row) -> dict[str, object]:
+        return {
+            "id": str(row["id"]),
+            "user_id": str(row["user_id"]),
+            "chat_id": int(row["chat_id"]),
+            "message_id": int(row["message_id"]) if row["message_id"] not in (None, "") else None,
+            "filename": str(row["filename"] or ""),
+            "content_type": str(row["content_type"] or "application/octet-stream"),
+            "size_bytes": int(row["size_bytes"] or 0),
+            "storage_path": str(row["storage_path"] or ""),
+            "kind": str(row["kind"] or "file"),
+            "width": int(row["width"]) if row["width"] not in (None, "") else None,
+            "height": int(row["height"]) if row["height"] not in (None, "") else None,
+            "created_at": str(row["created_at"] or ""),
+        }
+
+    def _attachment_map_for_message_ids(self, conn, *, user_id: str, chat_id: int, message_ids: list[int]) -> dict[int, list[dict[str, object]]]:
+        normalized_ids = [int(message_id) for message_id in message_ids if int(message_id or 0) > 0]
+        if not normalized_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in normalized_ids)
+        rows = conn.execute(
+            f"""
+            SELECT id, user_id, chat_id, message_id, filename, content_type, size_bytes,
+                   storage_path, kind, width, height, created_at
+            FROM chat_message_attachments
+            WHERE user_id = ? AND chat_id = ? AND message_id IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+            """,
+            (user_id, chat_id, *normalized_ids),
+        ).fetchall()
+        attachment_map: dict[int, list[dict[str, object]]] = {}
+        for row in rows:
+            message_id = int(row["message_id"] or 0)
+            attachment_map.setdefault(message_id, []).append(self._attachment_row_to_dict(row))
+        return attachment_map
+
+    def _bind_attachment_ids_to_message(
+        self,
+        conn,
+        *,
+        user_id: str,
+        chat_id: int,
+        message_id: int,
+        attachment_ids: list[str] | None,
+    ) -> list[dict[str, object]]:
+        cleaned_ids = [str(attachment_id or "").strip() for attachment_id in (attachment_ids or []) if str(attachment_id or "").strip()]
+        if not cleaned_ids:
+            return []
+        placeholders = ", ".join("?" for _ in cleaned_ids)
+        rows = conn.execute(
+            f"""
+            SELECT id, user_id, chat_id, message_id, filename, content_type, size_bytes,
+                   storage_path, kind, width, height, created_at
+            FROM chat_message_attachments
+            WHERE user_id = ?
+              AND chat_id = ?
+              AND id IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+            """,
+            (user_id, int(chat_id), *cleaned_ids),
+        ).fetchall()
+        if len(rows) != len(cleaned_ids):
+            found_ids = {str(row["id"]) for row in rows}
+            missing = [attachment_id for attachment_id in cleaned_ids if attachment_id not in found_ids]
+            raise KeyError(f"Attachment not found: {missing[0]}")
+        for row in rows:
+            existing_message_id = row["message_id"]
+            if existing_message_id not in (None, "", int(message_id)):
+                raise ValueError(f"Attachment already bound: {row['id']}")
+        conn.execute(
+            f"""
+            UPDATE chat_message_attachments
+            SET message_id = ?
+            WHERE user_id = ?
+              AND chat_id = ?
+              AND id IN ({placeholders})
+            """,
+            (int(message_id), user_id, int(chat_id), *cleaned_ids),
+        )
+        rebound_rows = conn.execute(
+            f"""
+            SELECT id, user_id, chat_id, message_id, filename, content_type, size_bytes,
+                   storage_path, kind, width, height, created_at
+            FROM chat_message_attachments
+            WHERE user_id = ?
+              AND chat_id = ?
+              AND id IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+            """,
+            (user_id, int(chat_id), *cleaned_ids),
+        ).fetchall()
+        return [self._attachment_row_to_dict(row) for row in rebound_rows]
+
+    def create_attachment(self, user_id: str, chat_id: int, record: dict[str, object]) -> dict[str, object]:
+        attachment_id = str(record.get("id") or "").strip()
+        filename = str(record.get("filename") or "").strip()
+        storage_path = str(record.get("storage_path") or "").strip()
+        if not attachment_id or not filename or not storage_path:
+            raise ValueError("Attachment id, filename, and storage path are required")
+        with self._connect() as conn:
+            self._ensure_chat_exists(conn, user_id, chat_id)
+            conn.execute(
+                """
+                INSERT INTO chat_message_attachments (
+                    id, user_id, chat_id, message_id, filename, content_type, size_bytes,
+                    storage_path, kind, width, height
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attachment_id,
+                    user_id,
+                    int(chat_id),
+                    int(record["message_id"]) if record.get("message_id") not in (None, "") else None,
+                    filename,
+                    str(record.get("content_type") or "application/octet-stream"),
+                    max(0, int(record.get("size_bytes") or 0)),
+                    storage_path,
+                    str(record.get("kind") or "file"),
+                    int(record["width"]) if record.get("width") not in (None, "") else None,
+                    int(record["height"]) if record.get("height") not in (None, "") else None,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT id, user_id, chat_id, message_id, filename, content_type, size_bytes,
+                       storage_path, kind, width, height, created_at
+                FROM chat_message_attachments
+                WHERE id = ? AND user_id = ? AND chat_id = ?
+                LIMIT 1
+                """,
+                (attachment_id, user_id, int(chat_id)),
+            ).fetchone()
+        assert row is not None
+        return self._attachment_row_to_dict(row)
+
+    def bind_attachments_to_message(
+        self,
+        user_id: str,
+        chat_id: int,
+        message_id: int,
+        attachment_ids: list[str] | None,
+    ) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            self._ensure_chat_exists(conn, user_id, chat_id)
+            return self._bind_attachment_ids_to_message(
+                conn,
+                user_id=user_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                attachment_ids=attachment_ids,
+            )
+
+    def get_attachment(self, user_id: str, attachment_id: str) -> dict[str, object]:
+        cleaned_id = str(attachment_id or "").strip()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, user_id, chat_id, message_id, filename, content_type, size_bytes,
+                       storage_path, kind, width, height, created_at
+                FROM chat_message_attachments
+                WHERE user_id = ? AND id = ?
+                LIMIT 1
+                """,
+                (user_id, cleaned_id),
+            ).fetchone()
+        if not row:
+            raise KeyError(f"Attachment not found: {cleaned_id}")
+        record = self._attachment_row_to_dict(row)
+        storage_path = str(record.get("storage_path") or "")
+        if not storage_path or not os.path.exists(storage_path):
+            raise FileNotFoundError(storage_path or cleaned_id)
+        return record
+
     def get_skin(self, user_id: str) -> str:
         with self._connect() as conn:
             row = conn.execute(
@@ -403,10 +578,10 @@ class StoreChatsMixin:
             raise KeyError(f"Chat {chat_id} not found")
         return self._hydrate_chat_thread(rows[0])
 
-    def _hydrate_chat_turns(self, rows) -> list[ChatTurn]:
-        return hydrate_chat_turns(rows)
+    def _hydrate_chat_turns(self, rows, *, attachments_by_message_id: dict[int, list[dict[str, object]]] | None = None) -> list[ChatTurn]:
+        return hydrate_chat_turns(rows, attachments_by_message_id=attachments_by_message_id)
 
-    def add_message(self, user_id: str, chat_id: int, role: str, body: str) -> int:
+    def add_message(self, user_id: str, chat_id: int, role: str, body: str, *, attachment_ids: list[str] | None = None) -> int:
         cleaned = body.strip()
         if not cleaned:
             raise ValueError("Message body cannot be empty")
@@ -427,11 +602,20 @@ class StoreChatsMixin:
                 "INSERT INTO chat_messages (user_id, chat_id, role, body) VALUES (?, ?, ?, ?)",
                 (user_id, chat_id, role, cleaned),
             )
+            message_id = int(cursor.lastrowid)
+            if attachment_ids:
+                self._bind_attachment_ids_to_message(
+                    conn,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    attachment_ids=attachment_ids,
+                )
             conn.execute(
                 "UPDATE chat_threads SET updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND id = ?",
                 (user_id, chat_id),
             )
-            return int(cursor.lastrowid)
+            return message_id
 
     def get_history(self, user_id: str, chat_id: int, limit: int = 120) -> list[ChatTurn]:
         with self._connect() as conn:
@@ -446,7 +630,13 @@ class StoreChatsMixin:
                 """,
                 (user_id, chat_id, limit),
             ).fetchall()
-        return self._hydrate_chat_turns(rows)
+            attachment_map = self._attachment_map_for_message_ids(
+                conn,
+                user_id=user_id,
+                chat_id=chat_id,
+                message_ids=[int(row["id"]) for row in rows],
+            )
+        return self._hydrate_chat_turns(rows, attachments_by_message_id=attachment_map)
 
     def mark_chat_read(self, user_id: str, chat_id: int) -> None:
         with self._connect() as conn:
@@ -575,7 +765,13 @@ class StoreChatsMixin:
                 """,
                 (user_id, chat_id, before_message_id, limit),
             ).fetchall()
-        return self._hydrate_chat_turns(rows)
+            attachment_map = self._attachment_map_for_message_ids(
+                conn,
+                user_id=user_id,
+                chat_id=chat_id,
+                message_ids=[int(row["id"]) for row in rows],
+            )
+        return self._hydrate_chat_turns(rows, attachments_by_message_id=attachment_map)
 
     def get_message(self, user_id: str, chat_id: int, message_id: int) -> ChatTurn:
         with self._connect() as conn:
@@ -588,6 +784,12 @@ class StoreChatsMixin:
                 """,
                 (user_id, chat_id, message_id),
             ).fetchone()
+            attachment_map = self._attachment_map_for_message_ids(
+                conn,
+                user_id=user_id,
+                chat_id=chat_id,
+                message_ids=[int(row["id"])] if row else [],
+            )
         if not row:
             raise KeyError(f"Message {message_id} not found")
         return ChatTurn(
@@ -595,6 +797,7 @@ class StoreChatsMixin:
             role=str(row["role"]),
             body=str(row["body"]),
             created_at=str(row["created_at"]),
+            attachments=list(attachment_map.get(int(row["id"]), [])),
         )
 
     def list_recoverable_pending_turns(self, user_id: str) -> list[tuple[int, int]]:

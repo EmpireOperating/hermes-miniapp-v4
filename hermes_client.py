@@ -602,10 +602,12 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         parent_pid: int | None = None,
     ) -> None:
         context = self._get_spawn_trace_context()
+        spawn_snapshot = self._child_process_snapshot(int(pid))
         record = {
             "transport": str(transport or "unknown"),
             "pid": int(pid),
             "command": [str(part) for part in list(command or [])],
+            "command_preview": " ".join(str(part) for part in list(command or []))[:200],
             "session_id": str(session_id or context.get("session_id") or ""),
             "user_id": str(user_id or context.get("user_id") or ""),
             "chat_id": int(chat_id) if chat_id not in {None, ""} else context.get("chat_id"),
@@ -613,6 +615,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             "parent_transport": str(parent_transport or "chat-worker-subprocess"),
             "parent_pid": int(parent_pid) if parent_pid not in {None, ""} else None,
             "started_monotonic": time.monotonic(),
+            "spawn_snapshot": spawn_snapshot,
         }
         with self._spawn_tracker_lock:
             self._observed_descendant_spawns[int(pid)] = record
@@ -651,6 +654,8 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                     "chat_id": record.get("chat_id"),
                     "session_id": record.get("session_id"),
                     "user_id": record.get("user_id"),
+                    "command_preview": record.get("command_preview"),
+                    **dict(record.get("spawn_snapshot") or {}),
                     "parent_transport": record.get("parent_transport"),
                     "parent_pid": record.get("parent_pid"),
                     "active_total": int(active_total),
@@ -673,6 +678,8 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             record = self._observed_descendant_spawns.pop(int(pid), None)
             active_total = len(self._observed_descendant_spawns)
 
+            finish_snapshot = self._child_process_snapshot(int(pid))
+            host_memory_snapshot = self._host_memory_snapshot()
             payload = {
                 "pid": int(pid),
                 "outcome": str(outcome or "unknown"),
@@ -689,8 +696,46 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 "monotonic_ms": int(time.monotonic() * 1000),
             }
             if record:
+                start_snapshot = dict(record.get("spawn_snapshot") or {})
                 payload["lifetime_ms"] = int((time.monotonic() - float(record.get("started_monotonic") or time.monotonic())) * 1000)
+                payload["command_preview"] = record.get("command_preview")
+                payload["start_rss_kb"] = start_snapshot.get("rss_kb")
+                payload["start_vm_hwm_kb"] = start_snapshot.get("vm_hwm_kb")
+                payload["start_vm_peak_kb"] = start_snapshot.get("vm_peak_kb")
+                payload["start_thread_count"] = start_snapshot.get("thread_count")
+                payload["start_process_state"] = start_snapshot.get("process_state")
+                payload["start_process_state_code"] = start_snapshot.get("process_state_code")
+            payload.update(dict(finish_snapshot or {}))
+            payload.update(dict(host_memory_snapshot or {}))
             self._observed_descendant_events.append({"event": "descendant_finish", **payload})
+
+    def observe_child_process_sample(self, *, pid: int, transport: str | None = None, session_id: str | None = None) -> None:
+        with self._spawn_tracker_lock:
+            record = self._active_child_spawns.get(int(pid))
+            if not isinstance(record, dict):
+                return
+            snapshot = self._child_process_snapshot(int(pid))
+            host_memory_snapshot = self._host_memory_snapshot()
+            self._child_spawn_events.append(
+                {
+                    "event": "sample",
+                    "spawn_id": record.get("spawn_id"),
+                    "pid": int(pid),
+                    "transport": str(transport or record.get("transport") or "unknown"),
+                    "job_id": record.get("job_id"),
+                    "chat_id": record.get("chat_id"),
+                    "session_id": str(session_id or record.get("session_id") or ""),
+                    "user_id": record.get("user_id"),
+                    "command_preview": record.get("command_preview"),
+                    **dict(snapshot or {}),
+                    **dict(host_memory_snapshot or {}),
+                    "active_total": len(self._active_child_spawns),
+                    "active_for_job": self._count_active_children_by("job_id", record.get("job_id")),
+                    "active_for_chat": self._count_active_children_by("chat_id", record.get("chat_id")),
+                    "active_for_session": self._count_active_children_by("session_id", record.get("session_id")),
+                    "monotonic_ms": int(time.monotonic() * 1000),
+                }
+            )
 
     def register_child_spawn(self, *, transport: str, pid: int, command: list[str], session_id: str | None = None) -> str:
         self.assert_child_spawn_allowed(transport=transport, session_id=session_id)
@@ -702,11 +747,13 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             "transport": str(transport),
             "pid": int(pid),
             "command": [str(part) for part in command],
+            "command_preview": " ".join(str(part) for part in command)[:200],
             "user_id": str(context.get("user_id") or ""),
             "chat_id": context.get("chat_id"),
             "job_id": context.get("job_id"),
             "session_id": session_value,
             "started_monotonic": time.monotonic(),
+            "spawn_snapshot": self._child_process_snapshot(int(pid)),
         }
         with self._spawn_tracker_lock:
             self._active_child_spawns[int(pid)] = record
@@ -737,6 +784,8 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                     "chat_id": record.get("chat_id"),
                     "session_id": record.get("session_id"),
                     "user_id": record.get("user_id"),
+                    "command_preview": record.get("command_preview"),
+                    **dict(record.get("spawn_snapshot") or {}),
                     "active_total": int(active_total),
                     "active_for_job": int(active_for_job),
                     "active_for_chat": int(active_for_chat),
@@ -745,7 +794,7 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                 }
             )
 
-        command_preview = " ".join(record.get("command") or [])[:200]
+        command_preview = str(record.get("command_preview") or "")
         self._safe_info_log(
             (
                 "Miniapp Hermes child spawned "
@@ -786,19 +835,31 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
             "active_for_chat": active_for_chat,
             "active_for_session": active_for_session,
         }
+        finish_snapshot = self._child_process_snapshot(int(pid))
+        host_memory_snapshot = self._host_memory_snapshot()
         if record:
+            start_snapshot = dict(record.get("spawn_snapshot") or {})
             payload.update(
                 {
                     "spawn_id": record.get("spawn_id"),
                     "transport": record.get("transport"),
                     "command": record.get("command"),
+                    "command_preview": record.get("command_preview"),
                     "user_id": record.get("user_id"),
                     "chat_id": record.get("chat_id"),
                     "job_id": record.get("job_id"),
                     "session_id": record.get("session_id"),
                     "lifetime_ms": int((time.monotonic() - float(record.get("started_monotonic") or time.monotonic())) * 1000),
+                    "start_rss_kb": start_snapshot.get("rss_kb"),
+                    "start_vm_hwm_kb": start_snapshot.get("vm_hwm_kb"),
+                    "start_vm_peak_kb": start_snapshot.get("vm_peak_kb"),
+                    "start_thread_count": start_snapshot.get("thread_count"),
+                    "start_process_state": start_snapshot.get("process_state"),
+                    "start_process_state_code": start_snapshot.get("process_state_code"),
                 }
             )
+        payload.update(dict(finish_snapshot or {}))
+        payload.update(dict(host_memory_snapshot or {}))
 
         safe_outcome = str(outcome)
         with self._spawn_tracker_lock:
@@ -812,6 +873,24 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
                     "chat_id": payload.get("chat_id"),
                     "session_id": payload.get("session_id"),
                     "user_id": payload.get("user_id"),
+                    "command_preview": payload.get("command_preview"),
+                    "start_rss_kb": payload.get("start_rss_kb"),
+                    "start_vm_hwm_kb": payload.get("start_vm_hwm_kb"),
+                    "start_vm_peak_kb": payload.get("start_vm_peak_kb"),
+                    "start_thread_count": payload.get("start_thread_count"),
+                    "start_process_state": payload.get("start_process_state"),
+                    "start_process_state_code": payload.get("start_process_state_code"),
+                    "rss_kb": payload.get("rss_kb"),
+                    "vm_hwm_kb": payload.get("vm_hwm_kb"),
+                    "vm_peak_kb": payload.get("vm_peak_kb"),
+                    "thread_count": payload.get("thread_count"),
+                    "process_state": payload.get("process_state"),
+                    "process_state_code": payload.get("process_state_code"),
+                    "host_mem_free_kb": payload.get("host_mem_free_kb"),
+                    "host_mem_available_kb": payload.get("host_mem_available_kb"),
+                    "host_swap_total_kb": payload.get("host_swap_total_kb"),
+                    "host_swap_free_kb": payload.get("host_swap_free_kb"),
+                    "host_swap_used_kb": payload.get("host_swap_used_kb"),
                     "outcome": safe_outcome,
                     "return_code": return_code,
                     "signal": signal,
@@ -1364,6 +1443,22 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
             return None
 
+    def _read_meminfo(self) -> dict[str, Any] | None:
+        try:
+            raw = Path("/proc/meminfo").read_text(encoding="utf-8", errors="ignore")
+        except Exception:  # noqa: BLE001 - broad-except-policy: intentional-no-log best-effort local cleanup and proc probing must never interrupt primary flow
+            return None
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        if not lines:
+            return None
+        payload: dict[str, Any] = {"raw": raw}
+        for line in lines:
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            payload[str(key).strip()] = str(value).strip()
+        return payload
+
     def _parse_proc_status_kb(self, value: Any) -> int | None:
         text = str(value or "").strip()
         if not text:
@@ -1384,6 +1479,40 @@ class HermesClient(HermesClientHTTPMixin, HermesClientAgentMixin, HermesClientCL
         except (TypeError, ValueError):
             return None
         return parsed if parsed >= 0 else None
+
+    def _child_process_snapshot(self, pid: int) -> dict[str, Any]:
+        status = self._read_process_status(int(pid)) or {}
+        rss_kb = self._parse_proc_status_kb(status.get("VmRSS"))
+        vm_hwm_kb = self._parse_proc_status_kb(status.get("VmHWM"))
+        vm_peak_kb = self._parse_proc_status_kb(status.get("VmPeak"))
+        thread_count = self._parse_proc_status_int(status.get("Threads"))
+        process_state = str(status.get("state") or "").strip() or None
+        process_state_code = str(status.get("state_code") or "").strip().upper() or None
+        return {
+            "rss_kb": rss_kb,
+            "vm_hwm_kb": vm_hwm_kb,
+            "vm_peak_kb": vm_peak_kb,
+            "thread_count": thread_count,
+            "process_state": process_state,
+            "process_state_code": process_state_code,
+        }
+
+    def _host_memory_snapshot(self) -> dict[str, Any]:
+        meminfo = self._read_meminfo() or {}
+        mem_free_kb = self._parse_proc_status_kb(meminfo.get("MemFree"))
+        mem_available_kb = self._parse_proc_status_kb(meminfo.get("MemAvailable"))
+        swap_total_kb = self._parse_proc_status_kb(meminfo.get("SwapTotal"))
+        swap_free_kb = self._parse_proc_status_kb(meminfo.get("SwapFree"))
+        swap_used_kb = None
+        if swap_total_kb is not None and swap_free_kb is not None:
+            swap_used_kb = max(0, int(swap_total_kb) - int(swap_free_kb))
+        return {
+            "host_mem_free_kb": mem_free_kb,
+            "host_mem_available_kb": mem_available_kb,
+            "host_swap_total_kb": swap_total_kb,
+            "host_swap_free_kb": swap_free_kb,
+            "host_swap_used_kb": swap_used_kb,
+        }
 
     def assess_warm_worker_candidate_health(self, session_id: str, candidate: dict[str, Any] | None) -> tuple[dict[str, Any] | None, str | None]:
         candidate_payload = dict(candidate) if isinstance(candidate, dict) else {}

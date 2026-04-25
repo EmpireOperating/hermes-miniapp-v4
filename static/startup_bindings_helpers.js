@@ -241,6 +241,7 @@
       renderTraceLog,
       maybeRefreshForBootstrapVersionMismatch,
       isMobileBootstrapPath = () => false,
+      skipTelegramWebappSetup = false,
       logBootStage,
       syncBootLatencyChip,
       fetchAuthBootstrapWithRetry,
@@ -299,7 +300,7 @@
       }
       syncBootLatencyChip?.('bootstrap-start');
 
-      if (tg) {
+      if (tg && !skipTelegramWebappSetup) {
         try {
           tg.ready?.();
           tg.disableVerticalSwipes?.();
@@ -308,6 +309,8 @@
         } catch {
           // Non-fatal: proceed with auth even when client WebApp helpers partially fail.
         }
+      } else if (tg && skipTelegramWebappSetup) {
+        logBootStage?.('telegram-webapp-skipped-embedded-preview');
       }
 
       syncRenderTraceBadge?.();
@@ -316,8 +319,10 @@
       syncFullscreenControlState?.();
       syncDevAuthUi?.();
       try {
-        tg?.onEvent?.('fullscreenChanged', syncFullscreenControlState);
-        tg?.onEvent?.('fullscreenFailed', () => appendSystemMessage('Fullscreen request was denied by Telegram client.'));
+        if (!skipTelegramWebappSetup) {
+          tg?.onEvent?.('fullscreenChanged', syncFullscreenControlState);
+          tg?.onEvent?.('fullscreenFailed', () => appendSystemMessage('Fullscreen request was denied by Telegram client.'));
+        }
       } catch {
         // Optional event hooks vary across Telegram clients.
       }
@@ -637,6 +642,7 @@
       renderTraceLog: deps.renderTraceLog,
       maybeRefreshForBootstrapVersionMismatch: deps.maybeRefreshForBootstrapVersionMismatch,
       isMobileBootstrapPath: deps.isMobileBootstrapPath,
+      skipTelegramWebappSetup: deps.skipTelegramWebappSetup,
       logBootStage: deps.logBootStage,
       syncBootLatencyChip: deps.syncBootLatencyChip,
       fetchAuthBootstrapWithRetry: deps.fetchAuthBootstrapWithRetry,

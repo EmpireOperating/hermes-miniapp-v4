@@ -8,6 +8,7 @@ from flask import jsonify
 
 from file_preview_eligibility import file_preview_allowed_roots, file_preview_context_roots, previewable_file_refs
 from hermes_client import HermesClientError
+from miniapp_attachments import normalize_attachment_list
 from routes_chat_context import ChatRouteContext
 from routes_chat_error_mapping import map_chat_id_payload_error_to_json
 from routes_chat_resolution import active_chat_id_or_error, verified_user_id_or_error
@@ -29,8 +30,12 @@ def register_sync_chat_routes(
     validated_message_fn = context.validated_message_fn
     json_error_fn = context.json_error_fn
 
-    def _serialize_turn(turn) -> dict[str, object]:
+    def _serialize_turn(turn, *, include_storage_path: bool = False) -> dict[str, object]:
         payload = asdict(turn)
+        payload["attachments"] = normalize_attachment_list(
+            payload.get("attachments") or [],
+            include_storage_path=include_storage_path,
+        )
         allowed_roots = file_preview_allowed_roots()
         preferred_roots = file_preview_context_roots(allowed_roots)
         refs = previewable_file_refs(
@@ -45,8 +50,17 @@ def register_sync_chat_routes(
             payload.pop("file_refs", None)
         return payload
 
-    def _chat_history(user_id: str, chat_id: int, *, limit: int = 120) -> list[dict[str, object]]:
-        return [_serialize_turn(turn) for turn in store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)]
+    def _chat_history(
+        user_id: str,
+        chat_id: int,
+        *,
+        limit: int = 120,
+        include_storage_path: bool = False,
+    ) -> list[dict[str, object]]:
+        return [
+            _serialize_turn(turn, include_storage_path=include_storage_path)
+            for turn in store_getter().get_history(user_id=user_id, chat_id=chat_id, limit=limit)
+        ]
 
     def _json_not_found(exc: Exception) -> tuple[dict[str, object], int]:
         return json_error_fn(str(exc), 404)
@@ -73,8 +87,20 @@ def register_sync_chat_routes(
             should_map_key_error_fn=_is_chat_not_found_key_error,
         )
 
-    def _add_operator_message(user_id: str, chat_id: int, message: str) -> int:
-        return store_getter().add_message(user_id=user_id, chat_id=chat_id, role="operator", body=message)
+    def _add_operator_message(
+        user_id: str,
+        chat_id: int,
+        message: str,
+        *,
+        attachment_ids: list[str] | None = None,
+    ) -> int:
+        return store_getter().add_message(
+            user_id=user_id,
+            chat_id=chat_id,
+            role="operator",
+            body=message,
+            attachment_ids=attachment_ids,
+        )
 
     def _json_try_not_found(
         action: Callable[[], T],
@@ -83,6 +109,20 @@ def register_sync_chat_routes(
             return action(), None
         except KeyError as exc:
             return None, _json_not_found(exc)
+
+    def _attachment_ids_from_payload(payload: dict[str, object]) -> tuple[list[str] | None, tuple[dict[str, object], int] | None]:
+        raw_attachment_ids = payload.get("attachment_ids")
+        if raw_attachment_ids in (None, ""):
+            return None, None
+        if not isinstance(raw_attachment_ids, list):
+            return None, json_error_fn("Invalid attachment_ids. Expected array.", 400)
+        cleaned_ids: list[str] = []
+        for candidate in raw_attachment_ids:
+            attachment_id = str(candidate or "").strip()
+            if not attachment_id:
+                return None, json_error_fn("Invalid attachment_ids. Expected non-empty strings.", 400)
+            cleaned_ids.append(attachment_id)
+        return cleaned_ids or None, None
 
     @api_bp.post("/chat")
     def chat() -> tuple[object, int]:
@@ -96,18 +136,32 @@ def register_sync_chat_routes(
         if auth_error:
             return auth_error
 
+        attachment_ids, attachment_ids_error = _attachment_ids_from_payload(payload)
+        if attachment_ids_error:
+            return attachment_ids_error
+
         chat_id, chat_id_error = _resolve_active_chat_or_error(payload, user_id=user_id)
         if chat_id_error:
             return chat_id_error
 
         _, not_found_error = _json_try_not_found(
-            lambda: _add_operator_message(user_id=user_id, chat_id=chat_id, message=message)
+            lambda: _add_operator_message(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=message,
+                attachment_ids=attachment_ids,
+            )
         )
         if not_found_error:
             return not_found_error
 
         history, history_error = _json_try_not_found(
-            lambda: _chat_history(user_id=user_id, chat_id=chat_id, limit=120)
+            lambda: _chat_history(
+                user_id=user_id,
+                chat_id=chat_id,
+                limit=120,
+                include_storage_path=True,
+            )
         )
         if history_error:
             return history_error

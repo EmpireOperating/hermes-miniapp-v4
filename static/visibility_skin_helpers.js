@@ -29,7 +29,8 @@
       markBackgrounded = null,
       markVisibilityResume = null,
       getPresenceInstanceId = null,
-    } = deps;
+      suppressDevAutoRefresh = false,
+    } = deps || {};
 
     async function syncUnreadNotificationPresence(options = {}) {
       if (!getIsAuthenticated()) return null;
@@ -144,7 +145,7 @@
     }
 
     function startDevAutoRefresh() {
-      if (!devConfig.enabled || !devConfig.reloadStateUrl) return;
+      if (suppressDevAutoRefresh || !devConfig.enabled || !devConfig.reloadStateUrl) return;
 
       let currentVersion = String(devConfig.version || '');
       let reloadQueued = false;

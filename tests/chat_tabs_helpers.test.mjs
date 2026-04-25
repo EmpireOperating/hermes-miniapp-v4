@@ -94,6 +94,8 @@ function createHarness({
   now = 1000,
   mobileTabCarouselEnabled = false,
   mobileViewport = false,
+  getForceOverviewRail = () => false,
+  getForceMobileCarousel = () => false,
   getCurrentUnreadCount = null,
 } = {}) {
   let activeChatIdValue = activeChatId;
@@ -171,6 +173,8 @@ function createHarness({
     tabOverviewEl,
     mobileTabCarouselEnabled,
     getIsMobileCarouselViewport: () => mobileViewport,
+    getForceOverviewRail,
+    getForceMobileCarousel,
     getCurrentUnreadCount,
     openChat: async (chatId) => {
       openedChats.push(Number(chatId));
@@ -484,6 +488,29 @@ test('renderTabs enables mobile carousel overview strip when feature flag is act
   assert.equal(h.tabOverviewEl.children[4].dataset.state, 'idle');
   assert.equal(h.tabOverviewEl.classList.has('chat-tabs__overview--centered'), true);
   assert.deepEqual(centeredCalls, [{ block: 'nearest', inline: 'center' }]);
+});
+
+test('renderTabs shows overview rail and reuses mobile carousel behavior on desktop when Workspace mode forces compact chat navigation', () => {
+  const h = createHarness({
+    activeChatId: 2,
+    getForceOverviewRail: () => true,
+    getForceMobileCarousel: () => true,
+  });
+
+  h.chats.set(1, { id: 1, unread_count: 1, pending: false, is_pinned: false, title: 'One' });
+  h.chats.set(2, { id: 2, unread_count: 0, pending: false, is_pinned: false, title: 'Two' });
+  h.chats.set(3, { id: 3, unread_count: 0, pending: true, is_pinned: false, title: 'Three' });
+
+  h.controller.renderTabs();
+
+  assert.equal(h.tabsEl.classList.has('chat-tabs--mobile-carousel'), true);
+  assert.equal(h.tabOverviewEl.hidden, false);
+  assert.equal(h.tabOverviewEl.children.length, 3);
+  assert.equal(h.tabOverviewEl.children[0].dataset.state, 'unread');
+  assert.equal(h.tabOverviewEl.children[1].dataset.active, 'true');
+  assert.equal(h.tabOverviewEl.children[1].children[0].textContent, '•');
+  assert.equal(h.tabOverviewEl.children[2].dataset.state, 'working');
+  assert.equal(h.tabOverviewEl.children[2].children[0].textContent, '⋯');
 });
 
 test('manual carousel interaction does not get recentered by later background rerenders', () => {

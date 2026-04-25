@@ -330,6 +330,33 @@ class HermesClientDirectAgentMixin:
         for message in history:
             role = str(message.get("role") or "").strip().lower()
             content = str(message.get("content") or message.get("body") or "").strip()
+            attachment_lines: list[str] = []
+            raw_attachments = message.get("attachments")
+            if isinstance(raw_attachments, list):
+                for attachment in raw_attachments:
+                    if not isinstance(attachment, dict):
+                        continue
+                    filename = str(attachment.get("filename") or "attachment").strip() or "attachment"
+                    kind = str(attachment.get("kind") or "file").strip() or "file"
+                    content_type = str(attachment.get("content_type") or "").strip()
+                    storage_path = str(attachment.get("storage_path") or "").strip()
+                    preview_url = str(attachment.get("preview_url") or attachment.get("download_url") or "").strip()
+                    size_bytes = attachment.get("size_bytes")
+                    detail_bits = [bit for bit in (kind, content_type) if bit]
+                    try:
+                        parsed_size = int(size_bytes)
+                    except (TypeError, ValueError):
+                        parsed_size = 0
+                    if parsed_size > 0:
+                        detail_bits.append(f"{parsed_size} bytes")
+                    attachment_lines.append(f"- {filename}" + (f" ({', '.join(detail_bits)})" if detail_bits else ""))
+                    if storage_path:
+                        attachment_lines.append(f"  local file path: {storage_path}")
+                    elif preview_url:
+                        attachment_lines.append(f"  preview url: {preview_url}")
+            if attachment_lines:
+                attachment_block = "Attached files:\n" + "\n".join(attachment_lines)
+                content = f"{content}\n\n{attachment_block}" if content else attachment_block
             if not role or not content:
                 continue
             if role in {"operator", "user"}:

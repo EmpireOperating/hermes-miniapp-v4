@@ -22,6 +22,7 @@ class ClientError(Exception):
 @dataclass
 class _Turn:
     body: str
+    attachments: list[dict[str, object]] | None = None
 
 
 @dataclass
@@ -36,12 +37,13 @@ class _FakeStore:
         self.checkpoint_writes: list[dict[str, object]] = []
         self.job_state = {"status": "running"}
         self.operator_body = "hello"
+        self.operator_attachments: list[dict[str, object]] | None = None
         self.chat_title = "Chat"
 
     def get_message(self, *, user_id: str, chat_id: int, message_id: int):
         if message_id == -1:
             raise KeyError("missing")
-        return _Turn(body=self.operator_body)
+        return _Turn(body=self.operator_body, attachments=self.operator_attachments)
 
     def get_chat(self, user_id: str, chat_id: int):
         return _Chat(title=self.chat_title)
@@ -637,3 +639,38 @@ def test_execute_chat_job_raises_retryable_on_chat_id_mismatch_event() -> None:
 
     assert runtime.store.completed == []
     assert not any(role == "hermes" for _, _, role, _ in runtime.store.messages)
+
+
+def test_execute_chat_job_includes_current_operator_attachments_in_run_message() -> None:
+    runtime = _FakeRuntime(
+        events=[
+            {"type": "chunk", "text": "saw it"},
+            {"type": "done", "reply": "saw it", "latency_ms": 5},
+        ]
+    )
+    runtime.store.operator_body = "what is in this image?"
+    runtime.store.operator_attachments = [
+        {
+            "filename": "output_4.png",
+            "kind": "image",
+            "content_type": "image/png",
+            "size_bytes": 135000,
+            "storage_path": "/tmp/miniapp-attachments/output_4.png",
+            "preview_url": "/api/chats/attachments/att_1/content",
+        }
+    ]
+    job = {"id": 31, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    stream_message = runtime.client.stream_calls[0]["message"]
+    assert "what is in this image?" in stream_message
+    assert "Attached files for this current operator message" in stream_message
+    assert "output_4.png (image, image/png, 135000 bytes)" in stream_message
+    assert "local file path: /tmp/miniapp-attachments/output_4.png" in stream_message
