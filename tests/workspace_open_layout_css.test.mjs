@@ -8,10 +8,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const cssSource = readFileSync(join(__dirname, '..', 'static', 'app.css'), 'utf8');
 
-test('desktop Workspace-open layout widens the shell and adds a splitter track between the left rail and the preview', () => {
+test('desktop Workspace-open layout stretches the shell close to the viewport edge and adds a splitter track between the left rail and the preview', () => {
   assert.match(
     cssSource,
-    /@media \(min-width: 861px\) \{[\s\S]*\.shell\[data-workspace-open="true"\]\s*\{[\s\S]*width:\s*min\(1440px, calc\(100vw - 24px\)\);[\s\S]*\.workspace\[data-workspace-open="true"\] \{[\s\S]*--workspace-sidebar-width:\s*380px;[\s\S]*grid-template-columns:\s*var\(--workspace-sidebar-width, 380px\)\s+12px\s+minmax\(0, 1fr\);[\s\S]*grid-template-rows:\s*auto\s+minmax\(0, 1fr\);[\s\S]*grid-template-areas:\s*"sidebar sidebar-resize visual"\s*"terminal sidebar-resize visual";[\s\S]*column-gap:\s*0;[\s\S]*row-gap:\s*0;/,
+    /@media \(min-width: 861px\) \{[\s\S]*\.shell\[data-workspace-open="true"\]\s*\{[\s\S]*width:\s*calc\(100vw - 24px\);[\s\S]*\.workspace\[data-workspace-open="true"\] \{[\s\S]*--workspace-sidebar-width:\s*380px;[\s\S]*grid-template-columns:\s*var\(--workspace-sidebar-width, 380px\)\s+12px\s+minmax\(0, 1fr\);[\s\S]*grid-template-rows:\s*auto\s+minmax\(0, 1fr\);[\s\S]*grid-template-areas:\s*"sidebar sidebar-resize visual"\s*"terminal sidebar-resize visual";[\s\S]*column-gap:\s*0;[\s\S]*row-gap:\s*0;/,
   );
   assert.match(cssSource, /\.sidebar\s*\{[\s\S]*grid-area:\s*sidebar;/);
   assert.match(cssSource, /\.terminal-panel\s*\{[\s\S]*grid-area:\s*terminal;/);

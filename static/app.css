@@ -103,7 +103,7 @@ html[data-skin="obsidian"] body {
 
 @media (min-width: 861px) {
   .shell[data-workspace-open="true"] {
-    width: min(1440px, calc(100vw - 24px));
+    width: calc(100vw - 24px);
   }
 }
 
