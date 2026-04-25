@@ -879,19 +879,27 @@
         deps.markResumeAlreadyComplete?.(key);
       }
 
+      if (transition.immediateFinalize) {
+        immediateFinalizedChats.add(key);
+        finalizeStreamPendingState(key, false);
+      }
+
+      const attentionResult = typeof transition.applyAttention === 'function'
+        ? transition.applyAttention()
+        : null;
+
       if (transition.traceStateEvent) {
+        const attentionTraceDetails = typeof transition.describeAttentionTraceDetails === 'function'
+          ? transition.describeAttentionTraceDetails(attentionResult)
+          : {};
         renderTraceLog(transition.traceStateEvent, {
           chatId: key,
           activeChatId: Number(getActiveChatId()),
           hidden: typeof document !== 'undefined' ? document.visibilityState !== 'visible' : false,
           replyLength: replyText.length,
           ...transition.traceStateDetails,
+          ...attentionTraceDetails,
         });
-      }
-
-      if (transition.immediateFinalize) {
-        immediateFinalizedChats.add(key);
-        finalizeStreamPendingState(key, false);
       }
     }
 
@@ -899,7 +907,7 @@
       builtReplyRef.value = payload.reply || builtReplyRef.value;
       finalizeInlineToolTrace(chatId);
       const doneTurnCount = Number(payload?.turn_count || 0);
-      const doneResult = typeof applyDoneAttention === 'function'
+      const applyAttention = () => (typeof applyDoneAttention === 'function'
         ? applyDoneAttention(chatId, { updateUnread, doneTurnCount })
         : (() => {
           const earlyAssistantNotification = consumeFirstAssistantNotification(chatId);
@@ -921,7 +929,7 @@
               renderTabs: deps.renderTabs,
             }),
           };
-        })();
+        })());
       return {
         replyText: builtReplyRef.value,
         clearStreamCursor: true,
@@ -935,14 +943,17 @@
         traceStateEvent: 'stream-done-state',
         traceStateDetails: {
           updateUnread: Boolean(updateUnread),
-          hadEarlyAssistantHaptic: doneResult.effect?.hadEarlyAssistantHaptic,
-          hadEarlyAssistantUnread: doneResult.effect?.hadEarlyAssistantUnread,
-          shouldTriggerHapticOnDone: doneResult.effect?.shouldTriggerHaptic,
-          shouldIncrementUnreadOnDone: doneResult.effect?.shouldIncrementUnread,
           doneTurnCount,
-          doneMessageKey: doneResult.effect?.messageKey,
           latencyMs: Number(payload?.latency_ms || 0),
         },
+        applyAttention,
+        describeAttentionTraceDetails: (doneResult) => ({
+          hadEarlyAssistantHaptic: doneResult?.effect?.hadEarlyAssistantHaptic,
+          hadEarlyAssistantUnread: doneResult?.effect?.hadEarlyAssistantUnread,
+          shouldTriggerHapticOnDone: doneResult?.effect?.shouldTriggerHaptic,
+          shouldIncrementUnreadOnDone: doneResult?.effect?.shouldIncrementUnread,
+          doneMessageKey: doneResult?.effect?.messageKey,
+        }),
         immediateFinalize: true,
       };
     }

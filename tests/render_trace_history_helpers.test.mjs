@@ -595,6 +595,66 @@ test('createHistoryRenderController preserves anchored viewport when rerender sh
   assert.equal(messagesEl.scrollTop, 200);
 });
 
+test('createHistoryRenderController can prefer stored viewport on visibility resume when webview reset scroll to top', () => {
+  const harness = createAnchoredMessagesHarness([
+    createAnchoredMessageNode('1', 0, 100),
+    createAnchoredMessageNode('2', 1000, 120),
+    createAnchoredMessageNode('3', 1120, 120),
+  ]);
+  const { messagesEl } = harness;
+  messagesEl.scrollTop = 0;
+  messagesEl.scrollHeight = 1800;
+  messagesEl.clientHeight = 400;
+
+  const histories = new Map([[
+    7,
+    [
+      { id: 1, role: 'operator', body: 'first' },
+      { id: 2, role: 'assistant', body: 'middle' },
+      { id: 3, role: 'assistant', body: 'latest' },
+    ],
+  ]]);
+  const chatScrollTop = new Map([[7, 1000]]);
+  const chatStickToBottom = new Map([[7, false]]);
+  let renderedChatId = 7;
+
+  const controller = renderTraceHistoryHelpers.createHistoryRenderController({
+    messagesEl,
+    jumpLatestButton: { hidden: true },
+    jumpLastStartButton: { hidden: true },
+    histories,
+    virtualizationRanges: new Map(),
+    virtualMetrics: new Map(),
+    renderedHistoryLength: new Map([[7, 3]]),
+    renderedHistoryVirtualized: new Map([[7, false]]),
+    unseenStreamChats: new Set(),
+    chatScrollTop,
+    chatStickToBottom,
+    historyCountEl: { textContent: '' },
+    getActiveChatId: () => 7,
+    getRenderedChatId: () => renderedChatId,
+    setRenderedChatId: (value) => { renderedChatId = value; },
+    refreshTabNode: () => {},
+    clearSelectionQuoteStateFn: () => {},
+    syncLiveToolStreamForChatFn: () => {},
+    appendMessagesFn: (fragment, history) => {
+      history.forEach((message, index) => {
+        fragment.children.push(createAnchoredMessageNode(String(message.id), index === 0 ? 0 : 1000 + ((index - 1) * 120), 120));
+      });
+      messagesEl.scrollHeight = 1800;
+    },
+    shouldUseAppendOnlyRenderFn: () => false,
+    renderTraceLogFn: () => {},
+    createFragmentFn: () => ({ children: [] }),
+  });
+
+  controller.renderMessages(7, { preserveViewport: true, preferStoredViewport: true });
+
+  assert.equal(messagesEl.scrollTop, 1000);
+  assert.equal(chatScrollTop.get(7), 1000);
+  assert.equal(chatStickToBottom.get(7), false);
+});
+
 test('createHistoryRenderController virtualizes a switched chat around its stored viewport instead of the previously rendered chat', () => {
   const histories = new Map([[
     7,

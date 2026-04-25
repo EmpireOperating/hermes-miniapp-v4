@@ -350,18 +350,26 @@
       }
     }
 
-    function renderMessages(chatId, { preserveViewport = false, forceBottom = false, forceVirtualize = false } = {}) {
+    function renderMessages(chatId, { preserveViewport = false, forceBottom = false, forceVirtualize = false, preferStoredViewport = false } = {}) {
       const targetChatId = Number(chatId);
       const isSameRenderedChat = Number(getRenderedChatId?.()) === targetChatId;
-      const prevScrollTop = Number(messagesEl.scrollTop || 0);
-      const prevViewportSnapshot = captureViewportSnapshot();
-      const wasNearBottom = isNearBottom(messagesEl, 40);
-      const shouldStick = Boolean(forceBottom);
       const hasStoredScrollTop = chatScrollTop.has(targetChatId);
       const storedTargetScrollTop = hasStoredScrollTop
         ? Math.max(0, Number(chatScrollTop.get(targetChatId)) || 0)
         : 0;
-      const renderScrollTop = (!forceBottom && !isSameRenderedChat && hasStoredScrollTop)
+      const shouldPreferStoredViewport = Boolean(preferStoredViewport)
+        && Boolean(preserveViewport)
+        && !Boolean(forceBottom)
+        && hasStoredScrollTop;
+      const prevScrollTop = shouldPreferStoredViewport
+        ? storedTargetScrollTop
+        : Number(messagesEl.scrollTop || 0);
+      const prevViewportSnapshot = shouldPreferStoredViewport
+        ? { scrollTop: storedTargetScrollTop }
+        : captureViewportSnapshot();
+      const wasNearBottom = isNearBottom(messagesEl, 40);
+      const shouldStick = Boolean(forceBottom);
+      const renderScrollTop = (!forceBottom && (shouldPreferStoredViewport || (!isSameRenderedChat && hasStoredScrollTop)))
         ? storedTargetScrollTop
         : prevScrollTop;
 

@@ -24,6 +24,7 @@
       warmChatHistoryCache,
       syncVisibleActiveChat,
       syncActiveMessageView,
+      syncActiveLatencyChip = null,
       getStreamAbortControllers,
       shouldDeferImmediateActiveMessageView = null,
       maybeRefreshForBootstrapVersionMismatch = null,
@@ -210,7 +211,9 @@
         // Visibility/focus resumption is a common point where throttled UI work catches up.
         // Force an immediate reconciliation from canonical history for the active chat unless
         // unread metadata says local transcript is known stale and active hydration should win first.
-        syncActiveMessageView(activeId, { preserveViewport: true });
+        // Prefer the cached per-chat viewport because Telegram/WebKit can briefly restore the
+        // scroll container to 0 while the mini app is backgrounded, before our resume pass runs.
+        syncActiveMessageView(activeId, { preserveViewport: true, preferStoredViewport: true });
       }
 
       try {
@@ -218,10 +221,17 @@
           await syncVisibleActiveChatDelegate({
             hidden,
             streamAbortControllers,
+            preferStoredViewport: true,
           });
         }
       } catch {
         // best effort active-chat sync
+      }
+
+      try {
+        syncActiveLatencyChip?.();
+      } catch {
+        // best effort latency UI refresh
       }
 
       try {
@@ -300,6 +310,18 @@
         focusResumeArmed = true;
         void syncUnreadNotificationPresence({ visible: false });
         markBackgrounded?.({ trigger: 'pagehide' });
+      });
+      windowObject.addEventListener?.('pageshow', () => {
+        if (documentObject.visibilityState !== 'visible') {
+          syncSkinFromStorage();
+          return;
+        }
+        if (!focusResumeArmed) {
+          syncSkinFromStorage();
+          return;
+        }
+        focusResumeArmed = false;
+        void resumeVisibleApp('pageshow');
       });
       windowObject.setInterval(() => {
         if (documentObject.visibilityState !== 'visible') return;

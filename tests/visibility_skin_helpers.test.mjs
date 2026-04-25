@@ -41,6 +41,7 @@ function buildHarness({
   const fetchCalls = [];
   const syncActiveMessageViewCalls = [];
   const syncVisibleActiveChatCalls = [];
+  const syncActiveLatencyChipCalls = [];
   const refreshChatsCalls = [];
   const warmChatHistoryCacheCalls = [];
   const apiPostCalls = [];
@@ -167,6 +168,10 @@ function buildHarness({
       callOrder.push('syncActiveMessageView');
       syncActiveMessageViewCalls.push({ chatId, options });
     },
+    syncActiveLatencyChip: () => {
+      callOrder.push('syncActiveLatencyChip');
+      syncActiveLatencyChipCalls.push('sync');
+    },
     shouldDeferImmediateActiveMessageView: (chatId) => (
       typeof shouldDeferImmediateActiveMessageView === 'function'
         ? Boolean(shouldDeferImmediateActiveMessageView(chatId))
@@ -193,6 +198,7 @@ function buildHarness({
     intervalCallbacks,
     syncActiveMessageViewCalls,
     syncVisibleActiveChatCalls,
+    syncActiveLatencyChipCalls,
     refreshChatsCalls,
     warmChatHistoryCacheCalls,
     apiPostCalls,
@@ -274,12 +280,13 @@ test('focus resumes visibility sync only after the app backgrounded without a vi
 
   assert.equal(harness.visibilityResumes.length, 1);
   assert.equal(harness.visibilityResumes[0].trigger, 'focus');
-  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true, preferStoredViewport: true } }]);
   assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
   assert.deepEqual(harness.warmChatHistoryCacheCalls, ['warm']);
   assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
     hidden: false,
     streamAbortControllers: harness.streamAbortControllers,
+    preferStoredViewport: true,
   }]);
   assert.deepEqual(harness.callOrder.slice(0, 3), [
     'apiPost:/api/presence/state',
@@ -287,6 +294,43 @@ test('focus resumes visibility sync only after the app backgrounded without a vi
     'syncVisibleActiveChat',
   ]);
   assert.equal(harness.callOrder.indexOf('refreshChats') < harness.callOrder.indexOf('warmChatHistoryCache'), true);
+});
+
+
+test('pageshow resumes mobile webview sync after pagehide even when focus does not fire', async () => {
+  const harness = buildHarness();
+
+  harness.controller.installLifecycleListeners();
+  harness.windowObject.dispatch('pagehide');
+  harness.windowObject.dispatch('pageshow');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(harness.visibilityResumes.length, 1);
+  assert.equal(harness.visibilityResumes[0].trigger, 'pageshow');
+  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true, preferStoredViewport: true } }]);
+  assert.deepEqual(harness.syncActiveLatencyChipCalls, ['sync']);
+  assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
+  assert.deepEqual(harness.warmChatHistoryCacheCalls, ['warm']);
+  assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
+    hidden: false,
+    streamAbortControllers: harness.streamAbortControllers,
+    preferStoredViewport: true,
+  }]);
+});
+
+test('focus does not duplicate a pageshow-driven mobile resume', async () => {
+  const harness = buildHarness();
+
+  harness.controller.installLifecycleListeners();
+  harness.windowObject.dispatch('pagehide');
+  harness.windowObject.dispatch('pageshow');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  harness.windowObject.dispatch('focus');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(harness.visibilityResumes.length, 1);
+  assert.equal(harness.visibilityResumes[0].trigger, 'pageshow');
+  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true, preferStoredViewport: true } }]);
 });
 
 test('focus does not duplicate a visibility-driven resume after returning to the app', async () => {
@@ -306,6 +350,7 @@ test('focus does not duplicate a visibility-driven resume after returning to the
   assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
     hidden: false,
     streamAbortControllers: harness.streamAbortControllers,
+    preferStoredViewport: true,
   }]);
 });
 
@@ -318,13 +363,14 @@ test('handleVisibilityChange refreshes lifecycle and delegates active-chat recon
   assert.equal(harness.visibilityResumes.length, 1);
   assert.equal(harness.visibilityResumes[0].trigger, 'visibilitychange');
   assert.equal(harness.visibilityResumes[0].pendingChatCount, 0);
-  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true, preferStoredViewport: true } }]);
   assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
   assert.deepEqual(harness.warmChatHistoryCacheCalls, ['warm']);
   assert.equal(harness.syncVisibleActiveChatCalls.length, 1);
   assert.deepEqual(harness.syncVisibleActiveChatCalls[0], {
     hidden: false,
     streamAbortControllers: harness.streamAbortControllers,
+    preferStoredViewport: true,
   });
   assert.deepEqual(harness.callOrder.slice(0, 3), [
     'apiPost:/api/presence/state',
@@ -349,6 +395,7 @@ test('handleVisibilityChange defers eager active transcript repaint when the act
   assert.deepEqual(harness.syncVisibleActiveChatCalls[0], {
     hidden: false,
     streamAbortControllers: harness.streamAbortControllers,
+    preferStoredViewport: true,
   });
   assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
   assert.deepEqual(harness.callOrder.slice(0, 2), [
@@ -402,6 +449,7 @@ test('resumeVisibleApp does not let visible presence sync block active chat hydr
   assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
     hidden: false,
     streamAbortControllers: harness.streamAbortControllers,
+    preferStoredViewport: true,
   }]);
   assert.deepEqual(harness.refreshChatsCalls, ['refresh']);
   assert.equal(harness.callOrder.indexOf('syncVisibleActiveChat') < harness.callOrder.indexOf('refreshChats'), true);
@@ -425,10 +473,11 @@ test('handleVisibilityChange coalesces overlapping visible resumes into one acti
   const secondResume = harness.controller.handleVisibilityChange();
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true } }]);
+  assert.deepEqual(harness.syncActiveMessageViewCalls, [{ chatId: 1, options: { preserveViewport: true, preferStoredViewport: true } }]);
   assert.deepEqual(harness.syncVisibleActiveChatCalls, [{
     hidden: false,
     streamAbortControllers: harness.streamAbortControllers,
+    preferStoredViewport: true,
   }]);
   assert.deepEqual(harness.refreshChatsCalls, []);
   assert.equal(harness.visibilityResumes.length, 1);
@@ -476,7 +525,7 @@ test('handleVisibilityChange ignores bootstrap refresh callbacks and continues n
     maybeRefreshForBootstrapVersionMismatch: async () => true,
     refreshChats: async () => { harness.refreshChatsCalls.push('refresh'); },
     syncVisibleActiveChat: async () => { harness.syncVisibleActiveChatCalls.push({ hidden: false, streamAbortControllers: new Map() }); },
-    syncActiveMessageView: () => { harness.syncActiveMessageViewCalls.push({ chatId: 1, options: { preserveViewport: true } }); },
+    syncActiveMessageView: () => { harness.syncActiveMessageViewCalls.push({ chatId: 1, options: { preserveViewport: true, preferStoredViewport: true } }); },
     getStreamAbortControllers: () => new Map(),
   });
 

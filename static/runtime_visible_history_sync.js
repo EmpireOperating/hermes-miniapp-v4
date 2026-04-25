@@ -56,6 +56,7 @@
       const {
         hidden = false,
         streamAbortControllers = new Map(),
+        preferStoredViewport = false,
       } = options;
       const activeChatId = getActiveChatId();
       if (!activeChatId) return;
@@ -109,7 +110,11 @@
       } = renderState;
       refreshTabNode(activeId);
       if (shouldRenderActiveHistory) {
-        renderMessages(activeId, { preserveViewport: true });
+        const renderOptions = { preserveViewport: true };
+        if (preferStoredViewport) {
+          renderOptions.preferStoredViewport = true;
+        }
+        renderMessages(activeId, renderOptions);
       }
       syncHydratedActiveReadState(activeId, {
         unreadCount: data.chat?.unread_count,

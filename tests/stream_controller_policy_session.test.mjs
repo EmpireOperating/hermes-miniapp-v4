@@ -1373,6 +1373,62 @@ test('createStreamLifecycleController fails fast on unexpected resume early clos
   }
 });
 
+
+test('terminal done applies unread attention after visible final transcript and pending finalize', () => {
+  const ops = [];
+  const terminalController = streamController.createStreamTerminalEventController({
+    formatLatency: () => '42ms',
+    getActiveChatId: () => 7,
+    chatLabel: (chatId) => `chat-${chatId}`,
+    compactChatLabel: (chatId) => `#${chatId}`,
+    finalizeInlineToolTrace: () => ops.push('finalize-tool'),
+    updatePendingAssistant: () => ops.push('update-assistant'),
+    markStreamUpdate: () => ops.push('mark-update'),
+    patchVisiblePendingAssistant: () => { ops.push('patch-assistant'); return true; },
+    patchVisibleToolTrace: () => { ops.push('patch-tool'); return true; },
+    renderTraceLog: () => {},
+    syncActiveMessageView: () => ops.push('sync-active'),
+    setChatLatency: () => {},
+    finalizeStreamPendingState: () => ops.push('finalize-pending'),
+    markStreamComplete: () => ops.push('mark-complete'),
+    clearStreamCursor: () => ops.push('clear-cursor'),
+    clearPendingStreamSnapshot: () => ops.push('clear-snapshot'),
+  }, {
+    immediateFinalizedChats: new Set(),
+    consumeFirstAssistantNotification: () => null,
+    applyDoneAttention: () => {
+      ops.push('attention');
+      return { effect: { shouldIncrementUnread: true, shouldTriggerHaptic: false } };
+    },
+    applyEarlyCloseAttention: () => {},
+    applyResumeCompletionAttention: () => {},
+    setStreamStatusForVisibleChat: () => {},
+    setStreamChipForVisibleChat: () => {},
+    registerTerminalHydrationPromise: () => ops.push('register-hydration'),
+  }, {
+    hydrateChatAfterGracefulResumeCompletion: () => Promise.resolve(),
+  }, {
+    reconcileVisibleTranscriptFallback: () => ops.push('fallback-reconcile'),
+  });
+
+  terminalController.applyDonePayload(7, { reply: 'final answer', latency_ms: 42, turn_count: 1 }, { value: '' });
+
+  assert.deepEqual(ops, [
+    'finalize-tool',
+    'clear-cursor',
+    'clear-snapshot',
+    'update-assistant',
+    'mark-update',
+    'patch-assistant',
+    'patch-tool',
+    'fallback-reconcile',
+    'register-hydration',
+    'mark-complete',
+    'finalize-pending',
+    'attention',
+  ]);
+});
+
 test('createStreamLifecycleController keeps pending state during transient resume retry backoff', async () => {
   const previousDocument = globalThis.document;
   globalThis.document = { visibilityState: 'visible', activeElement: null };

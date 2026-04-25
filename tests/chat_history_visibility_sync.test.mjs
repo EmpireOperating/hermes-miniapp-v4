@@ -34,6 +34,23 @@ test('syncVisibleActiveChat hydrates active history and resumes pending streams 
   });
 });
 
+test('syncVisibleActiveChat preserves cached viewport on background resume when requested', async () => {
+  const harness = buildHarness({
+    shouldResumeOnVisibilityChange: () => false,
+  });
+
+  await harness.controller.syncVisibleActiveChat({
+    hidden: false,
+    streamAbortControllers: new Map(),
+    preferStoredViewport: true,
+  });
+
+  assert.deepEqual(harness.renderedMessages.at(-1), {
+    chatId: 7,
+    options: { preserveViewport: true, preferStoredViewport: true },
+  });
+});
+
 test('syncVisibleActiveChat resumes when server still reports pending and there is no live stream', async () => {
   const harness = buildHarness({
     shouldResumeOnVisibilityChange: () => false,

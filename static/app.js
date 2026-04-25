@@ -2959,6 +2959,7 @@ function createVisibilitySkinControllerRuntimeDeps() {
     warmChatHistoryCache,
     syncVisibleActiveChat,
     syncActiveMessageView,
+    syncActiveLatencyChip,
     getStreamAbortControllers,
     shouldDeferImmediateActiveMessageView,
     maybeRefreshForBootstrapVersionMismatch,
