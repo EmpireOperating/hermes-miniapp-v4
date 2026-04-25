@@ -20,7 +20,7 @@ test('template exposes generic composer attachment controls ahead of the prompt 
   const formIndex = indexOfFragment('<form id="chat-form" class="composer">');
   const attachmentsWrapIndex = indexOfFragment('<div id="composer-attachments" class="composer-attachments" hidden></div>');
   const textareaIndex = indexOfFragment('<textarea id="prompt" name="prompt" rows="4" placeholder="Type a message…"');
-  const inputIndex = indexOfFragment('<input id="attachment-input" name="attachment" type="file" hidden>');
+  const inputIndex = indexOfFragment('<input id="attachment-input" name="attachment" type="file" accept="image/*,.pdf,.txt,.md,.json,.csv,.tsv,.log,.yaml,.yml" hidden>');
   const actionsIndex = indexOfFragment('<div class="composer__actions">');
   const attachButtonIndex = indexOfFragment('<button id="attachment-button" type="button" class="action-button action-button--subtle">Attach</button>');
   const sendButtonIndex = indexOfFragment('<button id="send-button" type="submit">Send</button>');
@@ -52,6 +52,14 @@ test('app.js wires generic composer attachments through upload, chips, and send 
       && source.includes('composerAttachmentsEl.hidden = !attachments.length;')
       && source.includes('attachmentButton?.setAttribute("aria-pressed", attachments.length ? "true" : "false");'),
     'app.js should render attachment chips and reflect attachment state on the button',
+  );
+  assert.ok(
+    source.includes('async function prepareComposerAttachmentForUpload(file) {')
+      && source.includes('function shouldCompressComposerImage(file) {')
+      && source.includes('await prepareComposerAttachmentForUpload(file)')
+      && source.includes('canvas.toBlob')
+      && source.includes('image/jpeg'),
+    'app.js should downscale large mobile image selections before uploading them',
   );
   assert.ok(
     source.includes('async function uploadComposerAttachment(file) {')

@@ -3578,6 +3578,91 @@ function formatAttachmentSize(sizeBytes) {
   return `${size} B`;
 }
 
+const COMPOSER_IMAGE_COMPRESSION_THRESHOLD_BYTES = 7 * 1024 * 1024;
+const COMPOSER_IMAGE_MAX_DIMENSION = 2048;
+const COMPOSER_IMAGE_JPEG_QUALITY = 0.82;
+
+function shouldCompressComposerImage(file) {
+  if (!file || typeof file !== "object") return false;
+  const type = String(file.type || "").toLowerCase();
+  if (!type.startsWith("image/") || type === "image/gif") return false;
+  const size = Number(file.size || 0);
+  return Number.isFinite(size) && size > COMPOSER_IMAGE_COMPRESSION_THRESHOLD_BYTES;
+}
+
+function composerCompressedImageFilename(filename) {
+  const sourceName = String(filename || "photo").trim() || "photo";
+  const withoutExtension = sourceName.replace(/\.[^.]*$/, "") || "photo";
+  return `${withoutExtension}.jpg`;
+}
+
+function loadComposerImageBitmap(file) {
+  if (typeof createImageBitmap === "function") {
+    return createImageBitmap(file);
+  }
+  if (typeof Image === "undefined" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
+    return Promise.reject(new Error("Image decoding is unavailable."));
+  }
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Image decoding failed."));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function canvasToComposerJpegBlob(canvas) {
+  return new Promise((resolve) => {
+    canvas.toBlob(resolve, "image/jpeg", COMPOSER_IMAGE_JPEG_QUALITY);
+  });
+}
+
+async function prepareComposerAttachmentForUpload(file) {
+  if (!shouldCompressComposerImage(file)) return file;
+  if (typeof document === "undefined" || typeof document.createElement !== "function") return file;
+  try {
+    const bitmap = await loadComposerImageBitmap(file);
+    const sourceWidth = Number(bitmap?.width || 0);
+    const sourceHeight = Number(bitmap?.height || 0);
+    if (!sourceWidth || !sourceHeight) return file;
+    const scale = Math.min(1, COMPOSER_IMAGE_MAX_DIMENSION / Math.max(sourceWidth, sourceHeight));
+    const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
+    const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    const context = canvas.getContext("2d");
+    if (!context) return file;
+    context.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
+    const compressedBlob = await canvasToComposerJpegBlob(canvas);
+    if (typeof bitmap.close === "function") {
+      bitmap.close();
+    }
+    if (!compressedBlob || !compressedBlob.size || compressedBlob.size >= Number(file.size || 0)) {
+      return file;
+    }
+    const filename = composerCompressedImageFilename(file.name);
+    if (typeof File === "function") {
+      return new File([compressedBlob], filename, {
+        type: "image/jpeg",
+        lastModified: Number(file.lastModified || Date.now()),
+      });
+    }
+    compressedBlob.name = filename;
+    compressedBlob.lastModified = Number(file.lastModified || Date.now());
+    return compressedBlob;
+  } catch {
+    return file;
+  }
+}
+
 function clearComposerAttachments() {
   composerAttachments = [];
   composerAttachmentChatId = null;
@@ -3641,13 +3726,17 @@ async function uploadComposerAttachment(file) {
     if (value == null || value === "") return;
     formData.append(key, String(value));
   });
-  formData.append("file", file);
+  const uploadFile = await prepareComposerAttachmentForUpload(file);
+  formData.append("file", uploadFile, uploadFile.name || file.name || "attachment");
   const response = await fetch("/api/chats/upload", {
     method: "POST",
     body: formData,
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 413) {
+      throw new Error("Attachment is too large. Try a smaller photo or screenshot.");
+    }
     throw new Error(String(data?.error || "Attachment upload failed."));
   }
   const attachment = normalizeComposerAttachmentRecord(data?.attachment);

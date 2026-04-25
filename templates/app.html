@@ -189,7 +189,7 @@
             <label class="composer__label" for="prompt">Message</label>
             <div id="composer-attachments" class="composer-attachments" hidden></div>
             <textarea id="prompt" name="prompt" rows="4" placeholder="Type a message…" maxlength="{{ max_message_len }}" enterkeyhint="send" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea>
-            <input id="attachment-input" name="attachment" type="file" hidden>
+            <input id="attachment-input" name="attachment" type="file" accept="image/*,.pdf,.txt,.md,.json,.csv,.tsv,.log,.yaml,.yml" hidden>
             <div class="composer__context-row" id="visual-dev-attached-context-row">
               <span id="visual-dev-attached-selection-chip" class="activity-chip activity-chip--context" hidden>Next send UI: none</span>
               <button type="button" id="visual-dev-attached-selection-clear" class="activity-chip activity-chip--context activity-chip--clear" hidden>Clear UI</button>
