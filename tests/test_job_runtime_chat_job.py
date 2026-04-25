@@ -35,6 +35,8 @@ class _FakeStore:
         self.messages: list[tuple[str, int, str, str]] = []
         self.completed: list[int] = []
         self.checkpoint_writes: list[dict[str, object]] = []
+        self.created_suggestion_batches: list[dict[str, object]] = []
+        self.media_project: dict[str, object] | None = None
         self.job_state = {"status": "running"}
         self.operator_body = "hello"
         self.operator_attachments: list[dict[str, object]] | None = None
@@ -90,6 +92,19 @@ class _FakeStore:
 
     def get_turn_count(self, _user_id: str, *, chat_id: int) -> int:
         return 7
+
+    def get_media_project_by_chat(self, *, user_id: str, chat_id: int):
+        return self.media_project
+
+    def create_media_project_suggestion_batch(self, *, project_id: str, author: str, summary: str, operations: list[dict[str, object]]):
+        record = {
+            "project_id": str(project_id),
+            "author": str(author),
+            "summary": str(summary),
+            "operations": operations,
+        }
+        self.created_suggestion_batches.append(record)
+        return {"batch_id": f"batch_fake_{len(self.created_suggestion_batches)}", **record}
 
 
 class _FakeClient:
@@ -674,3 +689,60 @@ def test_execute_chat_job_includes_current_operator_attachments_in_run_message()
     assert "Attached files for this current operator message" in stream_message
     assert "output_4.png (image, image/png, 135000 bytes)" in stream_message
     assert "local file path: /tmp/miniapp-attachments/output_4.png" in stream_message
+
+def test_execute_chat_job_creates_pending_media_editor_suggestion_batch_from_reply_block() -> None:
+    reply = """I drafted a timeline change.\n\n```media-project-suggestions\n{\n  "summary": "Add opening hook",\n  "operations": [\n    {\n      "kind": "create_text_clip",\n      "payload": {\n        "track_id": "proj_123:text",\n        "text": "Big opening hook",\n        "start_ms": 0,\n        "duration_ms": 2000\n      }\n    }\n  ]\n}\n```\n\nOpen the workspace to review it."""
+    runtime = _FakeRuntime(events=[{"type": "done", "reply": reply, "latency_ms": 5}])
+    runtime.store.media_project = {"project_id": "proj_123"}
+    job = {"id": 40, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert runtime.store.created_suggestion_batches == [
+        {
+            "project_id": "proj_123",
+            "author": "hermes",
+            "summary": "Add opening hook",
+            "operations": [
+                {
+                    "kind": "create_text_clip",
+                    "payload": {
+                        "track_id": "proj_123:text",
+                        "text": "Big opening hook",
+                        "start_ms": 0,
+                        "duration_ms": 2000,
+                    },
+                }
+            ],
+        }
+    ]
+    hermes_messages = [body for _, _, role, body in runtime.store.messages if role == "hermes"]
+    assert hermes_messages == ["I drafted a timeline change.\n\nOpen the workspace to review it."]
+    done_events = [payload for _, name, payload in runtime.published if name == "done"]
+    assert done_events[-1]["media_project_suggestion_batch_id"] == "batch_fake_1"
+
+
+def test_execute_chat_job_ignores_invalid_media_editor_suggestion_block_without_breaking_reply() -> None:
+    reply = """I tried a proposal.\n\n```media-project-suggestions\n{"summary":"Broken","operations":[]}\n```"""
+    runtime = _FakeRuntime(events=[{"type": "done", "reply": reply, "latency_ms": 5}])
+    runtime.store.media_project = {"project_id": "proj_123"}
+    job = {"id": 41, "user_id": "u", "chat_id": 9, "operator_message_id": 1}
+
+    execute_chat_job(
+        runtime,
+        job,
+        retryable_error_cls=RetryableError,
+        non_retryable_error_cls=NonRetryableError,
+        client_error_cls=ClientError,
+    )
+
+    assert runtime.store.created_suggestion_batches == []
+    assert any("media_project_suggestion_error" == payload.get("reason") for _, name, payload in runtime.published if name == "meta")
+    assert any(role == "hermes" and "```media-project-suggestions" in body for _, _, role, body in runtime.store.messages)
+

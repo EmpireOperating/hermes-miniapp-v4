@@ -84,6 +84,8 @@
       apiPost = async () => ({ ok: true }),
       onUiError = () => {},
       nowFn = () => Date.now(),
+      mediaEditorUrlForChat = null,
+      previewUrlForSession = null,
     } = deps || {};
 
     const visualDevConfig = normalizeConfig(config);
@@ -109,6 +111,7 @@
       consoleList,
       onWorkspaceOpenChange,
       initialEnabled: visualDevConfig.enabled,
+      previewUrlForSession,
     });
 
     let currentState = { ok: true, enabled: visualDevConfig.enabled, sessions: [] };
@@ -408,6 +411,17 @@
       return `visual-dev-${Number(chatId || 0)}-${Number(nowFn?.() || Date.now())}`;
     }
 
+    function buildMediaEditorPreviewUrl(chatId) {
+      if (typeof mediaEditorUrlForChat === 'function') {
+        return String(mediaEditorUrlForChat(chatId) || '').trim();
+      }
+      const origin = String(getParentOrigin?.() || visualDevConfig.allowedParentOrigins?.[0] || '').trim();
+      if (!origin) return '';
+      const url = new URL('/workspace/media-editor', origin);
+      url.searchParams.set('chat_id', String(Number(chatId || 0)));
+      return url.toString();
+    }
+
     async function attachSession({
       chatId = null,
       previewUrl = '',
@@ -432,6 +446,26 @@
       });
       await refreshState();
       return response;
+    }
+
+    async function attachMediaEditorSession({ chatId = null } = {}) {
+      const resolvedChatId = Number(chatId || getActiveChatIdRef?.() || 0);
+      if (resolvedChatId <= 0) {
+        throw new Error('Select a chat before opening the media editor');
+      }
+      const previewUrl = buildMediaEditorPreviewUrl(resolvedChatId);
+      if (!previewUrl) {
+        throw new Error('Media editor URL is unavailable');
+      }
+      return attachSession({
+        chatId: resolvedChatId,
+        previewUrl,
+        previewTitle: 'Workspace media editor',
+        metadata: {
+          workspace_kind: 'media_editor',
+          workspace_mode: 'timeline',
+        },
+      });
     }
 
     async function detachSession(sessionId = '') {
@@ -553,6 +587,7 @@
       bootstrap,
       refreshState,
       attachSession,
+      attachMediaEditorSession,
       detachSession,
       requestInspectMode: () => requestPreviewCommand('inspect-start', { source: 'toolbar' }),
       requestScreenshot: () => requestWorkspaceScreenshot(),

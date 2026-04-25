@@ -37,6 +37,29 @@ test('buildSelectionSnippet includes the selected UI metadata', () => {
   assert.match(snippet, /Visible text: Play/);
 });
 
+test('buildSelectionSnippet describes selected media-editor clips with timing metadata', () => {
+  const snippet = promptContextHelpers.buildSelectionSnippet({
+    selectionType: 'media_editor_clip',
+    label: 'Opening title',
+    selector: 'media-editor-clip:clip_1',
+    tagName: 'media-editor-clip',
+    clip_id: 'clip_1',
+    track_id: 'track_text',
+    clip_kind: 'text',
+    start_ms: 250,
+    duration_ms: 1750,
+    text: 'Big opening hook',
+  });
+
+  assert.match(snippet, /\[Media editor context\]/);
+  assert.match(snippet, /Selected clip: Opening title/);
+  assert.match(snippet, /Timing: 250–2000ms \(duration 1750ms\)/);
+  assert.match(snippet, /Clip ID: clip_1/);
+  assert.match(snippet, /Track ID: track_text/);
+  assert.match(snippet, /Clip kind: text/);
+  assert.match(snippet, /Visible text: Big opening hook/);
+});
+
 test('appendSnippetToPrompt appends context with spacing and focuses the composer', () => {
   const promptEl = createElement();
   promptEl.value = 'Existing request';
@@ -205,4 +228,41 @@ test('controller exposes explicit attached request context only after chip click
   assert.equal(attachedScreenshotClearButton.hidden, true);
   assert.equal(attachedConsoleChip.hidden, true);
   assert.equal(attachedConsoleClearButton.hidden, true);
+});
+
+test('controller renders selected media-editor clip as next-send clip context', () => {
+  const promptEl = createElement();
+  const selectionChip = createElement();
+  const attachedSelectionChip = createElement();
+  attachedSelectionChip.hidden = true;
+  const attachedSelectionClearButton = createElement();
+  attachedSelectionClearButton.hidden = true;
+  const selection = {
+    selectionType: 'media_editor_clip',
+    label: 'Opening title',
+    selector: 'media-editor-clip:clip_1',
+    tagName: 'media-editor-clip',
+    clip_id: 'clip_1',
+    track_id: 'track_text',
+    clip_kind: 'text',
+    start_ms: 250,
+    duration_ms: 1750,
+  };
+  const controller = promptContextHelpers.createController({
+    enabled: true,
+    promptEl,
+    selectionChip,
+    attachedSelectionChip,
+    attachedSelectionClearButton,
+    getSelectionContext: () => selection,
+  });
+
+  controller.bind();
+  selectionChip.click();
+
+  assert.equal(attachedSelectionChip.hidden, false);
+  assert.equal(attachedSelectionChip.textContent, 'Next send clip: Opening title, 250–2000ms');
+  assert.match(promptEl.value, /\[Media editor context\]/);
+  assert.match(promptEl.value, /Selected clip: Opening title/);
+  assert.deepEqual(controller.getRequestContext?.().selection, selection);
 });

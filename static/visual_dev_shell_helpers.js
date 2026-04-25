@@ -77,7 +77,7 @@
     return consoleSeverity(events) === 'error';
   }
 
-  function clampNumber(value, min, max) {
+function clampNumber(value, min, max) {
     if (!Number.isFinite(value)) return null;
     if (Number.isFinite(min) && value < min) return min;
     if (Number.isFinite(max) && value > max) return max;
@@ -119,6 +119,29 @@
     return Number(windowObject.innerWidth || 0) >= 861;
   }
 
+  function applySelectionLabel(selection = {}) {
+    const label = String(selection?.label || selection?.selector || selection?.selectionType || selection?.selection_type || 'none');
+    const startValue = Number(selection?.start_ms ?? selection?.startMs ?? 0);
+    const durationValue = Number(selection?.duration_ms ?? selection?.durationMs ?? 0);
+    const startMs = Number.isFinite(startValue) ? Math.max(Math.round(startValue), 0) : 0;
+    const durationMs = Number.isFinite(durationValue) ? Math.max(Math.round(durationValue), 0) : 0;
+    const isMediaEditorClip = String(selection?.selectionType || selection?.selection_type || '').trim() === 'media_editor_clip'
+      || String(selection?.tagName || selection?.tag_name || '').trim() === 'media-editor-clip'
+      || Boolean(String(selection?.clip_id || selection?.clipId || '').trim());
+    if (isMediaEditorClip) {
+      return {
+        label,
+        selectedText: `Selected clip: ${label}, ${startMs}–${startMs + durationMs}ms`,
+        composerText: `Selected clip: ${label}, ${startMs}–${startMs + durationMs}ms`,
+      };
+    }
+    return {
+      label,
+      selectedText: `Selected: ${label}`,
+      composerText: `UI: ${label}`,
+    };
+  }
+
   function createController(deps) {
     const {
       appShell,
@@ -145,6 +168,7 @@
       windowObject = typeof window !== 'undefined' ? window : null,
       localStorageRef = null,
       initialEnabled = false,
+      previewUrlForSession = null,
     } = deps || {};
 
     const featureEnabled = Boolean(initialEnabled);
@@ -474,11 +498,13 @@
     function activateSessionPreview(session = {}) {
       const sessionId = String(session?.session_id || session?.sessionId || '').trim();
       const previewUrl = String(
-        session?.previewFrameUrl
-        || session?.preview_frame_url
-        || session?.previewUrl
-        || session?.preview_url
-        || 'about:blank'
+        typeof previewUrlForSession === 'function'
+          ? previewUrlForSession(session)
+          : (session?.previewFrameUrl
+            || session?.preview_frame_url
+            || session?.previewUrl
+            || session?.preview_url
+            || 'about:blank')
       ) || 'about:blank';
       if (!sessionId) {
         activePreviewSessionId = '';
@@ -560,22 +586,11 @@
     }
 
     function applySelectionSummary(selection = {}) {
-      const label = String(selection?.label || selection?.selector || selection?.selectionType || selection?.selection_type || 'none');
-      const hasSelection = label !== 'none';
-      setText(selectionChip, `Selected: ${label}`);
-      setText(composerSelectionChip, `UI: ${label}`);
+      const summary = applySelectionLabel(selection || {});
+      const hasSelection = summary.label !== 'none';
+      setText(selectionChip, summary.selectedText);
+      setText(composerSelectionChip, summary.composerText);
       setHidden(composerSelectionChip, !hasSelection);
-    }
-
-    function screenshotBasename(screenshot = {}) {
-      const storagePath = String(screenshot?.storage_path || screenshot?.artifact_path || screenshot?.artifactPath || '').trim();
-      return storagePath ? storagePath.split(/[\\/]/).filter(Boolean).pop() || '' : '';
-    }
-
-    function screenshotHashFromBasename(basename = '') {
-      const normalized = String(basename || '').trim();
-      const match = normalized.match(/^screenshot-\d+-([a-f0-9]{6,12})\.(png|jpe?g|webp)$/i);
-      return match ? match[1] : '';
     }
 
     function compactScreenshotBasename(basename = '') {
@@ -588,6 +603,17 @@
         return `${normalized.slice(0, 12)}…${normalized.slice(-10)}`;
       }
       return normalized;
+    }
+
+    function screenshotBasename(screenshot = {}) {
+      const storagePath = String(screenshot?.storage_path || screenshot?.artifact_path || screenshot?.artifactPath || '').trim();
+      return storagePath ? storagePath.split(/[\\/]/).filter(Boolean).pop() || '' : '';
+    }
+
+    function screenshotHashFromBasename(basename = '') {
+      const normalized = String(basename || '').trim();
+      const match = normalized.match(/^screenshot-\d+-([a-f0-9]{6,12})\.(png|jpe?g|webp)$/i);
+      return match ? match[1] : '';
     }
 
     function screenshotSummaryLabel(screenshot = {}) {

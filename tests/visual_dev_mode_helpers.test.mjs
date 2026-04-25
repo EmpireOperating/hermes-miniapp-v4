@@ -38,6 +38,8 @@ function createHarness({
     },
   },
   getParentOrigin = () => 'https://miniapp.example.com',
+  mediaEditorUrlForChat = null,
+  previewUrlForSession = null,
 } = {}) {
   let currentStatePayload = statePayload;
   const shellCalls = [];
@@ -227,9 +229,10 @@ function createHarness({
           session_id: payload.session_id,
           chat_id: payload.chat_id,
           preview_url: payload.preview_url,
-          preview_origin: 'https://preview.example.com',
+          preview_origin: String(payload.preview_url || '').startsWith('https://miniapp.example.com') ? 'https://miniapp.example.com' : 'https://preview.example.com',
           bridge_parent_origin: payload.bridge_parent_origin,
           preview_title: payload.preview_title,
+          metadata: payload.metadata || {},
           runtime: { state: 'connecting' },
         };
         currentStatePayload = { ok: true, enabled: true, sessions: [attachedSession] };
@@ -253,6 +256,8 @@ function createHarness({
       }
       throw new Error(`Unexpected apiPost URL: ${url}`);
     },
+    mediaEditorUrlForChat,
+    previewUrlForSession,
     onUiError(error) {
       shellCalls.push(['error', String(error?.message || error)]);
     },
@@ -488,7 +493,38 @@ test('attachSession posts attach payload for the active chat, refreshes state, a
   assert.equal(harness.previewCreations.at(-1)?.sessionId, harness.apiPostCalls[0][1].session_id);
 });
 
+test('attachMediaEditorSession attaches same-origin media editor workspace without persisting init_data', async () => {
+  const harness = createHarness({
+    activeChatId: 33,
+    statePayload: { ok: true, enabled: true, sessions: [] },
+    mediaEditorUrlForChat: (chatId) => `https://miniapp.example.com/workspace/media-editor?chat_id=${chatId}`,
+  });
+
+  await harness.controller.attachMediaEditorSession();
+
+  assert.equal(harness.apiPostCalls[0][0], '/api/visual-dev/session/attach');
+  assert.equal(harness.apiPostCalls[0][1].chat_id, 33);
+  assert.equal(harness.apiPostCalls[0][1].preview_url, 'https://miniapp.example.com/workspace/media-editor?chat_id=33');
+  assert.equal(harness.apiPostCalls[0][1].preview_title, 'Workspace media editor');
+  assert.deepEqual(harness.apiPostCalls[0][1].metadata, {
+    workspace_kind: 'media_editor',
+    workspace_mode: 'timeline',
+  });
+});
+
+test('attachMediaEditorSession can derive the same-origin editor URL from the parent origin', async () => {
+  const harness = createHarness({
+    activeChatId: 44,
+    statePayload: { ok: true, enabled: true, sessions: [] },
+  });
+
+  await harness.controller.attachMediaEditorSession();
+
+  assert.equal(harness.apiPostCalls[0][1].preview_url, 'https://miniapp.example.com/workspace/media-editor?chat_id=44');
+});
+
 test('requestInspectMode and requestRegionScreenshot dispatch preview commands, while requestScreenshot captures the active iframe directly', async () => {
+
   const harness = createHarness({
     sessionDetailsByChatId: {
       11: {

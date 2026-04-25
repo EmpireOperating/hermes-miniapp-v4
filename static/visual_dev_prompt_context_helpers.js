@@ -10,7 +10,56 @@
       .join('\n');
   }
 
+  function isMediaEditorClipSelection(selection = {}) {
+    const selectionType = normalizeText(selection?.selectionType || selection?.selection_type || '');
+    const tagName = normalizeText(selection?.tagName || selection?.tag_name || '');
+    return selectionType === 'media_editor_clip'
+      || tagName === 'media-editor-clip'
+      || Boolean(normalizeText(selection?.clip_id || selection?.clipId || ''));
+  }
+
+  function selectionStartMs(selection = {}) {
+    const value = Number(selection?.start_ms ?? selection?.startMs ?? 0);
+    return Number.isFinite(value) ? Math.max(Math.round(value), 0) : 0;
+  }
+
+  function selectionDurationMs(selection = {}) {
+    const value = Number(selection?.duration_ms ?? selection?.durationMs ?? 0);
+    return Number.isFinite(value) ? Math.max(Math.round(value), 0) : 0;
+  }
+
+  function clipTimingLabel(selection = {}) {
+    const startMs = selectionStartMs(selection);
+    const durationMs = selectionDurationMs(selection);
+    const endMs = startMs + durationMs;
+    return `${startMs}–${endMs}ms`;
+  }
+
+  function buildMediaEditorClipSnippet(selection = {}) {
+    const label = normalizeText(selection?.label || selection?.selector || selection?.clip_id || selection?.clipId || 'selected clip');
+    const selector = normalizeText(selection?.selector || '');
+    const clipId = normalizeText(selection?.clip_id || selection?.clipId || '');
+    const trackId = normalizeText(selection?.track_id || selection?.trackId || '');
+    const clipKind = normalizeText(selection?.clip_kind || selection?.clipKind || '');
+    const text = normalizeText(selection?.text || '');
+    const durationMs = selectionDurationMs(selection);
+    return joinSnippetLines([
+      '[Media editor context]',
+      `Selected clip: ${label}`,
+      `Timing: ${clipTimingLabel(selection)}${durationMs ? ` (duration ${durationMs}ms)` : ''}`,
+      clipId ? `Clip ID: ${clipId}` : '',
+      trackId ? `Track ID: ${trackId}` : '',
+      clipKind ? `Clip kind: ${clipKind}` : '',
+      selector ? `Selector: ${selector}` : '',
+      text ? `Visible text: ${text}` : '',
+      'Please use this selected media-editor clip context for the next change.',
+    ]);
+  }
+
   function buildSelectionSnippet(selection = {}) {
+    if (isMediaEditorClipSelection(selection)) {
+      return buildMediaEditorClipSnippet(selection);
+    }
     const label = normalizeText(selection?.label || selection?.selector || selection?.tagName || 'selected element');
     const selector = normalizeText(selection?.selector || '');
     const tagName = normalizeText(selection?.tagName || '');
@@ -174,10 +223,16 @@
 
     function renderAttachedRequestContext() {
       const selectionLabel = normalizeText(attachedSelection?.label || attachedSelection?.selector || attachedSelection?.tagName || '');
-      const screenshotLabelText = screenshotChipLabel(attachedScreenshot);
+const screenshotLabelText = screenshotChipLabel(attachedScreenshot);
+      const selectionIsClip = isMediaEditorClipSelection(attachedSelection || {});
       const nextPreviewLabel = previewLabel(attachedPreview);
       const nextConsoleLabel = consoleLabel(attachedConsole);
-      setText(attachedSelectionChip, `Next send UI: ${selectionLabel || 'none'}`);
+      setText(
+        attachedSelectionChip,
+        selectionIsClip
+          ? `Next send clip: ${selectionLabel || 'selected clip'}, ${clipTimingLabel(attachedSelection || {})}`
+          : `Next send UI: ${selectionLabel || 'none'}`,
+      );
       setText(attachedScreenshotChip, `Next send screenshot: ${screenshotLabelText || 'none'}`);
       setText(attachedPreviewChip, `Next send preview: ${nextPreviewLabel || 'none'}`);
       setText(attachedConsoleChip, `Next send console: ${nextConsoleLabel || 'none'}`);
@@ -291,6 +346,7 @@
       getRequestContext,
       clearRequestContext,
       buildSelectionSnippet,
+      buildMediaEditorClipSnippet,
       buildScreenshotSnippet,
       buildPreviewSnippet,
       buildConsoleSnippet,

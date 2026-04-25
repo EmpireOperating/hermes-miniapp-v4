@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import asdict
@@ -36,6 +37,10 @@ _AMBIGUOUS_FOLLOWUP_PHRASES = (
     "yep",
     "ok",
     "okay",
+)
+_MEDIA_PROJECT_SUGGESTION_BLOCK_RE = re.compile(
+    r"\n{0,2}```(?:media-project-suggestions|media_project_suggestions)\s*\n(?P<body>.*?)\n```\n{0,2}",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -126,6 +131,99 @@ def _build_current_attachment_block(attachments: object) -> str:
     if count <= 0:
         return ""
     return "\n".join(lines)
+
+def _extract_media_project_suggestion_payload(reply_text: str) -> tuple[dict[str, object] | None, str, str | None]:
+    text = str(reply_text or "")
+    match = _MEDIA_PROJECT_SUGGESTION_BLOCK_RE.search(text)
+    if not match:
+        return None, text, None
+    raw_body = match.group("body") or ""
+    try:
+        decoded = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        return None, text, f"invalid JSON: {exc.msg}"
+    if not isinstance(decoded, dict):
+        return None, text, "suggestion payload must be a JSON object"
+    summary = str(decoded.get("summary") or "Hermes timeline suggestion").strip() or "Hermes timeline suggestion"
+    operations = decoded.get("operations")
+    if not isinstance(operations, list) or not operations:
+        return None, text, "suggestion operations must be a non-empty list"
+    normalized_operations: list[dict[str, object]] = []
+    for operation in operations:
+        if not isinstance(operation, dict):
+            return None, text, "suggestion operations must be objects"
+        kind = str(operation.get("kind") or "").strip()
+        if kind not in {"create_text_clip", "create_image_clip", "create_audio_clip", "create_video_clip", "create_clip_from_asset", "duplicate_clip", "split_clip", "update_clip", "delete_clip"}:
+            return None, text, f"unsupported media project operation: {kind}"
+        payload = operation.get("payload") if isinstance(operation.get("payload"), dict) else {}
+        normalized_operations.append({"kind": kind, "payload": payload})
+    cleaned = (text[: match.start()] + "\n\n" + text[match.end() :]).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return {"summary": summary, "operations": normalized_operations}, cleaned, None
+
+
+def _maybe_create_media_project_suggestion_batch(
+    runtime: "JobRuntime",
+    *,
+    user_id: str,
+    chat_id: int,
+    reply_text: str,
+    job_id: int,
+) -> tuple[str, dict[str, object] | None]:
+    suggestion_payload, cleaned_reply, error = _extract_media_project_suggestion_payload(reply_text)
+    if error:
+        runtime.publish_job_event(
+            job_id,
+            "meta",
+            {
+                "chat_id": chat_id,
+                "source": "media-editor",
+                "reason": "media_project_suggestion_error",
+                "detail": error,
+            },
+        )
+        return reply_text, None
+    if not suggestion_payload:
+        return reply_text, None
+    get_project = getattr(runtime.store, "get_media_project_by_chat", None)
+    create_batch = getattr(runtime.store, "create_media_project_suggestion_batch", None)
+    if not callable(get_project) or not callable(create_batch):
+        return reply_text, None
+    try:
+        project = get_project(user_id=user_id, chat_id=chat_id)
+        project_id = str((project or {}).get("project_id") or "").strip() if isinstance(project, dict) else ""
+        if not project_id:
+            return reply_text, None
+        batch = create_batch(
+            project_id=project_id,
+            author="hermes",
+            summary=str(suggestion_payload.get("summary") or ""),
+            operations=list(suggestion_payload.get("operations") or []),
+        )
+    except Exception as exc:  # noqa: BLE001 - proposal extraction must not break chat completion
+        runtime.publish_job_event(
+            job_id,
+            "meta",
+            {
+                "chat_id": chat_id,
+                "source": "media-editor",
+                "reason": "media_project_suggestion_error",
+                "detail": str(exc),
+            },
+        )
+        return reply_text, None
+    runtime.publish_job_event(
+        job_id,
+        "meta",
+        {
+            "chat_id": chat_id,
+            "source": "media-editor",
+            "reason": "media_project_suggestion_created",
+            "project_id": project_id,
+            "batch_id": str((batch or {}).get("batch_id") or ""),
+        },
+    )
+    return cleaned_reply, batch if isinstance(batch, dict) else None
 
 
 def execute_chat_job(
@@ -373,6 +471,15 @@ def execute_chat_job(
             f"{source_hint}{tool_hint}"
         )
 
+    media_project_suggestion_batch: dict[str, object] | None = None
+    reply_text, media_project_suggestion_batch = _maybe_create_media_project_suggestion_batch(
+        runtime,
+        user_id=user_id,
+        chat_id=chat_id,
+        reply_text=reply_text,
+        job_id=job_id,
+    )
+
     was_hard_truncated = False
     if len(reply_text) > runtime.assistant_hard_limit:
         trunc_notice = "\n\n[response truncated by miniapp hard limit]"
@@ -460,6 +567,8 @@ def execute_chat_job(
         done_payload["persistent_mode"] = "warm-detached"
         done_payload["warm_handoff"] = True
         done_payload["session_id"] = session_id
+    if media_project_suggestion_batch:
+        done_payload["media_project_suggestion_batch_id"] = str(media_project_suggestion_batch.get("batch_id") or "")
     runtime.publish_job_event(job_id, "done", done_payload)
     if not preserve_warm_owner:
         runtime.client.evict_session(session_id)

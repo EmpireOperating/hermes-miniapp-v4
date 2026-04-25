@@ -228,6 +228,7 @@ function buildHarness(overrides = {}) {
     windowObject,
     localStorageRef,
     initialEnabled: Boolean(overrides.initialEnabled),
+    previewUrlForSession: overrides.previewUrlForSession,
   });
 
   return {
@@ -350,6 +351,22 @@ test('attached preview keeps low-value URL and connected chips out of the compos
   assert.equal(harness.composerConsoleChip.hidden, true);
 });
 
+test('applySessionState can resolve a frame-only preview URL without mutating stored session state', () => {
+  const harness = buildHarness({
+    previewUrlForSession: (session) => `${session.previewUrl}&init_data=secret`,
+  });
+
+  harness.controller.applySessionState({
+    enabled: true,
+    chatId: 73,
+    chatLabel: '[feat]Editor',
+    sessionId: 'session-1',
+    previewUrl: 'https://miniapp.example.com/workspace/media-editor?chat_id=73',
+    runtime: { state: 'live' },
+  });
+
+  assert.equal(harness.controller.getActivePreviewFrame().src, 'https://miniapp.example.com/workspace/media-editor?chat_id=73&init_data=secret');
+});
 test('getActivePreviewRegion returns the visible bounds of the active preview frame', () => {
   const harness = buildHarness();
 
@@ -427,6 +444,7 @@ test('applySessionState does not reload the active cached iframe when runtime up
   assert.equal(assignedSrc, 'https://miniapp.example.com/app?__hermes_visual_dev_preview=1');
   assert.equal(assignedSrcCount, 0);
   assert.equal(harness.statusLabel.textContent, 'live');
+
 });
 
 test('applySelectionSummary and applyScreenshotSummary populate workspace and composer-adjacent context chips', () => {
@@ -810,6 +828,24 @@ test('desktop sidebar resize handle stays hidden until workspace is open and mob
   assert.equal(mobileHarness.sidebarResizeHandle.hidden, true);
   assert.equal(mobileHarness.workspaceRoot.style.getPropertyValue('--workspace-sidebar-width'), '');
   assert.deepEqual(mobileHarness.controller.getSidebarSize(), { width: null });
+});
+
+test('applySelectionSummary renders media-editor clip selection with timing in workspace and composer chips', () => {
+  const harness = buildHarness({ initialEnabled: true });
+
+  harness.controller.applySelectionSummary({
+    selectionType: 'media_editor_clip',
+    label: 'Opening title',
+    tagName: 'media-editor-clip',
+    clip_id: 'clip_1',
+    start_ms: 250,
+    duration_ms: 1750,
+  });
+
+  assert.equal(harness.selectionChip.textContent, 'Selected clip: Opening title, 250–2000ms');
+  assert.equal(harness.composerSelectionChip.textContent, 'Selected clip: Opening title, 250–2000ms');
+  assert.equal(harness.composerSelectionChip.hidden, false);
+
 });
 
 test('applySessionDetails renders runtime summary and recent console events into the drawer', () => {

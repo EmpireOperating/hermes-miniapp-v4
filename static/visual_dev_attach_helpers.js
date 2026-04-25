@@ -26,6 +26,7 @@
       attachHintLabel,
       settingsOpenButton,
       attachButton,
+      mediaEditorButton,
       refreshButton,
       inspectButton,
       screenshotButton,
@@ -80,6 +81,7 @@
       const sessionDisabled = !session?.session_id;
       setDisabled(settingsOpenButton, attachDisabled);
       setDisabled(attachButton, attachDisabled);
+      setDisabled(mediaEditorButton, attachDisabled);
       setDisabled(refreshButton, !session?.preview_url);
       setDisabled(inspectButton, sessionDisabled);
       setDisabled(screenshotButton, sessionDisabled);
@@ -136,6 +138,15 @@
       }
     }
 
+    async function handleOpenMediaEditor() {
+      try {
+        await visualDevController?.attachMediaEditorSession?.({ chatId: Number(getActiveChatId?.() || 0) });
+        refreshUi();
+      } catch (error) {
+        onError(error);
+      }
+    }
+
     function handleRefresh() {
       if (!activeSession()?.preview_url) return;
       reloadPreview();
@@ -171,6 +182,9 @@
       if (bound) return;
       settingsOpenButton?.addEventListener?.('click', openAttachModal);
       attachButton?.addEventListener?.('click', openAttachModal);
+      mediaEditorButton?.addEventListener?.('click', () => {
+        void handleOpenMediaEditor();
+      });
       refreshButton?.addEventListener?.('click', handleRefresh);
       inspectButton?.addEventListener?.('click', handleInspect);
       screenshotButton?.addEventListener?.('click', (event) => handleScreenshot(event));
@@ -194,6 +208,7 @@
       closeAttachModal,
       handleAttachSubmit,
       handleDetach,
+      handleOpenMediaEditor,
       handleRefresh,
       handleInspect,
       handleScreenshot,

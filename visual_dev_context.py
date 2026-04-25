@@ -4,11 +4,24 @@ import json
 from typing import Any
 
 _ALLOWED_SELECTION_KEYS = (
+    "selectionType",
+    "selection_type",
     "label",
     "selector",
     "tagName",
+    "tag_name",
     "text",
     "source",
+    "clip_id",
+    "clipId",
+    "track_id",
+    "trackId",
+    "clip_kind",
+    "clipKind",
+    "start_ms",
+    "startMs",
+    "duration_ms",
+    "durationMs",
 )
 _ALLOWED_SCREENSHOT_KEYS = (
     "label",
@@ -40,6 +53,23 @@ _ALLOWED_CONSOLE_KEYS = (
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _is_media_editor_clip_selection(selection: dict[str, str]) -> bool:
+    return (
+        selection.get("selectionType") == "media_editor_clip"
+        or selection.get("selection_type") == "media_editor_clip"
+        or selection.get("tagName") == "media-editor-clip"
+        or selection.get("tag_name") == "media-editor-clip"
+        or bool(selection.get("clip_id") or selection.get("clipId"))
+    )
+
+
+def _int_text(value: Any) -> int:
+    try:
+        return max(int(float(str(value or "0").strip() or "0")), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _normalize_section(payload: Any, *, allowed_keys: tuple[str, ...]) -> dict[str, str] | None:
@@ -98,17 +128,41 @@ def build_visual_context_message_block(payload: Any) -> str:
         return ""
 
     lines: list[str] = ["[Visual context for this turn]"]
+    media_editor_context = False
     selection = context.get("selection") or {}
     if selection:
-        lines.append("Visual UI context for this turn:")
-        if selection.get("label"):
-            lines.append(f"- Selected element: {selection['label']}")
-        if selection.get("selector"):
-            lines.append(f"- Selector: {selection['selector']}")
-        if selection.get("tagName"):
-            lines.append(f"- Tag: {selection['tagName']}")
-        if selection.get("text"):
-            lines.append(f"- Visible text: {selection['text']}")
+        if _is_media_editor_clip_selection(selection):
+            media_editor_context = True
+            start_ms = _int_text(selection.get("start_ms") or selection.get("startMs"))
+            duration_ms = _int_text(selection.get("duration_ms") or selection.get("durationMs"))
+            end_ms = start_ms + duration_ms
+            clip_id = selection.get("clip_id") or selection.get("clipId")
+            track_id = selection.get("track_id") or selection.get("trackId")
+            clip_kind = selection.get("clip_kind") or selection.get("clipKind")
+            lines.append("Media editor context for this turn:")
+            if selection.get("label"):
+                lines.append(f"- Selected clip: {selection['label']}")
+            lines.append(f"- Timing: {start_ms}–{end_ms}ms (duration {duration_ms}ms)")
+            if clip_id:
+                lines.append(f"- Clip ID: {clip_id}")
+            if track_id:
+                lines.append(f"- Track ID: {track_id}")
+            if clip_kind:
+                lines.append(f"- Clip kind: {clip_kind}")
+            if selection.get("selector"):
+                lines.append(f"- Selector: {selection['selector']}")
+            if selection.get("text"):
+                lines.append(f"- Visible text: {selection['text']}")
+        else:
+            lines.append("Visual UI context for this turn:")
+            if selection.get("label"):
+                lines.append(f"- Selected element: {selection['label']}")
+            if selection.get("selector"):
+                lines.append(f"- Selector: {selection['selector']}")
+            if selection.get("tagName"):
+                lines.append(f"- Tag: {selection['tagName']}")
+            if selection.get("text"):
+                lines.append(f"- Visible text: {selection['text']}")
 
     screenshot = context.get("screenshot") or {}
     if screenshot:
@@ -144,6 +198,16 @@ def build_visual_context_message_block(payload: Any) -> str:
             lines.append(f"- Console level: {console['level']}")
         if console.get("message"):
             lines.append(f"- Console message: {console['message']}")
+
+    if media_editor_context:
+        lines.append(
+            "If you want to propose timeline edits, include one hidden proposal block exactly like this; "
+            "the app will turn it into a pending suggestion batch instead of requiring manual copying:"
+        )
+        lines.append("```media-project-suggestions")
+        lines.append('{"summary":"Short human summary","operations":[{"kind":"create_text_clip","payload":{"track_id":"<text_track_id>","text":"New title","start_ms":0,"duration_ms":1500}},{"kind":"create_image_clip","payload":{"track_id":"<visual_track_id>","storage_path":"https://example.test/image.png","label":"Image label","start_ms":0,"duration_ms":3000}},{"kind":"create_video_clip","payload":{"track_id":"<visual_track_id>","storage_path":"/api/media-projects/<project_id>/uploaded-assets/clip.mp4","label":"Video label","start_ms":0,"duration_ms":3000}},{"kind":"create_clip_from_asset","payload":{"track_id":"<visual_track_id>","asset_id":"<existing_asset_id>","start_ms":0,"duration_ms":3000}},{"kind":"duplicate_clip","payload":{"clip_id":"<existing_clip_id>","start_ms":3000}},{"kind":"split_clip","payload":{"clip_id":"<existing_clip_id>","split_ms":1500}}]}')
+        lines.append("```")
+        lines.append("Supported operation kinds: create_text_clip, create_image_clip, create_audio_clip, create_video_clip, create_clip_from_asset, duplicate_clip, split_clip, update_clip, delete_clip.")
 
     lines.append("Use this visual context when interpreting the operator's request.")
     return "\n".join(lines)
