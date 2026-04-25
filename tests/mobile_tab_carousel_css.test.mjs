@@ -16,3 +16,10 @@ test('mobile tab carousel uses bounded card widths with snap padding instead of 
   assert.match(cssSource, /\.chat-tabs\.chat-tabs--mobile-carousel \.chat-tab\s*\{[\s\S]*flex:\s*0 0 clamp\(15rem, calc\(100% - 112px\), 19rem\);[\s\S]*width:\s*clamp\(15rem, calc\(100% - 112px\), 19rem\);[\s\S]*max-width:\s*calc\(100% - 40px\);/);
   assert.doesNotMatch(cssSource, /\.chat-tabs\.chat-tabs--mobile-carousel \.chat-tab\s*\{[\s\S]*flex:\s*0 0 calc\(100% - 72px\);/);
 });
+
+test('mobile transcript content cannot widen the app shell when a reply contains long code lines', () => {
+  assert.match(cssSource, /\.messages\s*\{[\s\S]*min-width:\s*0;/);
+  assert.match(cssSource, /\.message\s*\{[\s\S]*min-width:\s*0;/);
+  assert.match(cssSource, /\.message__body\s*\{[\s\S]*min-width:\s*0;[\s\S]*overflow-wrap:\s*anywhere;/);
+  assert.match(cssSource, /\.code-block\s*\{[\s\S]*max-width:\s*100%;[\s\S]*min-width:\s*0;[\s\S]*overflow-x:\s*auto;[\s\S]*white-space:\s*pre-wrap;[\s\S]*overflow-wrap:\s*anywhere;[\s\S]*word-break:\s*break-word;/);
+});
